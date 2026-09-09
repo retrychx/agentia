@@ -34,6 +34,8 @@
 
 ## 4. 装饰器表面（草案）
 
+**已定决策：标准装饰器（ECMAScript Stage 3），不用 `experimentalDecorators` / `emitDecoratorMetadata` / `reflect-metadata`。** 因此不支持构造器参数反射 —— DI 采用模块内显式 `providers` + factory 装配（`useFactory` 式）。框架的元数据一律显式声明（装饰器参数即配置，外加 `WeakMap`/注册表存储），不依赖 `design:paramtypes`。
+
 ```ts
 @AgentModule({ main: true })              // 模块 = 能力包；main 标记主 agent
 export class ProjectModule {
@@ -47,11 +49,11 @@ export class ProjectModule {
   static brand = '扁平 + 水彩，禁用霓虹色…';
 }
 
-@Injectable()
-export class ImageTools {
-  @Tool(z.object({ prompt: z.string() }))
-  async draw(prompt: string) { … }
-}
+// 显式装配：token + useFactory，不读构造器参数反射
+const providers = [
+  ImageTools,
+  { token: 'IMAGE', useFactory: (t: typeof ImageTools) => t },
+];
 ```
 
 ## 5. 自研运行时：参考 Claude 的机制清单
@@ -66,7 +68,7 @@ export class ImageTools {
 
 ## 6. 服务层（agent 服务的关键，区别于对话）
 
-1. **run 生命周期状态机**：queued → running → succeeded/failed；运行记录 + 调用树 tracing。
+1. **run 生命周期状态机**：queued → running → succeeded/failed；运行记录 + 调用树（trace，见 §9）。
 2. **结构化结果是一等契约**：收尾产出符合 schema 的 typed 结果 + 明确成败（`output_config.format`）。
 3. **触发三类**：同步请求 / 异步任务（入队→轮询）/ 定时事件。
 4. **可观测 + 成本**：每条 run 的调用树、token、超时、task budget。
@@ -88,8 +90,49 @@ export class ImageTools {
 | Turn 4 | compaction / context editing / task budget | 长上下文策略 |
 | Turn 5 | 触发传输（同步 RPC / 异步任务 / 定时）+ run 恢复 | transport 层 |
 
-## 9. 开放项
+Trace 自 Turn 0 起内建（每个 LLM 往返都记账），Turn 1 后是完整形态。
 
-- 语言已默认 TypeScript（NestJS-like 装饰器路线）。
-- 模型默认 `claude-opus-5`，thinking 用 adaptive，流式优先。
+## 9. Trace（调用树）—— 一等公民
+
+流水线服务靠**事后**调试，trace 是调试表面 + 审计记录（对话助手能现场看，trace 对流水线是必需品）。
+
+### 9.1 模型（对齐 OpenTelemetry 命名，便于接基础设施）
+
+- 一次 run == 一条 trace；v1 里 `traceId == runId`，1:1。
+- 树形层级：
+  - `run`（根 span）= 整次运行
+  - `unit` span = 每次对单元（tool/skill/prompt/subagent）的调用
+  - `llm.turn` span = unit 内部每次模型往返，挂 usage（model / input / output / cache_read）
+  - 子 agent = 一个 unit span，其内部单元递归成它的子孙
+- span 属性：model、input/output/cache tokens、成本估计、状态、错误类型。
+- 事件（logs）：工具入参/出参**默认截断 + 脱敏**，完整内容 opt-in。
+- 状态：`ok` / `error` + 错误分类（可重试 vs 不可重试）。
+
+### 9.2 上下文传播
+
+- 当前 span 句柄放进 **RunContext（DI run scope）**，每个单元调用从上下文拿 child span —— 不用全局单例，因为 agent 并行 tool 调用时父子关系必须准。
+- 对齐 NestJS 拦截器：每次“单元调用”包一层 TraceInterceptor，统一开 span / 记 usage / 写 status。
+- 异步化后：trace 上下文要跨队列传播 —— v1 同步先把 header 语义定好，实现后置。
+
+### 9.3 产出与导出
+
+- v1：内存 trace store，随 run 结果/运行记录返回（结构化输出 / JSONL），便于回放调试。
+- 生产：OTLP 导出 + span 与 run 记录同库存储。
+- 成本：span 级 usage 聚合自 API usage 字段（`cache_read_input_tokens` 等），run 汇总 = 各 span 求和。
+
+### 9.4 开放问题
+
+- 全量记录成本 vs 截断/采样默认阈值。
+- trace 是否作“重放基底”（把完成的 trace 喂回模型做调试）—— 未来，不进 v1。
+
+## 10. 决策记录
+
+- 2026-09-10：TypeScript 用 7.x（native tsgo，npm latest 实测 7.0.2）。
+- 2026-09-10：**装饰器走标准（Stage 3）+ 显式 DI（providers/useFactory）**，弃用 `experimentalDecorators`/`emitDecoratorMetadata`/`reflect-metadata` —— 原生编译器已在考虑移除 legacy 元数据发射，新框架不该押其上。
+- 2026-09-10：**trace（调用树）为一等公民**，与 run 1:1，自 Turn 0 内建。
+
+## 11. 开放项
+
 - npm 包拆分（core / runtime / transport）在发布阶段做，先单包。
+- DI 的 property-injection 便利写法（标准装饰器下可行）待定。
+- 模型默认 `claude-opus-5`，thinking 用 adaptive，流式优先。

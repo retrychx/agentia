@@ -11,10 +11,7 @@
     "declaration": true,
     "sourceMap": true,
     "outDir": "dist",
-    "rootDir": ".",
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "useDefineForClassFields": false
+    "rootDir": "."
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]
