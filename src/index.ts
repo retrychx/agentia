@@ -13,7 +13,7 @@ export type {
   UnitType,
   Usage,
 } from './core/trace.js';
-export type { AgentTool, JsonSchema } from './core/tool.js';
+export type { AgentTool, JsonSchema, RecorderBackend, ToolRunContext } from './core/tool.js';
 
 // engine：Turn 0 内核
 export { runAgent } from './engine/loop.js';
@@ -48,6 +48,8 @@ export type {
 // toolkit：Turn 2 声明式单元 + 应用装配
 export { Tool, collectTools } from './toolkit/tool.js';
 export type { ToolSpec } from './toolkit/tool.js';
+export { SubAgent, collectSubAgents, subagentToTool } from './toolkit/subagent.js';
+export type { SubAgentSpec, SubAgentUnit } from './toolkit/subagent.js';
 export { createApp, AgentApp } from './toolkit/module.js';
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
 

@@ -18,13 +18,14 @@ TS 装饰器 + DI 声明“agent 流水线服务”：一次 run = 一份任务 
 - **Turn 0**（`src/engine/`）：manual loop（流式）+ trace 记账 + 裸工具执行。
 - **Turn 1**（`src/run/`）：Run 生命周期（runId==traceId）+ RunContext(blackboard) + executeRun + SystemPrompt 稳定前缀 cache breakpoint。
 - **Turn 2**（`src/container/` + `src/toolkit/`）：`@Tool` 装饰器 + collectTools、显式 DI（value/class/factory）、`createApp` 装配工具菜单；RunContext 经 AsyncLocalStorage 透入工具执行体。
+- **Turn 3**（`src/toolkit/subagent.ts`）：`@SubAgent` 单元 —— 独立 agent 循环 + 裁剪上下文 + 隔离报告；loop 抽成 `runAgentScoped`（不双开 run 根），子 agent 的 llm.turn 递归成主 trace 里 `unit` span 的子孙（spec §9）。
 
 设计规格见 [`docs/spec.md`](docs/spec.md)。
 
-## 声明式写法（Turn 2+）
+## 声明式写法（Turn 2/3）
 
 ```ts
-import { Tool, createApp, SystemPrompt } from 'agentia';
+import { Tool, SubAgent, createApp, SystemPrompt } from 'agentia';
 
 class WeatherTools {
   // 工具名缺省取方法名（建议 snake_case）；方法入参即模型按 schema 解析的结构化 input
@@ -58,6 +59,22 @@ const { run, result } = await app.run(
 console.log(result.trace); // runId==traceId 的调用树 + usage
 ```
 
+子 agent（Turn 3）：主 agent 自主决定调用，子 agent 在裁剪上下文里独立循环，
+只有最终报告回流主上下文：
+
+```ts
+class PipelineModule {
+  @SubAgent({
+    name: 'reviewer',
+    description: '审查给定文档并输出书面评审意见',
+    schema: { type: 'object', properties: { doc: { type: 'string' } }, required: ['doc'], additionalProperties: false },
+    system: '你是评审 agent。结论必须以“审查通过/不通过”开头。',
+    tools: ['weather'],   // 子 agent 自己的 @Tool 菜单（provider token）
+  })
+  reviewer(_input: { doc: string }): void {} // 方法体不执行
+}
+```
+
 ## 运行
 
 ```bash
@@ -65,6 +82,7 @@ npm install
 npm run smoke        # Turn 0：mock loop + trace
 npm run smoke:run    # Turn 1：SystemPrompt 缓存布局 + run 生命周期
 npm run smoke:turn2  # Turn 2：@Tool 装饰器 → DI → createApp（tsx 直接跑源码）
+npm run smoke:turn3  # Turn 3：@SubAgent 嵌套循环 + 上下文裁剪/隔离 + usage 聚合
 ```
 
 真机跑（需要 `ANTHROPIC_API_KEY` 或 `ant auth login`）：

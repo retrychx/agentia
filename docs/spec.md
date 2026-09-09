@@ -86,7 +86,7 @@ const providers = [
 | Turn 0 | ✅ manual loop + 流式，单主 agent 调工具跑通 | 引擎内核 |
 | Turn 1 | ✅ run 生命周期 + 系统提示拼装 + cache 布局 | 容器 / run scope |
 | Turn 2 | ✅ 装饰器 → JSON Schema → tool_result 往返 + strict | `@Tool` 容器 |
-| Turn 3 | 子 agent 作为 tool（裁剪上下文 + 隔离报告） | `@SubAgent` |
+| Turn 3 | ✅ 子 agent 作为 tool（裁剪上下文 + 隔离报告） | `@SubAgent` |
 | Turn 4 | compaction / context editing / task budget | 长上下文策略 |
 | Turn 5 | 触发传输（同步 RPC / 异步任务 / 定时）+ run 恢复 | transport 层 |
 
@@ -132,6 +132,7 @@ Trace 自 Turn 0 起内建（每个 LLM 往返都记账），Turn 1 后是完整
 - 2026-09-10：**trace（调用树）为一等公民**，与 run 1:1，自 Turn 0 内建。
 - 2026-09-10：**trace v1 范围 = 单次 run 链路追踪 + 每步 usage**（每步 token/成本/成败/耗时）。跨 run 账单报表、预算硬管控 → 后置，不在 trace 内做。
 - 2026-09-10：Turn 2 —— **run 作用域上下文用 AsyncLocalStorage 传播**（executeRun 内建 ctx，执行体 `RunContext.current()` 直取），工具/子 agent 执行不把 ctx 作参数层层下传；`@Tool` 只登记「方法→spec」，AgentTool 由 `collectTools(instance)` 对容器解析后的实例生成（此时才绑定 this），零反射、与 tsgo/esbuild 双兼容。
+- 2026-09-10：Turn 3 —— **主循环抽成 `agentLoop`（不自开 run 根，llm.turn 挂给定 parentSpanId）**；`runAgent` = 开 run 根后调它，`runAgentScoped` = 嵌套单元入口。**子 agent 复用同一循环**：开 `unit` span（挂发起它的 llm.turn 下）→ 独立 messages（只含任务 JSON，裁剪主对话）→ 内部 llm.turn 递归成 unit 子孙 → 仅最终文本以 tool_result 交回（隔离报告）。工具执行注入 `ToolRunContext{client, recorder, parentSpanId}`，recorder 用 `core/tool.ts` 的 `RecorderBackend` 结构面（core 不依赖 engine）。usage 天然跨两级聚合（同 recorder 求和）。
 
 ## 11. 开放项
 

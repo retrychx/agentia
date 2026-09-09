@@ -7,6 +7,8 @@ import type { AgentRunResult } from '../engine/types.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
 import { collectTools } from './tool.js';
+import { collectSubAgents, subagentToTool } from './subagent.js';
+import type { SubAgentUnit } from './subagent.js';
 
 /**
  * Agentia —— 应用装配（spec §4/§6：主 agent + 可调工具菜单）。
@@ -76,12 +78,35 @@ export class AgentApp {
       maxIterations: opts.maxIterations,
     };
 
+    // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent；
+    // 子 agent 的 tools token 之后惰性解析到该 provider 的 @Tool 菜单。
+    const plainByToken = new Map<Token, AgentTool[]>();
+    const unitsByToken = new Map<Token, SubAgentUnit[]>();
+    for (const p of opts.providers) {
+      const inst = this.di.resolve<object>(p.provide);
+      plainByToken.set(p.provide, collectTools(inst));
+      unitsByToken.set(p.provide, collectSubAgents(inst));
+    }
+
     const sources = opts.toolSources ?? opts.providers.map((p) => p.provide);
     this._tools = sources.flatMap((token) => {
       if (!this.di.has(token)) {
         throw new Error(`toolSources 指向未注册 provider: "${token}"`);
       }
-      return collectTools(this.di.resolve(token));
+      const plain = plainByToken.get(token) ?? [];
+      const subTools = (unitsByToken.get(token) ?? []).map((unit) =>
+        subagentToTool(unit, () => {
+          const refs = unit.spec.tools ?? [];
+          return refs.flatMap((t) => {
+            const inner = plainByToken.get(t);
+            if (!inner) {
+              throw new Error(`@SubAgent "${unit.name}" tools 引用未注册 provider: "${t}"`);
+            }
+            return inner;
+          });
+        }),
+      );
+      return [...plain, ...subTools];
     });
   }
 

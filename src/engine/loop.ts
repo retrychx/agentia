@@ -1,137 +1,157 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool } from '../core/tool.js';
-import type { SpanError } from '../core/trace.js';
+import type { AgentTool, RecorderBackend, ToolRunContext } from '../core/tool.js';
+import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError } from './errors.js';
 import { TraceRecorder } from './tracer.js';
-import type { AgentRunResult, AgentStopReason, RunAgentOptions } from './types.js';
+import type { AgentRunResult, AgentStopReason, RunAgentOptions, SystemParam } from './types.js';
 import { costEstimate, usageFromAnthropic } from './usage.js';
 
 const DEFAULT_MODEL = 'claude-opus-5';
 
 /**
- * 主循环（manual loop，流式）—— spec §5。
- * 每次模型往返开一个 llm.turn span 记账；run 根 span 归本函数。
- * 可用 options.recorder 注入（run 层复用同一个 recorder，traceId 即 runId）。
+ * Agentia —— 主循环（manual loop，流式）—— spec §5。
+ *
+ * Turn 3 结构：核心是 `agentLoop` —— 不自开 run 根，所有 llm.turn 挂在给定的
+ * parentSpanId 下。同一套循环既能当主 agent（run 根为其父，由 runAgent 开），
+ * 也能当子 agent（unit span 为其父，见 toolkit/subagent.ts），llm.turn 与 usage
+ * 递归进同一条 trace（spec §9：子 agent = 一个 unit span，内部单元递归成它的子孙）。
+ *
+ * 工具执行经 ctx: ToolRunContext 把 {client, recorder, parentSpanId: 当前 turn}
+ * 交给 tool.run —— 普通工具忽略；子 agent 用它在正确位置开 unit span。
  */
-export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult> {
-  const client = options.client ?? new Anthropic();
-  const model = options.model ?? DEFAULT_MODEL;
-  const maxTokens = options.maxTokens ?? 64_000;
-  const maxIterations = options.maxIterations ?? 40;
 
-  const messages: Anthropic.MessageParam[] = [...options.messages];
-  const agentTools: AgentTool[] = options.tools ?? [];
-  const apiTools = agentTools.map(toApiTool);
+interface AgentLoopArgs {
+  client: Anthropic;
+  model: string;
+  maxTokens: number;
+  maxIterations: number;
+  system?: SystemParam;
+  /** 本轮循环自有消息（内部复制，不改调用方数组） */
+  messages: Anthropic.MessageParam[];
+  tools: AgentTool[];
+  recorder: RecorderBackend;
+  /** llm.turn 的父 span（run 根 / 子 agent 的 unit span） */
+  parentSpanId: SpanId | null;
+  onText?: (delta: string) => void;
+}
 
-  const recorder = options.recorder ?? new TraceRecorder();
-  const rootId = recorder.begin('run', options.runName ?? 'agent.run', null);
-  recorder.setAttribute(rootId, 'model', model);
+export interface AgentLoopResult {
+  stopReason: AgentStopReason;
+  finalText: string;
+  error?: SpanError;
+  /** 本轮循环自己发起的模型往返次数 */
+  iterations: number;
+}
+
+/** 循环体核心：带父 span 跑一轮 manual loop。请求失败按 error 收掉 turn 后抛出，由外层收尾。 */
+async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
+  const { client, model, recorder, parentSpanId } = args;
+  const messages: Anthropic.MessageParam[] = [...args.messages];
+  const apiTools = args.tools.map(toApiTool);
 
   let stopReason: AgentStopReason = 'end_turn';
   let error: SpanError | undefined;
   let finalText = '';
   let finished = false;
+  let iterations = 0;
 
-  try {
-    for (let iteration = 0; iteration < maxIterations; iteration++) {
-      const turnId = recorder.begin('llm.turn', model, rootId);
+  for (let iteration = 0; iteration < args.maxIterations; iteration++) {
+    const turnId = recorder.begin('llm.turn', model, parentSpanId);
 
-      let message: Anthropic.Message;
-      try {
-        const stream = client.messages.stream({
-          model,
-          max_tokens: maxTokens,
-          ...(options.system ? { system: options.system } : {}),
-          ...(apiTools.length ? { tools: apiTools } : {}),
-          messages,
-        });
-        stream.on('text', (delta) => options.onText?.(delta));
-        message = await stream.finalMessage();
-      } catch (e) {
-        recorder.end(turnId, { status: 'error', error: classifyError(e) });
-        throw e; // 冒泡到外层统一收尾
-      }
-
-      const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
-      if (usage) usage.costEstimate = costEstimate(model, usage);
-      recorder.end(turnId, { usage });
-      recorder.setAttribute(turnId, 'input_tokens', usage?.inputTokens ?? 0);
-      recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
-      recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
-
-      messages.push({ role: 'assistant', content: message.content });
-
-      // —— 终止/边界分支（每个都置 finished，退出循环不再兜底改判）——
-      if (message.stop_reason === 'end_turn') {
-        stopReason = 'end_turn';
-        finalText = textOf(message);
-        finished = true;
-        break;
-      }
-      if (message.stop_reason === 'refusal') {
-        stopReason = 'refusal';
-        finalText = textOf(message);
-        error = { type: 'refusal', message: 'model refused the request', retryable: false };
-        finished = true;
-        break;
-      }
-      if (message.stop_reason === 'max_tokens') {
-        stopReason = 'max_tokens';
-        finalText = textOf(message);
-        finished = true;
-        break;
-      }
-      if (message.stop_reason === 'pause_turn') {
-        // Turn 0 无 server tools，正常不会到；避免无限循环直接停
-        stopReason = 'pause_turn';
-        finished = true;
-        break;
-      }
-
-      const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-      if (toolUses.length === 0) {
-        // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停
-        stopReason = 'tool_use_no_blocks';
-        finished = true;
-        break;
-      }
-
-      // —— 执行工具：并行；单条 user 消息回全部 tool_result（抑制并行是反模式）——
-      const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
-        toolUses.map(async (use) => {
-          const tool = agentTools.find((t) => t.name === use.name);
-          recorder.event(turnId, 'tool.input', { tool: use.name, input: limit(use.input, 2000) });
-
-          let ok = true;
-          let content: unknown = '';
-          if (!tool) {
-            ok = false;
-            content = `unknown tool: ${use.name}`;
-          } else {
-            try {
-              content = await tool.run(use.input as never);
-            } catch (e) {
-              ok = false;
-              const err = classifyError(e);
-              content = `error(${err.type}): ${err.message}`;
-            }
-          }
-          recorder.event(turnId, 'tool.output', { tool: use.name, ok, content: ok ? limit(content, 2000) : limit(content, 1000) });
-
-          return {
-            type: 'tool_result',
-            tool_use_id: use.id,
-            content: stringifySafe(content),
-            is_error: !ok,
-          };
-        }),
-      );
-
-      messages.push({ role: 'user', content: toolResults });
+    let message: Anthropic.Message;
+    try {
+      const stream = client.messages.stream({
+        model,
+        max_tokens: args.maxTokens,
+        ...(args.system ? { system: args.system } : {}),
+        ...(apiTools.length ? { tools: apiTools } : {}),
+        messages,
+      });
+      stream.on('text', (delta) => args.onText?.(delta));
+      message = await stream.finalMessage();
+    } catch (e) {
+      recorder.end(turnId, { status: 'error', error: classifyError(e) });
+      throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/unit 与收尾
     }
-  } catch (e) {
-    stopReason = 'error';
-    error = classifyError(e);
+    iterations++;
+
+    const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
+    if (usage) usage.costEstimate = costEstimate(model, usage);
+    recorder.end(turnId, { usage });
+    recorder.setAttribute(turnId, 'input_tokens', usage?.inputTokens ?? 0);
+    recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
+    recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
+
+    messages.push({ role: 'assistant', content: message.content });
+
+    // —— 终止/边界分支（每个都置 finished，退出循环不再兜底改判）——
+    if (message.stop_reason === 'end_turn') {
+      stopReason = 'end_turn';
+      finalText = textOf(message);
+      finished = true;
+      break;
+    }
+    if (message.stop_reason === 'refusal') {
+      stopReason = 'refusal';
+      finalText = textOf(message);
+      error = { type: 'refusal', message: 'model refused the request', retryable: false };
+      finished = true;
+      break;
+    }
+    if (message.stop_reason === 'max_tokens') {
+      stopReason = 'max_tokens';
+      finalText = textOf(message);
+      finished = true;
+      break;
+    }
+    if (message.stop_reason === 'pause_turn') {
+      // Turn 0 无 server tools，正常不会到；避免无限循环直接停
+      stopReason = 'pause_turn';
+      finished = true;
+      break;
+    }
+
+    const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+    if (toolUses.length === 0) {
+      // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停
+      stopReason = 'tool_use_no_blocks';
+      finished = true;
+      break;
+    }
+
+    // —— 执行工具：并行；单条 user 消息回全部 tool_result（抑制并行是反模式）——
+    const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
+      toolUses.map(async (use) => {
+        const tool = args.tools.find((t) => t.name === use.name);
+        recorder.event(turnId, 'tool.input', { tool: use.name, input: limit(use.input, 2000) });
+
+        const ctx: ToolRunContext = { client, recorder, parentSpanId: turnId };
+        let ok = true;
+        let content: unknown = '';
+        if (!tool) {
+          ok = false;
+          content = `unknown tool: ${use.name}`;
+        } else {
+          try {
+            content = await tool.run(use.input as never, ctx);
+          } catch (e) {
+            ok = false;
+            const err = classifyError(e);
+            content = `error(${err.type}): ${err.message}`;
+          }
+        }
+        recorder.event(turnId, 'tool.output', { tool: use.name, ok, content: ok ? limit(content, 2000) : limit(content, 1000) });
+
+        return {
+          type: 'tool_result',
+          tool_use_id: use.id,
+          content: stringifySafe(content),
+          is_error: !ok,
+        };
+      }),
+    );
+
+    messages.push({ role: 'user', content: toolResults });
   }
 
   if (!finished && stopReason === 'end_turn') {
@@ -139,11 +159,71 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     stopReason = 'max_iterations';
   }
 
-  const runStatus = stopReason === 'end_turn' ? 'ok' : 'error';
-  recorder.setAttribute(rootId, 'stop_reason', stopReason);
-  recorder.end(rootId, { status: runStatus, ...(error ? { error } : {}) });
+  return { stopReason, finalText, error, iterations };
+}
+
+/** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */
+export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult> {
+  const recorder = options.recorder ?? new TraceRecorder();
+  const rootId = recorder.begin('run', options.runName ?? 'agent.run', null);
+  recorder.setAttribute(rootId, 'model', options.model ?? DEFAULT_MODEL);
+
+  let result: AgentLoopResult;
+  try {
+    result = await agentLoop({
+      client: options.client ?? new Anthropic(),
+      model: options.model ?? DEFAULT_MODEL,
+      maxTokens: options.maxTokens ?? 64_000,
+      maxIterations: options.maxIterations ?? 40,
+      system: options.system,
+      messages: options.messages,
+      tools: options.tools ?? [],
+      recorder,
+      parentSpanId: rootId,
+      onText: options.onText,
+    });
+  } catch (e) {
+    result = { stopReason: 'error', finalText: '', error: classifyError(e), iterations: 0 };
+  }
+
+  const runStatus = result.stopReason === 'end_turn' ? 'ok' : 'error';
+  recorder.setAttribute(rootId, 'stop_reason', result.stopReason);
+  recorder.end(rootId, { status: runStatus, ...(result.error ? { error: result.error } : {}) });
   const trace = recorder.snapshot(runStatus);
-  return { trace, stopReason, finalText, iterations: trace.spans.length, error };
+  return {
+    trace,
+    stopReason: result.stopReason,
+    finalText: result.finalText,
+    iterations: result.iterations,
+    error: result.error,
+  };
+}
+
+/** 嵌套单元（子 agent）入口：不自开 run 根，llm.turn 挂在给定 parentSpanId 下的同一条 trace。 */
+export async function runAgentScoped(opts: {
+  client?: Anthropic;
+  system?: SystemParam;
+  messages: Anthropic.MessageParam[];
+  tools?: AgentTool[];
+  model?: string;
+  maxTokens?: number;
+  maxIterations?: number;
+  recorder: RecorderBackend;
+  parentSpanId: SpanId;
+  onText?: (delta: string) => void;
+}): Promise<AgentLoopResult> {
+  return agentLoop({
+    client: opts.client ?? new Anthropic(),
+    model: opts.model ?? DEFAULT_MODEL,
+    maxTokens: opts.maxTokens ?? 64_000,
+    maxIterations: opts.maxIterations ?? 40,
+    system: opts.system,
+    messages: opts.messages,
+    tools: opts.tools ?? [],
+    recorder: opts.recorder,
+    parentSpanId: opts.parentSpanId,
+    onText: opts.onText,
+  });
 }
 
 function toApiTool(t: AgentTool): Anthropic.Tool {
