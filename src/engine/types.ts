@@ -11,9 +11,18 @@ export type AgentStopReason =
   | 'tool_use_no_blocks'
   | 'error';
 
+/** 可携带 cache_control 的 system 文本块（见 run/systemPrompt.ts） */
+export interface SystemTextBlock {
+  type: 'text';
+  text: string;
+  cache_control?: { type: 'ephemeral' };
+}
+/** system 参数：纯文本，或可缓存块数组（稳定段带 breakpoint，volatile 段放其后不带） */
+export type SystemParam = string | SystemTextBlock[];
+
 export interface RunAgentOptions {
-  /** 顶层 system prompt（稳定内容，放 cache breakpoint 前） */
-  system?: string;
+  /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
+  system?: SystemParam;
   /** 初始消息；Turn 0 由调用方给 user 起始消息 */
   messages: Anthropic.MessageParam[];
   /** 主 agent 可调工具（v1 裸 JSON schema） */
@@ -25,6 +34,8 @@ export interface RunAgentOptions {
   maxIterations?: number;
   /** 注入 client（默认 new Anthropic()，读 env/ant auth） */
   client?: Anthropic;
+  /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
+  recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */
   onText?: (delta: string) => void;
   runName?: string;
