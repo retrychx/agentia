@@ -130,6 +130,7 @@ Trace 自 Turn 0 起内建（每个 LLM 往返都记账），Turn 1 后是完整
 - 2026-09-10：TypeScript 用 7.x（native tsgo，npm latest 实测 7.0.2）。
 - 2026-09-10：**装饰器走标准（Stage 3）+ 显式 DI（providers/useFactory）**，弃用 `experimentalDecorators`/`emitDecoratorMetadata`/`reflect-metadata` —— 原生编译器已在考虑移除 legacy 元数据发射，新框架不该押其上。
 - 2026-09-10：**trace（调用树）为一等公民**，与 run 1:1，自 Turn 0 内建。
+- 2026-09-10：**trace v1 范围 = 单次 run 链路追踪 + 每步 usage**（每步 token/成本/成败/耗时）。跨 run 账单报表、预算硬管控 → 后置，不在 trace 内做。
 
 ## 11. 开放项
 

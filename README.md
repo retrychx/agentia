@@ -15,4 +15,21 @@ TS 装饰器 + DI 声明“agent 流水线服务”：一次 run = 一份任务 
 
 ## 状态
 
-脚手架阶段。设计规格见 [`docs/spec.md`](docs/spec.md)。尚未进入 Turn 0 实现。
+Turn 0 已完成：manual loop（流式）+ trace 记账 + 裸工具执行（见 `src/engine/`）。设计规格见 [`docs/spec.md`](docs/spec.md)。
+
+## 运行
+
+```bash
+npm install
+npm run smoke     # mock client，不联网，验证 loop + trace
+```
+
+真机跑（需要 `ANTHROPIC_API_KEY` 或 `ant auth login`）：
+```bash
+export ANTHROPIC_API_KEY=sk-...
+# 用 runAgent 传 tools/system/messages，返回 { trace, finalText, stopReason, ... }
+# trace 即本次 run 的调用树 + usage（traceId == runId）
+```
+
+> 注：`npm run dev`（tsx）前需先 `npm approve-scripts` 批准 esbuild/tsx 的 postinstall。
+> `@anthropic-ai/sdk` 无 postinstall，不受影响。
