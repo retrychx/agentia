@@ -21,6 +21,7 @@ TS 装饰器 + DI 声明“agent 流水线服务”：一次 run = 一份任务 
 - **Turn 3**（`src/toolkit/subagent.ts`）：`@SubAgent` 单元 —— 独立 agent 循环 + 裁剪上下文 + 隔离报告；loop 抽成 `runAgentScoped`（不双开 run 根），子 agent 的 llm.turn 递归成主 trace 里 `unit` span 的子孙（spec §9）。
 - **Turn 4**（`src/engine/context.ts` + `policy.ts`）：长上下文三策略分清 —— context editing（`trimToolPairs` 丢旧工具对）/ compaction（`compactMessages` 摘要器注入）/ 预算护栏（`createBudgetPolicy`，字符/4 估算 + 滞回）；改写时在 run 根记 `context.budget` 事件。
 - **Turn 5**（`src/run/`）：触发传输 —— 同步 RPC（`runSync`/`createSyncHandler`）/ 异步任务（`AsyncRunner` + `TaskStore`，idempotencyKey at-least-once 去重、失败可重试、`rethrow:false` 落 failed 记录）/ 定时（`Scheduler.every/.at`）；三类共用一份 `RunInput` 契约 —— 换宿主不换语义。
+- **Turn 6**（`src/toolkit/` + `src/run/fsStore.ts`）：单元表补全四类 —— `@Skill`（**代码控制的流程**：方法体 + `SkillContext.llm()` 受限子运行，产物以 tool_result 交回）/ `@Prompt`（纯文本资产，方法形态：实例 volatile / static 常量）；菜单跨类型（tool/skill/subagent/prompt）统一查重；`FileTaskStore`（JSONL）+ `AsyncRunner.resumePending()` 宿主重启续跑（换宿主不换语义）；缺省模型 `resolveDefaultModel()`（`AGENTIA_MODEL` env 覆盖）。
 
 设计规格见 [`docs/spec.md`](docs/spec.md)。
 
@@ -87,11 +88,14 @@ npm run smoke:turn2  # Turn 2：@Tool 装饰器 → DI → createApp（tsx 直�
 npm run smoke:turn3  # Turn 3：@SubAgent 嵌套循环 + 上下文裁剪/隔离 + usage 聚合
 npm run smoke:turn4  # Turn 4：trimToolPairs/compactMessages 纯函数 + 预算策略端到端压缩
 npm run smoke:turn5  # Turn 5：AsyncRunner 状态机 + 幂等去重/失败重试 + runSync + Scheduler
+npm run smoke:turn6  # Turn 6：@Skill 端到端 / @Prompt / 菜单查重 / FileTaskStore 续跑 / AGENTIA_MODEL
 ```
 
-真机跑（需要 `ANTHROPIC_API_KEY` 或 `ant auth login`）：
+真机跑（需要 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN`；走兼容端点时配 `ANTHROPIC_BASE_URL`，
+模型缺省 `claude-opus-5`、可用 `AGENTIA_MODEL` 覆盖）：
 ```bash
-export ANTHROPIC_API_KEY=sk-...
+npm run live        # runAgent + get_weather 工具往返，打印 stopReason/finalText/trace
+npm run live:skill  # @Skill 真机：方法里 ctx.llm() 两次取数拼产物（走源码）
 # 用 runAgent / executeRun / app.run 传 tools/system/messages，返回 { trace, finalText, stopReason, ... }
 # trace 即本次 run 的调用树 + usage（traceId == runId）
 ```

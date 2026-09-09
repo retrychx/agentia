@@ -12,7 +12,15 @@ import type {
 } from './types.js';
 import { costEstimate, usageFromAnthropic } from './usage.js';
 
-const DEFAULT_MODEL = 'claude-opus-5';
+/**
+ * 缺省模型解析：显式传入 > AGENTIA_MODEL env > 'claude-opus-5'。
+ * 不把端点私有模型写死在代码里 —— 走 Anthropic 兼容网关（如 DeepSeek 端点）时
+ * export AGENTIA_MODEL=deepseek-… 即可全局覆盖，无需逐处传 model。
+ */
+export function resolveDefaultModel(over?: string): string {
+  if (over) return over;
+  return process.env.AGENTIA_MODEL?.trim() || 'claude-opus-5';
+}
 
 /**
  * Agentia —— 主循环（manual loop，流式）—— spec §5。
@@ -189,13 +197,13 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
 export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult> {
   const recorder = options.recorder ?? new TraceRecorder();
   const rootId = recorder.begin('run', options.runName ?? 'agent.run', null);
-  recorder.setAttribute(rootId, 'model', options.model ?? DEFAULT_MODEL);
+  recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
 
   let result: AgentLoopResult;
   try {
     result = await agentLoop({
       client: options.client ?? new Anthropic(),
-      model: options.model ?? DEFAULT_MODEL,
+      model: resolveDefaultModel(options.model),
       maxTokens: options.maxTokens ?? 64_000,
       maxIterations: options.maxIterations ?? 40,
       system: options.system,
@@ -239,7 +247,7 @@ export async function runAgentScoped(opts: {
 }): Promise<AgentLoopResult> {
   return agentLoop({
     client: opts.client ?? new Anthropic(),
-    model: opts.model ?? DEFAULT_MODEL,
+    model: resolveDefaultModel(opts.model),
     maxTokens: opts.maxTokens ?? 64_000,
     maxIterations: opts.maxIterations ?? 40,
     system: opts.system,

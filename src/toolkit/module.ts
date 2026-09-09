@@ -10,6 +10,9 @@ import type { Provider, Token } from '../container/container.js';
 import { collectTools } from './tool.js';
 import { collectSubAgents, subagentToTool } from './subagent.js';
 import type { SubAgentUnit } from './subagent.js';
+import { collectSkills, skillToTool } from './skill.js';
+import type { SkillUnit } from './skill.js';
+import { collectPrompts } from './prompt.js';
 import type { ContextPolicy } from '../engine/types.js';
 
 /**
@@ -76,15 +79,29 @@ export class AgentApp {
       contextPolicy: opts.contextPolicy,
     };
 
-    // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent；
-    // 子 agent 的 tools token 之后惰性解析到该 provider 的 @Tool 菜单。
+    // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent / @Skill / @Prompt；
+    // 子 agent / skill 的 tools token 之后惰性解析到该 provider 的 @Tool 菜单。
     const plainByToken = new Map<Token, AgentTool[]>();
     const unitsByToken = new Map<Token, SubAgentUnit[]>();
+    const skillsByToken = new Map<Token, SkillUnit[]>();
+    const promptsByToken = new Map<Token, AgentTool[]>();
     for (const p of opts.providers) {
       const inst = this.di.resolve<object>(p.provide);
       plainByToken.set(p.provide, collectTools(inst));
       unitsByToken.set(p.provide, collectSubAgents(inst));
+      skillsByToken.set(p.provide, collectSkills(inst));
+      promptsByToken.set(p.provide, collectPrompts(inst));
     }
+
+    const resolveRefTools =
+      (owner: string, refs: string[] | undefined) => (): AgentTool[] =>
+        (refs ?? []).flatMap((t) => {
+          const inner = plainByToken.get(t);
+          if (!inner) {
+            throw new Error(`${owner} tools 引用未注册 provider: "${t}"`);
+          }
+          return inner;
+        });
 
     const sources = opts.toolSources ?? opts.providers.map((p) => p.provide);
     this._tools = sources.flatMap((token) => {
@@ -93,19 +110,24 @@ export class AgentApp {
       }
       const plain = plainByToken.get(token) ?? [];
       const subTools = (unitsByToken.get(token) ?? []).map((unit) =>
-        subagentToTool(unit, () => {
-          const refs = unit.spec.tools ?? [];
-          return refs.flatMap((t) => {
-            const inner = plainByToken.get(t);
-            if (!inner) {
-              throw new Error(`@SubAgent "${unit.name}" tools 引用未注册 provider: "${t}"`);
-            }
-            return inner;
-          });
-        }),
+        subagentToTool(unit, resolveRefTools(`@SubAgent "${unit.name}"`, unit.spec.tools)),
       );
-      return [...plain, ...subTools];
+      const skillTools = (skillsByToken.get(token) ?? []).map((unit) =>
+        skillToTool(unit, resolveRefTools(`@Skill "${unit.name}"`, unit.spec.tools)),
+      );
+      const promptTools = promptsByToken.get(token) ?? [];
+      return [...plain, ...subTools, ...skillTools, ...promptTools];
     });
+
+    // §7 静态校验（最小落地）：菜单统一查重 —— 重名会让模型在歧义菜单里猜，直接报错。
+    const dup = new Map<string, number>();
+    for (const t of this._tools) dup.set(t.name, (dup.get(t.name) ?? 0) + 1);
+    const dupNames = [...dup.entries()].filter(([, n]) => n > 1).map(([n]) => n);
+    if (dupNames.length > 0) {
+      throw new Error(
+        `菜单单元重名（tool/skill/subagent/prompt 共用命名空间）: ${dupNames.join(', ')}`,
+      );
+    }
   }
 
   /** app 已装配好的工具菜单（构建期即从容器解析，静态稳定） */

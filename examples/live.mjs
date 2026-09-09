@@ -1,13 +1,29 @@
 // 真机示例：npm run build && node examples/live.mjs
-// 需要 ANTHROPIC_API_KEY（或先 `ant auth login`）。
+// 认证：ANTHROPIC_API_KEY **或** ANTHROPIC_AUTH_TOKEN 任一即可（SDK 显式传最稳）；
+// 可走网关/兼容端点：ANTHROPIC_BASE_URL 已设则自动用（如 DeepSeek 的 Anthropic 兼容端点）。
+// 模型：AGENTIA_MODEL > ANTHROPIC_DEFAULT_OPUS_MODEL > claude-opus-5。
+// 在你的会话里：`! export ANTHROPIC_AUTH_TOKEN=sk-...` 或直接依赖已配好的 shell 环境。
+import Anthropic from '@anthropic-ai/sdk';
 import { runAgent } from '../dist/index.js';
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.log('未检测到 ANTHROPIC_API_KEY。请在 Claude Code 里用 `! export ANTHROPIC_API_KEY=sk-...` 设置后重跑。');
+const apiKey = process.env.ANTHROPIC_API_KEY;
+const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
+if (!apiKey && !authToken) {
+  console.log('未检测到 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN。用 `! export ANTHROPIC_AUTH_TOKEN=sk-...` 设置后重跑。');
   process.exit(0);
 }
+const client = new Anthropic({
+  baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+  ...(apiKey ? { apiKey } : { authToken }),
+});
+const model =
+  process.env.AGENTIA_MODEL ||
+  process.env.ANTHROPIC_DEFAULT_OPUS_MODEL ||
+  'claude-opus-5';
 
 const res = await runAgent({
+  client,
+  model,
   system: '你是助手。需要城市信息时用工具。',
   messages: [{ role: 'user', content: '伦敦天气怎么样？' }],
   tools: [

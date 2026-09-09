@@ -16,7 +16,7 @@ export type {
 export type { AgentTool, JsonSchema, RecorderBackend, ToolRunContext } from './core/tool.js';
 
 // engine：Turn 0 内核
-export { runAgent } from './engine/loop.js';
+export { runAgent, resolveDefaultModel } from './engine/loop.js';
 export { TraceRecorder } from './engine/tracer.js';
 export { classifyError } from './engine/errors.js';
 export type {
@@ -63,6 +63,16 @@ export { Tool, collectTools } from './toolkit/tool.js';
 export type { ToolSpec } from './toolkit/tool.js';
 export { SubAgent, collectSubAgents, subagentToTool } from './toolkit/subagent.js';
 export type { SubAgentSpec, SubAgentUnit } from './toolkit/subagent.js';
+export { Skill, collectSkills, skillToTool } from './toolkit/skill.js';
+export type {
+  SkillContext,
+  SkillLlmOptions,
+  SkillLlmResult,
+  SkillSpec,
+  SkillUnit,
+} from './toolkit/skill.js';
+export { Prompt, collectPrompts } from './toolkit/prompt.js';
+export type { PromptSpec } from './toolkit/prompt.js';
 export { createApp, AgentApp } from './toolkit/module.js';
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
 
@@ -71,6 +81,7 @@ export { normalizeMessages } from './run/spec.js';
 export type { RunInput, RunSpec, RunInvocationOptions } from './run/spec.js';
 export { InMemoryTaskStore } from './run/store.js';
 export type { TaskRecord, TaskStore } from './run/store.js';
+export { FileTaskStore } from './run/fsStore.js';
 export { AsyncRunner } from './run/async.js';
 export type { AsyncRunnerOptions, AppCallable } from './run/async.js';
 export { Scheduler } from './run/scheduler.js';

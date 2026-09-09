@@ -103,6 +103,21 @@ export class AsyncRunner {
     }
   }
 
+  /**
+   * 宿主重启续跑：把 store 里 queued | running 的记录重新派发执行
+   * （running 视为进程中断）。返回重派数量。幂等键去重照常生效。
+   */
+  resumePending(): number {
+    const pending = this.store
+      .list()
+      .filter((r) => r.status === 'queued' || r.status === 'running');
+    for (const rec of pending) {
+      rec.status = 'queued'; // 重新入队，由 #execute 统一推进
+      void this.#execute(rec.taskId);
+    }
+    return pending.length;
+  }
+
   async #execute(taskId: string): Promise<void> {
     const rec = this.store.get(taskId);
     if (!rec) return;

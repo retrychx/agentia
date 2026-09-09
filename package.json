@@ -15,7 +15,10 @@
     "smoke:turn2": "tsx scripts/smoke-turn2.ts",
     "smoke:turn3": "tsx scripts/smoke-turn3.ts",
     "smoke:turn4": "tsx scripts/smoke-turn4.ts",
-    "smoke:turn5": "tsx scripts/smoke-turn5.ts"
+    "smoke:turn5": "tsx scripts/smoke-turn5.ts",
+    "smoke:turn6": "tsx scripts/smoke-turn6.ts",
+    "live": "npm run build && node examples/live.mjs",
+    "live:skill": "tsx examples/live-skill.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
