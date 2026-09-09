@@ -29,8 +29,25 @@ export type {
 
 // run：Turn 1 生命周期
 export { Run, executeRun } from './run/run.js';
-export { RunContext } from './run/context.js';
+export { RunContext, withRunContext } from './run/context.js';
 export { SystemPrompt } from './run/systemPrompt.js';
 export type { SystemSection } from './run/systemPrompt.js';
 export type { ExecuteRunOptions } from './run/run.js';
 export type { RunMeta, RunStatus } from './run/types.js';
+
+// container：Turn 2 显式 DI
+export { Container } from './container/container.js';
+export type {
+  Provider,
+  ClassProvider,
+  ValueProvider,
+  FactoryProvider,
+  Token,
+} from './container/container.js';
+
+// toolkit：Turn 2 声明式单元 + 应用装配
+export { Tool, collectTools } from './toolkit/tool.js';
+export type { ToolSpec } from './toolkit/tool.js';
+export { createApp, AgentApp } from './toolkit/module.js';
+export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
+

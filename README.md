@@ -15,19 +15,62 @@ TS 装饰器 + DI 声明“agent 流水线服务”：一次 run = 一份任务 
 
 ## 状态
 
-Turn 0 已完成：manual loop（流式）+ trace 记账 + 裸工具执行（见 `src/engine/`）。设计规格见 [`docs/spec.md`](docs/spec.md)。
+- **Turn 0**（`src/engine/`）：manual loop（流式）+ trace 记账 + 裸工具执行。
+- **Turn 1**（`src/run/`）：Run 生命周期（runId==traceId）+ RunContext(blackboard) + executeRun + SystemPrompt 稳定前缀 cache breakpoint。
+- **Turn 2**（`src/container/` + `src/toolkit/`）：`@Tool` 装饰器 + collectTools、显式 DI（value/class/factory）、`createApp` 装配工具菜单；RunContext 经 AsyncLocalStorage 透入工具执行体。
+
+设计规格见 [`docs/spec.md`](docs/spec.md)。
+
+## 声明式写法（Turn 2+）
+
+```ts
+import { Tool, createApp, SystemPrompt } from 'agentia';
+
+class WeatherTools {
+  // 工具名缺省取方法名（建议 snake_case）；方法入参即模型按 schema 解析的结构化 input
+  @Tool({
+    description: '查询城市天气',
+    schema: {
+      type: 'object',
+      properties: { city: { type: 'string' } },
+      required: ['city'],
+      additionalProperties: false,
+    },
+    strict: true,
+  })
+  get_weather(input: { city: string }): string {
+    // 无需把 ctx 传进来 —— 直接从当前 run 取
+    const token = RunContext.current()?.get<string>('authToken');
+    return `city=${input.city};token=${token ?? 'none'}`;
+  }
+}
+
+const app = createApp({
+  name: 'weather-app',
+  providers: [{ provide: 'weather', useClass: WeatherTools }],
+  system: new SystemPrompt().add('role', '你是天气助手。', true),
+});
+
+const { run, result } = await app.run(
+  [{ role: 'user', content: '上海天气如何?' }],
+  { blackboard: { authToken: 'sk-...' } }, // 预置本次 run 的上下文
+);
+console.log(result.trace); // runId==traceId 的调用树 + usage
+```
 
 ## 运行
 
 ```bash
 npm install
-npm run smoke     # mock client，不联网，验证 loop + trace
+npm run smoke        # Turn 0：mock loop + trace
+npm run smoke:run    # Turn 1：SystemPrompt 缓存布局 + run 生命周期
+npm run smoke:turn2  # Turn 2：@Tool 装饰器 → DI → createApp（tsx 直接跑源码）
 ```
 
 真机跑（需要 `ANTHROPIC_API_KEY` 或 `ant auth login`）：
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-# 用 runAgent 传 tools/system/messages，返回 { trace, finalText, stopReason, ... }
+# 用 runAgent / executeRun / app.run 传 tools/system/messages，返回 { trace, finalText, stopReason, ... }
 # trace 即本次 run 的调用树 + usage（traceId == runId）
 ```
 

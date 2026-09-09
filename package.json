@@ -11,7 +11,8 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "smoke": "npm run build && node scripts/smoke.mjs",
-    "smoke:run": "npm run build && node scripts/smoke-run.mjs"
+    "smoke:run": "npm run build && node scripts/smoke-run.mjs",
+    "smoke:turn2": "tsx scripts/smoke-turn2.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
