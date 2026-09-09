@@ -1,0 +1,22 @@
+{
+  "name": "agentia",
+  "version": "0.0.1",
+  "private": true,
+  "description": "面向应用开发者的声明式 agent 服务开发框架 —— NestJS 模式：主 agent 调度 tool/skill/subagent/prompt，自研运行时，最终形态为流水线（pipeline）服务。",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
