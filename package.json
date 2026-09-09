@@ -13,7 +13,9 @@
     "smoke": "npm run build && node scripts/smoke.mjs",
     "smoke:run": "npm run build && node scripts/smoke-run.mjs",
     "smoke:turn2": "tsx scripts/smoke-turn2.ts",
-    "smoke:turn3": "tsx scripts/smoke-turn3.ts"
+    "smoke:turn3": "tsx scripts/smoke-turn3.ts",
+    "smoke:turn4": "tsx scripts/smoke-turn4.ts",
+    "smoke:turn5": "tsx scripts/smoke-turn5.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -3,12 +3,14 @@ import type { AgentTool } from '../core/tool.js';
 import type { SystemParam } from '../engine/types.js';
 import { SystemPrompt } from '../run/systemPrompt.js';
 import { executeRun } from '../run/run.js';
+import type { RunInvocationOptions } from '../run/spec.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
 import { collectTools } from './tool.js';
 import { collectSubAgents, subagentToTool } from './subagent.js';
 import type { SubAgentUnit } from './subagent.js';
+import type { ContextPolicy } from '../engine/types.js';
 
 /**
  * Agentia —— 应用装配（spec §4/§6：主 agent + 可调工具菜单）。
@@ -34,22 +36,16 @@ export interface AppOptions {
   maxTokens?: number;
   /** 缺省循环上限 */
   maxIterations?: number;
+  /** 缺省上下文预算策略（compaction / context editing） */
+  contextPolicy?: ContextPolicy;
   /** 只扫这些 token 的 provider 上的 @Tool；缺省扫全部 providers */
   toolSources?: Token[];
 }
 
-export interface RunAppOptions {
+/** 单次调用参数 = 通用调用参数 + 单次可覆盖 system（spec.ts 的 RunInvocationOptions 为单源） */
+export interface RunAppOptions extends RunInvocationOptions {
   /** 单次覆盖 system（volatile 段建议每 run 重建以拾取最新值） */
   system?: SystemPrompt | SystemParam;
-  model?: string;
-  maxTokens?: number;
-  maxIterations?: number;
-  client?: Anthropic;
-  onText?: (delta: string) => void;
-  /** 预置进本次 RunContext.blackboard 的键值（工具内经 RunContext.current() 读） */
-  blackboard?: Record<string, unknown>;
-  /** 显式替换工具菜单（缺省用 app 收集到的工具） */
-  tools?: AgentTool[];
 }
 
 export interface AgentRunOutput {
@@ -65,6 +61,7 @@ export class AgentApp {
     model?: string;
     maxTokens?: number;
     maxIterations?: number;
+    contextPolicy?: ContextPolicy;
   };
   private _tools?: AgentTool[];
 
@@ -76,6 +73,7 @@ export class AgentApp {
       model: opts.model,
       maxTokens: opts.maxTokens,
       maxIterations: opts.maxIterations,
+      contextPolicy: opts.contextPolicy,
     };
 
     // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent；
@@ -137,6 +135,9 @@ export class AgentApp {
       client: opts.client,
       onText: opts.onText,
       runName: this.name,
+      idempotencyKey: opts.idempotencyKey,
+      contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
+      rethrow: opts.rethrow,
       contextInit: (ctx) => {
         if (seed) {
           for (const key of Object.keys(seed)) ctx.set(key, seed[key]);

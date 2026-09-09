@@ -22,10 +22,23 @@ export { classifyError } from './engine/errors.js';
 export type {
   AgentRunResult,
   AgentStopReason,
+  ContextPolicy,
   RunAgentOptions,
   SystemParam,
   SystemTextBlock,
 } from './engine/types.js';
+
+// engine：Turn 4 长上下文策略
+export {
+  defaultEstimateTokens,
+  estimateMessages,
+  renderMessages,
+  trimToolPairs,
+  compactMessages,
+} from './engine/context.js';
+export type { CompactOptions, TrimOptions } from './engine/context.js';
+export { createBudgetPolicy } from './engine/policy.js';
+export type { BudgetPolicyOptions } from './engine/policy.js';
 
 // run：Turn 1 生命周期
 export { Run, executeRun } from './run/run.js';
@@ -52,4 +65,15 @@ export { SubAgent, collectSubAgents, subagentToTool } from './toolkit/subagent.j
 export type { SubAgentSpec, SubAgentUnit } from './toolkit/subagent.js';
 export { createApp, AgentApp } from './toolkit/module.js';
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
+
+// run：Turn 5 触发传输 + run 存储
+export { normalizeMessages } from './run/spec.js';
+export type { RunInput, RunSpec, RunInvocationOptions } from './run/spec.js';
+export { InMemoryTaskStore } from './run/store.js';
+export type { TaskRecord, TaskStore } from './run/store.js';
+export { AsyncRunner } from './run/async.js';
+export type { AsyncRunnerOptions, AppCallable } from './run/async.js';
+export { Scheduler } from './run/scheduler.js';
+export type { ScheduleEveryOptions, ScheduleHandle } from './run/scheduler.js';
+export { runSync, createSyncHandler } from './run/transport.js';
 

@@ -77,6 +77,12 @@ export interface ExecuteRunOptions extends RunAgentOptions {
   idempotencyKey?: string;
   /** 在 runAgent 前对本次 RunContext 做预置（blackboard 种子等） */
   contextInit?: (ctx: RunContext) => void;
+  /**
+   * 硬失败（请求/API 层异常）是否抛出。缺省 true；
+   * 异步宿主（AsyncRunner）置 false：失败也以 {run(status=failed), result.error} 返回，
+   * 便于把失败 run 落库而非冒泡。
+   */
+  rethrow?: boolean;
 }
 
 /**
@@ -99,6 +105,7 @@ export async function executeRun(
       return { run, result };
     } catch (e) {
       run.fail(e);
+      if (options.rethrow === false) return { run, result: run.result! };
       throw e;
     }
   });

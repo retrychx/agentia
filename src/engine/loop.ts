@@ -3,7 +3,13 @@ import type { AgentTool, RecorderBackend, ToolRunContext } from '../core/tool.js
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError } from './errors.js';
 import { TraceRecorder } from './tracer.js';
-import type { AgentRunResult, AgentStopReason, RunAgentOptions, SystemParam } from './types.js';
+import type {
+  AgentRunResult,
+  AgentStopReason,
+  ContextPolicy,
+  RunAgentOptions,
+  SystemParam,
+} from './types.js';
 import { costEstimate, usageFromAnthropic } from './usage.js';
 
 const DEFAULT_MODEL = 'claude-opus-5';
@@ -33,6 +39,8 @@ interface AgentLoopArgs {
   /** llm.turn 的父 span（run 根 / 子 agent 的 unit span） */
   parentSpanId: SpanId | null;
   onText?: (delta: string) => void;
+  /** 上下文预算策略（compaction / context editing），每回合发送前调用 */
+  contextPolicy?: ContextPolicy;
 }
 
 export interface AgentLoopResult {
@@ -56,6 +64,21 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
   let iterations = 0;
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
+    // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）
+    if (args.contextPolicy) {
+      const next = await args.contextPolicy.beforeTurn(messages, { iteration, model });
+      if (next && next !== messages) {
+        if (parentSpanId) {
+          recorder.event(parentSpanId, 'context.budget', {
+            from: messages.length,
+            to: next.length,
+            model,
+          });
+        }
+        messages.splice(0, messages.length, ...next);
+      }
+    }
+
     const turnId = recorder.begin('llm.turn', model, parentSpanId);
 
     let message: Anthropic.Message;
@@ -181,6 +204,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       recorder,
       parentSpanId: rootId,
       onText: options.onText,
+      contextPolicy: options.contextPolicy,
     });
   } catch (e) {
     result = { stopReason: 'error', finalText: '', error: classifyError(e), iterations: 0 };
@@ -211,6 +235,7 @@ export async function runAgentScoped(opts: {
   recorder: RecorderBackend;
   parentSpanId: SpanId;
   onText?: (delta: string) => void;
+  contextPolicy?: ContextPolicy;
 }): Promise<AgentLoopResult> {
   return agentLoop({
     client: opts.client ?? new Anthropic(),
@@ -223,6 +248,7 @@ export async function runAgentScoped(opts: {
     recorder: opts.recorder,
     parentSpanId: opts.parentSpanId,
     onText: opts.onText,
+    contextPolicy: opts.contextPolicy,
   });
 }
 

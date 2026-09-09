@@ -20,6 +20,20 @@ export interface SystemTextBlock {
 /** system 参数：纯文本，或可缓存块数组（稳定段带 breakpoint，volatile 段放其后不带） */
 export type SystemParam = string | SystemTextBlock[];
 
+/**
+ * 上下文预算策略（spec §5/§6 —— compaction / context editing）。
+ * 引擎在每个 llm 回合发送前调用 beforeTurn；返回的 messages 即本回合发送内容。
+ * 实现见 engine/policy.ts 的 createBudgetPolicy，或自实现（如每次用 /count_tokens）。
+ */
+export interface ContextPolicy {
+  /** 预算（估算 input tokens）；超预算的回合触发降级。供观测/文档用 */
+  readonly budgetTokens?: number;
+  beforeTurn(
+    messages: Anthropic.MessageParam[],
+    info: { iteration: number; model: string },
+  ): Promise<Anthropic.MessageParam[]>;
+}
+
 export interface RunAgentOptions {
   /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
   system?: SystemParam;
@@ -39,6 +53,8 @@ export interface RunAgentOptions {
   /** 文本增量回调（终端/SSE 用） */
   onText?: (delta: string) => void;
   runName?: string;
+  /** 上下文预算策略：每回合发送前可编辑/压缩消息（compaction / context editing） */
+  contextPolicy?: ContextPolicy;
 }
 
 export interface AgentRunResult {

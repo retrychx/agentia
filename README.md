@@ -19,6 +19,8 @@ TS 装饰器 + DI 声明“agent 流水线服务”：一次 run = 一份任务 
 - **Turn 1**（`src/run/`）：Run 生命周期（runId==traceId）+ RunContext(blackboard) + executeRun + SystemPrompt 稳定前缀 cache breakpoint。
 - **Turn 2**（`src/container/` + `src/toolkit/`）：`@Tool` 装饰器 + collectTools、显式 DI（value/class/factory）、`createApp` 装配工具菜单；RunContext 经 AsyncLocalStorage 透入工具执行体。
 - **Turn 3**（`src/toolkit/subagent.ts`）：`@SubAgent` 单元 —— 独立 agent 循环 + 裁剪上下文 + 隔离报告；loop 抽成 `runAgentScoped`（不双开 run 根），子 agent 的 llm.turn 递归成主 trace 里 `unit` span 的子孙（spec §9）。
+- **Turn 4**（`src/engine/context.ts` + `policy.ts`）：长上下文三策略分清 —— context editing（`trimToolPairs` 丢旧工具对）/ compaction（`compactMessages` 摘要器注入）/ 预算护栏（`createBudgetPolicy`，字符/4 估算 + 滞回）；改写时在 run 根记 `context.budget` 事件。
+- **Turn 5**（`src/run/`）：触发传输 —— 同步 RPC（`runSync`/`createSyncHandler`）/ 异步任务（`AsyncRunner` + `TaskStore`，idempotencyKey at-least-once 去重、失败可重试、`rethrow:false` 落 failed 记录）/ 定时（`Scheduler.every/.at`）；三类共用一份 `RunInput` 契约 —— 换宿主不换语义。
 
 设计规格见 [`docs/spec.md`](docs/spec.md)。
 
@@ -83,6 +85,8 @@ npm run smoke        # Turn 0：mock loop + trace
 npm run smoke:run    # Turn 1：SystemPrompt 缓存布局 + run 生命周期
 npm run smoke:turn2  # Turn 2：@Tool 装饰器 → DI → createApp（tsx 直接跑源码）
 npm run smoke:turn3  # Turn 3：@SubAgent 嵌套循环 + 上下文裁剪/隔离 + usage 聚合
+npm run smoke:turn4  # Turn 4：trimToolPairs/compactMessages 纯函数 + 预算策略端到端压缩
+npm run smoke:turn5  # Turn 5：AsyncRunner 状态机 + 幂等去重/失败重试 + runSync + Scheduler
 ```
 
 真机跑（需要 `ANTHROPIC_API_KEY` 或 `ant auth login`）：
