@@ -17,6 +17,7 @@
     "prepublishOnly": "npm run build",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test tests/*.test.ts",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "smoke:run": "npm run build && node scripts/smoke-run.mjs",
     "smoke:tools": "tsx scripts/smoke-tools.ts",

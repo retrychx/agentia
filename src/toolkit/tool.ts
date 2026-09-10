@@ -1,4 +1,5 @@
 import type { AgentTool, JsonSchema } from '../core/tool.js';
+import { scanDecoratedMethods, unitName } from './collect.js';
 
 /**
  * Agentia —— 声明式工具层（spec §4：标准装饰器 + 显式 DI，无 param 反射）。
@@ -47,33 +48,14 @@ export function Tool<I = any, O = any>(spec: ToolSpec) {
 
 /** 把容器实例上所有 @Tool 方法收集成 AgentTool[]（沿原型链，含继承的父类工具）。 */
 export function collectTools(instance: object): AgentTool[] {
-  const tools: AgentTool[] = [];
-  const seen = new Set<string | symbol>();
-
-  let proto: object | null = Object.getPrototypeOf(instance);
-  while (proto && proto !== Object.prototype) {
-    for (const key of Object.getOwnPropertyNames(proto)) {
-      if (seen.has(key)) continue;
-      const desc = Object.getOwnPropertyDescriptor(proto, key);
-      if (!desc || typeof desc.value !== 'function') continue;
-      const spec = toolSpecs.get(desc.value as Function);
-      // 子类未装饰的 override 不标 seen：让父类的 spec 沿原型链继续生效
-      // （Reflect.apply(instance[key]) 仍调到子类实现，override 生效、菜单不丢）
-      if (!spec) continue;
-      seen.add(key);
-      tools.push(buildTool(instance, key, spec));
-    }
-    proto = Object.getPrototypeOf(proto);
-  }
-  return tools;
+  return scanDecoratedMethods(instance, toolSpecs).map(({ key, spec }) =>
+    buildTool(instance, key, spec),
+  );
 }
 
 function buildTool(instance: object, key: string | symbol, spec: ToolSpec): AgentTool {
-  if (typeof spec.name !== 'string' && typeof key !== 'string') {
-    throw new Error(`@Tool 需要显式 name（方法名为私有符号 ${String(key)}）`);
-  }
   return {
-    name: spec.name ?? (key as string),
+    name: unitName(spec, key, '@Tool'),
     description: spec.description,
     inputSchema: spec.schema,
     ...(spec.strict ? { strict: true } : {}),

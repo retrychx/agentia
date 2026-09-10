@@ -37,7 +37,15 @@ export async function discoverProviders(dir: string): Promise<Provider[]> {
   for (const name of entries) {
     const entry = ENTRY_CANDIDATES.map((f) => join(root, name, f)).find(existsSync);
     if (!entry) continue; // 无入口的目录视为非单元目录（如 assets/），跳过
-    const mod: unknown = await import(pathToFileURL(entry).href);
+    let mod: unknown;
+    try {
+      mod = await import(pathToFileURL(entry).href);
+    } catch (e) {
+      throw new Error(
+        `单元 ${name} 入口加载失败（${entry}）: ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e },
+      );
+    }
     const exported = (mod as { default?: unknown }).default;
     providers.push(...normalizeExport(name, exported, entry));
   }

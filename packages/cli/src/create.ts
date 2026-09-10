@@ -1,6 +1,6 @@
 /** create 命令：生成 Agentia 项目脚手架 */
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   mainTs,
   projectGitignore,
@@ -14,7 +14,7 @@ import { registerUnit } from './registry.js';
 
 function write(dir: string, rel: string, content: string): void {
   const file = join(dir, rel);
-  mkdirSync(join(file, '..'), { recursive: true });
+  mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, content, 'utf8');
 }
 

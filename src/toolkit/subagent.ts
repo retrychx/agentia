@@ -1,3 +1,4 @@
+import { scanDecoratedMethods, unitName } from './collect.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { SystemParam, SystemTextBlock } from '../engine/types.js';
@@ -63,31 +64,12 @@ export function SubAgent(spec: SubAgentSpec) {
 
 /** 把容器实例上所有 @SubAgent 方法收集成 SubAgentUnit[]（沿原型链）。 */
 export function collectSubAgents(instance: object): SubAgentUnit[] {
-  const units: SubAgentUnit[] = [];
-  const seen = new Set<string | symbol>();
-
-  let proto: object | null = Object.getPrototypeOf(instance);
-  while (proto && proto !== Object.prototype) {
-    for (const key of Object.getOwnPropertyNames(proto)) {
-      if (seen.has(key)) continue;
-      const desc = Object.getOwnPropertyDescriptor(proto, key);
-      if (!desc || typeof desc.value !== 'function') continue;
-      const spec = subAgentSpecs.get(desc.value as Function);
-      if (!spec) continue; // 未装饰的 override 不标 seen，父类 spec 继续生效
-      seen.add(key);
-      if (typeof spec.name !== 'string' && typeof key !== 'string') {
-        throw new Error(`@SubAgent 需要显式 name（方法名为私有符号 ${String(key)}）`);
-      }
-      units.push({
-        name: spec.name ?? (key as string),
-        description: spec.description,
-        inputSchema: spec.schema,
-        spec,
-      });
-    }
-    proto = Object.getPrototypeOf(proto);
-  }
-  return units;
+  return scanDecoratedMethods(instance, subAgentSpecs).map(({ key, spec }) => ({
+    name: unitName(spec, key, '@SubAgent'),
+    description: spec.description,
+    inputSchema: spec.schema,
+    spec,
+  }));
 }
 
 const REPORT_HINT =

@@ -1,4 +1,5 @@
 import type { JsonSchema } from './tool.js';
+import { stringifySafe } from './json.js';
 
 /**
  * Agentia —— 最小 JSON Schema 校验子集（spec：v1 裸 JSON Schema，不接 zod）。
@@ -94,14 +95,6 @@ function typeOf(value: unknown): string {
 function preview(value: unknown): string {
   const s = stringifySafe(value);
   return s.length > 80 ? `${s.slice(0, 80)}…` : s;
-}
-
-function stringifySafe(x: unknown): string {
-  try {
-    return JSON.stringify(x) ?? String(x);
-  } catch {
-    return String(x);
-  }
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {

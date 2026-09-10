@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, RecorderBackend, ToolRunContext } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
+import { stringifySafe } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError } from './errors.js';
 import { TraceRecorder } from './tracer.js';
@@ -283,15 +284,6 @@ function textOf(message: Anthropic.Message): string {
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)
     .join('\n');
-}
-
-function stringifySafe(x: unknown): string {
-  if (typeof x === 'string') return x;
-  try {
-    return JSON.stringify(x) ?? String(x);
-  } catch {
-    return String(x);
-  }
 }
 
 /** 截断到上限字符，超长加省略标记 */

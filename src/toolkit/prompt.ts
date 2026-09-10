@@ -1,3 +1,4 @@
+import { scanDecoratedMethods, unitName } from './collect.js';
 import type { AgentTool, JsonSchema } from '../core/tool.js';
 
 /**
@@ -49,7 +50,6 @@ export function Prompt(spec: PromptSpec) {
  */
 export function collectPrompts(instance: object): AgentTool[] {
   const tools: AgentTool[] = [];
-  const seen = new Set<string | symbol>();
   const pushTool = (name: string, fn: Function, thisArg: unknown, spec: PromptSpec): void => {
     tools.push({
       name: spec.name ?? name,
@@ -60,24 +60,13 @@ export function collectPrompts(instance: object): AgentTool[] {
   };
 
   // 实例方法（沿原型链）
-  let proto: object | null = Object.getPrototypeOf(instance);
-  while (proto && proto !== Object.prototype) {
-    for (const key of Object.getOwnPropertyNames(proto)) {
-      if (seen.has(key)) continue;
-      const desc = Object.getOwnPropertyDescriptor(proto, key);
-      if (!desc || typeof desc.value !== 'function') continue;
-      const spec = promptSpecs.get(desc.value as Function);
-      if (!spec) continue; // 未装饰的 override 不标 seen，父类 spec 继续生效
-      seen.add(key);
-      if (typeof spec.name !== 'string' && typeof key !== 'string') {
-        throw new Error(`@Prompt 需要显式 name（方法名为私有符号 ${String(key)}）`);
-      }
-      pushTool(key as string, desc.value as Function, instance, spec);
-    }
-    proto = Object.getPrototypeOf(proto);
+  const found = scanDecoratedMethods(instance, promptSpecs);
+  for (const { key, fn, spec } of found) {
+    pushTool(unitName(spec, key, '@Prompt'), fn, instance, spec);
   }
 
-  // 静态方法（类自身属性）
+  // 静态方法（类自身属性）；已被实例方法占用的 key 跳过
+  const seen = new Set<string | symbol>(found.map((f) => f.key));
   const cls: unknown = (instance as { constructor?: unknown }).constructor;
   if (typeof cls === 'function') {
     const ctor = cls as unknown as Record<string, unknown>;

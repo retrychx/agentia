@@ -1,3 +1,4 @@
+import { scanDecoratedMethods, unitName } from './collect.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
@@ -91,34 +92,14 @@ export function Skill(spec: SkillSpec) {
 
 /** 把容器实例上所有 @Skill 方法收集成 SkillUnit[]（沿原型链）。 */
 export function collectSkills(instance: object): SkillUnit[] {
-  const units: SkillUnit[] = [];
-  const seen = new Set<string | symbol>();
-
-  let proto: object | null = Object.getPrototypeOf(instance);
-  while (proto && proto !== Object.prototype) {
-    for (const key of Object.getOwnPropertyNames(proto)) {
-      if (seen.has(key)) continue;
-      const desc = Object.getOwnPropertyDescriptor(proto, key);
-      if (!desc || typeof desc.value !== 'function') continue;
-      const spec = skillSpecs.get(desc.value as Function);
-      if (!spec) continue; // 未装饰的 override 不标 seen，父类 spec 继续生效
-      seen.add(key);
-      if (typeof spec.name !== 'string' && typeof key !== 'string') {
-        throw new Error(`@Skill 需要显式 name（方法名为私有符号 ${String(key)}）`);
-      }
-      const name = spec.name ?? (key as string);
-      units.push({
-        name,
-        description: spec.description,
-        inputSchema: spec.schema ?? EMPTY_SCHEMA,
-        spec,
-        invoke: (input: unknown, skillCtx: SkillContext) =>
-          Reflect.apply(desc.value as Function, instance, [input, skillCtx]),
-      });
-    }
-    proto = Object.getPrototypeOf(proto);
-  }
-  return units;
+  return scanDecoratedMethods(instance, skillSpecs).map(({ key, fn, spec }) => ({
+    name: unitName(spec, key, '@Skill'),
+    description: spec.description,
+    inputSchema: spec.schema ?? EMPTY_SCHEMA,
+    spec,
+    invoke: (input: unknown, skillCtx: SkillContext) =>
+      Reflect.apply(fn, instance, [input, skillCtx]),
+  }));
 }
 
 /**
