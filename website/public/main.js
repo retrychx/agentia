@@ -7,7 +7,7 @@
   const canvas = document.getElementById('orchestra');
   if (canvas) {
     const ctx = canvas.getContext('2d');
-    const ACCENT = '237, 168, 58';
+    const ACCENT = '217, 226, 238';
     let W = 0;
     let H = 0;
     let dpr = 1;

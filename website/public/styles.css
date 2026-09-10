@@ -1,4 +1,4 @@
-/* Agentia — design tokens：近黑 + 琥珀单点色，发丝线，方角工程感 */
+/* Agentia — design tokens：近黑 + 钛银金属色，发丝线，方角工程感 */
 :root {
   --bg: #0a0a0b;
   --bg-alt: #0f0f11;
@@ -8,8 +8,9 @@
   --text: #fafafa;
   --muted: #a1a1aa;
   --faint: #71717a;
-  --accent: #eda83a;
-  --accent-dim: rgba(237, 168, 58, 0.12);
+  --accent: #d9e2ee;
+  --steel: #8b98ab;
+  --accent-dim: rgba(217, 226, 238, 0.09);
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --sans: "Space Grotesk", -apple-system, "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", sans-serif;
@@ -37,7 +38,17 @@ code {
   border-radius: 3px;
 }
 
-::selection { background: rgba(237, 168, 58, 0.28); }
+::selection { background: rgba(217, 226, 238, 0.22); }
+
+/* 细颗粒噪点纹理：近黑底上的"纸质/金属"质感 */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
 
 /* 全局发丝竖线（工程图纸感） */
 .grid-lines {
@@ -130,7 +141,7 @@ code {
 .hero-content { position: relative; z-index: 2; max-width: 760px; }
 .hero-kicker {
   font-family: var(--mono);
-  color: var(--accent);
+  color: var(--steel);
   font-size: 12px;
   letter-spacing: 0.32em;
   margin-bottom: 26px;
@@ -139,10 +150,29 @@ code {
   font-size: clamp(42px, 7vw, 76px);
   line-height: 1.08;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 .hero h1 .line { display: inline-block; }
-.hero h1 .accent { color: var(--accent); }
+/* 钛银金属光泽：标题关键词上缓慢流动的银灰渐变 */
+.hero h1 .accent {
+  background: linear-gradient(
+    110deg,
+    #f4f7fb 0%,
+    #97a5b9 22%,
+    #eef2f8 45%,
+    #8b98ab 68%,
+    #f4f7fb 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: metal-sheen 7s ease-in-out infinite;
+}
+@keyframes metal-sheen {
+  0%, 100% { background-position: 0% 0; }
+  50% { background-position: 100% 0; }
+}
 .hero-sub {
   max-width: 600px;
   margin: 26px auto 0;
@@ -163,8 +193,8 @@ code {
   text-decoration: none;
   transition: transform 0.18s, box-shadow 0.25s, border-color 0.2s, background 0.2s;
 }
-.btn-primary { background: var(--accent); color: #14100a; }
-.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 32px rgba(237, 168, 58, 0.28); }
+.btn-primary { background: var(--accent); color: #0a0a0b; }
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 32px rgba(217, 226, 238, 0.22); }
 .btn-ghost { border: 1px solid var(--border-strong); color: var(--text); }
 .btn-ghost:hover { border-color: var(--accent); background: var(--accent-dim); }
 .hero-install {
@@ -259,7 +289,7 @@ code {
   font-family: var(--mono);
   font-size: 12px;
   letter-spacing: 0.28em;
-  color: var(--accent);
+  color: var(--steel);
   margin-bottom: 16px;
 }
 .section h2 {
@@ -281,13 +311,13 @@ code {
   padding: 26px 24px;
   transition: border-color 0.25s, transform 0.2s;
 }
-.card:hover, .feature:hover { border-color: rgba(237, 168, 58, 0.45); transform: translateY(-3px); }
+.card:hover, .feature:hover { border-color: rgba(217, 226, 238, 0.35); transform: translateY(-3px); }
 .card-tag {
   display: inline-block;
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--accent);
-  border: 1px solid rgba(237, 168, 58, 0.35);
+  border: 1px solid rgba(217, 226, 238, 0.28);
   border-radius: 3px;
   padding: 3px 10px;
   margin-bottom: 16px;
@@ -315,12 +345,12 @@ code {
   padding: 24px;
   transition: border-color 0.25s;
 }
-.step:hover { border-color: rgba(237, 168, 58, 0.45); }
+.step:hover { border-color: rgba(217, 226, 238, 0.35); }
 .step-no {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
-  border: 1px solid rgba(237, 168, 58, 0.5);
+  border: 1px solid rgba(217, 226, 238, 0.4);
   border-radius: 4px;
   color: var(--accent);
   font-family: var(--mono);
