@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import type { ModelClient } from '../core/tool.js';
 import type { AgentTool } from '../core/tool.js';
 import type { ContextPolicy } from '../engine/types.js';
 
@@ -13,7 +14,7 @@ export interface RunInvocationOptions {
   model?: string;
   maxTokens?: number;
   maxIterations?: number;
-  client?: Anthropic;
+  client?: ModelClient;
   onText?: (delta: string) => void;
   /** 预置进本次 RunContext.blackboard */
   blackboard?: Record<string, unknown>;

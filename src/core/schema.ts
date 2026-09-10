@@ -2,7 +2,8 @@ import type { JsonSchema } from './tool.js';
 import { stringifySafe } from './json.js';
 
 /**
- * Agentia —— 最小 JSON Schema 校验子集（spec：v1 裸 JSON Schema，不接 zod）。
+ * Agentia —— 最小 JSON Schema 校验子集（v1 裸 JSON Schema；zod 为可选外挂，
+ * 见 toolkit/zod.ts —— schema 上挂 __zodValidate 时先走它，core 本身不依赖 zod）。
  *
  * 用途：engine 在执行 tool.run 前校验模型给出的结构化 input；校验失败直接回
  * is_error 的 tool_result（错误信息含路径，模型可自我修正），不进方法体。
@@ -14,6 +15,13 @@ import { stringifySafe } from './json.js';
  * @returns 人类可读的错误描述（含路径）；合法返回 null。
  */
 export function validateJsonSchema(schema: JsonSchema, input: unknown): string | null {
+  // zod 可选接入（toolkit/zod.ts 的 fromZod 挂的隐藏字段）：存在则先走 zod 校验，
+  // 失败即回「$.: <首条错误>」（含 zod 路径）；通过后再叠加 JSON Schema 子集校验。
+  const zv = (schema as Record<string, unknown>).__zodValidate;
+  if (typeof zv === 'function') {
+    const err = (zv as (input: unknown) => string | null)(input);
+    if (err) return `$.: ${err}`;
+  }
   return check(schema, input, '$');
 }
 

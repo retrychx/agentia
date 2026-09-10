@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Playground — Agentia</title>
+  <meta name="description" content="Agentia 交互式模拟演示：主 agent 编排四类单元的运行过程回放，trace 调用树与 token 用量同步生长。" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <nav class="nav scrolled">
+    <div class="nav-inner">
+      <a class="brand" href="./index.html">
+        <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="7" stroke="currentColor" stroke-width="1.6"/>
+          <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+          <circle cx="16" cy="7.6" r="1.8" fill="currentColor" opacity=".7"/>
+          <circle cx="23.4" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
+          <circle cx="8.6" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
+        </svg>
+        <span>Agentia</span>
+      </a>
+      <div class="nav-links">
+        <a href="./index.html">首页</a>
+        <a href="./playground.html">Playground</a>
+        <a href="./docs.html">文档</a>
+        <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="pg-head">
+    <span class="pg-badge"><i></i>模拟演示：本地预置脚本，非真实模型调用</span>
+    <h1>看一次 run 怎么跑</h1>
+    <p>选一个任务，看主 agent 如何思考、从菜单选中单元、发起 llm.turn、调用单元并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。</p>
+  </header>
+
+  <main class="pg-layout" id="pg-layout">
+    <!-- 左：场景 -->
+    <aside>
+      <p class="pg-col-label">01 — 任务</p>
+      <div id="pg-scenarios"></div>
+      <div class="pg-actions">
+        <button class="pg-btn pg-btn-run" id="btn-run">运行</button>
+        <button class="pg-btn pg-btn-replay" id="btn-replay" disabled>重播</button>
+      </div>
+    </aside>
+
+    <!-- 中：菜单 + 回放 -->
+    <section>
+      <p class="pg-col-label">02 — 运行回放</p>
+      <div class="pg-menu" id="pg-menu"></div>
+      <div class="pg-term">
+        <div class="pg-term-bar"><i></i><i></i><i></i><em>agentia run —— replay</em></div>
+        <div class="pg-term-body" id="term-body">
+          <div class="pg-term-empty" id="term-empty">选择左侧任务，点击「运行」开始回放</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 右：trace + usage -->
+    <aside>
+      <p class="pg-col-label">03 — TRACE（runId == traceId）</p>
+      <div class="pg-trace" id="trace-body">
+        <div class="tr-empty" id="trace-empty">// 等待 run 开始…</div>
+      </div>
+      <div class="pg-usage">
+        <div class="u-row"><span>input tokens</span><b id="u-in">0</b></div>
+        <div class="u-row"><span>output tokens</span><b id="u-out">0</b></div>
+        <div class="u-row"><span>成本估算</span><b class="u-cost" id="u-cost">$0.0000</b></div>
+        <div class="u-note">按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。</div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-links">
+      <a href="./index.html">首页</a>
+      <a href="./docs.html">文档</a>
+      <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/@migor/agentia" target="_blank" rel="noopener">@migor/agentia</a>
+    </div>
+    <p>Agentia — 声明式 Agent 服务开发框架</p>
+  </footer>
+
+  <script src="./playground.js"></script>
+</body>
+</html>

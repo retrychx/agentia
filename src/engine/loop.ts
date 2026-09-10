@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool, RecorderBackend, ToolRunContext } from '../core/tool.js';
+import type { AgentTool, JsonSchema, ModelClient, RecorderBackend, ToolRunContext } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
@@ -37,7 +37,7 @@ export function resolveDefaultModel(over?: string): string {
  */
 
 interface AgentLoopArgs {
-  client: Anthropic;
+  client: ModelClient;
   model: string;
   maxTokens: number;
   maxIterations: number;
@@ -51,6 +51,8 @@ interface AgentLoopArgs {
   onText?: (delta: string) => void;
   /** 上下文预算策略（compaction / context editing），每回合发送前调用 */
   contextPolicy?: ContextPolicy;
+  /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（见 RunAgentOptions.resultSchema） */
+  resultSchema?: JsonSchema;
 }
 
 export interface AgentLoopResult {
@@ -59,19 +61,59 @@ export interface AgentLoopResult {
   error?: SpanError;
   /** 本轮循环自己发起的模型往返次数 */
   iterations: number;
+  /** submit_result 校验通过的结构化结果；未提交则为 undefined */
+  typed?: unknown;
+}
+
+/** 隐藏提交工具名：resultSchema 模式下由 engine 内部追加，不属开发者工具菜单 */
+const SUBMIT_RESULT = 'submit_result';
+
+/** resultSchema 模式下追加到 system 末尾的指令 */
+const RESULT_INSTRUCTION =
+  '本任务要求结构化结果：完成必要的信息收集与工具调用后，必须调用 submit_result 工具提交最终结果' +
+  '（input 严格符合该工具的 input_schema）；不要仅以普通文本结束作答。';
+
+/**
+ * 把结果提交指令追加到 system 末尾：string 时以空行拼接；SystemTextBlock[] 时
+ * 在数组末尾 push 一个无 cache_control 的 text block —— 不污染稳定前缀的缓存 breakpoint。
+ */
+function appendResultInstruction(system?: SystemParam): SystemParam {
+  if (!system) return RESULT_INSTRUCTION;
+  if (typeof system === 'string') return `${system}\n\n${RESULT_INSTRUCTION}`;
+  return [...system, { type: 'text' as const, text: RESULT_INSTRUCTION }];
 }
 
 /** 循环体核心：带父 span 跑一轮 manual loop。请求失败按 error 收掉 turn 后抛出，由外层收尾。 */
 async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
   const { client, model, recorder, parentSpanId } = args;
   const messages: Anthropic.MessageParam[] = [...args.messages];
-  const apiTools = args.tools.map(toApiTool);
+
+  // resultSchema 模式：追加隐藏 submit_result 工具 + system 末尾指令。
+  // 该工具由 engine 内部注入，不属开发者菜单；菜单已有同名工具视为装配冲突。
+  let apiTools = args.tools.map(toApiTool);
+  let system = args.system;
+  if (args.resultSchema) {
+    if (args.tools.some((t) => t.name === SUBMIT_RESULT)) {
+      throw new Error(`装配冲突：工具菜单已含 "${SUBMIT_RESULT}"，与 resultSchema 的隐藏提交工具同名`);
+    }
+    apiTools = [
+      ...apiTools,
+      {
+        name: SUBMIT_RESULT,
+        description: '任务完成时调用它提交最终结构化结果（input 必须符合本工具的 input_schema）',
+        input_schema: args.resultSchema as unknown as Anthropic.Tool.InputSchema,
+      },
+    ];
+    system = appendResultInstruction(args.system);
+  }
 
   let stopReason: AgentStopReason = 'end_turn';
   let error: SpanError | undefined;
   let finalText = '';
   let finished = false;
   let iterations = 0;
+  let typed: unknown;
+  let submitted = false;
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
     // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）
@@ -96,7 +138,7 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
       const stream = client.messages.stream({
         model,
         max_tokens: args.maxTokens,
-        ...(args.system ? { system: args.system } : {}),
+        ...(system ? { system } : {}),
         ...(apiTools.length ? { tools: apiTools } : {}),
         messages,
       });
@@ -161,7 +203,19 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
         const ctx: ToolRunContext = { client, recorder, parentSpanId: turnId };
         let ok = true;
         let content: unknown = '';
-        if (!tool) {
+        if (args.resultSchema && use.name === SUBMIT_RESULT) {
+          // 隐藏提交工具：校验通过即携结果收尾（循环在下方 break）；
+          // 校验失败回 is_error（含路径，模型可自我修正），同回合其他工具照常执行。
+          const invalid = validateJsonSchema(args.resultSchema, use.input);
+          if (invalid) {
+            ok = false;
+            content = `invalid input: ${invalid}`;
+          } else {
+            content = 'submitted';
+            typed = use.input;
+            submitted = true;
+          }
+        } else if (!tool) {
           ok = false;
           content = `unknown tool: ${use.name}`;
         } else {
@@ -193,6 +247,14 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
     );
 
     messages.push({ role: 'user', content: toolResults });
+
+    if (submitted) {
+      // submit_result 校验通过：结构化结果落定，循环正常收尾（finalText 取该回合文本，可空）
+      stopReason = 'end_turn';
+      finalText = textOf(message);
+      finished = true;
+      break;
+    }
   }
 
   if (!finished && stopReason === 'end_turn') {
@@ -200,7 +262,7 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
     stopReason = 'max_iterations';
   }
 
-  return { stopReason, finalText, error, iterations };
+  return { stopReason, finalText, error, iterations, typed };
 }
 
 /** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */
@@ -223,6 +285,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       parentSpanId: rootId,
       onText: options.onText,
       contextPolicy: options.contextPolicy,
+      resultSchema: options.resultSchema,
     });
   } catch (e) {
     result = { stopReason: 'error', finalText: '', error: classifyError(e), iterations: 0 };
@@ -238,12 +301,13 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     finalText: result.finalText,
     iterations: result.iterations,
     error: result.error,
+    typed: result.typed,
   };
 }
 
 /** 嵌套单元（子 agent）入口：不自开 run 根，llm.turn 挂在给定 parentSpanId 下的同一条 trace。 */
 export async function runAgentScoped(opts: {
-  client?: Anthropic;
+  client?: ModelClient;
   system?: SystemParam;
   messages: Anthropic.MessageParam[];
   tools?: AgentTool[];

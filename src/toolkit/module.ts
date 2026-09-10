@@ -14,6 +14,8 @@ import type { SubAgentUnit } from './subagent.js';
 import { collectSkills, skillToTool } from './skill.js';
 import type { SkillUnit } from './skill.js';
 import { collectPrompts } from './prompt.js';
+import { applyMiddleware } from './middleware.js';
+import type { UnitMiddleware } from './middleware.js';
 import type { ContextPolicy } from '../engine/types.js';
 
 /**
@@ -26,11 +28,30 @@ import type { ContextPolicy } from '../engine/types.js';
  * 主 agent 的 system 可由 SystemPrompt 实例给出（内部 build({cache:true})
  * 打稳定前缀 breakpoint），也接受已拼好的 SystemParam 原样透传。
  */
+/**
+ * 能力包（roadmap R5）：第三方包把「单元 providers + 中间件」打包成 AgentModule 分发，
+ * 应用侧经 AppOptions.modules 一次性装配。模块的 providers 先于应用级 providers 注册
+ *（同 token 应用级覆盖模块级）；中间件拼接顺序同样模块在前。
+ */
+export interface AgentModule {
+  /** 模块携带的 DI providers（单元类 / 值 / 工厂） */
+  providers: Provider[];
+  /** 模块级单元调用中间件（拼在应用级 middleware 之前，即更外层） */
+  middleware?: UnitMiddleware[];
+}
+
+/** 定义能力包：identity 函数，仅给第三方包一个类型锚点与导出约定 */
+export function defineModule(m: AgentModule): AgentModule {
+  return m;
+}
+
 export interface AppOptions {
   /** 应用名；同时作为 run 名写入 trace */
   name?: string;
   /** DI providers：值 / 类 / 工厂；与 discover 可混用（同 token 后者覆盖） */
   providers?: Provider[];
+  /** 能力包：providers 并入（在 providers 之前注册）、middleware 拼接（在 middleware 之前） */
+  modules?: AgentModule[];
   /**
    * 单元目录发现：units/<name>/ 目录约定（一单元一文件夹，index.ts 入口）。
    * 给目录路径（相对 cwd）即启动期扫描装配；因动态 import，带 discover 的
@@ -49,6 +70,8 @@ export interface AppOptions {
   contextPolicy?: ContextPolicy;
   /** 只扫这些 token 的 provider 上的 @Tool；缺省扫全部 providers */
   toolSources?: Token[];
+  /** 单元调用中间件（洋葱模型，链序 = 注册顺序）；装配期包裹整个菜单 */
+  middleware?: UnitMiddleware[];
 }
 
 /** 单次调用参数 = 通用调用参数 + 单次可覆盖 system（spec.ts 的 RunInvocationOptions 为单源） */
@@ -76,9 +99,18 @@ export class AgentApp {
 
   constructor(opts: AppOptions) {
     this.name = opts.name ?? 'app';
+    const modules = opts.modules ?? [];
     // 同 token 去重（后注册覆盖先注册，与 Container.register 语义一致）——
+    // 模块 providers 在前、应用级 providers 在后：应用级可覆盖模块级同 token；
     // providers 与 discover 混用/重复给出同一 token 时不会重复收集菜单。
-    const providerList = [...new Map((opts.providers ?? []).map((p) => [p.provide, p])).values()];
+    const providerList = [
+      ...new Map(
+        [...modules.flatMap((m) => m.providers), ...(opts.providers ?? [])].map((p) => [
+          p.provide,
+          p,
+        ]),
+      ).values(),
+    ];
     this.di = new Container().register(...providerList);
     this.system = opts.system;
     this.base = {
@@ -139,6 +171,31 @@ export class AgentApp {
       throw new Error(
         `菜单单元重名（tool/skill/subagent/prompt 共用命名空间）: ${dupNames.join(', ')}`,
       );
+    }
+
+    // 孤儿单元告警：toolSources 显式收窄时，被排除 provider 上的单元不可达
+    if (opts.toolSources) {
+      const included = new Set(opts.toolSources);
+      for (const p of providerList) {
+        if (included.has(p.provide)) continue;
+        const orphanCount =
+          (plainByToken.get(p.provide)?.length ?? 0) +
+          (unitsByToken.get(p.provide)?.length ?? 0) +
+          (skillsByToken.get(p.provide)?.length ?? 0) +
+          (promptsByToken.get(p.provide)?.length ?? 0);
+        if (orphanCount > 0) {
+          console.warn(
+            `[agentia] 孤儿单元告警：provider "${p.provide}" 上的 ${orphanCount} 个单元不在 toolSources 内，不可达`,
+          );
+        }
+      }
+    }
+
+    // 单元调用中间件：装配期包裹整个菜单（洋葱模型，对 engine 零侵入）；
+    // 模块级中间件在前（更外层），应用级在后。
+    const middleware = [...modules.flatMap((m) => m.middleware ?? []), ...(opts.middleware ?? [])];
+    if (middleware.length) {
+      this._tools = applyMiddleware(this._tools, middleware);
     }
   }
 

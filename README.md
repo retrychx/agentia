@@ -141,21 +141,77 @@ const app = createApp({
 });
 ```
 
+## 中间件
+
+挂在每一次单元调用前后的洋葱链——鉴权、限流、缓存、审计都走这里：
+
+```ts
+const app = createApp({
+  // ...
+  middleware: [
+    async (call, next) => {
+      if (call.unit.name === 'danger_op' && !RunContext.current()?.get('isAdmin')) {
+        return 'forbidden'; // 短路，不调 next 即拦截
+      }
+      return next(); // next(newInput) 还可改写入参
+    },
+  ],
+});
+```
+
+## 结构化结果
+
+```ts
+const { result } = await app.run(messages, {
+  resultSchema: {
+    type: 'object',
+    properties: { pass: { type: 'boolean' }, reason: { type: 'string' } },
+    required: ['pass', 'reason'],
+    additionalProperties: false,
+  },
+});
+console.log(result.typed); // 校验过的结构化结果，不再从文本里猜 JSON
+// schema 也可来自 zod（peer 可选）：fromZod(z.toJSONSchema(S), S)
+```
+
+## 宿主、多模型与记忆
+
+```ts
+// HTTP 宿主：POST /run（同步） POST /tasks（异步） GET /tasks/:id（轮询）
+createServer(createHttpHandler(app, { runner })).listen(8080);
+
+// OpenAI 兼容端点（DeepSeek 等）+ 跨 run 记忆
+const { result } = await app.run(messages, {
+  client: createOpenAIClient({ baseURL: 'https://api.deepseek.com' }),
+  model: 'deepseek-chat',
+  memory: { store: new InMemoryMemoryStore(), keys: ['profile'] },
+});
+
+// trace 导出到 OTLP 收集器
+await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.trace);
+```
+
 ## 常用 API
 
 | 导出 | 用途 |
 |---|---|
 | `createApp` / `discoverProviders` | 装配应用 / 扫描单元目录 |
+| `defineModule` | 能力包（providers + middleware 打包分发） |
 | `Tool` / `Skill` / `SubAgent` / `Prompt` | 四类单元装饰器 |
+| `UnitMiddleware`（`middleware` 选项） | 单元调用拦截器链 |
 | `asset` | 读单元文件夹内的文本资产 |
 | `SystemPrompt` | 拼装系统提示（自动打缓存 breakpoint） |
 | `RunContext.current()` | 取本次 run 的 blackboard / runId |
-| `AsyncRunner` / `Scheduler` / `runSync` | 异步任务 / 定时 / 同步触发 |
-| `FileTaskStore` / `InMemoryTaskStore` | 任务记录存储（重启续跑用 File） |
+| `AsyncRunner` / `Scheduler` / `runSync` / `createHttpHandler` | 异步 / 定时 / 同步 / HTTP 触发 |
+| `FileTaskStore` / `SqliteTaskStore` / `InMemoryTaskStore` | 任务记录存储 |
 | `createBudgetPolicy` | 长上下文预算护栏 |
+| `createOpenAIClient` | OpenAI 兼容端点适配（多模型） |
+| `InMemoryMemoryStore`（`memory` 选项） | 跨 run 记忆水合/回写 |
+| `createOtlpExporter` | trace 导出 OTLP |
+| `fromZod` | zod schema 接入（peer 可选） |
 | `runAgent` / `executeRun` | 裸引擎入口（不走装配） |
 
-完整导出见 [`src/index.ts`](src/index.ts)，设计规格见 [`docs/spec.md`](docs/spec.md)，官网见 [agentia-web.pages.dev](https://agentia-web.pages.dev)。
+完整导出见 [`src/index.ts`](src/index.ts)，设计规格见 [`docs/spec.md`](docs/spec.md)，roadmap 见 [`docs/roadmap.md`](docs/roadmap.md)，官网见 [agentia-web.pages.dev](https://agentia-web.pages.dev)（含[在线 Playground](https://agentia-web.pages.dev/playground.html) 与[文档](https://agentia-web.pages.dev/docs.html)）。
 
 ## 本仓库脚本
 
@@ -165,8 +221,6 @@ npm run build        # 编译框架（dist/）
 npm run typecheck    # 类型检查
 npm test             # 单元测试（node:test）
 npm run e2e          # 端到端：CLI 脚手架 → 目录发现/注册表装配 → mock run
-npm run live         # 真机：runAgent + 工具往返（需 API key）
-npm run live:skill   # 真机：@Skill ctx.llm()（需 API key）
 ```
 
 > 注：`npm run dev`（tsx）前需先 `npm approve-scripts` 批准 esbuild/tsx 的 postinstall。

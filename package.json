@@ -1,16 +1,32 @@
 {
   "name": "@migor/agentia",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "面向应用开发者的声明式 agent 服务开发框架：装饰器 + DI 声明 tool/skill/subagent/prompt 单元，主 agent 编排执行，最终形态为流水线（pipeline）服务。",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "repository": "retrychx/agentia",
-  "keywords": ["agent", "llm", "anthropic", "claude", "framework", "di", "decorators"],
-  "engines": { "node": ">=18" },
-  "publishConfig": { "access": "public" },
-  "workspaces": ["packages/*"],
+  "keywords": [
+    "agent",
+    "llm",
+    "anthropic",
+    "claude",
+    "framework",
+    "di",
+    "decorators"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:cli": "tsc -p packages/cli/tsconfig.json",
@@ -19,14 +35,13 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test \"tests/**/*.test.ts\"",
-    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts",
-    "live": "npm run build && node examples/live.mjs",
-    "live:skill": "tsx examples/live-skill.ts"
+    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "zod": "^4.6.1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0"

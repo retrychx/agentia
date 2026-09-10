@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp, SystemPrompt, Tool, SubAgent } from '../../src/index.js';
+import { defineModule } from '../../src/toolkit/module.js';
+import type { UnitMiddleware } from '../../src/toolkit/middleware.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 const sys = () => new SystemPrompt().add('role', 'r', true);
@@ -89,5 +91,63 @@ describe('createApp 装配期静态校验', () => {
       () => createApp({ providers: [], toolSources: ['ghost'], system: sys() }),
       /toolSources 指向未注册 provider/,
     );
+  });
+});
+
+describe('modules 能力包装配（R5）', () => {
+  it('模块 providers 并入菜单收集', () => {
+    class A {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_a(): string {
+        return 'a';
+      }
+    }
+    const mod = defineModule({ providers: [{ provide: 'a', useClass: A }] });
+    const app = createApp({ modules: [mod], system: sys() });
+    assert.deepEqual(app.tools.map((t) => t.name), ['tool_a']);
+  });
+
+  it('应用级 providers 覆盖模块级同 token', () => {
+    class FromModule {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_mod(): string {
+        return 'mod';
+      }
+    }
+    class FromApp {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_app(): string {
+        return 'app';
+      }
+    }
+    const mod = defineModule({ providers: [{ provide: 'x', useClass: FromModule }] });
+    const app = createApp({
+      modules: [mod],
+      providers: [{ provide: 'x', useClass: FromApp }],
+      system: sys(),
+    });
+    assert.deepEqual(app.tools.map((t) => t.name), ['tool_app']);
+    assert.ok(app.container.resolve('x') instanceof FromApp);
+  });
+
+  it('middleware 拼接顺序：模块级在前（更外层）', () => {
+    class A {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_a(): string {
+        return 'a';
+      }
+    }
+    const order: string[] = [];
+    const mw = (tag: string): UnitMiddleware => (_call, next) => {
+      order.push(tag);
+      return next();
+    };
+    const mod = defineModule({
+      providers: [{ provide: 'a', useClass: A }],
+      middleware: [mw('module')],
+    });
+    const app = createApp({ modules: [mod], middleware: [mw('app')], system: sys() });
+    app.tools[0].run({});
+    assert.deepEqual(order, ['module', 'app']);
   });
 });

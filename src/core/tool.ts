@@ -33,6 +33,25 @@ export interface RecorderBackend {
 }
 
 /**
+ * engine 对模型端的最小结构面（R4 多模型）：Anthropic SDK 天然满足，
+ * 其他 provider（OpenAI 兼容端点等）只需适配出同一形态。
+ */
+export interface ModelClient {
+  messages: {
+    stream(params: {
+      model: string;
+      max_tokens: number;
+      system?: string | Anthropic.TextBlockParam[];
+      tools?: Anthropic.Tool[];
+      messages: Anthropic.MessageParam[];
+    }): {
+      on(event: 'text', cb: (delta: string) => void): void;
+      finalMessage(): Promise<Anthropic.Message>;
+    };
+  };
+}
+
+/**
  * engine 在调用每个工具时注入的执行上下文（spec §9.2：当前 span 句柄随调用传播，
  * 不用全局单例，保证并行工具调用父子关系准确）。
  * - recorder：整条 run 共享的 recorder（新子单元/子 agent 的 span 写它下面）；
@@ -40,7 +59,7 @@ export interface RecorderBackend {
  * - client：与主循环同一注入（子 agent 独立循环复用它）。
  */
 export interface ToolRunContext {
-  client: Anthropic;
+  client: ModelClient;
   recorder: RecorderBackend;
   parentSpanId: SpanId;
 }

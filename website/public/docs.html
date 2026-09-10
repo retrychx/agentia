@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>文档 — Agentia</title>
+  <meta name="description" content="Agentia 文档：快速开始、四类单元、目录约定与装配、单元中间件、触发方式、长上下文策略、CLI 命令与环境变量。" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <nav class="nav scrolled">
+    <div class="nav-inner">
+      <a class="brand" href="./index.html">
+        <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="7" stroke="currentColor" stroke-width="1.6"/>
+          <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+          <circle cx="16" cy="7.6" r="1.8" fill="currentColor" opacity=".7"/>
+          <circle cx="23.4" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
+          <circle cx="8.6" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
+        </svg>
+        <span>Agentia</span>
+      </a>
+      <div class="nav-links">
+        <a href="./index.html">首页</a>
+        <a href="./playground.html">Playground</a>
+        <a href="./docs.html">文档</a>
+        <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="docs-layout">
+    <aside class="docs-nav" id="docs-nav">
+      <p class="dn-title">CONTENTS</p>
+      <a href="#start">快速开始</a>
+      <a href="#units">四类单元</a>
+      <a href="#structure">目录约定与装配</a>
+      <a href="#middleware">中间件</a>
+      <a href="#triggers">触发方式</a>
+      <a href="#context">长上下文策略</a>
+      <a href="#typed">结构化结果</a>
+      <a href="#hosting">宿主与导出</a>
+      <a href="#models">多模型与记忆</a>
+      <a href="#cli">CLI 命令参考</a>
+      <a href="#env">环境变量</a>
+    </aside>
+
+    <div class="docs-content">
+      <!-- 快速开始 -->
+      <section id="start">
+        <h2>快速开始</h2>
+        <p>Agentia 是声明式 agent 服务框架：装饰器声明四类单元，主 agent 作为路由器自主编排，一次 run 交付结构化结果与完整调用树（runId == traceId）。三分钟跑起来：</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
+          <pre><code><span class="cmd">npm</span> i -g @migor/cli
+<span class="cmd">agentia</span> create my-app        <span class="cm"># 脚手架：目录约定 + units.ts 注册表</span>
+<span class="cmd">cd</span> my-app && npm install
+<span class="cmd">agentia</span> g subagent doc-reviewer  <span class="cm"># 生成单元并自动登记</span>
+<span class="cmd">export</span> ANTHROPIC_API_KEY=sk-ant-...
+<span class="cmd">npm</span> run dev -- <span class="str">"帮我审查 docs/report.md"</span></code></pre>
+        </div>
+        <p>入口 <code>src/main.ts</code> 只有一件事：装配应用，然后触发 run。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/main.ts</em></div>
+          <pre><code><span class="kw">import</span> { createApp, SystemPrompt } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
+  name: <span class="str">'my-app'</span>,
+  discover: <span class="str">'units'</span>, <span class="cm">// 目录约定：units/&lt;name&gt;/ 一单元一文件夹</span>
+  system: <span class="kw">new</span> <span class="fn">SystemPrompt</span>().<span class="fn">add</span>(<span class="str">'role'</span>, <span class="str">'你是 my-app 的主 agent，按任务自主调度菜单里的单元。'</span>, <span class="kw">true</span>),
+});
+
+<span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>([{ role: <span class="str">'user'</span>, content: process.argv[<span class="dec">2</span>] }]);
+console.<span class="fn">log</span>(result.finalText);</code></pre>
+        </div>
+      </section>
+
+      <!-- 四类单元 -->
+      <section id="units">
+        <h2>四类单元</h2>
+        <p>单元即流水线的阶段。四类单元对主 agent 都是菜单里的可调用项，共用命名空间，装配期统一查重。</p>
+
+        <h3>@Tool — 函数调用</h3>
+        <p>类方法即工具。入参按 JSON Schema 解析，先校验再执行；失败回 <code>is_error</code>，run 不中断。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>units/weather/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { Tool } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">Weather</span> {
+  <span class="dec">@Tool</span>({
+    description: <span class="str">'查询城市天气'</span>,
+    schema: {
+      type: <span class="str">'object'</span>,
+      properties: { city: { type: <span class="str">'string'</span> } },
+      required: [<span class="str">'city'</span>],
+      additionalProperties: <span class="kw">false</span>,
+    },
+    strict: <span class="kw">true</span>,
+  })
+  <span class="fn">get_weather</span>(input: { city: <span class="kw">string</span> }) {
+    <span class="kw">return</span> <span class="str">`上海 72°F sunny（${input.city}）`</span>;
+  }
+}</code></pre>
+        </div>
+
+        <h3>@Skill — 代码控制的流程</h3>
+        <p>方法体是确定性脚本：要不要调模型、调几次、结果怎么加工，全由代码决定。模型调用只在显式 <code>ctx.llm()</code> 时发生，在 skill 自己的 unit span 下开 llm.turn 记账。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>units/weekly-report/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { Skill } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+<span class="kw">import type</span> { SkillContext } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">WeeklyReport</span> {
+  <span class="dec">@Skill</span>({
+    description: <span class="str">'就给定主题调用 LLM 产出要点'</span>,
+    schema: {
+      type: <span class="str">'object'</span>,
+      properties: { topic: { type: <span class="str">'string'</span> } },
+      required: [<span class="str">'topic'</span>],
+      additionalProperties: <span class="kw">false</span>,
+    },
+  })
+  <span class="kw">async</span> <span class="fn">weekly_report</span>(input: { topic: <span class="kw">string</span> }, ctx: SkillContext) {
+    <span class="kw">const</span> r = <span class="kw">await</span> ctx.<span class="fn">llm</span>({ prompt: <span class="str">`就「${input.topic}」给出三个要点`</span> });
+    <span class="kw">return</span> r.text; <span class="cm">// 返回值即产物，以 tool_result 交回主 agent</span>
+  }
+}</code></pre>
+        </div>
+
+        <h3>@SubAgent — 隔离的子代理</h3>
+        <p>独立循环 + 裁剪上下文。方法体不会执行——框架按 system 另起 agent 跑一轮，中间过程不外泄，只有最终报告回流主上下文。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>units/doc-reviewer/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { SubAgent, asset } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">DocReviewer</span> {
+  <span class="dec">@SubAgent</span>({
+    description: <span class="str">'按 system.md 的角色设定独立审查文档'</span>,
+    schema: {
+      type: <span class="str">'object'</span>,
+      properties: { task: { type: <span class="str">'string'</span> } },
+      required: [<span class="str">'task'</span>],
+      additionalProperties: <span class="kw">false</span>,
+    },
+    system: <span class="fn">asset</span>(<span class="kw">import</span>.meta.url, <span class="str">'./system.md'</span>),
+  })
+  <span class="cm">// 方法体不会执行：只读取方法名与装饰器元数据</span>
+  <span class="fn">doc_reviewer</span>(_input: { task: <span class="kw">string</span> }): <span class="kw">void</span> {}
+}</code></pre>
+        </div>
+
+        <h3>@Prompt — 纯文本资产</h3>
+        <p>模板与 playbook 资产，编译成菜单里一个无副作用的拉取型工具：模型判定需要时调用，文本以 tool_result 注入上下文。长文本放同目录 .md。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>units/style-guide/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { Prompt, asset } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">StyleGuide</span> {
+  <span class="dec">@Prompt</span>({ description: <span class="str">'写作规范（描述何时该拉取）'</span> })
+  <span class="fn">style_guide</span>(): <span class="kw">string</span> {
+    <span class="kw">return</span> <span class="fn">asset</span>(<span class="kw">import</span>.meta.url, <span class="str">'./asset.md'</span>);
+  }
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- 目录约定与装配 -->
+      <section id="structure">
+        <h2>目录约定与装配</h2>
+        <p>一单元一文件夹，长文本放 .md；每个单元是一个 default export 的类，用装饰器声明能力。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>project layout</em></div>
+          <pre><code>my-app/
+├─ units.ts              <span class="cm"># 显式注册表（agentia g 自动维护，可手改）</span>
+├─ src/main.ts           <span class="cm"># createApp 装配入口</span>
+└─ units/
+   ├─ weather/index.ts   <span class="cm"># @Tool 单元</span>
+   └─ doc-reviewer/
+      ├─ index.ts        <span class="cm"># @SubAgent 单元</span>
+      └─ system.md       <span class="cm"># 长文本资产</span></code></pre>
+        </div>
+        <h3>两条装配路线</h3>
+        <ul>
+          <li><strong>目录扫描</strong>：<code>createApp({ discover: 'units' })</code> 启动期扫描 <code>units/*/index.ts</code>，default export 为类时以文件夹名为 DI token 注册（因动态 import，带 discover 的 createApp 返回 Promise）。</li>
+          <li><strong>显式注册表</strong>：<code>createApp({ providers, system })</code>，providers 来自 <code>units.ts</code>（由 <code>agentia g</code> 自动维护）。</li>
+        </ul>
+        <p>两条路线二选一或混用；同 token 后者覆盖前者，不会重复收集菜单。装配期做静态校验：菜单查重、引用存在性、DI 循环依赖——在启动时失败，而不是在线上。</p>
+      </section>
+
+      <!-- 中间件 -->
+      <section id="middleware">
+        <h2>中间件（UnitMiddleware）</h2>
+        <p>挂在每一次单元（tool / skill / subagent / prompt）调用的前后：鉴权、限流、结果缓存、审计日志、超时包装等横切关注点都走这里，不进业务单元。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>签名</em></div>
+          <pre><code><span class="kw">type</span> <span class="fn">UnitMiddleware</span> = (call: UnitCall, next: UnitNext) =&gt; <span class="kw">unknown</span>;
+
+<span class="kw">interface</span> <span class="fn">UnitCall</span> {
+  <span class="kw">readonly</span> unit: AgentTool;   <span class="cm">// name / description / inputSchema 可读</span>
+  <span class="kw">readonly</span> input: <span class="kw">unknown</span>;   <span class="cm">// schema 校验已过的入参</span>
+  <span class="kw">readonly</span> ctx?: ToolRunContext;
+}
+<span class="cm">// 放行到下一层；next(newInput) 可改写入参，缺省沿用当前 input</span>
+<span class="kw">type</span> <span class="fn">UnitNext</span> = (input?: <span class="kw">unknown</span>) =&gt; <span class="kw">unknown</span>;</code></pre>
+        </div>
+        <h3>洋葱模型</h3>
+        <ul>
+          <li>链序 = 注册顺序：<strong>先注册的最外层</strong>，像洋葱一样层层包裹；</li>
+          <li><code>next()</code> 放行，<code>next(newInput)</code> 改写入参；<strong>不调 next 即短路</strong>（结果缓存等）；</li>
+          <li>抛错按单元失败处理：engine 包成 <code>is_error</code> 回给模型，run 不中断；</li>
+          <li>装配期包裹（AgentApp 构造函数），对 engine 零侵入；链为空时原样返回，零开销。</li>
+        </ul>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/main.ts — 注册</em></div>
+          <pre><code><span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
+  name: <span class="str">'my-app'</span>,
+  discover: <span class="str">'units'</span>,
+  middleware: [auth, cached], <span class="cm">// auth 在最外层</span>
+  system,
+});</code></pre>
+        </div>
+        <h3>例：鉴权</h3>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>middleware/auth.ts</em></div>
+          <pre><code><span class="kw">import type</span> { UnitMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="cm">// 敏感单元要求执行上下文里带授权标记，否则按单元失败抛错</span>
+<span class="kw">export const</span> auth: UnitMiddleware = (call, next) =&gt; {
+  <span class="kw">if</span> (call.unit.name.startsWith(<span class="str">'admin:'</span>) &amp;&amp; !call.ctx) {
+    <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">'forbidden: 缺少执行上下文'</span>);
+  }
+  <span class="kw">return</span> <span class="fn">next</span>();
+};</code></pre>
+        </div>
+        <h3>例：结果缓存</h3>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>middleware/cache.ts</em></div>
+          <pre><code><span class="kw">import type</span> { UnitMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> store = <span class="kw">new</span> <span class="fn">Map</span>&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;();
+
+<span class="cm">// 命中即短路（不调 next），未命中放行后回写</span>
+<span class="kw">export const</span> cached: UnitMiddleware = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">const</span> key = <span class="str">`${call.unit.name}:${JSON.stringify(call.input)}`</span>;
+  <span class="kw">if</span> (store.<span class="fn">has</span>(key)) <span class="kw">return</span> store.<span class="fn">get</span>(key);
+  <span class="kw">const</span> out = <span class="kw">await</span> <span class="fn">next</span>();
+  store.<span class="fn">set</span>(key, out);
+  <span class="kw">return</span> out;
+};</code></pre>
+        </div>
+      </section>
+
+      <!-- 触发方式 -->
+      <section id="triggers">
+        <h2>触发方式</h2>
+        <p>同步 RPC、异步任务、定时调度共用一份输入契约；换宿主不换语义。</p>
+        <h3>同步 RPC</h3>
+        <p><code>await app.run(messages)</code> 直接拿结果与 trace，适合请求-响应式宿主。</p>
+        <h3>异步任务</h3>
+        <p><code>AsyncRunner</code> 提交即返回任务记录，后台执行；<code>FileTaskStore</code> 按 JSONL 一行一快照落盘，宿主重启后 <code>resumePending()</code> 续跑 queued/running。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>async submit</em></div>
+          <pre><code><span class="kw">const</span> task = <span class="kw">await</span> runner.<span class="fn">submit</span>(
+  [{ role: <span class="str">'user'</span>, content: <span class="str">'生成上周运营周报'</span> }],
+  { idempotencyKey: <span class="str">'weekly-report:2026-W36'</span> },
+);</code></pre>
+        </div>
+        <h3>定时调度</h3>
+        <p>Scheduler 支持 <code>every</code>（间隔）与 <code>at</code>（定点）两种计划，到点转为异步任务提交。</p>
+        <h3>幂等</h3>
+        <p>异步宿主是 at-least-once 语义：同一 <code>idempotencyKey</code> 重复 submit，若上一任务未失败则直接返回既有记录（last-wins 去重）；失败的同键允许重提产生新任务。</p>
+      </section>
+
+      <!-- 长上下文策略 -->
+      <section id="context">
+        <h2>长上下文策略</h2>
+        <p><code>createBudgetPolicy</code> 提供预算驱动的上下文护栏，规则带滞回，避免每回合反复压缩：</p>
+        <ul>
+          <li>估算整组消息 token，≤ 预算 → 原样放行（快路径）；</li>
+          <li>超预算先 <strong>context editing</strong>：丢旧工具对，不额外调模型；</li>
+          <li>仍超预算且有 <code>summarize</code> → <strong>compaction</strong>：旧前缀做成摘要，只留最近 <code>keepRecent</code> 条；距上次压缩不足 <code>compactEvery</code> 个回合则跳过（防抖）；</li>
+          <li>框架不替你造 token：缺省 token 估算是 CJK 感知启发式，真机可注入按 <code>/count_tokens</code> 的 estimate。</li>
+        </ul>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>policy</em></div>
+          <pre><code><span class="kw">import</span> { createBudgetPolicy } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> policy = <span class="fn">createBudgetPolicy</span>({
+  budgetTokens: <span class="dec">60_000</span>,   <span class="cm">// 预算（估算 input tokens）</span>
+  keepRecent: <span class="dec">20</span>,          <span class="cm">// compaction 保留的最近消息条数</span>
+  editBeforeCompact: <span class="kw">true</span>,  <span class="cm">// 先编辑再压缩</span>
+  compactEvery: <span class="dec">1</span>,          <span class="cm">// 压缩滞回（回合数）</span>
+  <span class="cm">// summarize: (historyText) =&gt; ...,  // 提供才允许 compaction</span>
+});</code></pre>
+        </div>
+      </section>
+
+      <!-- CLI -->
+      <section id="typed">
+        <h2>结构化结果</h2>
+        <p>给 <code>run</code> 一个 <code>resultSchema</code>，模型完成工作后通过隐藏的 <code>submit_result</code> 工具提交结果，框架校验后挂在 <code>result.typed</code> 上——不再从纯文本里猜 JSON。</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>typed.ts</em></div>
+        <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
+  resultSchema: {
+    type: <span class="str">'object'</span>,
+    properties: { pass: { type: <span class="str">'boolean'</span> }, reason: { type: <span class="str">'string'</span> } },
+    required: [<span class="str">'pass'</span>, <span class="str">'reason'</span>],
+    additionalProperties: <span class="kw">false</span>,
+  },
+});
+<span class="fn">console</span>.log(result.typed); <span class="cm">// { pass: true, reason: '…' }</span></code></pre></div>
+        <p>schema 也可以来自 zod（peer 可选）：<code>fromZod(z.toJSONSchema(S), S)</code>，校验走 zod，错误路径原样回给模型自我修正。</p>
+      </section>
+
+      <section id="hosting">
+        <h2>宿主与导出</h2>
+        <p>同一份应用，一行接入 HTTP；任务记录可落 SQLite；trace 可导出到任何 OTLP 收集器。</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>server.ts</em></div>
+        <pre><code><span class="kw">import</span> { createServer } <span class="kw">from</span> <span class="str">'node:http'</span>;
+<span class="kw">import</span> { createHttpHandler, SqliteTaskStore, AsyncRunner, createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> runner = <span class="kw">new</span> <span class="fn">AsyncRunner</span>(app, { store: <span class="kw">new</span> <span class="fn">SqliteTaskStore</span>(<span class="str">'./tasks.db'</span>) });
+<span class="fn">createServer</span>(<span class="fn">createHttpHandler</span>(app, { runner })).<span class="fn">listen</span>(<span class="dec">8080</span>);
+<span class="cm">// POST /run（同步）  POST /tasks（异步）  GET /tasks/:id（轮询）</span>
+
+<span class="kw">const</span> otlp = <span class="fn">createOtlpExporter</span>({ endpoint: <span class="str">'http://localhost:4318'</span> });
+<span class="kw">await</span> otlp.<span class="fn">export</span>(result.trace);</code></pre></div>
+      </section>
+
+      <section id="models">
+        <h2>多模型与记忆</h2>
+        <p>engine 只依赖 <code>ModelClient</code> 结构面：Anthropic 天然满足，OpenAI 兼容端点（含 DeepSeek 等）用 <code>createOpenAIClient</code> 一行接入；<code>memory</code> 选项在 run 间水合/回写 blackboard。</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>models.ts</em></div>
+        <pre><code><span class="kw">import</span> { createOpenAIClient, InMemoryMemoryStore } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
+  client: <span class="fn">createOpenAIClient</span>({ baseURL: <span class="str">'https://api.deepseek.com'</span> }),
+  model: <span class="str">'deepseek-chat'</span>,
+  memory: { store: <span class="kw">new</span> <span class="fn">InMemoryMemoryStore</span>(), keys: [<span class="str">'profile'</span>] },
+});</code></pre></div>
+      </section>
+
+      <section id="cli">
+        <h2>CLI 命令参考</h2>
+        <p>全局安装 <code>npm i -g @migor/cli</code> 后使用 <code>agentia</code> 命令。</p>
+        <table class="doc-table">
+          <thead>
+            <tr><th>命令</th><th>作用</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>agentia create &lt;name&gt;</td><td>脚手架新项目：目录约定、units.ts 注册表、src/main.ts 入口、tsconfig。</td></tr>
+            <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>生成单元（tool / skill / subagent / prompt）到 units/&lt;name&gt;/，并自动登记 units.ts；长文本资产（system.md / asset.md）一并生成。</td></tr>
+            <tr><td>agentia dev</td><td>tsx watch 启动 src/main.ts：改单元文件自动重启。</td></tr>
+            <tr><td>agentia doctor</td><td>装配体检：未登记/悬空单元、命名规范、重复条目。</td></tr>
+            <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方单元包（@AgentModule）并登记到注册表。</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 环境变量 -->
+      <section id="env">
+        <h2>环境变量</h2>
+        <table class="doc-table">
+          <thead>
+            <tr><th>变量</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>ANTHROPIC_API_KEY</td><td>必填。Anthropic API 密钥（亦支持 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL 兼容端点）。</td></tr>
+            <tr><td>AGENTIA_MODEL</td><td>可选。全局缺省模型覆盖，无则回落 <code>claude-opus-5</code>；显式传参优先级最高。</td></tr>
+            <tr><td>OPENAI_API_KEY</td><td>可选。OpenAI 兼容 provider 的密钥，多 provider 场景使用。</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-links">
+      <a href="./index.html">首页</a>
+      <a href="./playground.html">Playground</a>
+      <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/@migor/agentia" target="_blank" rel="noopener">@migor/agentia</a>
+    </div>
+    <p>Agentia — 声明式 Agent 服务开发框架</p>
+  </footer>
+
+  <script>
+    /* 锚点 scrollspy + nav 滚动态（零依赖） */
+    (() => {
+      const nav = document.querySelector('.nav');
+      window.addEventListener('scroll', () => nav.classList.toggle('scrolled', window.scrollY > 24), { passive: true });
+
+      const links = [...document.querySelectorAll('.docs-nav a')];
+      const sections = links
+        .map((a) => document.querySelector(a.getAttribute('href')))
+        .filter(Boolean);
+      const spy = () => {
+        let current = sections[0];
+        for (const sec of sections) {
+          if (sec.getBoundingClientRect().top <= 120) current = sec;
+        }
+        links.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + current.id));
+      };
+      window.addEventListener('scroll', spy, { passive: true });
+      spy();
+    })();
+  </script>
+</body>
+</html>

@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { classifyError } from '../engine/errors.js';
 import type { RunStatus } from './types.js';
@@ -18,7 +19,7 @@ import type { TaskRecord, TaskStore } from './store.js';
  */
 
 export interface AsyncRunnerOptions {
-  client?: Anthropic;
+  client?: ModelClient;
   store?: TaskStore;
   /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
   concurrency?: number;
@@ -35,7 +36,7 @@ export interface AppCallable {
 
 export class AsyncRunner {
   readonly store: TaskStore;
-  private readonly client?: Anthropic;
+  private readonly client?: ModelClient;
   private readonly concurrency: number;
   private running = 0;
   private readonly waitQueue: Array<() => void> = [];

@@ -1,6 +1,8 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool } from '../core/tool.js';
+import type { AgentTool, JsonSchema, ModelClient } from '../core/tool.js';
 import type { SpanError, Trace } from '../core/trace.js';
+
+export type { ModelClient } from '../core/tool.js';
 
 export type AgentStopReason =
   | 'end_turn'
@@ -34,6 +36,11 @@ export interface ContextPolicy {
   ): Promise<Anthropic.MessageParam[]>;
 }
 
+/**
+ * engine 对模型端的最小结构面（R4 多模型）：Anthropic SDK 天然满足，
+ * 其他 provider（OpenAI 兼容端点等）只需适配出同一形态。
+ * 定义在 core/tool.js 并从此处转导出。
+ */
 export interface RunAgentOptions {
   /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
   system?: SystemParam;
@@ -46,8 +53,8 @@ export interface RunAgentOptions {
   maxTokens?: number;
   /** 循环安全上限，防止无限 tool 往返 */
   maxIterations?: number;
-  /** 注入 client（默认 new Anthropic()，读 env/ant auth） */
-  client?: Anthropic;
+  /** 注入 client（默认 new Anthropic()，读 env/ant auth）；多模型见 ModelClient */
+  client?: ModelClient;
   /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
   recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */
@@ -55,14 +62,22 @@ export interface RunAgentOptions {
   runName?: string;
   /** 上下文预算策略：每回合发送前可编辑/压缩消息（compaction / context editing） */
   contextPolicy?: ContextPolicy;
+  /**
+   * 结构化结果 schema（R2）：给出后 engine 追加隐藏工具 submit_result，
+   * 模型调用它提交符合 schema 的最终结果，校验通过即结束循环并写入 AgentRunResult.typed；
+   * 模型始终未提交则 typed 为 undefined（行为与不设时一致）。
+   */
+  resultSchema?: JsonSchema;
 }
 
 export interface AgentRunResult {
   /** 本次 run 的完整调用树 + usage（traceId == runId） */
   trace: Trace;
   stopReason: AgentStopReason;
-  /** 最终文本（结构化输出在后续 Turn 接入） */
+  /** 最终文本（提交结构化结果的回合若带文本则取之，可空） */
   finalText: string;
   iterations: number;
   error?: SpanError;
+  /** resultSchema 校验通过的结构化结果；模型没提交（或未设 resultSchema）则为 undefined */
+  typed?: unknown;
 }

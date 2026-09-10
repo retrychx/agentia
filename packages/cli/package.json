@@ -1,16 +1,27 @@
 {
   "name": "@migor/cli",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Agentia 框架命令行工具：create 脚手架 + g 单元生成器",
   "type": "module",
   "bin": {
     "agentia": "./dist/cli.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "repository": "retrychx/agentia",
-  "keywords": ["agentia", "agent", "cli", "scaffold"],
-  "engines": { "node": ">=18" },
-  "publishConfig": { "access": "public" },
+  "keywords": [
+    "agentia",
+    "agent",
+    "cli",
+    "scaffold"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "npm run build"
