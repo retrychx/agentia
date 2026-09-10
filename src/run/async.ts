@@ -6,7 +6,7 @@ import type { RunStatus } from './types.js';
 import { normalizeMessages } from './spec.js';
 import type { RunInvocationOptions } from './spec.js';
 import { InMemoryTaskStore } from './store.js';
-import type { TaskRecord, TaskStore } from './store.js';
+import type { MaybePromise, TaskRecord, TaskStore } from './store.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -16,7 +16,19 @@ import type { TaskRecord, TaskStore } from './store.js';
  *   queued/running/succeeded 则直接返回既有记录，不重复执行（失败可重试新任务）；
  * - run 记录落 TaskStore（v1 InMemoryTaskStore），trace 随 result 一同保留；
  *   DB/队列宿主只需实现 TaskStore。
+ *
+ * 异步 TaskStore（R6，TaskStore 方法返回 MaybePromise）：
+ * - 内部执行路径（#execute / awaitTask / resumePending）全部 await 化，两种 store 通吃；
+ * - submit/poll/byIdempotency/list 是**同步门面**，为同步 store 保持原有用法与返回类型
+ *   （http/scheduler/既有调用方零改动）。接异步 store 时：submit 的即时去重无法进行
+ *   （推迟到 #execute：同键已有 succeeded 记录则采纳其结果、不重复执行），poll 等
+ *   返回 Promise 需调用方自行 await。
  */
+
+/** store 返回值可能是同步值或 Promise —— 区分用（同步门面只在同步值上工作） */
+function isThenable<T>(x: MaybePromise<T>): x is Promise<T> {
+  return !!x && typeof (x as Promise<T>).then === 'function';
+}
 
 export interface AsyncRunnerOptions {
   client?: ModelClient;
@@ -57,6 +69,8 @@ export class AsyncRunner {
   /**
    * 提交一次异步任务。入参可为 string / messages / {prompt|text|messages}。
    * 幂等键存在且上一任务未失败 → 直接返回既有记录（去重）；失败的同键可产生新任务。
+   * 同步门面：同步 store 下立即去重并返回快照；异步 store 下 save 在后台完成、
+   * 去重推迟到执行前（见 #execute），返回新建任务的提交时刻快照。
    */
   submit(
     input: unknown,
@@ -65,7 +79,8 @@ export class AsyncRunner {
     const messages = normalizeMessages(input);
     if (opts.idempotencyKey) {
       const existing = this.store.byIdempotency(opts.idempotencyKey);
-      if (existing && existing.status !== 'failed') {
+      // 异步 store 返回 Promise —— 同步门面无法 await，去重交给 #execute
+      if (existing && !isThenable(existing) && existing.status !== 'failed') {
         return { ...existing }; // at-least-once 去重：不重复执行
       }
     }
@@ -76,22 +91,31 @@ export class AsyncRunner {
       spec: { messages, options: opts.options, source: opts.source ?? 'async' },
       createdAt: Date.now(),
     };
-    this.store.save(rec);
-    void this.#execute(rec.taskId);
+    const saved = this.store.save(rec);
+    if (isThenable(saved)) {
+      // 异步落库失败：尽力把任务标记为 failed 重存，避免静默吞错 / unhandled rejection
+      saved.catch((e) => {
+        rec.status = 'failed';
+        rec.error = classifyError(e);
+        rec.finishedAt = Date.now();
+        void Promise.resolve(this.store.save(rec)).catch(() => {});
+      });
+    }
+    void this.#execute(rec);
     // 返回浅拷贝：记录会被后台状态机原地推进，调用方拿到的是提交时刻的快照
     return { ...rec };
   }
 
-  /** 查任务当前记录 */
-  poll(taskId: string): TaskRecord | undefined {
+  /** 查任务当前记录（异步 store 下返回 Promise，调用方 await） */
+  poll(taskId: string): MaybePromise<TaskRecord | undefined> {
     return this.store.get(taskId);
   }
 
-  byIdempotency(key: string): TaskRecord | undefined {
+  byIdempotency(key: string): MaybePromise<TaskRecord | undefined> {
     return this.store.byIdempotency(key);
   }
 
-  list(): TaskRecord[] {
+  list(): MaybePromise<TaskRecord[]> {
     return this.store.list();
   }
 
@@ -104,7 +128,7 @@ export class AsyncRunner {
     const intervalMs = opts.intervalMs ?? 5;
     const start = Date.now();
     for (;;) {
-      const rec = this.store.get(taskId);
+      const rec = await this.store.get(taskId);
       if (!rec) throw new Error(`task 不存在: ${taskId}`);
       if (rec.status === 'succeeded' || rec.status === 'failed') return rec;
       if (Date.now() - start > timeoutMs) {
@@ -116,46 +140,81 @@ export class AsyncRunner {
 
   /**
    * 宿主重启续跑：把 store 里 queued | running 的记录重新派发执行
-   * （running 视为进程中断）。返回重派数量。幂等键去重照常生效。
+   * （running 视为进程中断）。返回重派数量（异步 store 下返回 Promise<number>）。
+   * 幂等键去重照常生效。
    */
-  resumePending(): number {
-    const pending = this.store
-      .list()
-      .filter((r) => r.status === 'queued' || r.status === 'running');
+  resumePending(): number | Promise<number> {
+    const listed = this.store.list();
+    if (isThenable(listed)) return listed.then((recs) => this.#redispatch(recs));
+    return this.#redispatch(listed);
+  }
+
+  #redispatch(recs: TaskRecord[]): number {
+    const pending = recs.filter((r) => r.status === 'queued' || r.status === 'running');
     for (const rec of pending) {
       rec.status = 'queued'; // 重新入队，由 #execute 统一推进
-      void this.#execute(rec.taskId);
+      void this.#execute(rec);
     }
     return pending.length;
   }
 
-  async #execute(taskId: string): Promise<void> {
-    const rec = this.store.get(taskId);
-    if (!rec) return;
-    await this.#acquireSlot();
-    rec.status = 'running';
-    rec.startedAt = Date.now();
-    this.store.save(rec);
-
+  async #execute(rec: TaskRecord): Promise<void> {
+    // 顶层容错：异步 store（网络客户端）任何一处 reject 都不得逃逸成
+    // unhandled rejection（Node ≥15 默认终止进程）——任务标记失败尽力落库。
     try {
-      const callOpts: RunInvocationOptions = {
-        ...(rec.spec.options ?? {}),
-        client: rec.spec.options?.client ?? this.client,
-        idempotencyKey: rec.idempotencyKey,
-        rethrow: false, // 硬失败也以 failed 记录落库
-      };
-      const out = await this.app.run(rec.spec.messages, callOpts);
-      rec.runId = out.run.runId;
-      rec.status = out.run.status;
-      rec.result = out.result;
-      rec.error = out.result.error;
+      // 异步 store 的幂等去重在此补齐（submit 同步门面无法 await）：
+      // 同键已有 succeeded 记录 → 采纳其结果，不重复执行；queued/running 不采纳 ——
+      // 重复执行本就是 at-least-once 允许的行为。同步 store 下 submit 已完成去重，
+      // 这里查到的一般是 rec 自身（taskId 相同，直接放行）。
+      // 注意（load-bearing）：该去重依赖 store.save 先写记录、后写 idem 索引的顺序
+      // （见 redisStore 头注释）——索引指向自身时上面的 taskId 相等判断放行。
+      if (rec.idempotencyKey) {
+        const existing = await this.store.byIdempotency(rec.idempotencyKey);
+        if (existing && existing.taskId !== rec.taskId && existing.status === 'succeeded') {
+          rec.status = 'succeeded';
+          rec.runId = existing.runId;
+          rec.result = existing.result;
+          rec.error = existing.error;
+          rec.finishedAt = Date.now();
+          await this.store.save(rec);
+          return;
+        }
+      }
+
+      await this.#acquireSlot();
+      try {
+        rec.status = 'running';
+        rec.startedAt = Date.now();
+        await this.store.save(rec);
+
+        try {
+          const callOpts: RunInvocationOptions = {
+            ...(rec.spec.options ?? {}),
+            client: rec.spec.options?.client ?? this.client,
+            idempotencyKey: rec.idempotencyKey,
+            rethrow: false, // 硬失败也以 failed 记录落库
+          };
+          const out = await this.app.run(rec.spec.messages, callOpts);
+          rec.runId = out.run.runId;
+          rec.status = out.run.status;
+          rec.result = out.result;
+          rec.error = out.result.error;
+        } catch (e) {
+          rec.error = classifyError(e);
+          rec.status = 'failed';
+        }
+      } finally {
+        rec.finishedAt = Date.now();
+        // 落库失败不遮罩、槽位必须释放
+        await Promise.resolve(this.store.save(rec)).catch(() => {});
+        this.#releaseSlot();
+      }
     } catch (e) {
-      rec.error = classifyError(e);
       rec.status = 'failed';
-    } finally {
+      rec.error = classifyError(e);
       rec.finishedAt = Date.now();
-      this.store.save(rec);
-      this.#releaseSlot();
+      await Promise.resolve(this.store.save(rec)).catch(() => {});
+      console.error(`[agentia] task ${rec.taskId} 执行异常:`, e);
     }
   }
 

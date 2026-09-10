@@ -203,11 +203,12 @@ await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.tr
 | `SystemPrompt` | 拼装系统提示（自动打缓存 breakpoint） |
 | `RunContext.current()` | 取本次 run 的 blackboard / runId |
 | `AsyncRunner` / `Scheduler` / `runSync` / `createHttpHandler` | 异步 / 定时 / 同步 / HTTP 触发 |
-| `FileTaskStore` / `SqliteTaskStore` / `InMemoryTaskStore` | 任务记录存储 |
+| `FileTaskStore` / `SqliteTaskStore` / `RedisTaskStore` / `InMemoryTaskStore` | 任务记录存储 |
 | `createBudgetPolicy` | 长上下文预算护栏 |
 | `createOpenAIClient` | OpenAI 兼容端点适配（多模型） |
 | `InMemoryMemoryStore`（`memory` 选项） | 跨 run 记忆水合/回写 |
 | `createOtlpExporter` | trace 导出 OTLP |
+| `traceToMessages` | trace 重放基底：把完成的 run 还原成消息喂回模型调试 |
 | `fromZod` | zod schema 接入（peer 可选） |
 | `runAgent` / `executeRun` | 裸引擎入口（不走装配） |
 

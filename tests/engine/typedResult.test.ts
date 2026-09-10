@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runAgent } from '../../src/index.js';
+import { runAgent, TraceRecorder } from '../../src/index.js';
 import type { AgentTool, JsonSchema } from '../../src/index.js';
+import { runAgentScoped } from '../../src/engine/loop.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const RESULT_SCHEMA: JsonSchema = {
@@ -169,5 +170,67 @@ describe('typed 结构化结果（hidden submit_result）', () => {
     assert.equal(result.stopReason, 'error');
     assert.ok(result.error?.message.includes('submit_result'), result.error?.message);
     assert.equal(result.trace.status, 'error');
+  });
+});
+
+describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', () => {
+  it('scoped 入口：submit_result 提交 → typed 直通 AgentLoopResult，llm.turn 挂在父 span 下', async () => {
+    const { seen, client } = mockClient([
+      {
+        ...toolUseMsg('submit_result', { answer: '42', confidence: 0.9 }, 'tu1'),
+        content: [
+          { type: 'text', text: '子 agent 报告' },
+          { type: 'tool_use', id: 'tu1', name: 'submit_result', input: { answer: '42', confidence: 0.9 } },
+        ],
+      },
+    ]);
+    const recorder = new TraceRecorder();
+    const rootId = recorder.begin('run', 'test.run', null);
+    const unitId = recorder.begin('unit', 'researcher', rootId); // 子 agent 的 unit span
+
+    const loop = await runAgentScoped({
+      client,
+      messages: [{ role: 'user', content: 'task' }],
+      tools: [echoTool()],
+      resultSchema: RESULT_SCHEMA,
+      recorder,
+      parentSpanId: unitId,
+    });
+
+    assert.equal(loop.stopReason, 'end_turn');
+    assert.deepEqual(loop.typed, { answer: '42', confidence: 0.9 });
+    assert.equal(loop.finalText, '子 agent 报告');
+    assert.equal(loop.iterations, 1);
+
+    // 隐藏 submit_result 追加到了 api 工具菜单（input_schema = resultSchema）
+    const tools = (seen[0] as { tools: Array<{ name: string; input_schema: unknown }> }).tools;
+    assert.deepEqual(tools.map((t) => t.name), ['echo', 'submit_result']);
+    assert.equal(tools[1].input_schema, RESULT_SCHEMA);
+
+    // llm.turn 记进了同一条 trace、挂在给定父 span 下（不开 run 根）
+    const turns = recorder.snapshot('ok').spans.filter((s) => s.kind === 'llm.turn');
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0].parentSpanId, unitId);
+  });
+
+  it('scoped 入口未给 resultSchema：typed 为 undefined，行为不变', async () => {
+    const { seen, client } = mockClient([endTurnMsg('纯文本报告')]);
+    const recorder = new TraceRecorder();
+    const unitId = recorder.begin('unit', 'researcher', null);
+
+    const loop = await runAgentScoped({
+      client,
+      messages: [{ role: 'user', content: 'task' }],
+      tools: [echoTool()],
+      recorder,
+      parentSpanId: unitId,
+    });
+
+    assert.equal(loop.stopReason, 'end_turn');
+    assert.equal(loop.typed, undefined);
+    assert.equal(loop.finalText, '纯文本报告');
+    const params = seen[0] as { tools: Array<{ name: string }>; system?: string };
+    assert.deepEqual(params.tools.map((t) => t.name), ['echo']); // 不追加隐藏工具
+    assert.equal(params.system, undefined);
   });
 });

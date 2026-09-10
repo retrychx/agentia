@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { asset, discoverProviders, createApp, SystemPrompt } from '../../src/index.js';
 
@@ -24,6 +25,18 @@ describe('discoverProviders（目录发现）', () => {
 
   it('非法 default export → 报出形态要求', async () => {
     await assert.rejects(discoverProviders(`${fixtures}/units-broken`), /default export 形态非法/);
+  });
+
+  it('入口加载失败 → 报出单元名与入口路径，并保留 cause', async () => {
+    const dir = `${fixtures}/units-loadfail`;
+    const entry = join(fixtures, 'units-loadfail', 'badunit', 'index.ts');
+    await assert.rejects(discoverProviders(dir), (e: unknown) => {
+      assert.ok(e instanceof Error);
+      assert.match(e.message, /单元 badunit 入口加载失败/);
+      assert.ok(e.message.includes(entry), `错误信息应包含入口路径，实际: ${e.message}`);
+      assert.ok(e.cause instanceof Error, '应把原始异常保留在 cause 上');
+      return true;
+    });
   });
 
   it('发现的单元可直接装配出菜单', async () => {

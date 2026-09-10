@@ -7,9 +7,11 @@ import type { RunInvocationOptions } from './spec.js';
  * 依赖 AsyncRunner：每次触发 = submit 一次异步任务。
  *
  * 周期任务去重：幂等键按 interval 窗口分片（同一片只算一次）；
- * 即便上一片还没跑完，下一片仍会重新 submit —— 但若上一任务的同窗口键还在
- * queued/running/succeeded，AsyncRunner 的 at-least-once 去重会直接返回既有记录，
- * 保证同窗口不并发跑两遍；窗口推进后新键正常执行。
+ * 即便上一片还没跑完，下一片仍会重新 submit —— 同步 store 下若上一任务的同窗口键
+ * 还在 queued/running/succeeded，AsyncRunner 的 at-least-once 去重会直接返回既有记录，
+ * 同窗口不并发跑两遍；**异步 store 下该保证减弱**：submit 即时去重让位于执行前去重
+ * （只采纳 succeeded），上一片仍 running 时新片可能并发执行 —— at-least-once 语义允许，
+ * 窗口推进后新键正常执行。
  *
  * v1 提供 everyMs / at；cron 表达式解析后置（宿主可用队列 cron 替换语义）。
  */

@@ -49,13 +49,20 @@
   spec §4 草图的正式落地；property-injection 便利写法（spec §11 待定项）。
 - **官网**：文档站（指南 + API 参考），从单页宣传站演进。
 
-## R6 候选（下一轮）
+## R6（v0.2.0 已落地 ✅）
 
-- 文档站从单页 docs.html 演进为指南 + API 参考（官网子站）；
-- Redis 版 TaskStore（需外部依赖，做可选 peer）；
-- 子 agent 的 typed 结果（runAgentScoped 透传 resultSchema）；
-- trace 作为「重放基底」喂回模型做调试（spec §9.4 开放项）；
-- 真实 LLM 后端的 playground（BYOK 或 Workers 代理）。
+- 子 agent typed 结果（runAgentScoped 透传 resultSchema，子 agent 交回 `{ report, result }`）；
+- RedisTaskStore（duck-typed RedisLike 客户端，TaskStore 接口放宽为 MaybePromise）；
+- trace 重放基底（traceToMessages，spec §9.4 落地）；
+- 文档站演进：docs.html + api.html（API 参考）；
+- 真实 LLM playground：BYOK 模式（key 只存 localStorage，浏览器直连 Anthropic）。
+
+## R7 候选（下一轮）
+
+- trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
+- Workers 代理版 playground（免 BYOK 的托管演示）；
+- 文档站内容扩充（指南按场景组织）；
+- canCall 单元级能力边（当前 tools 引用粒度为 provider）。
 
 ## 原则（约束所有 R）
 

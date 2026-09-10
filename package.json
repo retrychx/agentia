@@ -1,6 +1,6 @@
 {
   "name": "@migor/agentia",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "面向应用开发者的声明式 agent 服务开发框架：装饰器 + DI 声明 tool/skill/subagent/prompt 单元，主 agent 编排执行，最终形态为流水线（pipeline）服务。",
   "type": "module",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:cli": "tsc -p packages/cli/tsconfig.json",
-    "deploy:website": "npx wrangler pages deploy website/public --project-name=agentia-web",
+    "deploy:website": "npx wrangler pages deploy packages/website/public --project-name=agentia-web",
     "prepublishOnly": "npm run build",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",

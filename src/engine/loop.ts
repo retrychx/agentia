@@ -305,7 +305,11 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
   };
 }
 
-/** 嵌套单元（子 agent）入口：不自开 run 根，llm.turn 挂在给定 parentSpanId 下的同一条 trace。 */
+/**
+ * 嵌套单元（子 agent）入口：不自开 run 根，llm.turn 挂在给定 parentSpanId 下的同一条 trace。
+ * resultSchema 语义与 runAgent 一致（隐藏 submit_result → AgentLoopResult.typed），
+ * 供子 agent 产出结构化结果（见 toolkit/subagent.ts 的交回逻辑）。
+ */
 export async function runAgentScoped(opts: {
   client?: ModelClient;
   system?: SystemParam;
@@ -318,6 +322,8 @@ export async function runAgentScoped(opts: {
   parentSpanId: SpanId;
   onText?: (delta: string) => void;
   contextPolicy?: ContextPolicy;
+  /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（同 RunAgentOptions.resultSchema） */
+  resultSchema?: JsonSchema;
 }): Promise<AgentLoopResult> {
   return agentLoop({
     client: opts.client ?? new Anthropic(),
@@ -331,6 +337,7 @@ export async function runAgentScoped(opts: {
     parentSpanId: opts.parentSpanId,
     onText: opts.onText,
     contextPolicy: opts.contextPolicy,
+    resultSchema: opts.resultSchema,
   });
 }
 

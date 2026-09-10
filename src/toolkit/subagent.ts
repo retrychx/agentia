@@ -37,6 +37,12 @@ export interface SubAgentSpec {
   model?: string;
   maxTokens?: number;
   maxIterations?: number;
+  /**
+   * 子 agent 的结构化结果 schema（R6）：给出后子 agent 循环追加隐藏 submit_result 工具，
+   * 校验通过的结果随最终报告一起交回主 agent —— tool_result 为
+   * { report: 最终文本报告, result: 结构化结果 }（模型未提交则退化为纯文本报告，同不设时）。
+   */
+  resultSchema?: JsonSchema;
 }
 
 export interface SubAgentUnit {
@@ -135,12 +141,20 @@ export function subagentToTool(
           tools,
           recorder,
           parentSpanId: unitId,
+          resultSchema: spec.resultSchema,
         });
         recorder.setAttribute(unitId, 'stop_reason', loop.stopReason);
 
         if (loop.stopReason === 'end_turn') {
           close({ status: 'ok' });
-          return loop.finalText; // 隔离报告：只回最终文本
+          // 隔离报告：默认只回最终文本。子 agent 提交了结构化结果（resultSchema +
+          // submit_result 校验通过）时，连同报告以结构化 tool_result 交回 —— engine 会把
+          // 该对象 JSON.stringify 进 tool_result，report 字段在前保持可读性，主 agent
+          // 既可读报告也可直接取 result 做后续结构化处理。
+          if (loop.typed !== undefined) {
+            return { report: loop.finalText, result: loop.typed };
+          }
+          return loop.finalText;
         }
         // 子 agent 没正常收尾 → 作为可重试语义的失败回主 agent（is_error）
         const report = `subagent(${name}) ${loop.stopReason}: ${

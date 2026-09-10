@@ -31,16 +31,39 @@
         <a href="./index.html">首页</a>
         <a href="./playground.html">Playground</a>
         <a href="./docs.html">文档</a>
+        <a href="./api.html">API</a>
         <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>
       </div>
     </div>
   </nav>
 
   <header class="pg-head">
-    <span class="pg-badge"><i></i>模拟演示：本地预置脚本，非真实模型调用</span>
+    <div class="pg-mode" id="pg-mode" role="tablist" aria-label="运行模式">
+      <button class="pg-mode-btn active" data-mode="sim" role="tab">模拟演示</button>
+      <button class="pg-mode-btn" data-mode="real" role="tab">真实模型（自带 Key）</button>
+    </div>
+    <span class="pg-badge" id="pg-badge"><i></i><span id="pg-badge-text">模拟演示：本地预置脚本，非真实模型调用</span></span>
     <h1>看一次 run 怎么跑</h1>
-    <p>选一个任务，看主 agent 如何思考、从菜单选中单元、发起 llm.turn、调用单元并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。</p>
+    <p id="pg-head-sub">选一个任务，看主 agent 如何思考、从菜单选中单元、发起 llm.turn、调用单元并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。</p>
   </header>
+
+  <div class="pg-byok" id="pg-byok" hidden>
+    <p class="pg-byok-note">
+      <strong>你的 key 只存浏览器 localStorage，直接发往 Anthropic API，不经过任何服务器。</strong>
+      页面为纯静态托管，没有任何后端；可随时点「清除」删除本地保存的 key。
+    </p>
+    <div class="pg-byok-row">
+      <label class="pg-byok-field">
+        <span>Anthropic API Key</span>
+        <input type="password" id="byok-key" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="pg-byok-field pg-byok-model">
+        <span>模型</span>
+        <input type="text" id="byok-model" value="claude-haiku-4-5-20251001" autocomplete="off" spellcheck="false" />
+      </label>
+      <button class="pg-btn pg-btn-replay pg-byok-clear" id="byok-clear" type="button">清除</button>
+    </div>
+  </div>
 
   <main class="pg-layout" id="pg-layout">
     <!-- 左：场景 -->
@@ -75,7 +98,7 @@
         <div class="u-row"><span>input tokens</span><b id="u-in">0</b></div>
         <div class="u-row"><span>output tokens</span><b id="u-out">0</b></div>
         <div class="u-row"><span>成本估算</span><b class="u-cost" id="u-cost">$0.0000</b></div>
-        <div class="u-note">按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。</div>
+        <div class="u-note" id="u-note">按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。</div>
       </div>
     </aside>
   </main>
@@ -91,5 +114,6 @@
   </footer>
 
   <script src="./playground.js"></script>
+  <script src="./playground-real.js"></script>
 </body>
 </html>

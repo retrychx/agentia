@@ -146,7 +146,7 @@ export function createHttpHandler(
           return;
         }
         const taskId = decodeURIComponent(pathname.slice('/tasks/'.length));
-        const rec = runner.poll(taskId);
+        const rec = await runner.poll(taskId); // MaybePromise：异步 store 下必须 await
         if (!rec) {
           sendJson(res, 404, { error: `task 不存在: ${taskId}` });
           return;

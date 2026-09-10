@@ -165,6 +165,9 @@
     scenario: SCENARIOS[0],
     running: false,
     gen: 0, // 取消令牌：重播/切换场景时作废旧循环
+    mode: 'sim', // 'sim' 模拟演示 | 'real' 真实模型（BYOK，由 playground-real.js 接管）
+    realRun: null, // playground-real.js 注册的真实模式入口
+    onScenarioChange: null, // 场景切换钩子（真实模式用来换菜单/system）
   };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -186,6 +189,7 @@
         renderScenarios();
         renderMenu(sc);
         resetPanels();
+        if (state.onScenarioChange) state.onScenarioChange(sc);
       });
       scenariosEl.appendChild(btn);
     });
@@ -428,8 +432,55 @@
     setRunning(false);
   }
 
-  btnRun.addEventListener('click', runScenario);
-  btnReplay.addEventListener('click', runScenario);
+  /* ========== 运行入口分发 ==========
+   * 模拟模式走 runScenario；真实模型模式（BYOK）由 playground-real.js
+   * 注册 state.realRun 接管，复用下方同一套面板/trace 渲染函数。
+   */
+  function handleRun() {
+    if (state.mode === 'real') {
+      if (state.realRun) state.realRun();
+      return;
+    }
+    runScenario();
+  }
+
+  btnRun.addEventListener('click', handleRun);
+  btnReplay.addEventListener('click', handleRun);
+
+  /* 暴露给 playground-real.js 的最小共用面（不改动模拟模式任何行为） */
+  window.AgentiaPlayground = {
+    SCENARIOS,
+    state,
+    sleep,
+    fmtNum,
+    fmtMs,
+    el,
+    addBlock,
+    panelThink,
+    panelNote,
+    panelLlmOpen,
+    panelFinalOpen,
+    panelStream,
+    panelTool,
+    panelResult,
+    renderMenu,
+    highlightMenu(name) {
+      menuEl.querySelectorAll('.pg-chip').forEach((c) =>
+        c.classList.toggle('on', c.dataset.name === name),
+      );
+    },
+    traceReset,
+    traceStart,
+    traceEnd,
+    traceFinish,
+    renderUsage,
+    resetPanels,
+    setRunning,
+    setPrice(p) {
+      PRICE.input = p.input;
+      PRICE.output = p.output;
+    },
+  };
 
   /* nav 滚动态（与 main.js 一致） */
   const nav = $('.nav');

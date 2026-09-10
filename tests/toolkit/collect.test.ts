@@ -10,6 +10,7 @@ import {
   collectSkills,
   collectPrompts,
 } from '../../src/index.js';
+import { unitName } from '../../src/toolkit/collect.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 
@@ -99,5 +100,105 @@ describe('collect*（装饰器单元收集）', () => {
       () => Tool({ description: 'd', schema: OBJ })(() => {}, { kind: 'field', name: 'x' }),
       /只能修饰类方法/,
     );
+  });
+
+  it('多层级继承：中间层未装饰 override 继承祖父 spec 且调到中间层实现', async () => {
+    class G {
+      @Tool({ description: 'd', schema: OBJ })
+      x(): string {
+        return 'grand';
+      }
+    }
+    class M extends G {
+      override x(): string {
+        return 'middle';
+      }
+    }
+    class C extends M {}
+    const tools = collectTools(new C());
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].name, 'x');
+    assert.equal(await tools[0].run({}), 'middle');
+  });
+
+  it('多层级继承：中间层装饰 override 用自己的 spec，祖父不重复命中', () => {
+    class G {
+      @Tool({ description: 'g', schema: OBJ })
+      x(): string {
+        return 'grand';
+      }
+    }
+    class M extends G {
+      @Tool({ description: 'm', schema: OBJ, name: 'mid_tool' })
+      override x(): string {
+        return 'middle';
+      }
+    }
+    class C extends M {}
+    const tools = collectTools(new C());
+    assert.equal(tools.length, 1, '同名装饰方法只命中最近一层');
+    assert.equal(tools[0].name, 'mid_tool');
+    assert.equal(tools[0].description, 'm');
+  });
+
+  it('非函数原型成员与同名 getter 不干扰收集', async () => {
+    // 同名 getter（accessor 描述符无 value）：跳过且不标 seen，父类 spec 继续生效
+    class P {
+      @Tool({ description: 'd', schema: OBJ })
+      thing(): string {
+        return 'tool';
+      }
+    }
+    class C extends P {
+      // @ts-expect-error 故意用 getter 遮蔽父类方法，验证扫描不崩且父类 spec 仍命中
+      get thing(): string {
+        return 'getter';
+      }
+    }
+    const tools = collectTools(new C());
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].name, 'thing');
+
+    // 普通 getter / 非函数成员本身不会被收集成单元
+    class G {
+      @Tool({ description: 'd', schema: OBJ })
+      ok(): string {
+        return 'ok';
+      }
+      get notTool(): number {
+        return 1;
+      }
+    }
+    assert.deepEqual(collectTools(new G()).map((t) => t.name), ['ok']);
+  });
+
+  it('unitName：symbol 方法名且无显式 name → 抛错文案带符号信息', () => {
+    const sym = Symbol('hidden');
+    assert.throws(
+      () => unitName({}, sym, '@Tool'),
+      /@Tool 需要显式 name（方法名为私有符号 Symbol\(hidden\)）/,
+    );
+    assert.equal(unitName({ name: 'n' }, sym, '@Tool'), 'n', '显式 name 优先');
+    assert.equal(unitName({}, 'method', '@Tool'), 'method', '字符串 key 缺省取方法名');
+  });
+
+  it('symbol 命名的装饰方法：无显式 name 抛错，有显式 name 正常收集', () => {
+    const sym = Symbol('hidden');
+    class NoName {
+      @Tool({ description: 'd', schema: OBJ })
+      [sym](): string {
+        return 'x';
+      }
+    }
+    assert.throws(() => collectTools(new NoName()), /@Tool 需要显式 name/);
+
+    class Named {
+      @Tool({ description: 'd', schema: OBJ, name: 'hidden_tool' })
+      [sym](): string {
+        return 'x';
+      }
+    }
+    const tools = collectTools(new Named());
+    assert.deepEqual(tools.map((t) => t.name), ['hidden_tool']);
   });
 });

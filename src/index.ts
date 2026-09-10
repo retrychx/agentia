@@ -1,4 +1,4 @@
-export const AGENTIA_VERSION = '0.1.0';
+export const AGENTIA_VERSION = '0.2.1';
 
 // core：数据模型
 export type {
@@ -103,4 +103,9 @@ export { createOtlpExporter } from './run/otlp.js';
 export { createOpenAIClient } from './run/openai.js';
 export { InMemoryMemoryStore } from './run/memory.js';
 export type { MemoryStore } from './run/memory.js';
+export { RedisTaskStore } from './run/redisStore.js';
+export type { RedisLike } from './run/redisStore.js';
+export type { MaybePromise } from './run/store.js';
+export { traceToMessages } from './engine/replay.js';
+export type { ReplayOptions } from './engine/replay.js';
 

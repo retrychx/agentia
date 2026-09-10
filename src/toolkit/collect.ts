@@ -27,7 +27,9 @@ export function scanDecoratedMethods<S>(
 
   let proto: object | null = Object.getPrototypeOf(instance);
   while (proto && proto !== Object.prototype) {
-    for (const key of Object.getOwnPropertyNames(proto)) {
+    // Reflect.ownKeys 含 symbol key：symbol 命名的装饰方法也会被找到，
+    // 无显式 name 时由 unitName 抛出提示（而非静默忽略）
+    for (const key of Reflect.ownKeys(proto)) {
       if (seen.has(key)) continue;
       const desc = Object.getOwnPropertyDescriptor(proto, key);
       if (!desc || typeof desc.value !== 'function') continue;
