@@ -29,10 +29,13 @@ const toolSpecs = new WeakMap<Function, ToolSpec>();
 /**
  * 方法装饰器：登记 spec。被装饰方法入参即结构化 tool input，
  * 返回值（或 Promise）即 tool_result。抛错由 engine 包成 is_error，不中断 run。
+ *
+ * 泛型 <I, O> 可把方法签名与编译期类型绑定（`@Tool<{city:string}, string>({...})`），
+ * 挡住签名笔误；缺省 any 保持宽松。schema 与 I 的一致性仍由开发者保证（已知边界）。
  */
-export function Tool(spec: ToolSpec) {
+export function Tool<I = any, O = any>(spec: ToolSpec) {
   return function (
-    value: Function,
+    value: (input: I) => O | Promise<O>,
     context: { kind: string; name: string | symbol },
   ): void {
     if (context.kind !== 'method') {
@@ -51,11 +54,13 @@ export function collectTools(instance: object): AgentTool[] {
   while (proto && proto !== Object.prototype) {
     for (const key of Object.getOwnPropertyNames(proto)) {
       if (seen.has(key)) continue;
-      seen.add(key);
       const desc = Object.getOwnPropertyDescriptor(proto, key);
       if (!desc || typeof desc.value !== 'function') continue;
       const spec = toolSpecs.get(desc.value as Function);
+      // 子类未装饰的 override 不标 seen：让父类的 spec 沿原型链继续生效
+      // （Reflect.apply(instance[key]) 仍调到子类实现，override 生效、菜单不丢）
       if (!spec) continue;
+      seen.add(key);
       tools.push(buildTool(instance, key, spec));
     }
     proto = Object.getPrototypeOf(proto);

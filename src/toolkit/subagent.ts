@@ -70,11 +70,11 @@ export function collectSubAgents(instance: object): SubAgentUnit[] {
   while (proto && proto !== Object.prototype) {
     for (const key of Object.getOwnPropertyNames(proto)) {
       if (seen.has(key)) continue;
-      seen.add(key);
       const desc = Object.getOwnPropertyDescriptor(proto, key);
       if (!desc || typeof desc.value !== 'function') continue;
       const spec = subAgentSpecs.get(desc.value as Function);
-      if (!spec) continue;
+      if (!spec) continue; // 未装饰的 override 不标 seen，父类 spec 继续生效
+      seen.add(key);
       if (typeof spec.name !== 'string' && typeof key !== 'string') {
         throw new Error(`@SubAgent 需要显式 name（方法名为私有符号 ${String(key)}）`);
       }

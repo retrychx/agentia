@@ -64,11 +64,11 @@ export function collectPrompts(instance: object): AgentTool[] {
   while (proto && proto !== Object.prototype) {
     for (const key of Object.getOwnPropertyNames(proto)) {
       if (seen.has(key)) continue;
-      seen.add(key);
       const desc = Object.getOwnPropertyDescriptor(proto, key);
       if (!desc || typeof desc.value !== 'function') continue;
       const spec = promptSpecs.get(desc.value as Function);
-      if (!spec) continue;
+      if (!spec) continue; // 未装饰的 override 不标 seen，父类 spec 继续生效
+      seen.add(key);
       if (typeof spec.name !== 'string' && typeof key !== 'string') {
         throw new Error(`@Prompt 需要显式 name（方法名为私有符号 ${String(key)}）`);
       }
@@ -83,11 +83,11 @@ export function collectPrompts(instance: object): AgentTool[] {
     const ctor = cls as unknown as Record<string, unknown>;
     for (const key of Object.getOwnPropertyNames(ctor)) {
       if (seen.has(key)) continue;
-      seen.add(key);
       const fn = ctor[key];
       if (typeof fn !== 'function') continue;
       const spec = promptSpecs.get(fn as Function);
       if (!spec) continue;
+      seen.add(key);
       pushTool(key, fn as Function, cls as object, spec);
     }
   }

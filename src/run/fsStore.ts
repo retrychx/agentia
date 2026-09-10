@@ -13,6 +13,9 @@ import type { TaskRecord, TaskStore } from './store.js';
  * - 构造即 load：文件不存在则从空开始，写入自动建目录；
  * - 宿主重启后：new FileTaskStore(path) 读回记录 → AsyncRunner.resumePending() 续跑
  *   queued/running（running 视为中断）。幂等键去重照常生效（失败可重提）。
+ *
+ * 前提：**单宿主写者**。append 用同步写保证进程内串行；多进程写同一文件会交错，
+ * 跨进程协调（锁/队列）属于部署层职责，不在本实现内。
  */
 export class FileTaskStore implements TaskStore {
   private readonly byTask = new Map<string, TaskRecord>();

@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, RecorderBackend, ToolRunContext } from '../core/tool.js';
+import { validateJsonSchema } from '../core/schema.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError } from './errors.js';
 import { TraceRecorder } from './tracer.js';
@@ -163,12 +164,20 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
           ok = false;
           content = `unknown tool: ${use.name}`;
         } else {
-          try {
-            content = await tool.run(use.input as never, ctx);
-          } catch (e) {
+          // 模型给的 input 先过 schema 校验：不合法直接回 is_error（含路径，
+          // 模型可自我修正），不进方法体 —— schema 是方法与模型间的运行时契约。
+          const invalid = validateJsonSchema(tool.inputSchema, use.input);
+          if (invalid) {
             ok = false;
-            const err = classifyError(e);
-            content = `error(${err.type}): ${err.message}`;
+            content = `invalid input: ${invalid}`;
+          } else {
+            try {
+              content = await tool.run(use.input, ctx);
+            } catch (e) {
+              ok = false;
+              const err = classifyError(e);
+              content = `error(${err.type}): ${err.message}`;
+            }
           }
         }
         recorder.event(turnId, 'tool.output', { tool: use.name, ok, content: ok ? limit(content, 2000) : limit(content, 1000) });

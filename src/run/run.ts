@@ -62,6 +62,12 @@ export class Run {
     this._status = 'failed';
     this.finishedAt = Date.now();
     if (!this._result) {
+      // run 根可能尚未开（如 contextInit 抛错）：补一个 error 根再 snapshot，
+      // 避免 snapshot 的 "run root not started" 掩盖原始错误。
+      if (!this.recorder.rootStarted) {
+        const rootId = this.recorder.begin('run', 'agent.run', null);
+        this.recorder.end(rootId, { status: 'error', error: classifyError(error) });
+      }
       this._result = {
         trace: this.recorder.snapshot('error'),
         stopReason: 'error',

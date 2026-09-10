@@ -10,12 +10,30 @@ import type Anthropic from '@anthropic-ai/sdk';
  * - **客户端剪裁** = Turn 3 子 agent（另件）。
  *
  * 不在此自研 token 计数黑名单：`estimateMessages` 只是预算策略的默认启发式
- * （字符/4 估算，明确标注为估算），上层可注入真实 count_tokens 结果。
+ * （CJK 感知估算，明确标注为估算），上层可注入真实 count_tokens 结果。
  */
 
-/** 默认估算：~4 字符/ token（仅预算决策用，非精确记账） */
+/**
+ * 默认估算（仅预算决策用，非精确记账）：CJK 字符按 ~1.5 字/token，
+ * 其余（ASCII/拉丁）按 ~4 字符/token。纯字符/4 对中文系统性高估，
+ * 会让预算护栏过早触发压缩。
+ */
 export function defaultEstimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
+  let cjk = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!;
+    if (
+      (cp >= 0x3400 && cp <= 0x9fff) || // CJK 统一表意文字（扩展A + 基本区）
+      (cp >= 0xf900 && cp <= 0xfaff) || // 兼容表意文字
+      (cp >= 0x20000 && cp <= 0x2a6df) || // 扩展B
+      (cp >= 0x3000 && cp <= 0x30ff) || // 日文假名 + CJK 标点
+      (cp >= 0xff00 && cp <= 0xffef) // 全角字符
+    ) {
+      cjk++;
+    }
+  }
+  const other = text.length - cjk; // 非 BMP 字符按 UTF-16 长度计，属可接受偏差
+  return Math.max(1, Math.ceil(cjk / 1.5 + other / 4));
 }
 
 export function isToolResultMessage(msg: Anthropic.MessageParam): boolean {

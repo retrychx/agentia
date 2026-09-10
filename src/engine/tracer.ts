@@ -43,9 +43,19 @@ export class TraceRecorder {
     return id;
   }
 
+  get rootStarted(): boolean {
+    return this.rootSpanId !== null;
+  }
+
+  /**
+   * 结束 span。容错策略：未知 span id 抛错（程序员错误要响亮）；
+   * 对已结束的 span 幂等忽略（重复 end 视为无害）。event/setAttribute 对未知
+   * span 静默忽略 —— 观测不应中断业务，与 end 的严格性刻意区分。
+   */
   end(id: SpanId, patch: { status?: SpanStatus; error?: SpanError; usage?: Usage } = {}): void {
     const span = this.index.get(id);
     if (!span) throw new Error(`span not found: ${id}`);
+    if (span.endedAt !== undefined) return; // 幂等：重复 end 忽略
     span.endedAt = Date.now();
     if (patch.status) span.status = patch.status;
     if (patch.error) span.error = patch.error;

@@ -26,7 +26,7 @@ export interface BudgetPolicyOptions {
   budgetTokens?: number;
   /** compaction 保留的最近消息条数；缺省 20 */
   keepRecent?: number;
-  /** token 估算函数（预算决策用，非精确记账）；缺省 字符/4 */
+  /** token 估算函数（预算决策用，非精确记账）；缺省 CJK 感知启发式 */
   estimateTokens?: (text: string) => number;
   /** 是否先编辑再压缩；缺省 true */
   editBeforeCompact?: boolean;

@@ -20,6 +20,8 @@ import type { TaskRecord, TaskStore } from './store.js';
 export interface AsyncRunnerOptions {
   client?: Anthropic;
   store?: TaskStore;
+  /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
+  concurrency?: number;
 }
 
 /** 应用最小调用面（agent 装配无关，避免 run 层向上依赖 toolkit） */
@@ -34,6 +36,9 @@ export interface AppCallable {
 export class AsyncRunner {
   readonly store: TaskStore;
   private readonly client?: Anthropic;
+  private readonly concurrency: number;
+  private running = 0;
+  private readonly waitQueue: Array<() => void> = [];
 
   constructor(
     private readonly app: AppCallable,
@@ -42,6 +47,10 @@ export class AsyncRunner {
     this.app = app;
     this.store = opts.store ?? new InMemoryTaskStore();
     this.client = opts.client;
+    this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY;
+    if (!(this.concurrency > 0)) {
+      throw new Error(`concurrency 必须为正数，收到 ${opts.concurrency}`);
+    }
   }
 
   /**
@@ -56,7 +65,7 @@ export class AsyncRunner {
     if (opts.idempotencyKey) {
       const existing = this.store.byIdempotency(opts.idempotencyKey);
       if (existing && existing.status !== 'failed') {
-        return existing; // at-least-once 去重：不重复执行
+        return { ...existing }; // at-least-once 去重：不重复执行
       }
     }
     const rec: TaskRecord = {
@@ -68,7 +77,8 @@ export class AsyncRunner {
     };
     this.store.save(rec);
     void this.#execute(rec.taskId);
-    return rec;
+    // 返回浅拷贝：记录会被后台状态机原地推进，调用方拿到的是提交时刻的快照
+    return { ...rec };
   }
 
   /** 查任务当前记录 */
@@ -121,6 +131,7 @@ export class AsyncRunner {
   async #execute(taskId: string): Promise<void> {
     const rec = this.store.get(taskId);
     if (!rec) return;
+    await this.#acquireSlot();
     rec.status = 'running';
     rec.startedAt = Date.now();
     this.store.save(rec);
@@ -140,8 +151,28 @@ export class AsyncRunner {
     } catch (e) {
       rec.error = classifyError(e);
       rec.status = 'failed';
+    } finally {
+      rec.finishedAt = Date.now();
+      this.store.save(rec);
+      this.#releaseSlot();
     }
-    rec.finishedAt = Date.now();
-    this.store.save(rec);
+  }
+
+  /** 并发槽位：超限则排队等待（任务记录保持 queued，由 store 可见） */
+  #acquireSlot(): Promise<void> {
+    if (this.running < this.concurrency) {
+      this.running++;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.waitQueue.push(resolve));
+  }
+
+  #releaseSlot(): void {
+    const next = this.waitQueue.shift();
+    if (next) {
+      next(); // 槽位直接移交给等待者，running 计数不变
+    } else {
+      this.running--;
+    }
   }
 }

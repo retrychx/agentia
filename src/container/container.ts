@@ -15,7 +15,9 @@ export interface ValueProvider<T = unknown> {
 }
 export interface ClassProvider<T = unknown> {
   provide: Token;
-  useClass: new () => T;
+  useClass: new (...args: never[]) => T;
+  /** 构造器参数对应的依赖 token（按序注入）；无依赖可省略 */
+  deps?: Token[];
 }
 export interface FactoryProvider<T = unknown> {
   provide: Token;
@@ -62,8 +64,8 @@ export class Container {
   }
 
   resolve<T = unknown>(token: Token): T {
-    const cached = this.cache.get(token);
-    if (cached !== undefined) return cached as T;
+    // 用 has 判定命中：provider 值可以是 undefined，get 返回 undefined 不等于未缓存
+    if (this.cache.has(token)) return this.cache.get(token) as T;
 
     const cycleAt = this.resolving.indexOf(token);
     if (cycleAt !== -1) {
@@ -82,7 +84,8 @@ export class Container {
       if ('useValue' in binding) {
         value = binding.useValue;
       } else if ('useClass' in binding) {
-        value = new binding.useClass();
+        const deps = (binding.deps ?? []).map((d) => this.resolve(d));
+        value = new binding.useClass(...(deps as never[]));
       } else {
         const deps = (binding.deps ?? []).map((d) => this.resolve(d));
         value = binding.useFactory(...deps);
