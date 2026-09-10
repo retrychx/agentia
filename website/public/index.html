@@ -45,9 +45,8 @@
         <span class="line accent" data-intro>流水线服务</span>
       </h1>
       <p class="hero-sub" data-intro>
-        装饰器 + DI 声明单元，主 agent 作为路由器自主编排
-        <code>@Tool</code> <code>@Skill</code> <code>@SubAgent</code> <code>@Prompt</code>，
-        一次 run 产出结构化结果与完整调用树。
+        不写循环，不拼提示词管道。装饰器声明四类单元，主 agent 自主编排执行，
+        一次 run 交付结构化结果与完整调用树——你交付的是服务，不是对话脚本。
       </p>
       <div class="hero-actions" data-intro>
         <a class="btn btn-primary" href="#quickstart">快速开始</a>
@@ -58,6 +57,12 @@
         <code id="install-cmd">npm i -g @migor/cli && agentia create my-app</code>
         <button class="copy" onclick="navigator.clipboard.writeText('npm i -g @migor/cli && agentia create my-app');this.textContent='已复制'" aria-label="复制">复制</button>
       </div>
+    </div>
+    <div class="hero-stats" data-intro>
+      <span><b>4</b> 类单元</span><i></i>
+      <span><b>50</b> 例单测</span><i></i>
+      <span><b>3</b> 类触发</span><i></i>
+      <span><b>0</b> 反射</span>
     </div>
     <div class="scroll-hint" aria-hidden="true"><span></span></div>
   </header>
@@ -71,64 +76,79 @@
   <section class="section" id="units">
     <p class="sec-label" data-reveal>01 — UNITS</p>
     <h2 data-reveal>四类单元，一种抽象</h2>
-    <p class="section-sub" data-reveal>单元即流水线的阶段。对主 agent 而言都是菜单里的可调用项，差异只在运行时执行方式。</p>
+    <p class="section-sub" data-reveal>单元即流水线的阶段。四类单元对主 agent 都是菜单里的可调用项——声明一次，调度交给模型。</p>
     <div class="grid grid-4">
       <div class="card" data-card>
         <div class="card-tag">@Tool</div>
         <h3>函数调用</h3>
-        <p>类方法即工具，入参由模型按 JSON Schema 解析，运行时先校验再执行，出错回 <code>is_error</code> 不中断 run。</p>
+        <p>类方法即工具。入参按 JSON Schema 解析，先校验再执行；失败回 <code>is_error</code>，run 不中断。</p>
       </div>
       <div class="card" data-card>
         <div class="card-tag">@Skill</div>
         <h3>代码控制的流程</h3>
-        <p>方法体是确定性脚本，模型调用只发生在显式 <code>ctx.llm()</code>，返回值即产物交回主 agent。</p>
+        <p>确定性脚本里按需调模型：调几次、何时停、结果怎么加工，全由代码决定。</p>
       </div>
       <div class="card" data-card>
         <div class="card-tag">@SubAgent</div>
         <h3>隔离的子代理</h3>
-        <p>独立循环 + 裁剪上下文，中间过程不外泄，只有最终报告以 tool_result 回流主上下文。</p>
+        <p>独立循环 + 裁剪上下文。中间过程不外泄，只有最终报告回流主上下文。</p>
       </div>
       <div class="card" data-card>
         <div class="card-tag">@Prompt</div>
         <h3>纯文本资产</h3>
-        <p>模板 / 宏 / playbook，模型判定需要时拉取进上下文，支持实例 volatile 与静态常量。</p>
+        <p>模板与 playbook 资产。模型判定需要时拉取进上下文，支持 volatile 与静态常量。</p>
       </div>
     </div>
   </section>
 
+  <section class="section" id="how">
+    <p class="sec-label" data-reveal>02 — HOW IT WORKS</p>
+    <h2 data-reveal>一次 run 的全貌</h2>
+    <p class="section-sub" data-reveal>触发进来，结果出去。中间每一步都记在调用树上。</p>
+    <div class="pipeline" data-reveal>
+      <div class="pipe-box"><em>触发</em><span>同步 RPC<br />异步任务<br />定时调度</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box"><em>主 agent</em><span>作为路由器<br />自主编排<br />单元顺序</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box"><em>单元</em><span>@Tool / @Skill<br />@SubAgent<br />@Prompt</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box"><em>产出</em><span>结构化结果<br />trace 调用树<br />token / 成本</span></div>
+    </div>
+  </section>
+
   <section class="section section-alt" id="features">
-    <p class="sec-label" data-reveal>02 — FEATURES</p>
+    <p class="sec-label" data-reveal>03 — FEATURES</p>
     <h2 data-reveal>为生产而生</h2>
     <div class="grid grid-3">
       <div class="feature" data-card>
         <h3>CLI 与目录约定</h3>
-        <p><code>agentia create</code> 一键脚手架，<code>agentia g</code> 生成单元。一单元一文件夹，长文本放 .md，目录扫描与显式注册表双装配。</p>
+        <p><code>create</code> 脚手架、<code>g</code> 生成单元。一单元一文件夹，长文本放 .md；目录扫描与显式注册表双装配。</p>
       </div>
       <div class="feature" data-card>
         <h3>Trace 一等公民</h3>
-        <p>runId == traceId，每次模型往返、每次单元调用都记账：token、成本、耗时、错误分类，子 agent 递归成树。</p>
+        <p>runId == traceId。每次模型往返与单元调用都记账：token、成本、耗时、错误分类，子 agent 递归成树。</p>
       </div>
       <div class="feature" data-card>
         <h3>装配期静态校验</h3>
-        <p>菜单跨类型查重、tools 引用存在性、DI 循环依赖——错误在启动时暴露，不留给运行时。</p>
+        <p>菜单查重、引用存在性、DI 循环依赖——在启动时失败，而不是在线上。</p>
       </div>
       <div class="feature" data-card>
         <h3>长上下文三策略</h3>
-        <p>context editing 丢旧工具对、compaction 摘要压缩、预算护栏带滞回，CJK 感知 token 估算。</p>
+        <p>先丢旧工具对，再摘要压缩，预算护栏带滞回防抖；CJK 感知 token 估算。</p>
       </div>
       <div class="feature" data-card>
         <h3>三类触发</h3>
-        <p>同步 RPC、异步任务（幂等键去重、失败重提、落盘续跑）、定时调度，共用一份输入契约。</p>
+        <p>同步 RPC、异步任务、定时调度，共用一份输入契约；幂等去重，落盘续跑。</p>
       </div>
       <div class="feature" data-card>
         <h3>零反射装饰器</h3>
-        <p>标准 Stage 3 装饰器 + 显式 DI，不依赖 reflect-metadata，tsx / esbuild / tsgo 全兼容。</p>
+        <p>标准 Stage 3 装饰器 + 显式 DI，不押 reflect-metadata；tsx / esbuild / tsgo 全兼容。</p>
       </div>
     </div>
   </section>
 
   <section class="section" id="quickstart">
-    <p class="sec-label" data-reveal>03 — QUICKSTART</p>
+    <p class="sec-label" data-reveal>04 — QUICKSTART</p>
     <h2 data-reveal>三分钟跑起来</h2>
     <div class="steps">
       <div class="step" data-card>

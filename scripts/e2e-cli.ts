@@ -1,7 +1,7 @@
-// CLI 端到端冒烟：目录约定 + 发现机制 + CLI 端到端。
+// CLI 端到端验证：目录约定 + 发现机制 + CLI 端到端。
 // agentia create 脚手架 → agentia g 生成四类单元 → 注册表 codemod →
 // discoverProviders/createApp({discover}) 装配 → mock 模型跑通一次 run。
-// 运行：npm run smoke:cli（先 build 框架与 CLI，再 tsx 跑本脚本）
+// 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -120,7 +120,7 @@ try {
   });
   assert(app2.tools.length === 5, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
 
-  console.log('SMOKE-CLI PASS');
+  console.log('E2E-CLI PASS');
   console.log(JSON.stringify({
     scaffolded: proj.replace(tmp, '<tmp>'),
     discoveredTokens: tokens,

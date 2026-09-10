@@ -226,6 +226,26 @@ code {
 }
 .copy:hover { color: var(--ice); border-color: var(--ice); }
 
+.hero-stats {
+  position: relative;
+  z-index: 2;
+  margin-top: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--faint);
+  letter-spacing: 0.06em;
+}
+.hero-stats b { color: var(--text); font-weight: 500; margin-right: 4px; }
+.hero-stats i {
+  width: 3px; height: 3px; border-radius: 50%;
+  background: var(--ice);
+  opacity: 0.7;
+}
+
 .scroll-hint {
   position: absolute;
   bottom: 28px;
@@ -285,6 +305,7 @@ code {
   max-width: 1080px;
   margin: 0 auto;
   padding: 110px 24px;
+  border-top: 1px solid var(--border);
 }
 .section-alt { background: var(--bg-alt); max-width: none; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .section-alt > * { max-width: 1080px; margin-left: auto; margin-right: auto; }
@@ -335,6 +356,48 @@ code {
   color: var(--text);
 }
 .feature h3::before { content: "▸ "; color: var(--ice); }
+
+/* pipeline（how it works） */
+.pipeline {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  margin-top: 12px;
+}
+.pipe-box {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 20px 18px;
+  transition: border-color 0.25s;
+}
+.pipe-box:hover { border-color: var(--ice-border); }
+.pipe-box em {
+  display: block;
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 13px;
+  color: var(--ice);
+  margin-bottom: 10px;
+  letter-spacing: 0.08em;
+}
+.pipe-box span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.pipe-arrow {
+  align-self: center;
+  padding: 0 14px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 15px;
+}
+@media (max-width: 900px) {
+  .pipeline { flex-direction: column; gap: 10px; }
+  .pipe-arrow { transform: rotate(90deg); padding: 2px 0; text-align: center; }
+}
 
 /* steps */
 .steps { display: grid; gap: 14px; margin: 40px 0 28px; }
@@ -438,6 +501,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   .grid-3 { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 560px) {
+  .hero-stats { flex-wrap: wrap; gap: 12px; }
   .grid-4, .grid-3 { grid-template-columns: 1fr; }
   .nav-links { gap: 14px; }
   .hero-install { flex-direction: column; gap: 8px; }
