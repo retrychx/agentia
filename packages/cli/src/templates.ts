@@ -37,7 +37,7 @@ export function emptyRegistryTemplate(): string {
   return `// Agentia 单元注册表 —— 由 agentia CLI 维护（agentia g 自动更新，也可手工编辑）
 // @agentia:imports
 ${IMPORTS_END_MARKER}
-import type { Provider } from 'agentia';
+import type { Provider } from '@retrychx/agentia';
 
 /** 显式装配路线：createApp({ providers, system: ... })（与 discover 目录扫描二选一或混用） */
 export const providers: Provider[] = [
@@ -59,7 +59,7 @@ export function projectPackageJson(name: string): string {
         dev: 'tsx src/main.ts',
         typecheck: 'tsc --noEmit -p tsconfig.json',
       },
-      dependencies: { agentia: '^0.0.1' },
+      dependencies: { '@retrychx/agentia': '^0.0.1' },
       devDependencies: {
         tsx: '^4.19.0',
         typescript: '^7.0.2',
@@ -91,7 +91,7 @@ export function projectTsconfig(): string {
 }
 
 export function mainTs(name: string): string {
-  return `import { createApp, SystemPrompt } from 'agentia';
+  return `import { createApp, SystemPrompt } from '@retrychx/agentia';
 
 const app = await createApp({
   name: '${name}',
@@ -160,7 +160,7 @@ dist
 export function toolIndexTs(name: string): string {
   const cls = kebabToPascal(name);
   const method = kebabToSnake(name);
-  return `import { Tool } from 'agentia';
+  return `import { Tool } from '@retrychx/agentia';
 
 /** ${name} 工具单元 */
 export default class ${cls} {
@@ -184,7 +184,7 @@ export default class ${cls} {
 export function promptIndexTs(name: string): string {
   const cls = kebabToPascal(name);
   const method = kebabToSnake(name);
-  return `import { Prompt, asset } from 'agentia';
+  return `import { Prompt, asset } from '@retrychx/agentia';
 
 /** ${name} 文本资产单元 */
 export default class ${cls} {
@@ -206,7 +206,7 @@ export function promptAssetMd(name: string): string {
 export function subagentIndexTs(name: string): string {
   const cls = kebabToPascal(name);
   const method = kebabToSnake(name);
-  return `import { SubAgent, asset } from 'agentia';
+  return `import { SubAgent, asset } from '@retrychx/agentia';
 
 /** ${name} 子代理单元 */
 export default class ${cls} {
@@ -236,8 +236,8 @@ export function subagentSystemMd(name: string): string {
 export function skillIndexTs(name: string): string {
   const cls = kebabToPascal(name);
   const method = kebabToSnake(name);
-  return `import { Skill } from 'agentia';
-import type { SkillContext } from 'agentia';
+  return `import { Skill } from '@retrychx/agentia';
+import type { SkillContext } from '@retrychx/agentia';
 
 /** ${name} 技能单元 */
 export default class ${cls} {

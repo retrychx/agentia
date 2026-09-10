@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync }
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// 注意：从 dist 而非 src 导入 —— 生成项目 import 'agentia' 解析到 dist/index.js，
+// 注意：从 dist 而非 src 导入 —— 生成项目 import '@retrychx/agentia' 解析到 dist/index.js，
 // 装饰器注册表（WeakMap）必须在同一模块实例里，否则 collect* 收不到 spec。
 import { createApp, discoverProviders, SystemPrompt } from '../dist/index.js';
 
@@ -53,9 +53,9 @@ try {
   }
   assert(dupFailed, '重复 g 同名应失败');
 
-  // —— 4) 让生成项目的 `import 'agentia'` 可解析（symlink 回仓库根，框架已 build 到 dist）——
-  mkdirSync(join(proj, 'node_modules'), { recursive: true });
-  symlinkSync(repoRoot, join(proj, 'node_modules', 'agentia'), 'dir');
+  // —— 4) 让生成项目的 `import '@retrychx/agentia'` 可解析（symlink 回仓库根，框架已 build 到 dist）——
+  mkdirSync(join(proj, 'node_modules', '@retrychx'), { recursive: true });
+  symlinkSync(repoRoot, join(proj, 'node_modules', '@retrychx', 'agentia'), 'dir');
 
   // —— 5) 发现机制：discoverProviders ——
   const unitsDir = join(proj, 'units');
