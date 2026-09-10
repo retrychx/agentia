@@ -155,7 +155,7 @@ const app = createApp({
 | `createBudgetPolicy` | 长上下文预算护栏 |
 | `runAgent` / `executeRun` | 裸引擎入口（不走装配） |
 
-完整导出见 [`src/index.ts`](src/index.ts)，设计规格见 [`docs/spec.md`](docs/spec.md)。
+完整导出见 [`src/index.ts`](src/index.ts)，设计规格见 [`docs/spec.md`](docs/spec.md)，官网见 [agentia-web.pages.dev](https://agentia-web.pages.dev)。
 
 ## 本仓库脚本
 

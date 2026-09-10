@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp, SystemPrompt, Tool, SubAgent } from '../src/index.js';
+import { createApp, SystemPrompt, Tool, SubAgent } from '../../src/index.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 const sys = () => new SystemPrompt().add('role', 'r', true);

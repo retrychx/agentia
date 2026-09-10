@@ -1,0 +1,5 @@
+# Agentia 官网（宣传站）—— 部署到 Cloudflare Pages
+# 参考 ts7-monorepo：wrangler.toml + pages_build_output_dir，静态免构建
+name = "agentia-web"
+compatibility_date = "2026-09-01"
+pages_build_output_dir = "./public"

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { Container } from '../src/index.js';
+import { Container } from '../../src/index.js';
 
 describe('Container（显式 DI）', () => {
   it('value / factory+deps / class+deps 三态解析', () => {

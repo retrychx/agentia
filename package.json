@@ -14,10 +14,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:cli": "tsc -p packages/cli/tsconfig.json",
+    "deploy:website": "npx wrangler pages deploy website/public --project-name=agentia-web",
     "prepublishOnly": "npm run build",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "smoke:run": "npm run build && node scripts/smoke-run.mjs",
     "smoke:tools": "tsx scripts/smoke-tools.ts",

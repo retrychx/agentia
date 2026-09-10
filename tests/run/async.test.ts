@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { AsyncRunner, InMemoryTaskStore } from '../src/index.js';
-import type { AppCallable } from '../src/index.js';
-import type { AgentRunResult } from '../src/index.js';
+import { AsyncRunner, InMemoryTaskStore } from '../../src/index.js';
+import type { AppCallable } from '../../src/index.js';
+import type { AgentRunResult } from '../../src/index.js';
 
 function fakeApp(fn?: () => Promise<void>): AppCallable & { calls: number } {
   const app = {

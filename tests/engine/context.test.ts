@@ -6,7 +6,7 @@ import {
   trimToolPairs,
   compactMessages,
   createBudgetPolicy,
-} from '../src/index.js';
+} from '../../src/index.js';
 import type Anthropic from '@anthropic-ai/sdk';
 
 describe('长上下文策略', () => {

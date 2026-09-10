@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateJsonSchema } from '../src/index.js';
-import type { JsonSchema } from '../src/index.js';
+import { validateJsonSchema } from '../../src/index.js';
+import type { JsonSchema } from '../../src/index.js';
 
 const person: JsonSchema = {
   type: 'object',

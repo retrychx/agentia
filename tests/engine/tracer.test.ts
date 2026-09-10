@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { TraceRecorder } from '../src/index.js';
+import { TraceRecorder } from '../../src/index.js';
 
 describe('TraceRecorder', () => {
   it('begin/end/属性/事件 全链路', () => {

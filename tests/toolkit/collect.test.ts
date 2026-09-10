@@ -9,7 +9,7 @@ import {
   collectSubAgents,
   collectSkills,
   collectPrompts,
-} from '../src/index.js';
+} from '../../src/index.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 

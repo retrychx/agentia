@@ -1,9 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { asset, discoverProviders, createApp, SystemPrompt } from '../src/index.js';
+import { asset, discoverProviders, createApp, SystemPrompt } from '../../src/index.js';
 
-const fixtures = fileURLToPath(new URL('./fixtures', import.meta.url));
+const fixtures = fileURLToPath(new URL('../fixtures', import.meta.url));
 
 describe('discoverProviders（目录发现）', () => {
   it('类 / Provider / Provider[] 三种 default export 形态', async () => {
@@ -38,7 +38,7 @@ describe('discoverProviders（目录发现）', () => {
 
 describe('asset（文本资产加载）', () => {
   it('相对调用模块读取文本', () => {
-    const text = asset(import.meta.url, './fixtures/asset.md');
+    const text = asset(import.meta.url, '../fixtures/asset.md');
     assert.ok(text.includes('fixture asset content'));
   });
 });

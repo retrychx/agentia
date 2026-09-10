@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { executeRun, Run, RunContext, Tool, createApp, SystemPrompt } from '../src/index.js';
-import { mockClient, toolUseMsg, endTurnMsg } from './helpers.js';
+import { executeRun, Run, RunContext, Tool, createApp, SystemPrompt } from '../../src/index.js';
+import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 
