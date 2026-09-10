@@ -3,8 +3,8 @@ import type { SpanError, SpanId, SpanKind, SpanStatus, Trace, Usage } from './tr
 
 /**
  * Agentia —— 工具定义。
- * Turn 0：v1 用裸 JSON Schema，不引 zod；装饰器 → schema 在 Turn 2 接入。
- * Turn 3：run 执行体可接收第二参 ctx（ToolRunContext），供子 agent/嵌套单元把
+ * v1 用裸 JSON Schema，不引 zod。
+ * run 执行体可接收第二参 ctx（ToolRunContext），供子 agent/嵌套单元把
  * 自己的 llm.turn 递归挂进当前 trace（unit span 的父由 engine 给定）。
  */
 

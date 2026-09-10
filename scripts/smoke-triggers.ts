@@ -1,10 +1,10 @@
-// Turn 5 冒烟：触发传输 + run 存储 —— 三类触发共用同一份入参契约（spec §6.3）。
+// 触发传输冒烟：触发传输 + run 存储 —— 三类触发共用同一份入参契约（spec §6.3）。
 // A) AsyncRunner 真实 app：submit 即回记录、后台到 succeeded、runId==traceId；
 //    同 idempotencyKey 重复 submit 去重（不重复跑，客户端调用数不变）。
 // B) 失败捕获：app.run 抛错 → rethrow:false 落 failed 记录（不冒泡）；同 key 失败后可重提新任务。
 // C) runSync / createSyncHandler：字符串/{text}/messages 统一归一；非法入参抛错。
 // D) Scheduler：at 恰好触发一次、cancel 不触发；every 窗口幂等键 + stop 停表。
-// 运行：npm run smoke:turn5（tsx 直接跑源码）
+// 运行：npm run smoke:triggers（tsx 直接跑源码）
 import {
   createApp,
   SystemPrompt,
@@ -150,7 +150,7 @@ const afterStop = submitted.length;
 await sleep(130);
 assert(submitted.length === afterStop, 'stop 后不应再触发');
 
-console.log('SMOKE-TURN5 PASS');
+console.log('SMOKE-TRIGGERS PASS');
 console.log(JSON.stringify({
   async: { firstRunId: done1.runId, dedupHit: true, listCount: runner.list().length, modelCalls: captured.length },
   failure: { status: fDone.status, error: fDone.error?.message, retryableAfterFail: true },

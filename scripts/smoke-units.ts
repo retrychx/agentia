@@ -1,11 +1,11 @@
-// Turn 6 冒烟：@Skill + @Prompt 单元 / 菜单重名静态校验 / 文件宿主耐久 + 重启续跑 / AGENTIA_MODEL。
+// 单元装配冒烟：@Skill + @Prompt 单元 / 菜单重名静态校验 / 文件宿主耐久 + 重启续跑 / AGENTIA_MODEL。
 // A) @Skill：scripted client 下 app.run 触发 compose_tagline —— 方法体执行（读到 blackboard token）+ 内部
 //    ctx.llm() 开一个受限子运行（unit 下 llm.turn 子孙）→ 产物以 tool_result 回流主上下文。
 // B) @Prompt：方法版（volatile 实例绑定）+ static 版都进菜单；直接调 prompt tool.run 返回文本。
 // C) 静态校验：tool 与 skill 同名 → createApp 抛「菜单单元重名」（跨类型共用命名空间）。
 // D) FileTaskStore：写 tmp JSONL → 新实例读回（换宿主还原）→ AsyncRunner.resumePending() 续跑 queued 到 succeeded。
 // E) resolveDefaultModel：AGENTIA_MODEL 优先、缺省 claude-opus-5、显式入参优先。
-// 运行：npm run smoke:turn6（tsx 直接跑源码）
+// 运行：npm run smoke:units（tsx 直接跑源码）
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -229,7 +229,7 @@ assert(resolveDefaultModel() === 'claude-opus-5', '无 env 应回落 claude-opus
 assert(resolveDefaultModel('given-model') === 'given-model', '显式入参应最优先');
 process.env.AGENTIA_MODEL = prevModel;
 
-console.log('SMOKE-TURN6 PASS');
+console.log('SMOKE-UNITS PASS');
 console.log(JSON.stringify(
   {
     skill: {

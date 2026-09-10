@@ -26,7 +26,7 @@ export function resolveDefaultModel(over?: string): string {
 /**
  * Agentia —— 主循环（manual loop，流式）—— spec §5。
  *
- * Turn 3 结构：核心是 `agentLoop` —— 不自开 run 根，所有 llm.turn 挂在给定的
+ * 结构：核心是 `agentLoop` —— 不自开 run 根，所有 llm.turn 挂在给定的
  * parentSpanId 下。同一套循环既能当主 agent（run 根为其父，由 runAgent 开），
  * 也能当子 agent（unit span 为其父，见 toolkit/subagent.ts），llm.turn 与 usage
  * 递归进同一条 trace（spec §9：子 agent = 一个 unit span，内部单元递归成它的子孙）。
@@ -137,7 +137,7 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
       break;
     }
     if (message.stop_reason === 'pause_turn') {
-      // Turn 0 无 server tools，正常不会到；避免无限循环直接停
+      // 无 server tools 时正常不会到；避免无限循环直接停
       stopReason = 'pause_turn';
       finished = true;
       break;

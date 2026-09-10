@@ -1,8 +1,8 @@
-// Turn 4 冒烟：长上下文三策略 —— compaction / context editing / 预算护栏。
+// 长上下文冒烟：长上下文三策略 —— compaction / context editing / 预算护栏。
 // 上半场：纯函数断言（trimToolPairs 保留最近对、compactMessages 角色交替合法 + 不拆对）；
 // 下半场：端到端预算策略 —— 大 tool_result 把消息顶过小预算 → 触发编辑/压缩 →
 // 断言旧结果被折叠成摘要、最近结果仍保留、run 根上打了 context.budget 事件。
-// 运行：npm run smoke:turn4（tsx 直接跑源码）
+// 运行：npm run smoke:context（tsx 直接跑源码）
 import {
   defaultEstimateTokens,
   estimateMessages,
@@ -181,7 +181,7 @@ assert(fs.includes('(压缩略'), '摘要内容应到位');
 assert(!fs.includes('DATA:t0') && !fs.includes('"tag":"t0"'), '旧工具对 t0 不应再出现在末轮请求');
 assert(fs.includes('DATA:t1'), '最近工具结果 t1 应保留');
 
-console.log('SMOKE-TURN4 PASS');
+console.log('SMOKE-CONTEXT PASS');
 console.log(JSON.stringify({
   pure: { estimate: true, trimKeepsRecent: true, compactAlternating: true, pairNotSplit: true },
   policy: {

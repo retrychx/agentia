@@ -1,7 +1,7 @@
-// Turn 3 冒烟：@SubAgent —— 主 agent 调 reviewer 子 agent；子 agent 在裁剪上下文里
+// 子 agent 冒烟：@SubAgent —— 主 agent 调 reviewer 子 agent；子 agent 在裁剪上下文里
 // 再调 get_weather；断言：unit span 层级、上下文裁剪（主对话不可见）、隔离报告
 // （子 agent 中间产物不进主上下文）、usage 跨两级聚合。
-// 运行：npm run smoke:turn3（tsx 直接跑源码，走标准装饰器语义）
+// 运行：npm run smoke:subagent（tsx 直接跑源码，走标准装饰器语义）
 import {
   Tool,
   SubAgent,
@@ -148,7 +148,7 @@ assert(mainFinalMsgs.includes('审查通过'), '主 agent 应收到 reviewer 最
 assert(!mainFinalMsgs.includes('city=上海') && !mainFinalMsgs.includes('sk-12345'),
   '子 agent 内部 weather 结果不应泄漏进主上下文（隔离）');
 
-console.log('SMOKE-TURN3 PASS');
+console.log('SMOKE-SUBAGENT PASS');
 console.log(JSON.stringify(
   {
     menu: menuNames,

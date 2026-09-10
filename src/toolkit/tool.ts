@@ -3,7 +3,7 @@ import type { AgentTool, JsonSchema } from '../core/tool.js';
 /**
  * Agentia —— 声明式工具层（spec §4：标准装饰器 + 显式 DI，无 param 反射）。
  *
- * Turn 2：`@Tool({ description, schema })` 方法装饰器 —— 把类方法变成
+ * `@Tool({ description, schema })` 方法装饰器 —— 把类方法变成
  * 主 agent 可调的 AgentTool。方法签名固定为单参数：模型按 input_schema
  * 解析出的结构化入参（JSON Schema 由开发者在 spec 里显式给出，不靠反射猜）。
  * 装饰器只把「方法 → spec」登记到 WeakMap；真正的 AgentTool 由

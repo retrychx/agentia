@@ -7,7 +7,7 @@ import type Anthropic from '@anthropic-ai/sdk';
  * - **context editing**（`trimToolPairs`）：清旧 tool_use→tool_result 对，不掉内容、不额外调模型；
  * - **compaction**（`compactMessages`）：把旧消息前缀做**服务端摘要**（摘要器由上层注入，可走模型），
  *   只保留最近 N 条 + 一段摘要 —— 新的消息数组仍保证角色交替合法；
- * - **客户端剪裁** = Turn 3 子 agent（另件）。
+ * - **客户端剪裁** = 子 agent 的独立上下文（见 toolkit/subagent.ts）。
  *
  * 不在此自研 token 计数黑名单：`estimateMessages` 只是预算策略的默认启发式
  * （CJK 感知估算，明确标注为估算），上层可注入真实 count_tokens 结果。

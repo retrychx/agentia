@@ -163,7 +163,7 @@ const app = createApp({
 npm install
 npm run build        # 编译框架（dist/）
 npm run typecheck    # 类型检查
-npm run smoke:turn7  # 端到端：CLI 脚手架 → 目录发现/注册表装配 → mock run
+npm run smoke:cli    # 端到端：CLI 脚手架 → 目录发现/注册表装配 → mock run
 npm run live         # 真机：runAgent + 工具往返（需 API key）
 npm run live:skill   # 真机：@Skill ctx.llm()（需 API key）
 ```

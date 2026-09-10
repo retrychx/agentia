@@ -1,7 +1,7 @@
-// Turn 7 冒烟：目录约定 + 发现机制 + CLI 端到端。
+// CLI 端到端冒烟：目录约定 + 发现机制 + CLI 端到端。
 // agentia create 脚手架 → agentia g 生成四类单元 → 注册表 codemod →
 // discoverProviders/createApp({discover}) 装配 → mock 模型跑通一次 run。
-// 运行：npm run smoke:turn7（先 build 框架与 CLI，再 tsx 跑本脚本）
+// 运行：npm run smoke:cli（先 build 框架与 CLI，再 tsx 跑本脚本）
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,7 @@ const assert = (cond: boolean, msg: string): void => {
 
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const cliPath = join(repoRoot, 'packages', 'cli', 'dist', 'cli.js');
-const tmp = mkdtempSync(join(tmpdir(), 'agentia-turn7-'));
+const tmp = mkdtempSync(join(tmpdir(), 'agentia-cli-'));
 const cli = (args: string[], cwd: string): string =>
   execFileSync(process.execPath, [cliPath, ...args], { cwd, encoding: 'utf8' });
 
@@ -95,7 +95,7 @@ try {
   };
 
   const app = await createApp({
-    name: 'turn7-app',
+    name: 'cli-app',
     discover: unitsDir,
     system: new SystemPrompt().add('role', '测试装配', true),
   });
@@ -114,13 +114,13 @@ try {
   // —— 7) 注册表路线：import 生成的 units.ts 显式装配 ——
   const registryMod = await import(`${proj}/units.ts`);
   const app2 = createApp({
-    name: 'turn7-registry',
+    name: 'cli-registry',
     providers: registryMod.providers,
     system: new SystemPrompt().add('role', '测试装配', true),
   });
   assert(app2.tools.length === 5, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
 
-  console.log('SMOKE-TURN7 PASS');
+  console.log('SMOKE-CLI PASS');
   console.log(JSON.stringify({
     scaffolded: proj.replace(tmp, '<tmp>'),
     discoveredTokens: tokens,

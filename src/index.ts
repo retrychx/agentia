@@ -1,4 +1,4 @@
-export const AGENTIA_VERSION = '0.0.1';
+export const AGENTIA_VERSION = '0.0.2';
 
 // core：数据模型
 export type {
@@ -16,7 +16,7 @@ export type {
 export type { AgentTool, JsonSchema, RecorderBackend, ToolRunContext } from './core/tool.js';
 export { validateJsonSchema } from './core/schema.js';
 
-// engine：Turn 0 内核
+// engine：运行时内核
 export { runAgent, resolveDefaultModel } from './engine/loop.js';
 export { TraceRecorder } from './engine/tracer.js';
 export { classifyError } from './engine/errors.js';
@@ -29,7 +29,7 @@ export type {
   SystemTextBlock,
 } from './engine/types.js';
 
-// engine：Turn 4 长上下文策略
+// engine：长上下文策略
 export {
   defaultEstimateTokens,
   estimateMessages,
@@ -41,7 +41,7 @@ export type { CompactOptions, TrimOptions } from './engine/context.js';
 export { createBudgetPolicy } from './engine/policy.js';
 export type { BudgetPolicyOptions } from './engine/policy.js';
 
-// run：Turn 1 生命周期
+// run：run 生命周期
 export { Run, executeRun } from './run/run.js';
 export { RunContext, withRunContext } from './run/context.js';
 export { SystemPrompt } from './run/systemPrompt.js';
@@ -49,7 +49,7 @@ export type { SystemSection } from './run/systemPrompt.js';
 export type { ExecuteRunOptions } from './run/run.js';
 export type { RunMeta, RunStatus } from './run/types.js';
 
-// container：Turn 2 显式 DI
+// container：显式 DI
 export { Container } from './container/container.js';
 export type {
   Provider,
@@ -59,7 +59,7 @@ export type {
   Token,
 } from './container/container.js';
 
-// toolkit：Turn 2 声明式单元 + 应用装配
+// toolkit：声明式单元 + 应用装配
 export { asset } from './toolkit/asset.js';
 export { discoverProviders } from './toolkit/discover.js';
 export { Tool, collectTools } from './toolkit/tool.js';
@@ -79,7 +79,7 @@ export type { PromptSpec } from './toolkit/prompt.js';
 export { createApp, AgentApp } from './toolkit/module.js';
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
 
-// run：Turn 5 触发传输 + run 存储
+// run：触发传输 + run 存储
 export { normalizeMessages } from './run/spec.js';
 export type { RunInput, RunSpec, RunInvocationOptions } from './run/spec.js';
 export { InMemoryTaskStore } from './run/store.js';

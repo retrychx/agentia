@@ -37,7 +37,7 @@ export interface ContextPolicy {
 export interface RunAgentOptions {
   /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
   system?: SystemParam;
-  /** 初始消息；Turn 0 由调用方给 user 起始消息 */
+  /** 初始消息；由调用方给 user 起始消息 */
   messages: Anthropic.MessageParam[];
   /** 主 agent 可调工具（v1 裸 JSON schema） */
   tools?: AgentTool[];

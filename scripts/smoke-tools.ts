@@ -1,6 +1,6 @@
-// Turn 2 冒烟：@Tool 装饰器 → collectTools → DI → createApp → executeRun，
+// 工具冒烟：@Tool 装饰器 → collectTools → DI → createApp → executeRun，
 // 并验证 RunContext 经 AsyncLocalStorage 透入工具执行体。
-// 运行：npm run smoke:turn2（tsx 直接跑源码，走标准装饰器语义）
+// 运行：npm run smoke:tools（tsx 直接跑源码，走标准装饰器语义）
 import {
   Tool,
   collectTools,
@@ -133,7 +133,7 @@ assert(s.includes('city=上海') || s.includes('上海'), 'tool_result 内容应
 
 assert(RunContext.current() === undefined, 'run 结束后 current() 应回落 undefined');
 
-console.log('SMOKE-TURN2 PASS');
+console.log('SMOKE-TOOLS PASS');
 console.log(JSON.stringify(
   {
     tools: app.tools.map((t) => ({ name: t.name, strict: t.strict ?? false })),

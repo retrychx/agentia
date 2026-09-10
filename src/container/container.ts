@@ -2,7 +2,7 @@
  * Agentia —— 最小显式 DI 容器（spec §4/§10：标准装饰器 + 显式 DI，不用
  * experimentalDecorators/emitDecoratorMetadata/reflect-metadata）。
  *
- * NestJS 风格 provider 三态：useValue / useClass / useFactory(+deps)。
+ * Provider 三态：useValue / useClass / useFactory(+deps)。
  * 依赖以字符串 token 显式声明，靠工厂解析期惰性求值；无构造器参数反射。
  * 容器按 app 粒度单例缓存；run 作用域的黑板/上下文不经过 DI，而由
  * RunContext(AsyncLocalStorage) 在 executeRun 内注入（见 run/context.ts）。
