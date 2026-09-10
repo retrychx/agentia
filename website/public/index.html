@@ -6,19 +6,23 @@
   <title>Agentia — 声明式 Agent 服务开发框架</title>
   <meta name="description" content="Agentia：装饰器 + DI 声明 agent 流水线服务。主 agent 调度 @Tool / @Skill / @SubAgent / @Prompt 单元，产出结构化结果与完整调用树。" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+
   <nav class="nav">
     <div class="nav-inner">
-      <a class="brand" href="#">
-        <svg width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-          <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#g0)"/>
-          <circle cx="16" cy="16" r="4" fill="#fff"/>
-          <circle cx="16" cy="7.5" r="2.2" fill="#fff" opacity=".85"/>
-          <circle cx="23.5" cy="20.5" r="2.2" fill="#fff" opacity=".85"/>
-          <circle cx="8.5" cy="20.5" r="2.2" fill="#fff" opacity=".85"/>
-          <defs><linearGradient id="g0" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+      <a class="brand" href="#top">
+        <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="7" stroke="currentColor" stroke-width="1.6"/>
+          <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+          <circle cx="16" cy="7.6" r="1.8" fill="currentColor" opacity=".7"/>
+          <circle cx="23.4" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
+          <circle cx="8.6" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
         </svg>
         <span>Agentia</span>
       </a>
@@ -26,50 +30,64 @@
         <a href="#units">单元</a>
         <a href="#features">特性</a>
         <a href="#quickstart">快速开始</a>
-        <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>
       </div>
     </div>
   </nav>
 
-  <header class="hero">
-    <div class="hero-glow"></div>
-    <p class="hero-kicker">面向应用开发者的声明式 Agent 框架</p>
-    <h1>把 Agent 跑成<br /><span class="grad">流水线服务</span></h1>
-    <p class="hero-sub">
-      装饰器 + DI 声明单元，主 agent 作为路由器自主编排
-      <code>@Tool</code> / <code>@Skill</code> / <code>@SubAgent</code> / <code>@Prompt</code>，
-      一次 run 产出结构化结果与完整调用树。
-    </p>
-    <div class="hero-actions">
-      <a class="btn btn-primary" href="#quickstart">快速开始</a>
-      <a class="btn btn-ghost" href="https://github.com/retrychx/agentia" target="_blank" rel="noopener">GitHub 仓库</a>
+  <header class="hero" id="top">
+    <canvas id="orchestra" aria-hidden="true"></canvas>
+    <div class="hero-content">
+      <p class="hero-kicker" data-intro>DECLARATIVE AGENT FRAMEWORK</p>
+      <h1>
+        <span class="line" data-intro>把 Agent 跑成</span><br />
+        <span class="line accent" data-intro>流水线服务</span>
+      </h1>
+      <p class="hero-sub" data-intro>
+        装饰器 + DI 声明单元，主 agent 作为路由器自主编排
+        <code>@Tool</code> <code>@Skill</code> <code>@SubAgent</code> <code>@Prompt</code>，
+        一次 run 产出结构化结果与完整调用树。
+      </p>
+      <div class="hero-actions" data-intro>
+        <a class="btn btn-primary" href="#quickstart">快速开始</a>
+        <a class="btn btn-ghost" href="https://github.com/retrychx/agentia" target="_blank" rel="noopener">GitHub 仓库 ↗</a>
+      </div>
+      <div class="hero-install" data-intro>
+        <span class="prompt">$</span>
+        <code id="install-cmd">npm i -g @migor/cli && agentia create my-app</code>
+        <button class="copy" onclick="navigator.clipboard.writeText('npm i -g @migor/cli && agentia create my-app');this.textContent='已复制'" aria-label="复制">复制</button>
+      </div>
     </div>
-    <div class="hero-install">
-      <code>npm i -g @migor/cli &amp;&amp; agentia create my-app</code>
-      <button class="copy" onclick="navigator.clipboard.writeText('npm i -g @migor/cli && agentia create my-app')" aria-label="复制">复制</button>
-    </div>
+    <div class="scroll-hint" aria-hidden="true"><span></span></div>
   </header>
 
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-track" id="marquee-track">
+      <span>runId == traceId</span><span>装配期静态校验</span><span>一单元一文件夹</span><span>幂等键去重</span><span>CJK 感知预算</span><span>隔离子代理</span><span>零反射装饰器</span><span>换宿主不换语义</span>
+    </div>
+  </div>
+
   <section class="section" id="units">
-    <h2>四类单元，一种抽象</h2>
-    <p class="section-sub">单元即流水线的阶段。对主 agent 而言都是菜单里的可调用项，差异只在运行时执行方式。</p>
+    <p class="sec-label" data-reveal>01 — UNITS</p>
+    <h2 data-reveal>四类单元，一种抽象</h2>
+    <p class="section-sub" data-reveal>单元即流水线的阶段。对主 agent 而言都是菜单里的可调用项，差异只在运行时执行方式。</p>
     <div class="grid grid-4">
-      <div class="card">
+      <div class="card" data-card>
         <div class="card-tag">@Tool</div>
         <h3>函数调用</h3>
         <p>类方法即工具，入参由模型按 JSON Schema 解析，运行时先校验再执行，出错回 <code>is_error</code> 不中断 run。</p>
       </div>
-      <div class="card">
+      <div class="card" data-card>
         <div class="card-tag">@Skill</div>
         <h3>代码控制的流程</h3>
         <p>方法体是确定性脚本，模型调用只发生在显式 <code>ctx.llm()</code>，返回值即产物交回主 agent。</p>
       </div>
-      <div class="card">
+      <div class="card" data-card>
         <div class="card-tag">@SubAgent</div>
         <h3>隔离的子代理</h3>
         <p>独立循环 + 裁剪上下文，中间过程不外泄，只有最终报告以 tool_result 回流主上下文。</p>
       </div>
-      <div class="card">
+      <div class="card" data-card>
         <div class="card-tag">@Prompt</div>
         <h3>纯文本资产</h3>
         <p>模板 / 宏 / playbook，模型判定需要时拉取进上下文，支持实例 volatile 与静态常量。</p>
@@ -78,29 +96,30 @@
   </section>
 
   <section class="section section-alt" id="features">
-    <h2>为生产而生</h2>
+    <p class="sec-label" data-reveal>02 — FEATURES</p>
+    <h2 data-reveal>为生产而生</h2>
     <div class="grid grid-3">
-      <div class="feature">
+      <div class="feature" data-card>
         <h3>CLI 与目录约定</h3>
         <p><code>agentia create</code> 一键脚手架，<code>agentia g</code> 生成单元。一单元一文件夹，长文本放 .md，目录扫描与显式注册表双装配。</p>
       </div>
-      <div class="feature">
+      <div class="feature" data-card>
         <h3>Trace 一等公民</h3>
         <p>runId == traceId，每次模型往返、每次单元调用都记账：token、成本、耗时、错误分类，子 agent 递归成树。</p>
       </div>
-      <div class="feature">
+      <div class="feature" data-card>
         <h3>装配期静态校验</h3>
         <p>菜单跨类型查重、tools 引用存在性、DI 循环依赖——错误在启动时暴露，不留给运行时。</p>
       </div>
-      <div class="feature">
+      <div class="feature" data-card>
         <h3>长上下文三策略</h3>
         <p>context editing 丢旧工具对、compaction 摘要压缩、预算护栏带滞回，CJK 感知 token 估算。</p>
       </div>
-      <div class="feature">
+      <div class="feature" data-card>
         <h3>三类触发</h3>
-        <p>同步 RPC、异步任务（幂等键去重、失败重提、落盘续跑）、定时调度，共用一份输入契约，换宿主不换语义。</p>
+        <p>同步 RPC、异步任务（幂等键去重、失败重提、落盘续跑）、定时调度，共用一份输入契约。</p>
       </div>
-      <div class="feature">
+      <div class="feature" data-card>
         <h3>零反射装饰器</h3>
         <p>标准 Stage 3 装饰器 + 显式 DI，不依赖 reflect-metadata，tsx / esbuild / tsgo 全兼容。</p>
       </div>
@@ -108,27 +127,28 @@
   </section>
 
   <section class="section" id="quickstart">
-    <h2>三分钟跑起来</h2>
+    <p class="sec-label" data-reveal>03 — QUICKSTART</p>
+    <h2 data-reveal>三分钟跑起来</h2>
     <div class="steps">
-      <div class="step">
+      <div class="step" data-card>
         <div class="step-no">1</div>
         <div>
           <h3>脚手架</h3>
           <pre><code>npm i -g @migor/cli
 agentia create my-app
-cd my-app &amp;&amp; npm install</code></pre>
+cd my-app && npm install</code></pre>
         </div>
       </div>
-      <div class="step">
+      <div class="step" data-card>
         <div class="step-no">2</div>
         <div>
           <h3>生成单元</h3>
-          <pre><code>agentia g subagent doc-reviewer   # 独立子代理
-agentia g skill note-writer      # 代码控制流程
-agentia g prompt style-guide     # 文本资产</code></pre>
+          <pre><code>agentia g subagent doc-reviewer   <span class="cm"># 独立子代理</span>
+agentia g skill note-writer      <span class="cm"># 代码控制流程</span>
+agentia g prompt style-guide     <span class="cm"># 文本资产</span></code></pre>
         </div>
       </div>
-      <div class="step">
+      <div class="step" data-card>
         <div class="step-no">3</div>
         <div>
           <h3>运行</h3>
@@ -137,8 +157,8 @@ npm run dev</code></pre>
         </div>
       </div>
     </div>
-    <div class="code-block">
-      <div class="code-title"><span></span><span></span><span></span>units/weather/index.ts</div>
+    <div class="code-block" data-reveal>
+      <div class="code-title"><i></i><i></i><i></i><em>units/weather/index.ts</em></div>
       <pre><code><span class="kw">import</span> { Tool } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
 <span class="kw">export default class</span> <span class="fn">Weather</span> {
@@ -167,5 +187,10 @@ npm run dev</code></pre>
     </div>
     <p>Agentia — 声明式 Agent 服务开发框架</p>
   </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lenis@1.1.14/dist/lenis.min.js"></script>
+  <script src="./main.js"></script>
 </body>
 </html>
