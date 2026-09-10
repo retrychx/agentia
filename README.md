@@ -22,6 +22,22 @@ TS 装饰器 + DI 声明“agent 流水线服务”：一次 run = 一份任务 
 - **Turn 4**（`src/engine/context.ts` + `policy.ts`）：长上下文三策略分清 —— context editing（`trimToolPairs` 丢旧工具对）/ compaction（`compactMessages` 摘要器注入）/ 预算护栏（`createBudgetPolicy`，字符/4 估算 + 滞回）；改写时在 run 根记 `context.budget` 事件。
 - **Turn 5**（`src/run/`）：触发传输 —— 同步 RPC（`runSync`/`createSyncHandler`）/ 异步任务（`AsyncRunner` + `TaskStore`，idempotencyKey at-least-once 去重、失败可重试、`rethrow:false` 落 failed 记录）/ 定时（`Scheduler.every/.at`）；三类共用一份 `RunInput` 契约 —— 换宿主不换语义。
 - **Turn 6**（`src/toolkit/` + `src/run/fsStore.ts`）：单元表补全四类 —— `@Skill`（**代码控制的流程**：方法体 + `SkillContext.llm()` 受限子运行，产物以 tool_result 交回）/ `@Prompt`（纯文本资产，方法形态：实例 volatile / static 常量）；菜单跨类型（tool/skill/subagent/prompt）统一查重；`FileTaskStore`（JSONL）+ `AsyncRunner.resumePending()` 宿主重启续跑（换宿主不换语义）；缺省模型 `resolveDefaultModel()`（`AGENTIA_MODEL` env 覆盖）。
+- **Turn 7**（`src/toolkit/asset.ts` + `discover.ts` + `packages/cli/`）：**目录约定 `units/<name>/`（一单元一文件夹，index.ts 入口 + .md 文本资产）**；`asset(import.meta.url, './x.md')` 读文本资产；发现机制双形态 —— 运行时扫描 `createApp({ discover: 'units' })`（返回 Promise）与 CLI 维护的 `units.ts` 显式注册表，可混用、同 token 去重、装配期统一静态校验；独立 CLI 包 `@agentia/cli`：`create` 脚手架项目、`g tool|skill|prompt|subagent <name>` 生成单元文件夹并 codemod 注册表。
+
+## CLI 与目录约定（Turn 7）
+
+```bash
+agentia create my-app            # 脚手架：package.json/tsconfig/src/main.ts/units.ts/units/hello/
+cd my-app && npm install
+agentia g subagent doc-reviewer  # 生成 units/doc-reviewer/{index.ts,system.md} 并登记 units.ts
+agentia g prompt style-guide     # 生成 units/style-guide/{index.ts,asset.md} 并登记 units.ts
+```
+
+- **一单元一文件夹**：`units/<name>/index.ts` default export 一个 provider 类（或 Provider / Provider[]），
+  DI token 缺省 = 文件夹名；长文本放文件夹内 `.md`，代码里 `asset(import.meta.url, './system.md')` 读取。
+- **装配两条路（可混用）**：
+  - 目录扫描：`await createApp({ discover: 'units', system, ... })` —— 启动期扫描装配；
+  - 显式注册表：`import { providers } from './units.js'`（CLI 自动维护），`createApp({ providers, system, ... })`。
 
 设计规格见 [`docs/spec.md`](docs/spec.md)。
 
@@ -89,6 +105,7 @@ npm run smoke:turn3  # Turn 3：@SubAgent 嵌套循环 + 上下文裁剪/隔离 
 npm run smoke:turn4  # Turn 4：trimToolPairs/compactMessages 纯函数 + 预算策略端到端压缩
 npm run smoke:turn5  # Turn 5：AsyncRunner 状态机 + 幂等去重/失败重试 + runSync + Scheduler
 npm run smoke:turn6  # Turn 6：@Skill 端到端 / @Prompt / 菜单查重 / FileTaskStore 续跑 / AGENTIA_MODEL
+npm run smoke:turn7  # Turn 7：CLI create/g 脚手架 → 目录发现 + 注册表双路线装配 → mock run 端到端
 ```
 
 真机跑（需要 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN`；走兼容端点时配 `ANTHROPIC_BASE_URL`，

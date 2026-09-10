@@ -14,6 +14,7 @@ export type {
   Usage,
 } from './core/trace.js';
 export type { AgentTool, JsonSchema, RecorderBackend, ToolRunContext } from './core/tool.js';
+export { validateJsonSchema } from './core/schema.js';
 
 // engine：Turn 0 内核
 export { runAgent, resolveDefaultModel } from './engine/loop.js';
@@ -59,6 +60,8 @@ export type {
 } from './container/container.js';
 
 // toolkit：Turn 2 声明式单元 + 应用装配
+export { asset } from './toolkit/asset.js';
+export { discoverProviders } from './toolkit/discover.js';
 export { Tool, collectTools } from './toolkit/tool.js';
 export type { ToolSpec } from './toolkit/tool.js';
 export { SubAgent, collectSubAgents, subagentToTool } from './toolkit/subagent.js';

@@ -1,0 +1,17 @@
+{
+  "name": "@agentia/cli",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Agentia 框架命令行工具：create 脚手架 + g 单元生成器",
+  "type": "module",
+  "bin": {
+    "agentia": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -7,6 +7,7 @@ import type { RunInvocationOptions } from '../run/spec.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
+import { discoverProviders } from './discover.js';
 import { collectTools } from './tool.js';
 import { collectSubAgents, subagentToTool } from './subagent.js';
 import type { SubAgentUnit } from './subagent.js';
@@ -18,19 +19,24 @@ import type { ContextPolicy } from '../engine/types.js';
 /**
  * Agentia —— 应用装配（spec §4/§6：主 agent + 可调工具菜单）。
  *
- * createApp 组装：DI 容器注册 providers → 从容器实例自动扫描 @Tool 方法
- * 收集成本 app 的工具菜单 → agent.run(messages) 带着菜单走 executeRun。
+ * createApp 组装：DI 容器注册 providers（手动和/或 discover 目录发现）→
+ * 从容器实例自动扫描 @Tool / @SubAgent / @Skill / @Prompt 收集成本 app 的工具菜单
+ * → agent.run(messages) 带着菜单走 executeRun。装配期统一静态校验（§7）：
+ * 菜单查重、tools 引用存在性、toolSources 指向。
  * 主 agent 的 system 可由 SystemPrompt 实例给出（内部 build({cache:true})
  * 打稳定前缀 breakpoint），也接受已拼好的 SystemParam 原样透传。
- *
- * 后续 Turn 会在此挂上 subagent/skill 工具项与 trace 拦截器；现阶段
- * “主 agent 路由” 即模型从工具菜单中自主选择（engine 的 manual loop）。
  */
 export interface AppOptions {
   /** 应用名；同时作为 run 名写入 trace */
   name?: string;
-  /** DI providers：值 / 类 / 工厂 */
-  providers: Provider[];
+  /** DI providers：值 / 类 / 工厂；与 discover 可混用（同 token 后者覆盖） */
+  providers?: Provider[];
+  /**
+   * 单元目录发现：units/<name>/ 目录约定（一单元一文件夹，index.ts 入口）。
+   * 给目录路径（相对 cwd）即启动期扫描装配；因动态 import，带 discover 的
+   * createApp 返回 Promise<AgentApp>。
+   */
+  discover?: string;
   /** 主 agent system：SystemPrompt 实例（自动打缓存）或拼好的 SystemParam */
   system: SystemPrompt | SystemParam;
   /** 缺省模型；不给则走 engine 默认（claude-opus-5） */
@@ -70,7 +76,10 @@ export class AgentApp {
 
   constructor(opts: AppOptions) {
     this.name = opts.name ?? 'app';
-    this.di = new Container().register(...opts.providers);
+    // 同 token 去重（后注册覆盖先注册，与 Container.register 语义一致）——
+    // providers 与 discover 混用/重复给出同一 token 时不会重复收集菜单。
+    const providerList = [...new Map((opts.providers ?? []).map((p) => [p.provide, p])).values()];
+    this.di = new Container().register(...providerList);
     this.system = opts.system;
     this.base = {
       model: opts.model,
@@ -80,12 +89,12 @@ export class AgentApp {
     };
 
     // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent / @Skill / @Prompt；
-    // 子 agent / skill 的 tools token 之后惰性解析到该 provider 的 @Tool 菜单。
+    // 子 agent / skill 的 tools token 在装配期即解析到该 provider 的 @Tool 菜单（静态校验）。
     const plainByToken = new Map<Token, AgentTool[]>();
     const unitsByToken = new Map<Token, SubAgentUnit[]>();
     const skillsByToken = new Map<Token, SkillUnit[]>();
     const promptsByToken = new Map<Token, AgentTool[]>();
-    for (const p of opts.providers) {
+    for (const p of providerList) {
       const inst = this.di.resolve<object>(p.provide);
       plainByToken.set(p.provide, collectTools(inst));
       unitsByToken.set(p.provide, collectSubAgents(inst));
@@ -93,17 +102,20 @@ export class AgentApp {
       promptsByToken.set(p.provide, collectPrompts(inst));
     }
 
-    const resolveRefTools =
-      (owner: string, refs: string[] | undefined) => (): AgentTool[] =>
-        (refs ?? []).flatMap((t) => {
-          const inner = plainByToken.get(t);
-          if (!inner) {
-            throw new Error(`${owner} tools 引用未注册 provider: "${t}"`);
-          }
-          return inner;
-        });
+    // 装配期立即解析 tools 引用（§7 启动期静态校验）：引用未注册 provider 在
+    // createApp 即抛错，不延迟到模型调用该单元的运行时。
+    const resolveRefTools = (owner: string, refs: string[] | undefined): (() => AgentTool[]) => {
+      const resolved = (refs ?? []).flatMap((t) => {
+        const inner = plainByToken.get(t);
+        if (!inner) {
+          throw new Error(`${owner} tools 引用未注册 provider: "${t}"`);
+        }
+        return inner;
+      });
+      return () => resolved;
+    };
 
-    const sources = opts.toolSources ?? opts.providers.map((p) => p.provide);
+    const sources = opts.toolSources ?? providerList.map((p) => p.provide);
     this._tools = sources.flatMap((token) => {
       if (!this.di.has(token)) {
         throw new Error(`toolSources 指向未注册 provider: "${token}"`);
@@ -169,6 +181,17 @@ export class AgentApp {
   }
 }
 
-export function createApp(opts: AppOptions): AgentApp {
+/**
+ * 装配应用。不带 discover 时同步返回 AgentApp；带 discover（单元目录路径）时
+ * 先扫描装配，返回 Promise<AgentApp>（动态 import 决定）。
+ */
+export function createApp(opts: AppOptions & { discover: string }): Promise<AgentApp>;
+export function createApp(opts: AppOptions): AgentApp;
+export function createApp(opts: AppOptions): AgentApp | Promise<AgentApp> {
+  if (opts.discover) {
+    return discoverProviders(opts.discover).then(
+      (found) => new AgentApp({ ...opts, providers: [...(opts.providers ?? []), ...found] }),
+    );
+  }
   return new AgentApp(opts);
 }

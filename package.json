@@ -6,8 +6,10 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "workspaces": ["packages/*"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:cli": "tsc -p packages/cli/tsconfig.json",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "smoke": "npm run build && node scripts/smoke.mjs",
@@ -17,6 +19,7 @@
     "smoke:turn4": "tsx scripts/smoke-turn4.ts",
     "smoke:turn5": "tsx scripts/smoke-turn5.ts",
     "smoke:turn6": "tsx scripts/smoke-turn6.ts",
+    "smoke:turn7": "npm run build && npm run build:cli && tsx scripts/smoke-turn7.ts",
     "live": "npm run build && node examples/live.mjs",
     "live:skill": "tsx examples/live-skill.ts"
   },
