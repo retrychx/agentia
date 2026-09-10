@@ -10,6 +10,9 @@
   --faint: #71717a;
   --accent: #d9e2ee;
   --steel: #8b98ab;
+  --ice: #7aa2f7;
+  --ice-dim: rgba(122, 162, 247, 0.10);
+  --ice-border: rgba(122, 162, 247, 0.32);
   --accent-dim: rgba(217, 226, 238, 0.09);
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --sans: "Space Grotesk", -apple-system, "PingFang SC", "Hiragino Sans GB",
@@ -32,13 +35,13 @@ body {
 code {
   font-family: var(--mono);
   font-size: 0.88em;
-  color: var(--accent);
-  background: var(--accent-dim);
+  color: var(--ice);
+  background: var(--ice-dim);
   padding: 0.1em 0.4em;
   border-radius: 3px;
 }
 
-::selection { background: rgba(217, 226, 238, 0.22); }
+::selection { background: rgba(122, 162, 247, 0.24); }
 
 /* 细颗粒噪点纹理：近黑底上的"纸质/金属"质感 */
 .grain {
@@ -119,7 +122,7 @@ code {
   border-radius: 4px;
   transition: border-color 0.2s, background 0.2s !important;
 }
-.nav-cta:hover { border-color: var(--accent); background: var(--accent-dim); }
+.nav-cta:hover { border-color: var(--ice); background: var(--ice-dim); }
 
 /* hero */
 .hero {
@@ -221,7 +224,7 @@ code {
   cursor: pointer;
   transition: color 0.2s, border-color 0.2s;
 }
-.copy:hover { color: var(--accent); border-color: var(--accent); }
+.copy:hover { color: var(--ice); border-color: var(--ice); }
 
 .scroll-hint {
   position: absolute;
@@ -242,7 +245,7 @@ code {
   height: 7px;
   margin-left: -1.5px;
   border-radius: 2px;
-  background: var(--accent);
+  background: var(--ice);
   animation: scroll-dot 1.8s ease-in-out infinite;
 }
 @keyframes scroll-dot {
@@ -273,7 +276,7 @@ code {
   color: var(--faint);
   white-space: nowrap;
 }
-.marquee-track span::before { content: "// "; color: var(--accent); }
+.marquee-track span::before { content: "// "; color: var(--ice); }
 
 /* sections */
 .section {
@@ -311,13 +314,13 @@ code {
   padding: 26px 24px;
   transition: border-color 0.25s, transform 0.2s;
 }
-.card:hover, .feature:hover { border-color: rgba(217, 226, 238, 0.35); transform: translateY(-3px); }
+.card:hover, .feature:hover { border-color: var(--ice-border); transform: translateY(-3px); }
 .card-tag {
   display: inline-block;
   font-family: var(--mono);
   font-size: 12.5px;
-  color: var(--accent);
-  border: 1px solid rgba(217, 226, 238, 0.28);
+  color: var(--ice);
+  border: 1px solid var(--ice-border);
   border-radius: 3px;
   padding: 3px 10px;
   margin-bottom: 16px;
@@ -331,7 +334,7 @@ code {
   font-weight: 500;
   color: var(--text);
 }
-.feature h3::before { content: "▸ "; color: var(--accent); }
+.feature h3::before { content: "▸ "; color: var(--ice); }
 
 /* steps */
 .steps { display: grid; gap: 14px; margin: 40px 0 28px; }
@@ -345,21 +348,23 @@ code {
   padding: 24px;
   transition: border-color 0.25s;
 }
-.step:hover { border-color: rgba(217, 226, 238, 0.35); }
+.step:hover { border-color: var(--ice-border); }
 .step-no {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
-  border: 1px solid rgba(217, 226, 238, 0.4);
+  border: 1px solid var(--ice-border);
   border-radius: 4px;
-  color: var(--accent);
+  color: var(--ice);
   font-family: var(--mono);
   font-size: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+.step > div:last-child { flex: 1; min-width: 0; }
 .step h3 { font-size: 15.5px; margin-bottom: 12px; font-family: var(--mono); font-weight: 500; }
+.cmd { color: var(--ice); font-weight: 500; }
 pre {
   background: #0c0c0e;
   border: 1px solid var(--border);
@@ -401,7 +406,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .kw { color: #bb9af7; }
 .str { color: #9ece6a; }
 .fn { color: #7aa2f7; }
-.dec { color: var(--accent); }
+.dec { color: var(--ice); }
 
 /* footer */
 .footer {
@@ -422,7 +427,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   font-size: 12.5px;
 }
 .footer-links a { color: var(--muted); text-decoration: none; transition: color 0.2s; }
-.footer-links a:hover { color: var(--accent); }
+.footer-links a:hover { color: var(--ice); }
 
 /* 动画初始态（GSAP 接管；无 JS 时保持可见） */
 [data-intro], [data-reveal], [data-card] { opacity: 1; }

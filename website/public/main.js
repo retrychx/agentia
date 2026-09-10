@@ -7,7 +7,7 @@
   const canvas = document.getElementById('orchestra');
   if (canvas) {
     const ctx = canvas.getContext('2d');
-    const ACCENT = '217, 226, 238';
+    const ACCENT = '122, 162, 247';
     let W = 0;
     let H = 0;
     let dpr = 1;
@@ -114,7 +114,7 @@
           ctx.beginPath();
           ctx.arc(pos[i].x, pos[i].y, 26 * pulse, 0, Math.PI * 2);
           ctx.fill();
-          ctx.fillStyle = `rgba(${ACCENT},0.95)`;
+          ctx.fillStyle = 'rgba(240, 246, 255, 0.95)'; // hub 白热核心 + 冰蓝光晕
         } else {
           ctx.fillStyle = 'rgba(255,255,255,0.55)';
         }
