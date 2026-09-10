@@ -1,5 +1,5 @@
 {
-  "name": "@retrychx/agentia",
+  "name": "@migor/agentia",
   "version": "0.0.1",
   "description": "面向应用开发者的声明式 agent 服务开发框架 —— NestJS 模式：主 agent 调度 tool/skill/subagent/prompt，自研运行时，最终形态为流水线（pipeline）服务。",
   "type": "module",

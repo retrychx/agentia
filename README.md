@@ -12,8 +12,8 @@ export ANTHROPIC_API_KEY=sk-...        # 或 ANTHROPIC_AUTH_TOKEN
 ## 快速开始（CLI）
 
 ```bash
-npm i -g @retrychx/cli                 # 安装 CLI（提供 agentia 命令）
-agentia create my-app                  # 脚手架新项目（依赖 @retrychx/agentia）
+npm i -g @migor/cli                 # 安装 CLI（提供 agentia 命令）
+agentia create my-app                  # 脚手架新项目（依赖 @migor/agentia）
 cd my-app && npm install
 agentia g tool weather                 # 生成 units/weather/index.ts 并登记 units.ts
 agentia g subagent doc-reviewer        # 生成 units/doc-reviewer/{index.ts,system.md}
@@ -38,7 +38,7 @@ const app = createApp({ name: 'my-app', providers, system });
 ## 手写单元
 
 ```ts
-import { Tool, SubAgent, createApp, SystemPrompt, RunContext } from '@retrychx/agentia';
+import { Tool, SubAgent, createApp, SystemPrompt, RunContext } from '@migor/agentia';
 
 class WeatherTools {
   // 工具名缺省取方法名（建议 snake_case）；入参 = 模型按 schema 解析的结构化 input
@@ -130,7 +130,7 @@ scheduler.every(60_000, '巡检一次', { idempotencyKey: 'patrol' });
 ## 长上下文预算
 
 ```ts
-import { createBudgetPolicy } from '@retrychx/agentia';
+import { createBudgetPolicy } from '@migor/agentia';
 
 const app = createApp({
   // ...
