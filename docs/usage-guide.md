@@ -152,6 +152,10 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `toolSources` | 白名单：只把这些 provider 的单元放进主菜单 |
 | `middleware` | 单元调用中间件（洋葱链，链序 = 注册顺序） |
 | `sinks` | trace 出口，run 收尾投递 |
+| `maxTotalTokens` | 缺省成本硬管控：整条 run 累计 token 上限（可被单次 run 覆盖） |
+| `maxCostUsd` | 缺省成本硬管控：累计成本（美元）上限（依赖模型在价格表内） |
+| `toolTimeoutMs` | 缺省单工具超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run |
+| `maxToolConcurrency` | 缺省同回合并行工具上限；不设 = 不限（全并行） |
 
 ### `app.run(messages, opts?: RunAppOptions)`
 
@@ -169,6 +173,11 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `rethrow` | 硬失败是否抛出；缺省 `true`（异步宿主置 `false`，落 failed 记录而非冒泡） |
 | `tools` | 单次覆盖工具菜单 |
 | `resultSchema` | 结构化结果 schema；配 `fromZod<T>` 可让 `result.typed` 自动是 `T` |
+| `maxTotalTokens` | 成本硬管控：整条 run 累计 token 上限；超限以 `stopReason='budget_exceeded'` 收尾（**算失败**） |
+| `maxCostUsd` | 成本硬管控：累计成本（美元）上限；模型不在价格表内时不触发（要兜底用 `maxTotalTokens`） |
+| `toolTimeoutMs` | 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，run 继续 |
+| `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
+| `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
 
 返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`。
 
@@ -272,6 +281,7 @@ result.typed;   // { answer: string } | undefined
 |---|---|
 | `createHttpHandler` | `(req,res)` handler：`POST /run` 同步（带 `Accept: text/event-stream` 则 SSE 流式）、`POST /tasks` 异步、`GET /tasks/:id`、`GET /healthz`；返回值另带 `drain()` 与 `runner` |
 | `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `resumePending` / `drain`） |
+| `TaskSink` | 任务完成回调 `{ onFinished(rec) }`，配 `AsyncRunner({ taskSinks })`；抛错被吞 |
 | `HttpException` | 鉴权钩子抛出以自定 HTTP 状态与响应体（抛别的错误一律按 401 处理） |
 | `Scheduler` | 定时触发（`every` / `at`） |
 | `runSync` | 同步 RPC（`(input, opts?) => result`） |
@@ -323,17 +333,19 @@ process.on('SIGTERM', async () => {
 
 **不鉴权**（探针带不了凭据），且停机中也照回 200。非 `GET` 回 405。
 
-### 取消 / 重试 / 流式
+### 取消 / 重试 / 流式 / 并发闸门
 
 | API | 说明 |
 |---|---|
 | `combineSignals` | 合成多个中断源（调用方 / 超时 / 断连），任一触发即中止 |
 | `DEFAULT_RETRY` | 缺省重试参数（maxAttempts=3、指数退避 + 抖动）—— 缺省**开启** |
 | `isAbortError` | 判定异常是否为中断（`name === 'AbortError'`） |
+| `mapWithConcurrency` | 有界并发 map（结果保序）；`maxToolConcurrency` 的底座，也可自用 |
 
 - **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**。
 - **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与 SDK 内置重试叠加 —— 建议二选一调（这里 `maxAttempts: 1` 或把 SDK 的 `maxRetries` 调小）。
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
+- **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。
 
 ### 观测
 
@@ -352,6 +364,31 @@ process.on('SIGTERM', async () => {
 | `trimToolPairs` | context editing：丢旧 tool 对（按**对数**，`keepToolPairs`） |
 | `compactMessages` | compaction：旧前缀做摘要（摘要器由你注入，框架不替你造 token） |
 | `estimateMessages` | 估算 token（预算决策用，不是精确记账） |
+
+### 成本硬管控（**别与上面的上下文预算混为一谈**）
+
+| API | 说明 |
+|---|---|
+| `createBudgetGuard` | 执行 `check(trace)` → `'tokens' \| 'cost' \| null` 的护栏（也可只用来自己记账） |
+
+两者是**互补的两件事**，取舍点完全不同：
+
+| | `createBudgetPolicy`（§长上下文） | `BudgetGuard`（本节） |
+|---|---|---|
+| 时机 | **发送前** | **记账后** |
+| 干什么 | 改 messages（丢旧 tool 对 / 压缩旧前缀） | 改 run 结局（超限即停） |
+| 为解决 | 历史太长把请求撞 400 / 过早压缩 | **控制花钱** |
+| 怎么开 | `contextPolicy` | `maxTotalTokens` / `maxCostUsd` |
+
+- 超限后 run 以 `stopReason='budget_exceeded'` 收尾（**算失败**），run 根记一条 `budget.exceeded` 事件（带 `{ kind, limit, actual, totalTokens, costUsd }`）。
+- **不是硬实时**：一回合跑完才判，实际用量可能超上限一个回合的量。
+- **模型自然收尾的那一回合超限不改判失败**（只留事件）—— 那次 run 的任务其实做完了，不该追认成失败。
+- 子 agent 的 token **计入**总账（口径 = 整个 trace 的 `totalUsage`）。
+
+```ts
+const { result } = await app.run(messages, { maxTotalTokens: 200_000 });
+if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算拦下了', result.error);
+```
 
 选项字段（`TrimOptions` / `CompactOptions` / `BudgetPolicyOptions`）：
 
@@ -386,8 +423,9 @@ process.on('SIGTERM', async () => {
 
 | API | 说明 |
 |---|---|
-| `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；非流式模拟、cache token 恒 0） |
-| `InMemoryMemoryStore` | 跨 run 记忆（`{ store, keys }` 配 `executeRun`） |
+| `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、cache token 恒 0） |
+| `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
+| `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用 |
 | `traceToMessages` | 把 trace 还原成 messages（重放基底） |
 | `applyMiddleware` | 手动包裹配置菜单（装配层已自动做） |
 
@@ -413,6 +451,11 @@ process.on('SIGTERM', async () => {
 | 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不读 env、不做进程级决策）；信号处理是宿主的 |
 | 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
+| 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |
+| `maxCostUsd` 依赖价格表 | 模型不在 `engine/usage.ts` 的价格表内时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens` |
+| 工具超时**不取消**工具 | `AgentTool.run` 没有 signal 参数，超时只是「不等了」；副作用可能已发生。想真停请让工具自己读 `ToolRunContext.signal` |
+| 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
+| OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
 
 ---
 
@@ -431,6 +474,9 @@ process.on('SIGTERM', async () => {
 | 长跑内存涨 | 缺省内存 store 不淘汰；设 `InMemoryTaskStore({ maxRecords })` 或换耐久 store |
 | 鉴权钩子抛错，客户端只看到「未通过鉴权」 | 这是设计：非 `HttpException` 的错误原文只进服务端日志（要回给调用方就抛 `HttpException(status, body)`） |
 | 停机后 `POST /tasks` 回 503 | `drain()` 已被调用（或注入的 runner 已 drain）—— 这是「拒新单」的正常行为，任务没丢 |
+| `stopReason` 是 `budget_exceeded`、任务被判失败 | 这是设计（护栏拦下的 run **没跑完**）。只想「记一笔」不想改结局，就自己用 `createBudgetGuard` 读 trace |
+| 工具超时了，副作用却还是发生了 | 超时是「放弃等待」不是取消（`AgentTool.run` 收不到 signal）。要能真停就得让工具自己读 `ToolRunContext.signal` |
+| 用 OpenAI 端点没看到打字机效果 | 端点没按 `stream:true` 回 `event-stream`（回了一整份 JSON）—— 适配器按响应形态解析，此时退回一次性 |
 | 改了框架源码却看不到效果 | 确认 import 的是同一份构建产物（`npm run build` 后跑 `dist`） |
 
 ---

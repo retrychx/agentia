@@ -248,6 +248,53 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   新增导出：`HttpException`（值）、`HttpHandler` / `HealthResponse`（类型）。测试 254 → 275 例（+21）。
   真实 HTTP 实测（非仅单测）：`/healthz` 反映在飞数、鉴权先于读 body、SIGTERM → `drain()` 等慢 run 收尾返回 `true`。
 
+- 2026-09-11：**Phase C 落地（能力成色）** —— 设计见 `docs/plans/2026-09-11-agent-service-hardening.md` §5。
+  **① 成本硬管控（补 §6.4 欠账）**：新增 `AgentStopReason: 'budget_exceeded'`（**算失败**，`isSuccessStopReason` 不纳入）。
+  `RunAgentOptions` / `AppOptions` 加 `maxTotalTokens` / `maxCostUsd`（先到先算，tokens 优先），贯通 `RunInvocationOptions` →
+  `app.run` → `executeRun`。新增 `engine/budget.ts`：`createBudgetGuard({ maxTotalTokens, maxCostUsd, onExceed })`
+  → `{ check(trace) }`。触发点是**每回合记账后**（`recorder.end(turnId, {usage})` 之后），口径 = 整个 trace 的
+  `totalUsage`（**含子 agent**；input+output+cacheRead+cacheCreation）。
+  **两处语义取舍（在此锁定）**：(a) **自然收尾的回合超限不改判失败** —— 只记 `budget.exceeded` 事件；
+  只有「循环还要继续（模型要求调工具）」时才以 `budget_exceeded` 停下。理由：那次 run 的任务已经做完了，
+  不该因为「最后一回合用超了」被追认成失败（设计里 `budget_exceeded` 的注解正是「run 没跑完」）。
+  (b) 超限时**连带不执行本回合的工具**（避免继续产生副作用）。
+  **与 `createBudgetPolicy` 的分工（文档并列讲清）**：前者是**发送前**改 messages（防 400 / 过早压缩），
+  后者是**记账后**改 run 结局（控制花钱）—— 互补，不是一回事。**不做**：把硬管控塞进 `contextPolicy.beforeTurn`。
+  ⚠️ 已知边界：**不是硬实时**（一回合跑完才判，可超一个回合的量）；`maxCostUsd` 依赖模型在价格表内，
+  不在表里时成本恒 0、护栏不触发。
+  **② 工具级超时 + 并发闸门**：`RunAgentOptions` / `AppOptions` 加 `toolTimeoutMs` / `maxToolConcurrency`。
+  新增 `engine/concurrency.ts`：`mapWithConcurrency`（**结果保序**的有界并发 map，`limit` 非正/非有限 = 不限）
+  与 `withTimeout`（超时返回 `TIMED_OUT` 哨兵，区分「超时」与「工具返回 undefined」）。主循环的
+  `Promise.all(toolUses.map(...))` 换成有界 map。**语义锁定**：工具超时**不杀 run**（该条 tool_result 记
+  `is_error`，模型可换路 —— 与「工具抛错不中断 run」同族）；超时 = **放弃等待**，`AgentTool.run` 没有 signal
+  参数（想真停的工具自行读 `ToolRunContext.signal`）。缺省 `maxToolConcurrency = Infinity`（= 旧行为）。
+  **③ OpenAI 适配器：真流式 + 多模态**：默认 `stream: true` + `stream_options.include_usage`，解析 `data:` 行；
+  `delta.content` 逐 token 触发 `on('text')`；`tool_calls` 按 **`index` 归并**累积后再汇成 `tool_use`
+  （`id`/`name` 取**首次出现**，`arguments` **拼接** —— 分片与并行交错都是易错点，各带单测）；
+  `usage` 取自最后一个 chunk；`[DONE]` 为结束哨兵；畸形分片跳过不毁流；缺 id 补 `call_N`。
+  **内容协商（此处锁定）**：**按响应实际形态解析**（`content-type` 含 `event-stream` 才走流式）——
+  部分兼容端点会忽略 `stream:true` 直接回 JSON，此时退回一次性（与旧行为一致）。仍保留的近似：
+  cache token 恒 0、`content_filter→refusal` 近似。多模态：`renderBlocks` → 文本块 `{type:'text'}`、
+  图片块 `{type:'image_url'}`（base64 编 data URL、url 源透传）；**无图时回落纯字符串**（兼容只吃 string 的端点）。
+  **顺带修**：适配器此前**未转发 `signal`**（与 guide/spec 一直声称的「内置适配器都转发 signal」不符）—— 现已转发。
+  新增 `OpenAIClientOptions.stream`（设 false 退回一次性）。
+  **④ 会话持久化**：新增 `runtime/session.ts`：`SessionStore`（`load` / `append`，**append-only**）+
+  `InMemorySessionStore`；`ExecuteRunOptions` / `RunAppOptions` 加 `session?: { store, id }`
+  （**不放进 `RunInvocationOptions`** —— store 实例不可序列化，transport 不替调用方传）。
+  语义：run 前 `load(id)` 拼在传入 messages **之前**；收尾 `append` 本轮消息 + 回复。**三条不变量（在此锁定）**：
+  (a) **只有跑成功的轮次才回写**（判据是 run 终态而非「没抛异常」—— error/max_tokens/budget_exceeded/aborted
+  同样「没跑完」）；(b) 历史**以 assistant 结尾**（无文本输出时补占位）—— 否则下一轮出现连续两条 user 撞 API 校验；
+  (c) 只存**对话轮次**，run 内部 tool 往返不进历史（要完整过程用 `traceToMessages`）。
+  **与 `MemoryStore` 正交**（键值黑板 vs 对话历史），可同时用。读/写失败均吞掉（同既有原则）。
+  **⑤ 任务完成回调**：`transport/async.ts` 新增 `TaskSink { onFinished(rec) }` + `AsyncRunnerOptions.taskSinks`；
+  在 `#execute` 的 finally 里**逐个 await**、**抛错被吞**，且**先通知 sink 再递减在飞计数**（`drain()` 返回时
+  保证回调已发完）。传快照副本。webhook 后置（sink + 自家 fetch 即可，不引「出站请求 + 签名 + 重试」）。
+  新增导出：`createBudgetGuard` / `mapWithConcurrency` / `InMemorySessionStore`（值）、
+  `BudgetGuard` / `BudgetGuardOptions` / `BudgetSnapshot` / `SessionStore` / `TaskSink`（类型）。
+  测试 275 → 322 例（+47）。真实端到端实测：本地假 OpenAI 兼容端点（真 SSE 分片）→ 适配器（真流式）
+  → HTTP 宿主（A3 SSE）→ 客户端**逐帧到达**（+40/157/279/399ms）；带工具的一轮 `maxTotalTokens=100`
+  → `stopReason='budget_exceeded'` 且**工具未被执行**。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。

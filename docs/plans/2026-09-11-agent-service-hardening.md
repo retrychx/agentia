@@ -205,7 +205,7 @@ interface HttpHandler {
 
 ---
 
-## 5. Phase C —— 能力成色
+## 5. Phase C —— 能力成色 ✅ 已落地（2026-09-11）
 
 ### C1. 成本硬管控（补 `spec §6.4` 的欠账）
 
