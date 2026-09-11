@@ -53,17 +53,25 @@
 
   <div class="pg-byok" id="pg-byok" hidden>
     <p class="pg-byok-note">
-      <strong>你的 key 只存浏览器 localStorage，直接发往 Anthropic API，不经过任何服务器。</strong>
+      <strong id="byok-note-lead">你的 key 只存浏览器 localStorage，直接发往 Anthropic API，不经过任何服务器。</strong>
       页面为纯静态托管，没有任何后端；可随时点「清除」删除本地保存的 key。
     </p>
     <div class="pg-byok-row">
+      <label class="pg-byok-field pg-byok-provider">
+        <span>服务商</span>
+        <select id="byok-provider">
+          <option value="anthropic">Anthropic</option>
+          <option value="deepseek">DeepSeek</option>
+        </select>
+      </label>
       <label class="pg-byok-field">
-        <span>Anthropic API Key</span>
+        <span id="byok-key-label">Anthropic API Key</span>
         <input type="password" id="byok-key" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
       </label>
       <label class="pg-byok-field pg-byok-model">
         <span>模型</span>
-        <input type="text" id="byok-model" value="claude-haiku-4-5-20251001" autocomplete="off" spellcheck="false" />
+        <input type="text" id="byok-model" list="byok-models" value="claude-haiku-4-5-20251001" autocomplete="off" spellcheck="false" />
+        <datalist id="byok-models"></datalist>
       </label>
       <button class="pg-btn pg-btn-replay pg-byok-clear" id="byok-clear" type="button">清除</button>
     </div>

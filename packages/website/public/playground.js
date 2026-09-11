@@ -378,6 +378,10 @@
   function renderUsage(acc) {
     uIn.textContent = fmtNum(acc.input);
     uOut.textContent = fmtNum(acc.output);
+    if (PRICE.input == null || PRICE.output == null) {
+      uCost.textContent = '—'; // 无公开单价的端点不做估算（如 DeepSeek）
+      return;
+    }
     const cost = (acc.input * PRICE.input + acc.output * PRICE.output) / 1e6;
     uCost.textContent = '$' + cost.toFixed(4);
   }
@@ -477,8 +481,8 @@
     resetPanels,
     setRunning,
     setPrice(p) {
-      PRICE.input = p.input;
-      PRICE.output = p.output;
+      PRICE.input = p && p.input != null ? p.input : null;
+      PRICE.output = p && p.output != null ? p.output : null;
     },
   };
 

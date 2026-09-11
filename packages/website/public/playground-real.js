@@ -15,34 +15,76 @@
   const badgeText = $('#pg-badge-text');
   const headSub = $('#pg-head-sub');
   const byokEl = $('#pg-byok');
+  const providerSel = $('#byok-provider');
   const keyInput = $('#byok-key');
+  const keyLabel = $('#byok-key-label');
   const modelInput = $('#byok-model');
+  const modelsList = $('#byok-models');
+  const noteLead = $('#byok-note-lead');
   const btnClear = $('#byok-clear');
   const uNote = $('#u-note');
-  if (!modeBar || !byokEl || !keyInput) return;
+  if (!modeBar || !byokEl || !keyInput || !providerSel) return;
 
-  const LS_KEY = 'agentia.byok.key';
-  const LS_MODEL = 'agentia.byok.model';
-  const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
   const MAX_ITERATIONS = 6;
-  const API_URL = 'https://api.anthropic.com/v1/messages';
 
-  /* 单价（$/M tokens）：模拟模式沿用 opus，真实模式按 haiku 4.5 */
-  const PRICE_SIM = { input: 3, output: 15 };
-  const PRICE_REAL = { input: 0.8, output: 4 };
-
-  const COPY = {
-    sim: {
-      badge: '模拟演示：本地预置脚本，非真实模型调用',
-      sub: '选一个任务，看主 agent 如何思考、从菜单选中单元、发起 llm.turn、调用单元并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。',
-      note: '按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。',
+  /* 真实模式支持的服务商。二者都讲 Anthropic Messages 协议，所以 agent 循环零改动——
+     只换 endpoint / 鉴权头 / 默认模型；DeepSeek 的兼容端点在 /anthropic 前缀下，
+     且响应带 CORS 头（已实测 access-control-allow-origin 回显请求 Origin），可浏览器直连。 */
+  const PROVIDERS = {
+    anthropic: {
+      label: 'Anthropic',
+      host: 'api.anthropic.com',
+      url: 'https://api.anthropic.com/v1/messages',
+      defaultModel: 'claude-haiku-4-5-20251001',
+      models: ['claude-haiku-4-5-20251001'],
+      keyPlaceholder: 'sk-ant-...',
+      price: { input: 0.8, output: 4 }, // $/M tokens（haiku 4.5）
+      priceNote: 'token 为 API 返回真实值；成本按 claude-haiku-4.5 估算（input $0.8 / output $4 每百万 token），改模型后单价可能不准。',
+      headers: (key) => ({
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      }),
     },
-    real: {
-      badge: '真实模型：浏览器直连 Anthropic API，产生真实 token 消耗',
-      sub: '同一个任务，换真实模型跑一遍：浏览器内迷你 agent 循环直连 Anthropic Messages API，三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，trace 与 token 用量均为真实值。',
-      note: 'token 为 API 返回真实值；成本按 claude-haiku-4.5 估算（input $0.8 / output $4 每百万 token），改模型后单价可能不准。',
+    deepseek: {
+      label: 'DeepSeek',
+      host: 'api.deepseek.com',
+      url: 'https://api.deepseek.com/anthropic/v1/messages',
+      defaultModel: 'deepseek-v4-pro',
+      models: ['deepseek-v4-pro', 'deepseek-flash'],
+      keyPlaceholder: 'sk-...',
+      price: null, // 无公开单价对照 → 成本显示为 —
+      priceNote: 'token 为 API 返回真实值；DeepSeek 无公开单价对照，成本不作估算（显示为 —）。',
+      headers: (key) => ({
+        authorization: 'Bearer ' + key,
+        'anthropic-version': '2023-06-01',
+      }),
     },
   };
+
+  /* 按服务商分别持久化 key / 模型，切换时不互相覆盖 */
+  const LS_PROVIDER = 'agentia.byok.provider';
+  const lsKeyOf = (p) => 'agentia.byok.key.' + p;
+  const lsModelOf = (p) => 'agentia.byok.model.' + p;
+
+  let providerId = 'anthropic'; // 当前服务商
+  const prov = () => PROVIDERS[providerId];
+
+  /* 单价（$/M tokens）：模拟模式沿用 opus */
+  const PRICE_SIM = { input: 3, output: 15 };
+
+  const COPY_SIM = {
+    badge: '模拟演示：本地预置脚本，非真实模型调用',
+    sub: '选一个任务，看主 agent 如何思考、从菜单选中单元、发起 llm.turn、调用单元并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。',
+    note: '按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。',
+  };
+  function copyReal(p) {
+    return {
+      badge: '真实模型：浏览器直连 ' + p.host + '，产生真实 token 消耗',
+      sub: '同一个任务，换真实模型跑一遍：浏览器内迷你 agent 循环直连 ' + p.label + '（' + p.host + '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，trace 与 token 用量均为真实值。',
+      note: p.priceNote,
+    };
+  }
 
   /* ========== 内置工具（与场景联动） ========== */
   const WEATHER = {
@@ -145,18 +187,13 @@
     { name: 'tool:read_asset', desc: '读取预置文本资产' },
   ];
 
-  /* ========== Anthropic API 直连 ========== */
-  async function callApi(key, model, system, messages) {
+  /* ========== Anthropic 协议直连（服务商可切换） ========== */
+  async function callApi(p, key, model, system, messages) {
     let resp;
     try {
-      resp = await fetch(API_URL, {
+      resp = await fetch(p.url, {
         method: 'POST',
-        headers: {
-          'x-api-key': key,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-          'content-type': 'application/json',
-        },
+        headers: Object.assign({ 'content-type': 'application/json' }, p.headers(key)),
         body: JSON.stringify({
           model,
           max_tokens: 2048,
@@ -191,21 +228,25 @@
   }
 
   function describeError(err) {
+    const p = prov();
     if (err && err.kind === 'http') {
       if (err.status === 401) return '鉴权失败（401）：API key 无效或已撤销，请检查上面的 key 后重试。';
+      if (err.status === 402) return '余额不足（402）：该 key 的账户额度已用尽，请充值或换一个 key。';
       if (err.status === 429) return '触发限流（429）：请求太密或额度不足，请稍后重试。';
-      return 'API 返回错误（HTTP ' + err.status + '）' + (err.message ? '：' + err.message : '。');
+      return 'API 返回错误（HTTP ' + err.status + '）' + (err.message ? '：' + err.message + '。' : '。');
     }
-    return '网络 / CORS 错误：浏览器未能连通 api.anthropic.com。本页通过 anthropic-dangerous-direct-browser-access 直连 Anthropic（不经过任何服务器）；若请求被拦截，请检查网络连通性、代理或屏蔽跨域的浏览器扩展。';
+    return '网络 / CORS 错误：浏览器未能连通 ' + p.host + '。本页为纯静态托管，直连 ' + p.label +
+      '（不经过任何服务器）；若请求被拦截，请检查网络连通性、代理，或确认该端点放行浏览器跨域。';
   }
 
   /* ========== 真实模式主循环 ========== */
   async function realRun() {
     if (pg.state.running) return;
+    const p = prov();
     const key = keyInput.value.trim();
     if (!key) {
       pg.resetPanels();
-      pg.panelNote('请先在页面顶部填入 Anthropic API Key —— key 只存浏览器 localStorage，直连 Anthropic API，不经过任何服务器。');
+      pg.panelNote('请先在页面顶部填入 ' + p.label + ' API Key —— key 只存浏览器 localStorage，直连 ' + p.host + '，不经过任何服务器。');
       keyInput.focus();
       byokEl.classList.add('pg-byok-pulse');
       setTimeout(() => byokEl.classList.remove('pg-byok-pulse'), 1600);
@@ -213,7 +254,7 @@
     }
 
     const sc = pg.state.scenario;
-    const model = modelInput.value.trim() || DEFAULT_MODEL;
+    const model = modelInput.value.trim() || p.defaultModel;
     const system = SYSTEMS[sc.id] || SYSTEMS['weather-trip'];
     const gen = ++pg.state.gen;
     pg.setRunning(true);
@@ -233,7 +274,7 @@
         pg.traceStart({ id: spanId, parent: 'root', kind: 'llm.turn', name: model });
         pg.panelLlmOpen('llm.turn · 主 agent（' + model + '）');
         const t0 = performance.now();
-        const resp = await callApi(key, model, system, messages);
+        const resp = await callApi(p, key, model, system, messages);
         if (stale()) return;
         const ms = Math.round(performance.now() - t0);
 
@@ -286,13 +327,28 @@
     } finally {
       if (!stale()) {
         pg.traceFinish(Math.round(performance.now() - startedAt), usageAcc);
-        pg.addBlock(pg.el('div', 'tp-note', '— run 结束：usage 为 Anthropic API 返回的真实 token 计数 —'));
+        pg.addBlock(pg.el('div', 'tp-note', '— run 结束：usage 为 ' + p.label + ' API 返回的真实 token 计数 —'));
         pg.setRunning(false);
       }
     }
   }
 
   /* ========== 模式切换 ========== */
+  function applyProviderUI() {
+    const p = prov();
+    providerSel.value = providerId;
+    keyInput.placeholder = p.keyPlaceholder;
+    keyLabel.textContent = p.label + ' API Key';
+    modelsList.innerHTML = '';
+    p.models.forEach((m) => {
+      const o = document.createElement('option');
+      o.value = m;
+      modelsList.appendChild(o);
+    });
+    noteLead.textContent = '你的 key 只存浏览器 localStorage，直接发往 ' + p.host + '，不经过任何服务器。';
+    modelInput.placeholder = p.defaultModel;
+  }
+
   function setMode(mode) {
     if (pg.state.running || pg.state.mode === mode) return;
     pg.state.gen++; // 作废任何残留循环
@@ -300,11 +356,12 @@
     modeBar.querySelectorAll('.pg-mode-btn').forEach((b) =>
       b.classList.toggle('active', b.dataset.mode === mode),
     );
-    badgeText.textContent = COPY[mode].badge;
-    headSub.textContent = COPY[mode].sub;
-    uNote.textContent = COPY[mode].note;
+    const copy = mode === 'real' ? copyReal(prov()) : COPY_SIM;
+    badgeText.textContent = copy.badge;
+    headSub.textContent = copy.sub;
+    uNote.textContent = copy.note;
     byokEl.hidden = mode !== 'real';
-    pg.setPrice(mode === 'real' ? PRICE_REAL : PRICE_SIM);
+    pg.setPrice(mode === 'real' ? prov().price : PRICE_SIM);
     if (mode === 'real') {
       pg.renderMenu({ menu: REAL_MENU });
       pg.state.realRun = realRun;
@@ -325,25 +382,60 @@
     if (pg.state.mode === 'real') pg.renderMenu({ menu: REAL_MENU });
   };
 
-  /* ========== key / model 持久化 ========== */
-  try {
-    keyInput.value = localStorage.getItem(LS_KEY) || '';
-    modelInput.value = localStorage.getItem(LS_MODEL) || DEFAULT_MODEL;
-  } catch (_) { /* localStorage 不可用（隐私模式等）时仅本次会话有效 */ }
+  /* ========== 服务商切换与持久化（key/model 按服务商分开存） ========== */
+  function loadProvider(id) {
+    providerId = PROVIDERS[id] ? id : 'anthropic';
+    const p = prov();
+    try { localStorage.setItem(LS_PROVIDER, providerId); } catch (_) {}
+    try {
+      keyInput.value = localStorage.getItem(lsKeyOf(providerId)) || '';
+      modelInput.value = localStorage.getItem(lsModelOf(providerId)) || p.defaultModel;
+    } catch (_) {
+      modelInput.value = p.defaultModel;
+    }
+    applyProviderUI();
+    if (pg.state.mode === 'real') {
+      const c = copyReal(p);
+      badgeText.textContent = c.badge;
+      headSub.textContent = c.sub;
+      uNote.textContent = c.note;
+      pg.setPrice(p.price);
+    }
+  }
+
+  providerSel.addEventListener('change', () => {
+    if (pg.state.running) { providerSel.value = providerId; return; } // 跑动中不允许换服务商
+    // 先把当前输入存到旧服务商名下，再切到新服务商
+    try {
+      localStorage.setItem(lsKeyOf(providerId), keyInput.value.trim());
+      localStorage.setItem(lsModelOf(providerId), modelInput.value.trim());
+    } catch (_) {}
+    pg.state.gen++; // key 已变，作废任何残留循环
+    loadProvider(providerSel.value);
+    pg.resetPanels();
+  });
 
   keyInput.addEventListener('input', () => {
-    try { localStorage.setItem(LS_KEY, keyInput.value.trim()); } catch (_) {}
+    try { localStorage.setItem(lsKeyOf(providerId), keyInput.value.trim()); } catch (_) {}
   });
   modelInput.addEventListener('change', () => {
-    try { localStorage.setItem(LS_MODEL, modelInput.value.trim()); } catch (_) {}
+    try { localStorage.setItem(lsModelOf(providerId), modelInput.value.trim()); } catch (_) {}
   });
   btnClear.addEventListener('click', () => {
     keyInput.value = '';
     try {
-      localStorage.removeItem(LS_KEY);
-      localStorage.removeItem(LS_MODEL);
+      localStorage.removeItem(lsKeyOf(providerId));
+      localStorage.removeItem(lsModelOf(providerId));
     } catch (_) {}
-    modelInput.value = DEFAULT_MODEL;
+    modelInput.value = prov().defaultModel;
     keyInput.focus();
   });
+
+  /* 初始化：读回上次用的服务商及其 key / 模型 */
+  let savedProvider = 'anthropic';
+  try {
+    const s = localStorage.getItem(LS_PROVIDER);
+    if (s && PROVIDERS[s]) savedProvider = s;
+  } catch (_) {}
+  loadProvider(savedProvider);
 })();

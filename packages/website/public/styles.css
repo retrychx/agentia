@@ -882,7 +882,8 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   color: var(--steel);
   margin-bottom: 6px;
 }
-.pg-byok-field input {
+.pg-byok-field input,
+.pg-byok-field select {
   width: 100%;
   background: var(--card);
   border: 1px solid var(--border-strong);
@@ -894,7 +895,10 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.pg-byok-field input:focus { border-color: var(--ice); box-shadow: 0 0 0 3px var(--ice-dim); }
+.pg-byok-field input:focus,
+.pg-byok-field select:focus { border-color: var(--ice); box-shadow: 0 0 0 3px var(--ice-dim); }
+.pg-byok-field select { color-scheme: dark; cursor: pointer; }
+.pg-byok-provider { flex: 0 1 170px; min-width: 150px; }
 .pg-byok-model { flex: 0 1 320px; min-width: 220px; }
 .pg-byok-clear { flex: 0 0 auto; padding: 10px 22px; }
 .pg-byok-pulse .pg-byok-note { animation: pg-byok-pulse 0.8s ease-in-out 2; }
@@ -1099,6 +1103,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 
   /* BYOK 字段解除 min-width：否则 320px 下模型字段与清除按钮各占一行 */
   .pg-byok-field { flex: 1 1 100%; min-width: 0; }
+  .pg-byok-provider { flex: 1 1 100%; min-width: 0; }
   .pg-byok-model { flex: 1 1 100%; min-width: 0; }
   .pg-byok-clear { width: 100%; }
 
