@@ -17,6 +17,8 @@ export type AgentStopReason =
   | 'refusal'
   | 'pause_turn'
   | 'max_iterations'
+  /** 调用方主动取消（AbortSignal）：run 未跑完，按失败收尾 */
+  | 'aborted'
   /** stop_reason=tool_use 但回合里没有可执行块（畸形响应），防死循环直接停 */
   | 'tool_use_no_blocks'
   /** 模型/网关返回了本框架未识别的 stop_reason：保留文本，但按失败收尾 */
@@ -74,6 +76,8 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */
   onText?: (delta: string) => void;
+  /** 中断信号：中止则本回合结束后以 stopReason='aborted' 收尾（不抛异常） */
+  signal?: AbortSignal;
   runName?: string;
   /** 上下文预算策略：每回合发送前可编辑/压缩消息（compaction / context editing） */
   contextPolicy?: ContextPolicy;

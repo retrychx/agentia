@@ -17,6 +17,8 @@ export interface RunInvocationOptions {
   maxIterations?: number;
   client?: ModelClient;
   onText?: (delta: string) => void;
+  /** 中断信号：中止则在飞请求被取消，run 以 stopReason='aborted' 收尾 */
+  signal?: AbortSignal;
   /** 预置进本次 RunContext.blackboard（扩展过 Blackboard 时键有补全） */
   blackboard?: BlackboardSeed;
   /** 上下文预算策略（compaction / context editing） */

@@ -25,11 +25,12 @@ export type {
   TypedSchema,
 } from './core/tool.js';
 export { validateJsonSchema } from './core/schema.js';
+export { combineSignals } from './core/abort.js';
 
 // engine：运行时内核
 export { runAgent, resolveDefaultModel } from './engine/loop.js';
 export { TraceRecorder } from './engine/tracer.js';
-export { classifyError } from './engine/errors.js';
+export { classifyError, isAbortError } from './engine/errors.js';
 export { isSuccessStopReason } from './engine/types.js';
 export type {
   AgentRunResult,

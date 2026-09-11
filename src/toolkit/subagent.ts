@@ -138,6 +138,7 @@ export function subagentToTool(
           tools,
           recorder,
           parentSpanId: unitId,
+          signal: ctx.signal,
           resultSchema: spec.resultSchema,
         });
         recorder.setAttribute(unitId, 'stop_reason', loop.stopReason);

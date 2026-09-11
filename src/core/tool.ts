@@ -74,6 +74,8 @@ export interface ModelClient {
       system?: string | Anthropic.TextBlockParam[];
       tools?: Anthropic.Tool[];
       messages: Anthropic.MessageParam[];
+      /** 中断信号（可选）：实现须转发给底层请求，否则调用方无法中止在飞 run */
+      signal?: AbortSignal;
     }): {
       on(event: 'text', cb: (delta: string) => void): void;
       finalMessage(): Promise<Anthropic.Message>;
@@ -92,6 +94,11 @@ export interface ToolRunContext {
   client: ModelClient;
   recorder: RecorderBackend;
   parentSpanId: SpanId;
+  /**
+   * 本次 run 的中断信号。工具**自行决定**是否尊重（如传给 fetch）；框架不会
+   * 强制中断工具 —— 工具副作用无法回滚，强行中止只会留下不一致的中间态。
+   */
+  signal?: AbortSignal;
 }
 
 export interface AgentTool<I = unknown, O = unknown> {

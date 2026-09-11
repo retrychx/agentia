@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { classifyError } from '../../src/index.js';
+import { classifyError, isAbortError } from '../../src/index.js';
 
 const headers = () => new Headers();
 
@@ -12,6 +12,17 @@ describe('classifyError（异常分类 → SpanError）', () => {
     assert.equal(span.type, 'rate_limit');
     assert.equal(span.retryable, true);
     assert.equal(span.message, e.message, 'message 原样透传（SDK 会拼入 status 前缀）');
+  });
+
+  it('AbortError → aborted / 不可重试（中断不是可重试故障）', () => {
+    const dom = new DOMException('The operation was aborted', 'AbortError');
+    assert.equal(isAbortError(dom), true);
+    assert.deepEqual(classifyError(dom), { type: 'aborted', message: 'run 已被取消', retryable: false });
+
+    const plain = Object.assign(new Error('x'), { name: 'AbortError' });
+    assert.equal(isAbortError(plain), true, '普通 Error 靠 name 也能识别');
+
+    assert.equal(isAbortError(new Error('普通错误')), false);
   });
 
   it('APIConnectionError（含 Timeout 子类）→ connection / retryable', () => {

@@ -386,4 +386,43 @@ describe('createHttpHandler', () => {
       await close(server);
     }
   });
+
+  it('客户端断开 → abort 传给 app 的 signal（不在后台白烧 token）', async () => {
+    let received: AbortSignal | undefined;
+    let indicateStarted!: () => void;
+    // 确定性闸门：等 run 真开始再断开，避免「还没跑到就 abort」的测试竞态
+    const started = new Promise<void>((r) => {
+      indicateStarted = r;
+    });
+    const app: AppCallable = {
+      name: 'slow',
+      async run(_messages, opts) {
+        received = opts?.signal;
+        indicateStarted();
+        await new Promise<void>((resolve) => {
+          opts?.signal?.addEventListener('abort', () => resolve());
+        });
+        return { run: { runId: 'r-slow', status: 'failed' }, result: fakeResult('') };
+      },
+    };
+    const server = createServer(createHttpHandler(app));
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const ac = new AbortController();
+      const p = fetch(`http://127.0.0.1:${port}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hi' }),
+        signal: ac.signal,
+      }).catch(() => undefined);
+      await started;
+      ac.abort();
+      await p;
+      for (let i = 0; i < 100 && !received?.aborted; i++) await new Promise((r) => setTimeout(r, 10));
+      assert.equal(received?.aborted, true, '客户端断开应 abort 在飞 run');
+    } finally {
+      await close(server);
+    }
+  });
 });

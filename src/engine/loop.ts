@@ -3,7 +3,7 @@ import type { AgentTool, JsonSchema, ModelClient, RecorderBackend, SchemaType, T
 import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
-import { classifyError } from './errors.js';
+import { classifyError, isAbortError } from './errors.js';
 import { TraceRecorder } from './tracer.js';
 import type {
   AgentRunResult,
@@ -54,6 +54,8 @@ interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   /** llm.turn 的父 span（run 根 / 子 agent 的 unit span） */
   parentSpanId: SpanId | null;
   onText?: (delta: string) => void;
+  /** 中断信号：中止后不再发起新回合，以 stopReason='aborted' 收尾 */
+  signal?: AbortSignal;
   /** 上下文预算策略（compaction / context editing），每回合发送前调用 */
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（见 RunAgentOptions.resultSchema） */
@@ -127,7 +129,16 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   let typed: SchemaType<S> | undefined;
   let submitted = false;
 
+  const signal = args.signal;
+
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
+    // 调用方已取消：不再发起新回合，直接以 aborted 收尾（不抛异常，语义确定）
+    if (signal?.aborted) {
+      stopReason = 'aborted';
+      error = { type: 'aborted', message: 'run 已被取消', retryable: false };
+      finished = true;
+      break;
+    }
     // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）
     if (args.contextPolicy) {
       const next = await args.contextPolicy.beforeTurn(messages, { iteration, model });
@@ -153,11 +164,19 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
         ...(system ? { system } : {}),
         ...(apiTools.length ? { tools: apiTools } : {}),
         messages,
+        ...(signal ? { signal } : {}),
       });
       stream.on('text', (delta) => args.onText?.(delta));
       message = await stream.finalMessage();
     } catch (e) {
       recorder.end(turnId, { status: 'error', error: classifyError(e) });
+      // 中断不作异常冒泡：以确定的 stopReason 收尾，调用方能区分「取消」与「故障」
+      if (isAbortError(e) || signal?.aborted) {
+        stopReason = 'aborted';
+        error = { type: 'aborted', message: 'run 已被取消', retryable: false };
+        finished = true;
+        break;
+      }
       throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/unit 与收尾
     }
     progress.iterations++;
@@ -236,7 +255,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           input: limit(use.input, 2000),
         });
 
-        const ctx: ToolRunContext = { client, recorder, parentSpanId: turnId };
+        const ctx: ToolRunContext = { client, recorder, parentSpanId: turnId, ...(signal ? { signal } : {}) };
         let ok = true;
         let content: unknown = '';
         if (args.resultSchema && use.name === SUBMIT_RESULT) {
@@ -339,6 +358,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       recorder,
       parentSpanId: rootId,
       onText: options.onText,
+      signal: options.signal,
       contextPolicy: options.contextPolicy,
       resultSchema: options.resultSchema,
       progress,
@@ -378,6 +398,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   recorder: RecorderBackend;
   parentSpanId: SpanId;
   onText?: (delta: string) => void;
+  /** 中断信号（由发起它的单元从 ToolRunContext.signal 透传，取消能传播到子 agent） */
+  signal?: AbortSignal;
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（同 RunAgentOptions.resultSchema） */
   resultSchema?: S;
@@ -393,6 +415,7 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     recorder: opts.recorder,
     parentSpanId: opts.parentSpanId,
     onText: opts.onText,
+    signal: opts.signal,
     contextPolicy: opts.contextPolicy,
     resultSchema: opts.resultSchema,
   });

@@ -164,4 +164,42 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal(result.stopReason, 'max_iterations');
     assert.equal(result.iterations, 2, '上限内的 2 次模型往返都要记');
   });
+
+  it('signal 预先中止 → stopReason=aborted、run 失败，且不发起模型请求', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const { client, seen } = mockClient([endTurnMsg('不该被调用')]);
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      signal: ac.signal,
+      rethrow: false,
+    });
+    assert.equal(result.stopReason, 'aborted');
+    assert.equal(result.error?.type, 'aborted');
+    assert.equal(run.status, 'failed');
+    assert.equal(seen.length, 0, '已中止就不该再发请求');
+  });
+
+  it('回合中途 abort（stream 抛 AbortError）→ aborted 收尾，异常不冒泡', async () => {
+    const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            throw abortErr;
+          },
+        }),
+      },
+    } as never;
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      rethrow: false,
+    });
+    assert.equal(result.stopReason, 'aborted');
+    assert.equal(result.error?.type, 'aborted');
+    assert.equal(run.status, 'failed');
+  });
 });

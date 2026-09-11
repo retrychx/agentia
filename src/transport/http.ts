@@ -186,9 +186,16 @@ export function createHttpHandler(
           return;
         }
         inFlightRuns++;
+        // 客户端中途断开 → 中止本次 run（省 token）。res 'close' 正常结束也会触发，
+        // 故以 writableEnded 区分：只有响应还没写完才算「断开」。
+        const runAc = new AbortController();
+        const onClose = (): void => {
+          if (!res.writableEnded) runAc.abort();
+        };
+        res.once('close', onClose);
         try {
           // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 status/error 字段返回 200
-          const out = await app.run(messages, { rethrow: false });
+          const out = await app.run(messages, { rethrow: false, signal: runAc.signal });
           const body: RunHttpResponse = {
             runId: out.run.runId,
             status: out.run.status,
@@ -200,6 +207,7 @@ export function createHttpHandler(
           };
           sendJson(res, 200, body);
         } finally {
+          res.off('close', onClose);
           inFlightRuns--;
         }
         return;

@@ -8,6 +8,7 @@ import { normalizeMessages } from '../runtime/spec.js';
 import type { RunInvocationOptions } from '../runtime/spec.js';
 import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
+import { combineSignals } from '../core/abort.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -34,10 +35,10 @@ export interface AsyncRunnerOptions {
   /**
    * 单任务执行超时（毫秒）；缺省 0 = 不限。
    *
-   * **只是「放弃等待」，不是「终止执行」**：底层模型请求没有可中断句柄，超时后
-   * 那次 run 仍在后台跑完（其产物被丢弃），槽位则立即回收。因此超时值应大于
-   * 任务的正常耗时上限，把它当兜底而不是调度手段；被放弃的任务若仍在跑，
-   * 实际并发会短暂高于 concurrency。
+   * **超时即中止**：到点会 abort 本次 run 的 signal —— 对尊重 signal 的模型客户端
+   * （框架自带的 Anthropic / OpenAI 适配器都转发 signal）是**真中止**，token 不再继续烧；
+   * 不尊重 signal 的自定义 client 则仍等价于「放弃等待」（run 在后台跑完、产物丢弃）。
+   * 槽位无论如何立即回收；被放弃且仍在跑的任务会让实际并发短暂高于 concurrency。
    */
   runTimeoutMs?: number;
 }
@@ -238,15 +239,20 @@ export class AsyncRunner {
         await this.store.save(rec);
 
         try {
+          // runTimeoutMs 到点即 abort（对尊重 signal 的客户端是真中止）；与调用方
+          // 可能传入的 signal 合成，任一触发都中止本次 run。
+          const timeoutAc = new AbortController();
           const callOpts: RunInvocationOptions = {
             ...(rec.spec.options ?? {}),
             client: rec.spec.options?.client ?? this.client,
             idempotencyKey: rec.idempotencyKey,
             rethrow: false, // 硬失败也以 failed 记录落库
+            signal: combineSignals(rec.spec.options?.signal, timeoutAc.signal),
           };
           const out = await this.#raceTimeout(
             this.app.run(rec.spec.messages, callOpts),
             rec.taskId,
+            () => timeoutAc.abort(),
           );
           rec.runId = out.run.runId;
           rec.status = out.run.status;
@@ -292,22 +298,22 @@ export class AsyncRunner {
   }
 
   /**
-   * 超时竞速（runTimeoutMs > 0 时）：超时即 reject → 任务按 failed 落库、槽位回收。
-   * 底层 run 没有取消句柄，Promise.race 只是**停止等待**；被放弃的那次执行仍在后台
-   * 跑完（结果被丢弃）。race 已订阅该 Promise，所以它此后的 reject 不会变成
-   * unhandled rejection。timer 必须 clear（否则每次任务都留一个定时器）。
+   * 超时竞速（runTimeoutMs > 0 时）：超时先 `onTimeout()`（abort 在飞请求）再 reject
+   * → 任务按 failed 落库、槽位回收。尊重 signal 的客户端会被真中止；不尊重者只是
+   * 停止等待（race 已订阅该 Promise，其后续 reject 不会变成 unhandled rejection）。
+   * timer 必须 clear（否则每次任务都留一个定时器）。
    */
-  async #raceTimeout<T>(p: Promise<T>, taskId: string): Promise<T> {
+  async #raceTimeout<T>(p: Promise<T>, taskId: string, onTimeout?: () => void): Promise<T> {
     if (this.runTimeoutMs <= 0) return p;
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
         p,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`task ${taskId} 执行超时（${this.runTimeoutMs}ms）`)),
-            this.runTimeoutMs,
-          );
+          timer = setTimeout(() => {
+            onTimeout?.();
+            reject(new Error(`task ${taskId} 执行超时（${this.runTimeoutMs}ms）`));
+          }, this.runTimeoutMs);
           timer.unref?.(); // 兜底计时器不该让宿主为它续命
         }),
       ]);

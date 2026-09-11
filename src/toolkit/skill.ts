@@ -157,6 +157,7 @@ export function skillToTool(
             tools: spec.tools?.length ? resolveTools() : [],
             recorder,
             parentSpanId: unitId,
+            signal: ctx.signal,
           });
           if (!isSuccessStopReason(loop.stopReason)) {
             const report = `skill "${name}".llm ${loop.stopReason}: ${
