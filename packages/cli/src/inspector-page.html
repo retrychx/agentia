@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agentia Inspector</title>
+    <link rel="stylesheet" href="/trace-view.css" />
+    <style>
+      :root {
+        --ice: #34cbe0;
+        --faint: #71717a;
+        --text: #e4e4e7;
+        --muted: #a1a1aa;
+        --border: #27272a;
+        --bg: #0b0b0d;
+        --card: #111113;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      }
+      header {
+        display: flex; align-items: baseline; gap: 12px;
+        padding: 14px 20px; border-bottom: 1px solid var(--border);
+      }
+      header h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+      header .sub { color: var(--faint); font-size: 12px; }
+      header .live { margin-left: auto; color: var(--faint); font-size: 12px; }
+      header .live b { color: var(--ice); font-weight: 500; }
+      main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; padding: 14px 20px; }
+      aside, section {
+        background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+      }
+      aside { overflow: hidden auto; max-height: calc(100vh - 90px); }
+      section { padding: 14px; min-height: 240px; font-family: var(--mono); font-size: 12px; overflow: auto; }
+      .run {
+        display: block; width: 100%; text-align: left; cursor: pointer;
+        background: none; border: 0; border-bottom: 1px solid var(--border);
+        color: var(--text); padding: 10px 12px; font: inherit;
+      }
+      .run:hover { background: #17171a; }
+      .run.active { background: #17171a; box-shadow: inset 2px 0 0 var(--ice); }
+      .run .r1 { display: flex; align-items: center; gap: 6px; }
+      .run .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ice); flex: none; }
+      .run.err .dot { background: #f7768e; }
+      .run .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .run .r2 { margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
+      .empty { color: var(--faint); padding: 16px; }
+      #ttl { color: var(--faint); margin-bottom: 10px; font-family: var(--mono); font-size: 11.5px; }
+      .usage { display: flex; gap: 16px; margin-top: 12px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+      .usage b { color: var(--text); font-weight: 500; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Agentia Inspector</h1>
+      <span class="sub">每次 run 的调用树与单元执行</span>
+      <span class="live" id="live">等待 run…</span>
+    </header>
+    <main>
+      <aside id="runs"><div class="empty">还没有 run。触发一次 agent 调用即可。</div></aside>
+      <section>
+        <div id="ttl"></div>
+        <div id="trace"><div class="tr-empty">// 选一个 run 查看调用树</div></div>
+        <div class="usage" id="usage" hidden>
+          <span>in <b id="u-in">0</b></span>
+          <span>out <b id="u-out">0</b></span>
+        </div>
+      </section>
+    </main>
+
+    <script type="module">
+      import { createTraceView, playTrace } from './index.js';
+
+      const runsEl = document.getElementById('runs');
+      const traceEl = document.getElementById('trace');
+      const ttlEl = document.getElementById('ttl');
+      const liveEl = document.getElementById('live');
+      const usageEl = document.getElementById('usage');
+      const view = createTraceView(traceEl, {
+        // 无公开单价 → 不估算成本；只展示 token
+        usage: { in: document.getElementById('u-in'), out: document.getElementById('u-out') },
+      });
+
+      let current = null;
+      let list = [];
+
+      const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
+      const fmtNum = (n) => Number(n || 0).toLocaleString('en-US');
+      const ago = (t) => {
+        const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+        return s < 60 ? s + 's 前' : Math.round(s / 60) + 'm 前';
+      };
+
+      function renderList() {
+        if (!list.length) {
+          runsEl.innerHTML = '<div class="empty">还没有 run。触发一次 agent 调用即可。</div>';
+          return;
+        }
+        runsEl.innerHTML = '';
+        for (const r of list) {
+          const b = document.createElement('button');
+          b.className = 'run' + (r.ok ? '' : ' err') + (r.traceId === current ? ' active' : '');
+          b.innerHTML =
+            `<span class="r1"><span class="dot"></span><span class="name"></span></span>` +
+            `<span class="r2">${fmtMs(r.ms)} · ${fmtNum(r.tokens)} tok · ${ago(r.startedAt)}</span>`;
+          b.querySelector('.name').textContent = r.name;
+          b.addEventListener('click', () => open(r.traceId));
+          runsEl.appendChild(b);
+        }
+      }
+
+      async function refresh() {
+        const res = await fetch('/api/runs');
+        list = await res.json();
+        renderList();
+      }
+
+      async function open(id) {
+        const res = await fetch('/api/runs/' + encodeURIComponent(id));
+        if (!res.ok) return;
+        const trace = await res.json();
+        current = id;
+        ttlEl.textContent = trace.traceId;
+        usageEl.hidden = false;
+        playTrace(view, trace);
+        renderList();
+      }
+
+      // 打开最新一条（首屏/新 run 到达时）
+      async function openLatest() {
+        await refresh();
+        if (list.length && !current) await open(list[0].traceId);
+      }
+
+      // SSE：新 run 到达即刷新列表并切到最新
+      const es = new EventSource('/stream');
+      es.onmessage = async (m) => {
+        const s = JSON.parse(m.data);
+        liveEl.innerHTML = `最新 run：<b>${s.name}</b> · ${fmtMs(s.ms)}`;
+        await refresh();
+        await open(s.traceId);
+      };
+      es.onerror = () => { liveEl.textContent = '连接断开（dev 进程还在吗？）'; };
+
+      openLatest();
+    </script>
+  </body>
+</html>

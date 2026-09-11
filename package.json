@@ -30,13 +30,13 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:cli": "tsc -p packages/cli/tsconfig.json",
+    "build:cli": "npm run build -w @migor/trace-view && tsc -p packages/cli/tsconfig.json && node packages/cli/scripts/copy-assets.mjs",
     "build:website": "npm run build -w @migor/website",
     "deploy:website": "npm run build:website && npx wrangler pages deploy packages/website/dist --project-name=agentia-web",
     "prepublishOnly": "npm run build",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\" && node --test \"packages/cli/test/*.test.mjs\"",
     "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts"
   },
   "devDependencies": {

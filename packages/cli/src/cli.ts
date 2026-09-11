@@ -14,7 +14,7 @@ const USAGE = `agentia —— Agentia 框架命令行工具
   agentia create <name> [--dir <parent>]   创建项目脚手架（目录 <parent|当前目录>/<name>/）
   agentia g <type> <name>                  在当前目录生成单元（别名：generate）
                                            type: ${UNIT_TYPES.join(' | ')}
-  agentia dev                              启动开发模式（tsx watch src/main.ts，热重载）
+  agentia dev                              启动开发模式（tsx watch 热重载 + 本地 inspector 面板）
   agentia doctor                           装配体检（未登记/悬空单板/命名规范/重复条目）
   agentia add <pkg>                        安装第三方单元包并登记到 units.ts
   agentia --help                           显示本帮助
