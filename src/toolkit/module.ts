@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool } from '../core/tool.js';
+import type { AgentTool, JsonSchema, SchemaType } from '../core/tool.js';
 import type { SystemParam } from '../engine/types.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 import { executeRun } from '../runtime/run.js';
@@ -8,6 +8,7 @@ import type { AgentRunResult } from '../engine/types.js';
 import type { TraceSink } from '../core/trace.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
+import type { BlackboardKey } from '../runtime/context.js';
 import { discoverProviders } from './discover.js';
 import { collectTools } from './tool.js';
 import { collectSubAgents, subagentToTool } from './subagent.js';
@@ -85,14 +86,20 @@ export interface AppOptions {
 }
 
 /** 单次调用参数 = 通用调用参数 + 单次可覆盖 system（spec.ts 的 RunInvocationOptions 为单源） */
-export interface RunAppOptions extends RunInvocationOptions {
+export interface RunAppOptions<S extends JsonSchema = JsonSchema> extends RunInvocationOptions {
   /** 单次覆盖 system（volatile 段建议每 run 重建以拾取最新值） */
   system?: SystemPrompt | SystemParam;
+  /**
+   * 结构化结果 schema（R2）：语义同 `RunAgentOptions.resultSchema`（engine 追加隐藏
+   * submit_result 工具，校验通过的结果写入 `result.typed`）。
+   * 传 `fromZod<T>(...)` 时 `app.run` 的返回类型自动带上 `typed: T | undefined`。
+   */
+  resultSchema?: S;
 }
 
-export interface AgentRunOutput {
+export interface AgentRunOutput<T = unknown> {
   run: import('../runtime/run.js').Run;
-  result: AgentRunResult;
+  result: AgentRunResult<T>;
 }
 
 export class AgentApp {
@@ -249,14 +256,20 @@ export class AgentApp {
     return this.di;
   }
 
-  /** 执行一次主 agent run。system 每 run 从 SystemPrompt 重建，保证 volatile 新鲜。 */
-  run(messages: Anthropic.MessageParam[], opts: RunAppOptions = {}): Promise<AgentRunOutput> {
+  /**
+   * 执行一次主 agent run。system 每 run 从 SystemPrompt 重建，保证 volatile 新鲜。
+   * 传 `resultSchema: fromZod<T>(...)` 时返回值 `result.typed` 为 `T | undefined`。
+   */
+  run<S extends JsonSchema = JsonSchema>(
+    messages: Anthropic.MessageParam[],
+    opts: RunAppOptions<S> = {},
+  ): Promise<AgentRunOutput<SchemaType<S>>> {
     const sys = opts.system ?? this.system;
     const system: SystemParam =
       sys instanceof SystemPrompt ? sys.build({ cache: true }) : sys;
 
     const seed = opts.blackboard;
-    return executeRun({
+    return executeRun<S>({
       system,
       messages,
       tools: opts.tools ?? this._tools,
@@ -268,11 +281,15 @@ export class AgentApp {
       runName: this.name,
       idempotencyKey: opts.idempotencyKey,
       contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
+      resultSchema: opts.resultSchema,
       rethrow: opts.rethrow,
       sinks: this.sinks,
       contextInit: (ctx) => {
         if (seed) {
-          for (const key of Object.keys(seed)) ctx.set(key, seed[key]);
+          // 种子键是运行期字符串，类型上无从与「用户声明的 Blackboard」对齐 ——
+          // 走文档里给用户的同一条逃生口：断言为 BlackboardKey。
+          const entries = seed as Record<string, unknown>;
+          for (const key of Object.keys(entries)) ctx.set(key as BlackboardKey, entries[key]);
         }
       },
     });

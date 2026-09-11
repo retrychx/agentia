@@ -1,4 +1,4 @@
-import type { JsonSchema } from '../core/tool.js';
+import type { JsonSchema, TypedSchema } from '../core/tool.js';
 
 /**
  * Agentia —— zod 可选接入（R2，duck-typed，框架永不 import zod）。
@@ -15,7 +15,8 @@ import type { JsonSchema } from '../core/tool.js';
  * class WeatherTools {
  *   @Tool({
  *     description: '查天气',
- *     schema: fromZod(z.toJSONSchema(Weather) as JsonSchema, Weather),
+ *     // 显式给出结果类型 → 方法入参必须与之一致（不一致直接编译期报错）
+ *     schema: fromZod<z.infer<typeof Weather>>(z.toJSONSchema(Weather) as JsonSchema, Weather),
  *   })
  *   get(input: { city: string; days: number }) { ... }
  * }
@@ -24,7 +25,7 @@ import type { JsonSchema } from '../core/tool.js';
  * @param jsonSchema 由 zod 推导的 JSON Schema（发给模型 / 走 JSON Schema 子集校验）
  * @param zod zod schema 本体（只需带 safeParse），其校验结果优先于 JSON Schema 子集
  */
-export function fromZod(jsonSchema: JsonSchema, zod: unknown): JsonSchema {
+export function fromZod<T = unknown>(jsonSchema: JsonSchema, zod: unknown): TypedSchema<T> {
   const zp = zod as {
     safeParse?: (input: unknown) => {
       success: boolean;

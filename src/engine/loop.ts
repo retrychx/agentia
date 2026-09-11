@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool, JsonSchema, ModelClient, RecorderBackend, ToolRunContext } from '../core/tool.js';
+import type { AgentTool, JsonSchema, ModelClient, RecorderBackend, SchemaType, ToolRunContext } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
@@ -37,7 +37,7 @@ export function resolveDefaultModel(over?: string): string {
  * 交给 tool.run —— 普通工具忽略；子 agent 用它在正确位置开 unit span。
  */
 
-interface AgentLoopArgs {
+interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   client: ModelClient;
   model: string;
   maxTokens: number;
@@ -53,7 +53,7 @@ interface AgentLoopArgs {
   /** 上下文预算策略（compaction / context editing），每回合发送前调用 */
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（见 RunAgentOptions.resultSchema） */
-  resultSchema?: JsonSchema;
+  resultSchema?: S;
   /**
    * 模型往返计数的外部持有者。抛错路径（请求失败）也要能报出**已发生**的往返次数，
    * 所以用对象就地累加，而不是只靠返回值。
@@ -61,14 +61,14 @@ interface AgentLoopArgs {
   progress?: { iterations: number };
 }
 
-export interface AgentLoopResult {
+export interface AgentLoopResult<T = unknown> {
   stopReason: AgentStopReason;
   finalText: string;
   error?: SpanError;
   /** 本轮循环自己发起的模型往返次数 */
   iterations: number;
-  /** submit_result 校验通过的结构化结果；未提交则为 undefined */
-  typed?: unknown;
+  /** submit_result 校验通过的结构化结果；未提交则为 undefined（类型由 resultSchema 推导） */
+  typed?: T;
 }
 
 /** 隐藏提交工具名：resultSchema 模式下由 engine 内部追加，不属开发者工具菜单 */
@@ -90,7 +90,9 @@ function appendResultInstruction(system?: SystemParam): SystemParam {
 }
 
 /** 循环体核心：带父 span 跑一轮 manual loop。请求失败按 error 收掉 turn 后抛出，由外层收尾。 */
-async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
+async function agentLoop<S extends JsonSchema = JsonSchema>(
+  args: AgentLoopArgs<S>,
+): Promise<AgentLoopResult<SchemaType<S>>> {
   const { client, model, recorder, parentSpanId } = args;
   const messages: Anthropic.MessageParam[] = [...args.messages];
 
@@ -118,7 +120,7 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
   let finalText = '';
   let finished = false;
   const iterations = args.progress ?? { iterations: 0 }; // 就地累加，抛错时调用方仍读得到
-  let typed: unknown;
+  let typed: SchemaType<S> | undefined;
   let submitted = false;
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
@@ -244,7 +246,8 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
               content = `invalid input: ${invalid}`;
             } else {
               content = 'submitted';
-              typed = use.input;
+              // 模型提交的 input 已过 resultSchema 校验 → 断言为 SchemaType<S>（信任边界在此）
+              typed = use.input as SchemaType<S>;
               submitted = true;
             }
           } catch (e) {
@@ -310,15 +313,17 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
 }
 
 /** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */
-export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult> {
+export async function runAgent<S extends JsonSchema = JsonSchema>(
+  options: RunAgentOptions<S>,
+): Promise<AgentRunResult<SchemaType<S>>> {
   const recorder = options.recorder ?? new TraceRecorder();
   const rootId = recorder.begin('run', options.runName ?? 'agent.run', null);
   recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
 
   const progress = { iterations: 0 };
-  let result: AgentLoopResult;
+  let result: AgentLoopResult<SchemaType<S>>;
   try {
-    result = await agentLoop({
+    result = await agentLoop<S>({
       client: options.client ?? new Anthropic(),
       model: resolveDefaultModel(options.model),
       maxTokens: options.maxTokens ?? 64_000,
@@ -357,7 +362,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
  * resultSchema 语义与 runAgent 一致（隐藏 submit_result → AgentLoopResult.typed），
  * 供子 agent 产出结构化结果（见 toolkit/subagent.ts 的交回逻辑）。
  */
-export async function runAgentScoped(opts: {
+export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   client?: ModelClient;
   system?: SystemParam;
   messages: Anthropic.MessageParam[];
@@ -370,9 +375,9 @@ export async function runAgentScoped(opts: {
   onText?: (delta: string) => void;
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（同 RunAgentOptions.resultSchema） */
-  resultSchema?: JsonSchema;
-}): Promise<AgentLoopResult> {
-  return agentLoop({
+  resultSchema?: S;
+}): Promise<AgentLoopResult<SchemaType<S>>> {
+  return agentLoop<S>({
     client: opts.client ?? new Anthropic(),
     model: resolveDefaultModel(opts.model),
     maxTokens: opts.maxTokens ?? 64_000,

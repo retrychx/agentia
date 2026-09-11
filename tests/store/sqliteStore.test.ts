@@ -94,7 +94,8 @@ describe('SqliteTaskStore', () => {
   it('与 FileTaskStore 语义对照：同一操作序列结果一致', () => {
     const { dir, file } = tmpFile('ref.jsonl');
     const fileStore: TaskStore = new FileTaskStore(file);
-    const sqliteStore: TaskStore = new SqliteTaskStore(':memory:');
+    // 用具体类型而非 TaskStore：本用例要同步访问 list/byIdempotency（MaybePromise 下是 Union）
+    const sqliteStore = new SqliteTaskStore(':memory:');
     try {
       // 两 store 用同一批记录对象走同一序列（含同键重提）
       const records = [rec({ idempotencyKey: 'k1' }), rec({ idempotencyKey: 'k2' })];

@@ -2,6 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentTool } from '../core/tool.js';
 import type { ContextPolicy } from '../engine/types.js';
+import type { BlackboardSeed } from './context.js';
 
 /**
  * Agentia —— run 调用契约（spec §6.3 三类触发共用同一份入参形态）。
@@ -16,8 +17,8 @@ export interface RunInvocationOptions {
   maxIterations?: number;
   client?: ModelClient;
   onText?: (delta: string) => void;
-  /** 预置进本次 RunContext.blackboard */
-  blackboard?: Record<string, unknown>;
+  /** 预置进本次 RunContext.blackboard（扩展过 Blackboard 时键有补全） */
+  blackboard?: BlackboardSeed;
   /** 上下文预算策略（compaction / context editing） */
   contextPolicy?: ContextPolicy;
   /** 幂等键：异步宿主的 at-least-once 去重依据 */

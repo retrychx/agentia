@@ -53,8 +53,10 @@ class WeatherTools {
     strict: true,
   })
   get_weather(input: { city: string }): string {
-    // 方法体内随时可读本次 run 的上下文（blackboard）
-    const token = RunContext.current()?.get<string>('authToken');
+    // 方法体内随时可读本次 run 的上下文（blackboard）。
+    // 想让键有补全/校验：在一次 declare module 里合并 Blackboard（见 docs/usage-guide.md §5.1）；
+    // 未声明时键为 string、值为 unknown，这里按需断言。
+    const token = RunContext.current()?.get('authToken') as string | undefined;
     return `city=${input.city};token=${token ?? 'none'}`;
   }
 }

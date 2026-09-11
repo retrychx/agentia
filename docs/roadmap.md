@@ -85,6 +85,22 @@
 - **文档**：删掉与代码不符的承诺（roadmap R1「静态校验补全」、spec §7 未实现的检查清单、CLI doctor 的 canCall 环、
   `ToolSpec.strict` 的合规要求、`AgentApp.container` 的「生命周期回调」）。
 
+### DX 与 AI 可编码性（并入 v0.2.2 未发布窗口）
+
+起因是一个真问题：**用框架时编辑器给不给级联提示**。实测（用类型系统把解析结果打进诊断）结论是
+「框架 API 的补全没问题，但**你自定义的东西**没有类型链路」—— 黑板键是裸 `string`、`result.typed` 是 `unknown`、
+schema 与方法签名双写且默认互不校验。这三点既是人「记不住 API」的原因，也是 AI 猜错 API 的根源。
+
+- **类型链路**（详见 spec §10）：`Blackboard` 声明合并给黑板键补全 + 拼写检查；`fromZod<T>` 让 schema 成为单一事实
+  来源并**校验方法签名**；`resultSchema` 自动推导 `typed`。三条都是**可选开启**，不声明则与旧行为逐字一致。
+- **顺带修**：`FactoryProvider.useFactory` 的形参逆变 bug（`unknown[]` → `never[]`）—— 旧写法连框架自带测试里
+  那种正常工厂都编译不过；`app.run` 补上 `resultSchema`（此前根本传不了结构化结果 schema）。
+- **AI 可编码性**：`docs/usage-guide.md` 作为**使用者向唯一说明**，三处消费 —— CLI 脚手架写进新项目的 `AGENTS.md`
+  （Claude Code / Cursor / Copilot 会自动读）、官网 `/llms-full.txt` 与 `/llms.txt`、人类速查。
+- **验证基建**：`tests/docs/usage-guide.test.ts` 把说明里的表格**逐项对源码核**（改名即失败，防「文档承诺了、代码没有」）；
+  新增 `typecheck:tests`（此前**测试目录从未被类型检查**，首跑 50 个错误已全修）与 `typecheck:types`
+  （`@ts-expect-error` 断言「应当报错」的场景真报错，针对构建产物 dist 编译）。测试 210 → 215 例。
+
 ## Dev Inspector（本地调试面板）✅ 已落地
 
 `agentia dev` 内置本地 inspector：左栏 run 列表 + 右栏调用树，展示每个单元（tool/skill/prompt/subagent）

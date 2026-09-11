@@ -25,9 +25,24 @@ try {
   // —— 1) create：项目骨架 ——
   cli(['create', 'demo-app', '--dir', tmp], tmp);
   const proj = join(tmp, 'demo-app');
-  for (const f of ['package.json', 'tsconfig.json', 'src/main.ts', 'units.ts', 'units/hello/index.ts']) {
+  for (const f of ['package.json', 'tsconfig.json', 'src/main.ts', 'units.ts', 'units/hello/index.ts', 'AGENTS.md']) {
     assert(existsSync(join(proj, f)), `create 缺文件: ${f}`);
   }
+
+  // 使用者向 AI 说明：单源 docs/usage-guide.md → 构建拷进 dist/AGENTS.md → create 写进项目。
+  // 三段任一断掉，AI 辅助编码就退化成「猜 API」，所以这里按内容验。
+  const guide = readFileSync(join(proj, 'AGENTS.md'), 'utf8');
+  for (const needle of [
+    'declare module', // Blackboard 声明合并
+    'fromZod', // schema 单一事实来源
+    'RunContext',
+    'createApp',
+    '@SubAgent',
+    '已知边界', // 如实标注的边界（不写就没有）
+  ]) {
+    assert(guide.includes(needle), `项目 AGENTS.md 缺少关键内容: ${needle}`);
+  }
+  assert(guide.length > 5000, `项目 AGENTS.md 过短（${guide.length}）`);
 
   // —— 2) g：四类单元各一个 ——
   cli(['g', 'subagent', 'doc-reviewer'], proj);
@@ -128,6 +143,7 @@ try {
     runStatus: run.status,
     toolResultReachedModel: s.includes('echo: smoke'),
     registryRouteTools: app2.tools.length,
+    projectAgentsMdBytes: guide.length,
   }, null, 2));
 } finally {
   rmSync(tmp, { recursive: true, force: true });

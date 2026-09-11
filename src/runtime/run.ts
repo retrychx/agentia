@@ -1,4 +1,5 @@
 import type { AgentRunResult, RunAgentOptions } from '../engine/types.js';
+import type { JsonSchema, SchemaType } from '../core/tool.js';
 import type { Trace, TraceSink } from '../core/trace.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgent } from '../engine/loop.js';
@@ -82,7 +83,7 @@ export class Run {
   }
 }
 
-export interface ExecuteRunOptions extends RunAgentOptions {
+export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends RunAgentOptions<S> {
   idempotencyKey?: string;
   /** 在 runAgent 前对本次 RunContext 做预置（blackboard 种子等） */
   contextInit?: (ctx: RunContext) => void;
@@ -108,9 +109,9 @@ export interface ExecuteRunOptions extends RunAgentOptions {
  * RunContext 在整个执行期间经 AsyncLocalStorage 可被 `RunContext.current()` 读到，
  * 工具/单元执行体无需把 ctx 作为参数层层下传。
  */
-export async function executeRun(
-  options: ExecuteRunOptions,
-): Promise<{ run: Run; result: AgentRunResult }> {
+export async function executeRun<S extends JsonSchema = JsonSchema>(
+  options: ExecuteRunOptions<S>,
+): Promise<{ run: Run; result: AgentRunResult<SchemaType<S>> }> {
   const run = new Run({ idempotencyKey: options.idempotencyKey });
   run.start();
   const ctx = new RunContext(run);
@@ -127,7 +128,7 @@ export async function executeRun(
           /* ignore：辅助动作失败不影响 run */
         }
       }
-      const result = await runAgent({ ...options, recorder: run.recorder });
+      const result = await runAgent<S>({ ...options, recorder: run.recorder });
       run.finish(result);
       if (memory) {
         // 回写是辅助动作：失败不得把已成功的 run 翻成 failed（会丢结果与 trace），
@@ -151,7 +152,8 @@ export async function executeRun(
         }
       }
       await flushSinks(options.sinks, run.result!.trace);
-      if (options.rethrow === false) return { run, result: run.result! };
+      // 失败路径：run.fail() 造的结果没有 typed（恒为 undefined），断言只为对齐返回类型
+      if (options.rethrow === false) return { run, result: run.result! as AgentRunResult<SchemaType<S>> };
       throw e;
     }
   });

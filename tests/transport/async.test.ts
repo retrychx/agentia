@@ -50,7 +50,7 @@ describe('AsyncRunner', () => {
     const r2 = new AsyncRunner(failApp);
     const f1 = r2.submit('a', { idempotencyKey: 'k' });
     await r2.awaitTask(f1.taskId);
-    assert.equal(r2.poll(f1.taskId)?.status, 'failed');
+    assert.equal((await r2.poll(f1.taskId))?.status, 'failed');
     const f2 = r2.submit('a', { idempotencyKey: 'k' });
     assert.notEqual(f2.taskId, f1.taskId);
   });
@@ -66,7 +66,7 @@ describe('AsyncRunner', () => {
     const t2 = runner.submit('b');
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(app.calls, 1);
-    assert.equal(runner.poll(t2.taskId)?.status, 'queued');
+    assert.equal((await runner.poll(t2.taskId))?.status, 'queued');
     assert.equal(t1.status, 'queued', 'submit 返回的是提交时刻快照');
     release();
     await runner.awaitTask(t1.taskId);
@@ -87,7 +87,7 @@ describe('AsyncRunner', () => {
       await runner.awaitTask(t1.taskId, { timeoutMs: 2_000 });
       await runner.awaitTask(t2.taskId, { timeoutMs: 2_000 }); // 槽位泄漏时这里会超时
       assert.equal(app.calls, 2, '落库抛错后槽位必须仍被释放');
-      assert.equal(runner.poll(t1.taskId)?.status, 'succeeded');
+      assert.equal((await runner.poll(t1.taskId))?.status, 'succeeded');
       await new Promise((r) => setTimeout(r, 20)); // 给潜在的 unhandled rejection 落地机会
       assert.deepEqual(rejections, []);
     } finally {

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { AsyncRunner, Scheduler } from '../../src/index.js';
-import type { AppCallable, AgentRunResult } from '../../src/index.js';
+import type { AppCallable, AgentRunResult, TaskRecord } from '../../src/index.js';
 
 function fakeApp(): AppCallable & { calls: number } {
   const app = {
@@ -27,6 +27,13 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
     await sleep(5);
   }
 }
+
+/**
+ * 取任务记录快照。`AsyncRunner.list` 的返回类型是 MaybePromise（异步 store 下是 Promise）；
+ * 本套用例用缺省 InMemoryTaskStore（同步），断言成同步数组以便直接 `.length` / `.map`。
+ */
+const listOf = (runner: AsyncRunner): TaskRecord[] =>
+  runner.list() as TaskRecord[]; // 同步 store：断言掉 MaybePromise 的 Promise 分支
 
 describe('Scheduler', () => {
   it('at：定时器 unref（与 every 一致，不阻止宿主进程退出）', () => {
@@ -68,7 +75,7 @@ describe('Scheduler', () => {
       assert.equal(app.calls, settled, 'cancel 后不再派发新任务');
 
       // 每次触发 = submit 一次异步任务，默认 source 带调度 id 前缀
-      const sources = runner.list().map((r) => r.spec.source ?? '');
+      const sources = listOf(runner).map((r) => r.spec.source ?? '');
       assert.ok(sources.length >= 2);
       for (const s of sources) assert.match(s, /^schedule:[0-9a-f]{8}/);
     } finally {
@@ -82,10 +89,10 @@ describe('Scheduler', () => {
     const scheduler = new Scheduler(runner);
     try {
       scheduler.every(20, 'tick', { idempotencyPrefix: 'p' });
-      await waitFor(() => runner.list().length >= 2);
+      await waitFor(() => listOf(runner).length >= 2);
       scheduler.stop();
 
-      const keys = runner.list().map((r) => r.idempotencyKey ?? '');
+      const keys = listOf(runner).map((r) => r.idempotencyKey ?? '');
       for (const k of keys) assert.match(k, /^p:\d+$/, '窗口分片键 = 前缀:窗口序号');
       assert.equal(new Set(keys).size, keys.length, '每个窗口一个键，互不重复');
       assert.equal(app.calls, keys.length, '同窗口去重：任务数 = 执行次数');
@@ -109,7 +116,7 @@ describe('Scheduler', () => {
       assert.equal(app.calls, 1, '单发任务不重复触发');
       assert.equal(scheduler.active, 0);
 
-      const rec = runner.list()[0];
+      const rec = listOf(runner)[0];
       assert.equal(rec.idempotencyKey, 'one', 'at 单发用固定键而非窗口键');
       assert.equal(rec.spec.source, 'custom-src');
     } finally {
@@ -156,11 +163,11 @@ describe('Scheduler', () => {
       scheduler.every(10, 'tick');
       await sleep(120); // 十来个 tick
       assert.equal(calls, 1, '上一片还在跑：后续 tick 全部跳过');
-      assert.equal(runner.list().length, 1);
+      assert.equal(listOf(runner).length, 1);
 
       // 上一片终态后恢复派发（闸门不会永久关闭）
       release();
-      await waitFor(() => runner.list().length >= 2);
+      await waitFor(() => listOf(runner).length >= 2);
     } finally {
       scheduler.stop();
     }

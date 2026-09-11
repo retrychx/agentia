@@ -10,7 +10,7 @@ describe('SystemPrompt（缓存布局）', () => {
       .add('clock', '当前时间: {now}', false); // volatile
 
   it('cache=false：拼成单个纯文本（stable + volatile）', () => {
-    const out = sp().build({ cache: false });
+    const out = sp().build({ cache: false }) as string; // cache=false 必为 string，收窄便于断言
     assert.equal(typeof out, 'string');
     assert.ok(out.includes('流水线主 agent') && out.includes('当前时间'));
   });

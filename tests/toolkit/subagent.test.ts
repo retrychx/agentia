@@ -105,6 +105,6 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
       () => [],
     );
     // 子 agent 死循环工具调用、超出 maxIterations → 抛错（engine 包成 is_error 回主 agent）
-    await assert.rejects(tool.run({ task: 't' }, ctx), /max_iterations/);
+    await assert.rejects(async () => tool.run({ task: 't' }, ctx), /max_iterations/);
   });
 });

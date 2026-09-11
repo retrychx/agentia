@@ -56,7 +56,7 @@ export interface ContextPolicy {
  * 其他 provider（OpenAI 兼容端点等）只需适配出同一形态。
  * 定义在 core/tool.js 并从此处转导出。
  */
-export interface RunAgentOptions {
+export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
   system?: SystemParam;
   /** 初始消息；由调用方给 user 起始消息 */
@@ -81,11 +81,14 @@ export interface RunAgentOptions {
    * 结构化结果 schema（R2）：给出后 engine 追加隐藏工具 submit_result，
    * 模型调用它提交符合 schema 的最终结果，校验通过即结束循环并写入 AgentRunResult.typed；
    * 模型始终未提交则 typed 为 undefined（行为与不设时一致）。
+   *
+   * 泛型 S：传 `fromZod<T>(...)`（TypedSchema<T>）时，返回值 `typed` 自动是 `T | undefined`；
+   * 传裸 JsonSchema 时回落 `unknown`。
    */
-  resultSchema?: JsonSchema;
+  resultSchema?: S;
 }
 
-export interface AgentRunResult {
+export interface AgentRunResult<T = unknown> {
   /** 本次 run 的完整调用树 + usage（traceId == runId） */
   trace: Trace;
   stopReason: AgentStopReason;
@@ -93,6 +96,9 @@ export interface AgentRunResult {
   finalText: string;
   iterations: number;
   error?: SpanError;
-  /** resultSchema 校验通过的结构化结果；模型没提交（或未设 resultSchema）则为 undefined */
-  typed?: unknown;
+  /**
+   * resultSchema 校验通过的结构化结果；模型没提交（或未设 resultSchema）则为 undefined。
+   * 类型由 resultSchema 推导（见 RunAgentOptions.resultSchema 的泛型说明）。
+   */
+  typed?: T;
 }

@@ -67,7 +67,7 @@ describe('Skill 单元（ctx.llm 受限子运行）', () => {
     const tool = skillToTool(onlySkill(new Fragile()), () => []);
 
     // 对主 agent 仍是 is_error 语义（抛错 → engine 包成 tool_result）
-    await assert.rejects(tool.run({}, ctx), /unknown_stop_reason/);
+    await assert.rejects(async () => tool.run({}, ctx), /unknown_stop_reason/);
 
     const unit = recorder.snapshot('error').spans.find((s) => s.kind === 'unit')!;
     assert.equal(unit.status, 'error');

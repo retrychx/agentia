@@ -21,7 +21,13 @@ export interface ClassProvider<T = unknown> {
 }
 export interface FactoryProvider<T = unknown> {
   provide: Token;
-  useFactory: (...deps: unknown[]) => T;
+  /**
+   * 工厂函数。形参用 `never[]` 而非 `unknown[]` —— 函数参数是**逆变**的，
+   * 写 `(...deps: unknown[]) => T` 会拒掉一切带类型形参的正常工厂
+   * （`(cfg: Config) => T` 不可赋值）。`never` 是最小类型，任何形参列表都能赋值，
+   * 与 `ClassProvider.useClass` 的 `new (...args: never[])` 保持一致。
+   */
+  useFactory: (...deps: never[]) => T;
   /** 与 useFactory 形参一一对应的依赖 token */
   deps?: Token[];
 }
@@ -112,7 +118,8 @@ export class Container {
         value = new binding.useClass(...(deps as never[]));
       } else {
         const deps = (binding.deps ?? []).map((d) => this.resolve(d));
-        value = binding.useFactory(...deps);
+        // 工厂形参声明为 never[]（见 FactoryProvider 注释）：调用点按实际 deps 断言
+        value = (binding.useFactory as (...a: unknown[]) => unknown)(...deps);
       }
     } finally {
       this.resolving.pop();

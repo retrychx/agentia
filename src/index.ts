@@ -14,7 +14,16 @@ export type {
   UnitType,
   Usage,
 } from './core/trace.js';
-export type { AgentTool, JsonSchema, ModelClient, RecorderBackend, ToolRunContext } from './core/tool.js';
+export type {
+  AgentTool,
+  JsonSchema,
+  ModelClient,
+  RecorderBackend,
+  SchemaInput,
+  SchemaType,
+  ToolRunContext,
+  TypedSchema,
+} from './core/tool.js';
 export { validateJsonSchema } from './core/schema.js';
 
 // engine：运行时内核
@@ -46,6 +55,7 @@ export type { BudgetPolicyOptions } from './engine/policy.js';
 // run：run 生命周期
 export { Run, executeRun } from './runtime/run.js';
 export { RunContext, withRunContext } from './runtime/context.js';
+export type { Blackboard, BlackboardKey, BlackboardSeed, BlackboardValue } from './runtime/context.js';
 export { SystemPrompt } from './runtime/systemPrompt.js';
 export type { SystemSection } from './runtime/systemPrompt.js';
 export type { ExecuteRunOptions } from './runtime/run.js';

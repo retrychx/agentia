@@ -19,7 +19,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）
 ├── tests/                   # node:test 单测，目录镜像 src（tests/transport/x → src/transport/x）
 │   ├── helpers.ts           # 共用 mock client（改它影响全部套件，谨慎）
-│   └── fixtures/            # discover/asset 测试夹具
+│   ├── fixtures/            # discover/asset 测试夹具
+│   ├── types/               # **类型断言测试**（*.types.ts，只被 typecheck:types 编译、不被 node:test 收）
+│   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
 ├── packages/
 │   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/add），零运行时依赖
@@ -29,7 +31,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   └── website/             # 官网（Astro 静态站，构建产物 dist/ 部署 Cloudflare Pages）
 │                            #   src/layouts/Base.astro 全站外壳、src/components/ 共享组件
 │                            #   src/fragments/*.html 页面正文（?raw 注入）、src/scripts/ 客户端脚本
-└── docs/                    # spec.md（锁定决策）、roadmap.md（方向与状态）
+└── docs/                # spec.md（锁定决策）、roadmap.md（方向与状态）、
+                         # usage-guide.md（**使用者向唯一说明**：CLI 项目 AGENTS.md 与官网 llms.txt 的单源）
 ```
 
 ## 硬约定
@@ -39,8 +42,16 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
-- **验证顺序**：`npm run typecheck && npm run build && npm run build:cli && npm test && npm run e2e` 全绿才算完。
+- **验证顺序**：`npm run typecheck && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完。
+  - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）；
+  - `typecheck:types` = **针对构建产物 dist 的类型断言测试**（`tests/types/`，用 `@ts-expect-error`
+    断言「应当报错」的场景真的报错）—— 必须先 `build`。它与 src 分开编译是**必须**的：模块增强
+    （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
 - **设计决策**：改语义的决定要同步 `docs/spec.md` §10 决策记录；方向性工作更新 `docs/roadmap.md`。
+- **使用者向文档单源**：`docs/usage-guide.md` 是**唯一**的框架使用说明（API 速查 + 类型链路 + 已知边界 + 反例）。
+  它被三处消费：① `packages/cli` 构建时拷成 `dist/AGENTS.md`，`agentia create` 写进新项目的 `AGENTS.md`；
+  ② 官网 `/llms-full.txt`（整篇）与 `/llms.txt`（索引，导出清单也从同一份里抠）；③ 人类速查。
+  **不要另写第二份**：`tests/docs/usage-guide.test.ts` 会拿它里面的表格逐项对源码校验，改名/删字段立刻失败。
 - **发布**：两包版本同步（@migor/agentia 与 @migor/cli），CLI 模板里的框架依赖版本跟着走。
 - **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
   构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。

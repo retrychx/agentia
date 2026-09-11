@@ -1,4 +1,4 @@
-import type { AgentTool, JsonSchema } from '../core/tool.js';
+import type { AgentTool, JsonSchema, SchemaInput } from '../core/tool.js';
 import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
 import type { UnitDecoratorContext } from './collect.js';
 
@@ -15,12 +15,18 @@ import type { UnitDecoratorContext } from './collect.js';
  * 与 tsgo/esbuild 均兼容。当前 run 作用域经 AsyncLocalStorage 传播，
  * 方法体内可随时 `RunContext.current()` 读 blackboard/runId。
  */
-export interface ToolSpec {
+export interface ToolSpec<S extends JsonSchema = JsonSchema> {
   /** 模型可见工具名；缺省取被装饰方法名 */
   name?: string;
   description: string;
-  /** input_schema：v1 用裸 JSON Schema（对应 engine/core 的 JsonSchema） */
-  schema: JsonSchema;
+  /**
+   * input_schema：v1 用裸 JSON Schema（对应 engine/core 的 JsonSchema）。
+   *
+   * 传 `fromZod<T>(...)`（TypedSchema<T>）时，被装饰方法的**入参类型会被自动校验**：
+   * 签名与 T 不一致直接编译期报错（不用手写 `@Tool<I, O>` 泛型）。
+   * 传裸 JsonSchema 时回落 any —— 不校验（旧行为）。
+   */
+  schema: S;
   /** strict 参数校验（透传给 Anthropic 的 strict 模式） */
   strict?: boolean;
 }
@@ -32,16 +38,21 @@ const toolSpecs = new WeakMap<Function, ToolSpec>();
  * 方法装饰器：登记 spec。被装饰方法入参即结构化 tool input，
  * 返回值（或 Promise）即 tool_result。抛错由 engine 包成 is_error，不中断 run。
  *
- * 泛型 <I, O> 可把方法签名与编译期类型绑定（`@Tool<{city:string}, string>({...})`），
- * 挡住签名笔误；缺省 any 保持宽松。schema 与 I 的一致性仍由开发者保证（已知边界）。
+ * 类型检查由 **schema 驱动**：
+ * - `schema: fromZod<T>(…)`（TypedSchema<T>）→ 方法入参必须是 `T`，签名与 schema
+ *   不一致直接编译期报错 —— schema 即单一事实来源，不用两处双写；
+ * - `schema: {…}`（裸 JsonSchema）→ 入参回落 `any`，不校验（宽松旧行为）。
+ *
+ * 第二个泛型 `O` 用于显式约束返回值（缺省 `any`，不校验）。
  */
-export function Tool<I = any, O = any>(spec: ToolSpec) {
+export function Tool<S extends JsonSchema = JsonSchema, O = any>(spec: ToolSpec<S>) {
   return function (
-    value: (input: I) => O | Promise<O>,
+    value: (input: SchemaInput<S>) => O | Promise<O>,
     context: UnitDecoratorContext,
   ): void {
     assertMethodTarget(context, '@Tool');
-    toolSpecs.set(value, spec);
+    // spec 的 schema 在类型上更精确（S），登记表按擦除后的形态存（与 collect 一致）
+    toolSpecs.set(value, spec as ToolSpec);
   };
 }
 

@@ -52,6 +52,14 @@ function close(server: Server): Promise<void> {
   return new Promise((r) => server.close(() => r()));
 }
 
+/**
+ * 读响应 JSON。宿主回的是运行时数据（端点契约见 http.ts 的 RunHttpResponse /
+ * TaskRecord），测试里按 any 取用 —— 否则每个字段访问都要单独断言 unknown。
+ */
+async function readJson(res: Response): Promise<any> {
+  return res.json();
+}
+
 describe('createHttpHandler', () => {
   it('POST /run 成功：RunInput 规整后同步执行，200 返回完整 run 结果', async () => {
     const app = fakeApp();
@@ -63,7 +71,7 @@ describe('createHttpHandler', () => {
         body: JSON.stringify({ prompt: 'hi' }),
       });
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = await readJson(res);
       assert.equal(body.runId, 'r-1');
       assert.equal(body.status, 'succeeded');
       assert.equal(body.stopReason, 'end_turn');
@@ -84,11 +92,11 @@ describe('createHttpHandler', () => {
         body: JSON.stringify(123),
       });
       assert.equal(r1.status, 400);
-      assert.ok((await r1.json()).error);
+      assert.ok((await readJson(r1)).error);
 
       const r2 = await fetch(`${base}/run`, { method: 'POST', body: 'not-json{' });
       assert.equal(r2.status, 400);
-      assert.ok((await r2.json()).error);
+      assert.ok((await readJson(r2)).error);
     } finally {
       await close(server);
     }
@@ -108,7 +116,7 @@ describe('createHttpHandler', () => {
     try {
       const res = await fetch(`${base}/run`, { method: 'POST', body: JSON.stringify('go') });
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = await readJson(res);
       assert.equal(body.status, 'failed');
       assert.equal(body.error.message, 'boom');
     } finally {
@@ -126,7 +134,7 @@ describe('createHttpHandler', () => {
         body: JSON.stringify({ input: { text: 'hi' }, idempotencyKey: 'k1' }),
       });
       assert.equal(submit.status, 202);
-      const rec = await submit.json();
+      const rec = await readJson(submit);
       assert.equal(rec.status, 'queued');
       assert.equal(rec.idempotencyKey, 'k1');
 
@@ -135,7 +143,7 @@ describe('createHttpHandler', () => {
       for (let i = 0; i < 100; i++) {
         const r = await fetch(`${base}/tasks/${rec.taskId}`);
         assert.equal(r.status, 200);
-        polled = await r.json();
+        polled = await readJson(r);
         if (polled.status === 'succeeded' || polled.status === 'failed') break;
         await new Promise((r2) => setTimeout(r2, 5));
       }
@@ -150,7 +158,7 @@ describe('createHttpHandler', () => {
         body: JSON.stringify({ input: 'hi', idempotencyKey: 'k1' }),
       });
       assert.equal(again.status, 202);
-      assert.equal((await again.json()).taskId, rec.taskId);
+      assert.equal((await readJson(again)).taskId, rec.taskId);
       assert.equal(app.seen.length, 1);
     } finally {
       await close(server);
@@ -166,7 +174,7 @@ describe('createHttpHandler', () => {
         body: JSON.stringify({ input: 42 }),
       });
       assert.equal(res.status, 400);
-      assert.ok((await res.json()).error);
+      assert.ok((await readJson(res)).error);
     } finally {
       await close(server);
     }
@@ -180,7 +188,7 @@ describe('createHttpHandler', () => {
       // 残缺的 % 转义是调用方的输入问题 → 400，不是服务端 500
       const bad = await fetch(`${base}/tasks/%E0%A4%A`);
       assert.equal(bad.status, 400);
-      assert.match((await bad.json()).error, /URL 编码/);
+      assert.match((await readJson(bad)).error, /URL 编码/);
       assert.equal((await fetch(`${base}/nope`)).status, 404);
       assert.equal((await fetch(`${base}/run`)).status, 405);
       assert.equal(
@@ -204,7 +212,7 @@ describe('createHttpHandler', () => {
         body: JSON.stringify({ prompt: 'x'.repeat(4096) }),
       });
       assert.equal(res.status, 413);
-      assert.match((await res.json()).error, /上限/);
+      assert.match((await readJson(res)).error, /上限/);
       assert.equal(app.seen.length, 0, '超限请求不得进入 run');
       assert.equal(res.headers.get('connection'), 'close');
     } finally {
@@ -266,7 +274,7 @@ describe('createHttpHandler', () => {
       const second = await post();
       assert.equal(second.status, 503);
       assert.equal(second.headers.get('retry-after'), '1');
-      assert.match((await second.json()).error, /并发/);
+      assert.match((await readJson(second)).error, /并发/);
       assert.equal(started, 1, '超限请求不得进入 run');
 
       release();
@@ -325,7 +333,7 @@ describe('createHttpHandler', () => {
     try {
       const res = await fetch(`${base}/run`, { method: 'POST', body: JSON.stringify('go') });
       assert.equal(res.status, 500);
-      const body = await res.json();
+      const body = await readJson(res);
       assert.equal(body.error, '内部错误');
       assert.ok(
         !JSON.stringify(body).includes('ECONNREFUSED'),
@@ -354,7 +362,7 @@ describe('createHttpHandler', () => {
         body: JSON.stringify('go'),
       });
       assert.equal(res.status, 500);
-      assert.match((await res.json()).error, /ECONNREFUSED/);
+      assert.match((await readJson(res)).error, /ECONNREFUSED/);
     } finally {
       await close(server);
     }
@@ -372,7 +380,7 @@ describe('createHttpHandler', () => {
         method: 'POST',
         body: JSON.stringify({ input: 'hi' }),
       });
-      const rec = await res.json();
+      const rec = await readJson(res);
       assert.ok(runner.poll(rec.taskId), '记录应落在注入的 runner store 里');
     } finally {
       await close(server);

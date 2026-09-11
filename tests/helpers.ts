@@ -22,8 +22,10 @@ export function mockClient(script: Array<Record<string, unknown> | MockExchange>
               const step = script[i++];
               if (!step) throw new Error(`mock 脚本耗尽（第 ${i} 次调用）`);
               if ('message' in step) {
-                step.onParams?.(params);
-                return step.message;
+                // `in` 对 `Record<string, unknown>` 联合不会收窄 → 显式按 MockExchange 用
+                const ex = step as MockExchange;
+                ex.onParams?.(params);
+                return ex.message;
               }
               return step;
             },

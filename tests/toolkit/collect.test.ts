@@ -83,7 +83,7 @@ describe('collect*（装饰器单元收集）', () => {
     const skills = collectSkills(inst);
     assert.equal(skills.length, 1, '父类 spec 继承，只出一个单元');
     assert.equal(
-      await skills[0].invoke({}, { llm: async () => ({ text: '' }) }),
+      await skills[0].invoke({}, { llm: async () => ({ text: '', stopReason: 'end_turn' as const }) }),
       'child-skill',
       '必须调用实例上的实现',
     );
@@ -122,7 +122,7 @@ describe('collect*（装饰器单元收集）', () => {
     const skills = collectSkills(inst);
     assert.equal(skills.length, 1);
     assert.equal(skills[0].name, 'writer');
-    const out = await skills[0].invoke({}, { llm: async () => ({ text: 'llm-done' }) });
+    const out = await skills[0].invoke({}, { llm: async () => ({ text: 'llm-done', stopReason: 'end_turn' as const }) });
     assert.equal(out, 'llm-done');
 
     const prompts = collectPrompts(inst);

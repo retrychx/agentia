@@ -19,6 +19,36 @@ export interface JsonSchema {
 }
 
 /**
+ * 泛型 schema：在普通 JSON Schema 上挂一个**纯类型**的幻影字段，把「校验通过后的
+ * 结果类型」带进类型系统 —— 框架据此推导 `AgentRunResult.typed` 与 `@Tool` 方法的
+ * 入参类型。运行时**不存在**该字段（见 toolkit/zod.ts 的 fromZod）。
+ *
+ * 不是必须的：直接给裸 JsonSchema（旧写法）时回落 unknown/any，行为与之前逐字一致。
+ */
+export interface TypedSchema<T> extends JsonSchema {
+  /** 幻影字段（永不在运行时出现）：仅用于类型推导，勿读取 */
+  readonly __typed?: T;
+}
+
+/**
+ * 从 schema 提取「结果类型」：`TypedSchema<T>` → `T`；普通 `JsonSchema` → `unknown`
+ * （与 typed 字段旧语义一致）。用于 `runAgent` / `executeRun` / `app.run` 的返回值。
+ */
+export type SchemaType<S> = S extends TypedSchema<infer T> ? T : unknown;
+
+/**
+ * 装饰器方法入参类型：与 SchemaType 同源，但**未给出具体类型时回落 any** ——
+ * 这样「裸 JsonSchema」与「fromZod(...) 没写 <T>」两种既有写法都不被破坏
+ * （不校验方法签名），只有 `fromZod<T>()` 明确了 T 后才开始校验
+ * 「方法签名 vs schema」的一致性。
+ */
+export type SchemaInput<S> = S extends TypedSchema<infer T>
+  ? unknown extends T
+    ? any
+    : T
+  : any;
+
+/**
  * engine 的 TraceRecorder 面向子单元的最小结构面（core 不依赖 engine）。
  * 需要开嵌套 span 的单元（如 @SubAgent）通过 ctx.recorder 记账，
  * 其余工具可完全忽略它。
