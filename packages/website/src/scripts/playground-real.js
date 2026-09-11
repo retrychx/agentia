@@ -263,15 +263,17 @@
     pg.renderUsage({ input: 0, output: 0 });
     pg.panelNote('— 真实模型调用：' + model + ' · 工具为浏览器内 JS 实现 · 最多 ' + MAX_ITERATIONS + ' 轮 —');
 
-    const usageAcc = { input: 0, output: 0 };
+    const usageAcc = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
     const startedAt = performance.now();
     const messages = [{ role: 'user', content: sc.task }];
     const stale = () => pg.state.gen !== gen;
+    let openSpanId = null;
 
     try {
       for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
         const spanId = 'turn-' + iter;
         pg.traceStart({ id: spanId, parent: 'root', kind: 'llm.turn', name: model });
+        openSpanId = spanId; // 异常时用它把 span 收尾，避免 trace 留下永远转圈的 ◌
         pg.panelLlmOpen('llm.turn · 主 agent（' + model + '）');
         const t0 = performance.now();
         const resp = await callApi(p, key, model, system, messages);
@@ -288,8 +290,11 @@
         const usage = {
           input: (resp.usage && resp.usage.input_tokens) || 0,
           output: (resp.usage && resp.usage.output_tokens) || 0,
+          cacheRead: (resp.usage && resp.usage.cache_read_input_tokens) || 0,
+          cacheCreation: (resp.usage && resp.usage.cache_creation_input_tokens) || 0,
         };
         pg.traceEnd({ id: spanId, ms, usage }, usageAcc);
+        openSpanId = null;
 
         const toolUses = blocks.filter((b) => b && b.type === 'tool_use');
         if (resp.stop_reason === 'tool_use' && toolUses.length > 0) {
@@ -303,11 +308,16 @@
             const tu = toolUses[i];
             const unitId = spanId + '-tool-' + i;
             pg.highlightMenu('tool:' + tu.name);
-            pg.traceStart({ id: unitId, parent: 'root', kind: 'unit', name: 'tool:' + tu.name });
+            pg.traceStart({ id: unitId, parent: 'root', kind: 'unit', name: 'tool:' + tu.name, arg: pg.fmtArg(tu.input) });
             pg.panelTool(tu.name, tu.input);
             const out = execTool(tu.name, tu.input);
             pg.panelResult(out.text);
-            pg.traceEnd({ id: unitId, ms: out.ms }, usageAcc);
+            pg.traceEnd({
+              id: unitId,
+              ms: out.ms,
+              status: out.isError ? 'error' : 'ok',
+              error: out.isError ? { type: 'tool_error', message: String(out.text).slice(0, 200) } : null,
+            }, usageAcc);
             const r = { type: 'tool_result', tool_use_id: tu.id, content: out.text };
             if (out.isError) r.is_error = true;
             results.push(r);
@@ -323,7 +333,12 @@
       }
     } catch (err) {
       if (stale()) return;
-      panelError(describeError(err));
+      const msg = describeError(err);
+      if (openSpanId) {
+        pg.traceEnd({ id: openSpanId, ms: Math.round(performance.now() - startedAt), status: 'error', error: { type: 'api_error', message: msg } }, usageAcc);
+        openSpanId = null;
+      }
+      panelError(msg);
     } finally {
       if (!stale()) {
         pg.traceFinish(Math.round(performance.now() - startedAt), usageAcc);

@@ -865,6 +865,12 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .tr-dot { color: var(--ice); }
 .tr-row.running .tr-dot { animation: pg-blink 0.9s steps(1) infinite; }
 .tr-name { color: #d4d4d8; overflow: hidden; text-overflow: ellipsis; }
+/* span 入参摘要：让同名调用（如两次 tool:get_weather）可区分 */
+.tr-arg { color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* 失败 span：点变红、名字与 meta 走告警色 */
+.tr-row.error .tr-dot { color: #f7768e; }
+.tr-row.error .tr-name { color: #f7768e; }
+.tr-row.error .tr-meta { color: rgba(247, 118, 142, 0.9); }
 .tr-row[data-kind="run"] .tr-name { color: var(--text); font-weight: 500; }
 .tr-row[data-kind="llm.turn"] .tr-name { color: var(--ice); }
 .tr-meta { margin-left: auto; color: var(--faint); font-size: 11px; padding-left: 10px; }

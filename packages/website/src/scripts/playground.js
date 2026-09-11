@@ -59,7 +59,7 @@
         { wait: 300, spanStart: { id: 's6', parent: 'root', kind: 'llm.turn', name: 'claude-opus-5' } },
         { finalOpen: {} },
         { stream: '文档审查结论\n\n① 结构：摘要与正文的指标口径不一致（第 2 节）；渠道分析缺数据来源标注。\n② 事实：第 3 节 DAU「12.4 万」与摘要「11.8 万」冲突，建议以数仓口径为准。\n③ 建议：统一环比定义，附录补充取数 SQL 与统计窗口。\n\n详细逐条清单已由 doc_reviewer 归档，可按需调取。' },
-        { wait: 300, spanEnd: { id: 's6', ms: 1740, usage: { input: 2680, output: 310 } } },
+        { wait: 300, spanEnd: { id: 's6', ms: 1740, usage: { input: 2680, output: 310, cacheRead: 2340 } } },
         { done: {} },
       ],
     },
@@ -102,7 +102,7 @@
         { wait: 600, spanStart: { id: 's6', parent: 'root', kind: 'llm.turn', name: 'claude-opus-5' } },
         { finalOpen: {} },
         { stream: '运营周报 · 2026-W36\n\n核心指标：DAU 118,420（+3.1%）、WAU 402,311、7 日留存 41.2%、营收 ¥2.31M（-1.4%）。\n异动：活跃度与营收背离，建议排查付费转化漏斗。\n跟进：① 转化漏斗分渠道拆解；② 留存人群画像复核；③ 下周三前出营收归因简报。' },
-        { wait: 300, spanEnd: { id: 's6', ms: 1490, usage: { input: 2410, output: 290 } } },
+        { wait: 300, spanEnd: { id: 's6', ms: 1490, usage: { input: 2410, output: 290, cacheRead: 2180, cacheCreation: 190 } } },
         { done: {} },
       ],
     },
@@ -139,7 +139,7 @@
         { wait: 600, spanStart: { id: 's5', parent: 'root', kind: 'llm.turn', name: 'claude-opus-5' } },
         { finalOpen: {} },
         { stream: '出行建议 · 上海 → 杭州（周末）\n\n天气：杭州周六上午有阵雨，午后转晴；周日全晴。建议周六午后再进景区。\n衣物：白天 28~30°C 短袖即可，湿度大，备一件速干外套。\n装备：折叠伞必带；防晒 SPF30+；高铁往返注意返程末班。\n行程：周六午后西湖东线，周日早起灵隐寺避开人流。' },
-        { wait: 300, spanEnd: { id: 's5', ms: 1620, usage: { input: 2260, output: 340 } } },
+        { wait: 300, spanEnd: { id: 's5', ms: 1620, usage: { input: 2260, output: 340, cacheRead: 2010 } } },
         { done: {} },
       ],
     },
@@ -173,6 +173,21 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const fmtNum = (n) => n.toLocaleString('en-US');
   const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
+  /* span 入参摘要：写进 trace 行，否则同名 unit（如两次 tool:get_weather）无法区分 */
+  const fmtArg = (v) => {
+    if (v == null) return '';
+    let s;
+    if (typeof v === 'object') {
+      const keys = Object.keys(v);
+      if (!keys.length) return ''; // 无入参就不显示，避免行里多一个 "{}"
+      s = '{ ' + keys.slice(0, 4).map((k) => {
+        let sv = typeof v[k] === 'object' ? JSON.stringify(v[k]) : String(v[k]);
+        if (sv.length > 22) sv = sv.slice(0, 21) + '…';
+        return k + ': ' + sv;
+      }).join(', ') + (keys.length > 4 ? ', …' : '') + ' }';
+    } else s = String(v);
+    return s.length > 62 ? s.slice(0, 61) + '…' : s;
+  };
 
   /* ========== 场景选择与按钮 ========== */
   function renderScenarios() {
@@ -376,9 +391,12 @@
       id: s.id,
       kind: s.kind,
       name: s.name,
+      arg: s.arg || '',
       children: [],
       done: false,
       ms: 0,
+      status: 'ok',
+      error: null,
       usage: null,
     };
     spanMap.set(s.id, node);
@@ -392,11 +410,23 @@
     if (!node) return;
     node.done = true;
     node.ms = s.ms || 0;
-    node.usage = s.usage || null;
+    node.status = s.status || 'ok';
+    node.error = s.error || null;
+    if (s.arg) node.arg = s.arg;
+    node.usage = s.usage
+      ? {
+          input: s.usage.input || 0,
+          output: s.usage.output || 0,
+          cacheRead: s.usage.cacheRead || 0,
+          cacheCreation: s.usage.cacheCreation || 0,
+        }
+      : null;
     // 计数器只累加 llm.turn（unit span 的 usage 是子 span 聚合，重复计入会双算）
     if (s.usage && node.kind === 'llm.turn') {
-      usageAcc.input += s.usage.input || 0;
-      usageAcc.output += s.usage.output || 0;
+      usageAcc.input += node.usage.input;
+      usageAcc.output += node.usage.output;
+      usageAcc.cacheRead = (usageAcc.cacheRead || 0) + node.usage.cacheRead;
+      usageAcc.cacheCreation = (usageAcc.cacheCreation || 0) + node.usage.cacheCreation;
       renderUsage(usageAcc);
     }
     renderTrace();
@@ -423,18 +453,45 @@
     })(traceRoot, '', true, true);
 
     rows.forEach(({ node, prefix, isRoot }, idx) => {
-      const row = el('div', 'tr-row' + (node.done ? '' : ' running'));
+      const bad = node.done && node.status === 'error';
+      const row = el('div', 'tr-row' + (node.done ? '' : ' running') + (bad ? ' error' : ''));
       row.dataset.kind = node.kind;
       const branch = isRoot ? '' : prefix + (idx === rows.length - 1 || isLastChild(node) ? '└─ ' : '├─ ');
       row.appendChild(el('span', 'tr-pre', branch));
-      row.appendChild(el('span', 'tr-dot', node.done ? '●' : '◌'));
+      row.appendChild(el('span', 'tr-dot', node.done ? (bad ? '✕' : '●') : '◌'));
       row.appendChild(el('span', 'tr-name', node.name));
-      const meta = node.done
-        ? fmtMs(node.ms) + (node.usage ? ' · ' + fmtNum(node.usage.input + node.usage.output) + ' tok' : '')
-        : '…';
-      row.appendChild(el('span', 'tr-meta', meta));
+      if (node.arg) {
+        const arg = el('span', 'tr-arg', node.arg);
+        arg.title = node.arg;
+        row.appendChild(arg);
+      }
+      let meta;
+      if (node.done) {
+        const parts = [fmtMs(node.ms)];
+        if (node.usage) {
+          parts.push(fmtNum(node.usage.input + node.usage.output) + ' tok');
+          const cr = node.usage.cacheRead || 0;
+          const cc = node.usage.cacheCreation || 0;
+          if (cr || cc) parts.push('cache ↑' + fmtNum(cr) + ' ↓' + fmtNum(cc));
+        }
+        if (bad) parts.push((node.error && node.error.type) || 'error');
+        meta = parts.join(' · ');
+      } else meta = '…';
+      const metaEl = el('span', 'tr-meta', meta);
+      if (bad && node.error && node.error.message) metaEl.title = node.error.message;
+      row.appendChild(metaEl);
       traceBody.appendChild(row);
     });
+  }
+
+  /* 脚本里 tool 事件紧跟其 unit span 的 spanStart：把入参挂到同名、尚未带入参的最后一个 span 上 */
+  function attachSpanArg(name, input) {
+    let target = null;
+    for (const n of spanMap.values()) if (n.kind === 'unit' && n.name === name && !n.arg) target = n;
+    if (target) {
+      target.arg = fmtArg(input);
+      renderTrace();
+    }
   }
 
   function isLastChild(node) {
@@ -492,7 +549,10 @@
       if (ev.spanEnd) traceEnd(ev.spanEnd, usageAcc);
       if (ev.llmOpen) panelLlmOpen(ev.llmOpen.label, ev.llmOpen.nested);
       if (ev.stream) await panelStream(ev.stream, gen);
-      if (ev.tool) panelTool(ev.tool.name, ev.tool.input, ev.tool.nested);
+      if (ev.tool) {
+        panelTool(ev.tool.name, ev.tool.input, ev.tool.nested);
+        attachSpanArg(ev.tool.name, ev.tool.input);
+      }
       if (ev.result) panelResult(ev.result.text, ev.result.nested);
       if (ev.note) panelNote(ev.note);
       if (ev.finalOpen) panelFinalOpen();
@@ -526,6 +586,7 @@
     sleep,
     fmtNum,
     fmtMs,
+    fmtArg,
     el,
     addBlock,
     panelThink,

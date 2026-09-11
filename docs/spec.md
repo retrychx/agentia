@@ -4,9 +4,9 @@
 
 ## 1. 定位（一句话）
 
-面向应用开发者的**声明式 agent 服务开发框架**：TS 装饰器 + DI + 模块；主 agent 作为路由器调度 tool/skill/subagent/prompt；**最终形态是流水线（pipeline）服务而非对话助手**；运行时自研、参考 Claude 设计，底层调用 Messages API。
+面向应用开发者的**声明式 agent 服务开发框架**：TS 装饰器 + DI + 模块；主 agent 作为路由器调度 tool/skill/subagent/prompt；**交付物是可上线的 Agent 服务而非对话助手**；运行时自研、参考 Claude 设计，底层调用 Messages API。
 
-> 不是“agent 聊天 SDK”，是“把 agent 跑成服务的框架”。文本只是副产品，agent 执行出的活 + 结构化产物才是产品。
+> 不是“agent 聊天 SDK”，是“把 agent 做成服务的框架”。文本只是副产品，agent 执行出的活 + 结构化产物才是产品。
 
 ## 2. 运行模型：run（一次运行）
 
@@ -19,7 +19,7 @@
 - **run** = 一次任务实例。入参 = 任务 spec；出参 = 结构化结果。
 - **run scope 上下文**：在单次运行内累积（blackboard），结束即释放。跨运行记忆是次级问题。
 - **主 agent = 路由器**：不确定阶段顺序，而是自主决定调用哪些单元、什么顺序。
-- 单元（tool/skill/subagent/prompt）= 流水线的**阶段**。
+- 单元（tool/skill/subagent/prompt）= 服务的**组成阶段**。
 
 ## 3. 单元契约（四个装饰目标）
 
@@ -96,7 +96,7 @@ Trace 自 Turn 0 起内建（每个 LLM 往返都记账），Turn 1 后是完整
 
 ## 9. Trace（调用树）—— 一等公民
 
-流水线服务靠**事后**调试，trace 是调试表面 + 审计记录（对话助手能现场看，trace 对流水线是必需品）。
+Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话助手能现场看，trace 对服务交付是必需品）。
 
 ### 9.1 模型（对齐 OpenTelemetry 命名，便于接基础设施）
 
