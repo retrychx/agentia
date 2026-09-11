@@ -70,12 +70,20 @@
 - **官网全面响应式**：窄机断点（≤420px）+ 汉堡导航，20 组「页面×宽度」零横向溢出；
 - 许可证补齐 MIT；测试 142 → 182 例。
 
-## Dev Inspector（本地调试面板，进行中）
+## Dev Inspector（本地调试面板）✅ 已落地
 
-`agentia dev` 内置本地 inspector：run 列表 + 调用树，展示每个单元（tool/skill/prompt/subagent）的
-入参 / 出参 / 耗时 / token / cache / 错误状态。框架侧加 trace 出口缝（`TraceSink`、`AppOptions.sinks`、
-`registerDefaultTraceSink`）；渲染器抽为 `@migor/trace-view` 供官网与面板共用；dev 注入走 CLI 侧
-`--import` preload（框架不读 env）。计划见 `docs/plans/2026-09-11-dev-inspector.md`。
+`agentia dev` 内置本地 inspector：左栏 run 列表 + 右栏调用树，展示每个单元（tool/skill/prompt/subagent）
+的入参 / 出参 / 耗时 / token / cache / 错误状态（环形缓冲最近 50 条）。
+
+- **框架**：trace 出口缝 `TraceSink` + `AppOptions.sinks` + `registerDefaultTraceSink()`（构造期快照合并）；
+  run 成功 / 失败两条路径均投递，sink 抛错吞掉不影响 run。`createOtlpExporter()` 返回值天然满足该接口。
+- **共享渲染器** `@migor/trace-view`（零依赖 ESM）：`createTraceView` + `playTrace(真实 Trace)`；
+  官网 playground 与 CLI 面板共用同一份 —— **官网自此不再维护第二套渲染**（原 680 行的 playground.js
+  收敛到 517 行）。
+- **dev 注入**：CLI 侧 `NODE_OPTIONS=--import` preload，从用户项目解析框架并注册 sink；
+  **框架不读 env、不含 dev 逻辑**。
+- 四项测试基线与验证：框架 190 + trace-view 6 + CLI 3 例；真浏览器实测（本地面板 + 线上 playground）。
+- 计划见 `docs/plans/2026-09-11-dev-inspector.md`。
 
 ## R7 候选（下一轮）
 

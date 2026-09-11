@@ -175,4 +175,4 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖），thinking 用 adaptive，流式优先。
-- CLI 后续：`add`（接第三方单元包）、`dev`（watch）、注册表与扫描混用时的冲突提示策略。
+- CLI 后续：`add`（接第三方单元包）、注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板）。
