@@ -318,18 +318,26 @@
         out += '<li>' + mdInline(line.replace(/^\s*[-*•]\s+/, '')) + '</li>';
         continue;
       }
-      const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      const ol = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
       if (ol) {
         flushPara();
-        if (listType !== 'ol') { closeList(); out += '<ol>'; listType = 'ol'; }
-        out += '<li>' + mdInline(ol[1]) + '</li>';
+        if (listType !== 'ol') {
+          closeList();
+          const start = parseInt(ol[1], 10);
+          out += '<ol' + (start > 1 ? ' start="' + start + '"' : '') + '>';
+          listType = 'ol';
+        }
+        out += '<li>' + mdInline(ol[2]) + '</li>';
         continue;
       }
 
+      /* 空行只断段落、不断列表：模型常在有序列表项之间插空行（松散列表），
+         若在这里就 closeList()，每个列表项都会各自成为一个 <ol>，
+         标记全部从 1 重新计数 —— 表现为「每一条都是 1.」。 */
+      if (line.trim() === '') { flushPara(); continue; }
       closeList();
       if (/^\s*>\s?/.test(line)) { flushPara(); out += '<blockquote>' + mdInline(line.replace(/^\s*>\s?/, '')) + '</blockquote>'; continue; }
       if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); out += '<hr />'; continue; }
-      if (line.trim() === '') { flushPara(); continue; }
       para.push(line);
     }
     flushPara();
