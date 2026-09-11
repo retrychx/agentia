@@ -1,0 +1,21 @@
+{
+  "name": "@migor/trace-view",
+  "version": "0.2.2",
+  "private": true,
+  "type": "module",
+  "description": "Agentia trace 调用树渲染器（框架无关、零依赖）—— 官网 playground 与 CLI inspector 共用",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./style.css": "./dist/trace-view.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "repository": "retrychx/agentia",
+  "license": "MIT"
+}

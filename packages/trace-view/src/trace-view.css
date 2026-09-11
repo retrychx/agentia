@@ -1,0 +1,45 @@
+/* Agentia trace 调用树样式 —— 从 packages/website/src/styles/global.css 的 .tr-* 段原样抽出。
+ * 宿主需提供这些 CSS 变量：--ice（accent）--faint（次要文本）--text（主文本）。
+ * 官网用站点调色板；CLI inspector 页面自带同名变量，视觉一致。 */
+
+.tr-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  white-space: nowrap;
+}
+.tr-pre { color: var(--faint); white-space: pre; }
+.tr-dot { color: var(--ice); }
+.tr-row.running .tr-dot { animation: tr-blink 0.9s steps(1) infinite; }
+.tr-name { color: #d4d4d8; overflow: hidden; text-overflow: ellipsis; }
+/* span 入参摘要：让同名调用（如两次 tool:get_weather）可区分 */
+.tr-arg { color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* 失败 span：点变红、名字与 meta 走告警色 */
+.tr-row.error .tr-dot { color: #f7768e; }
+.tr-row.error .tr-name { color: #f7768e; }
+.tr-row.error .tr-meta { color: rgba(247, 118, 142, 0.9); }
+.tr-row[data-kind="run"] .tr-name { color: var(--text); font-weight: 500; }
+.tr-row[data-kind="llm.turn"] .tr-name { color: var(--ice); }
+.tr-meta { margin-left: auto; color: var(--faint); font-size: 11px; padding-left: 10px; }
+.tr-empty { color: var(--faint); }
+
+/* 四类单元标识符（⚙ tool / ◆ skill / ¶ prompt / ⊕ subagent）：只靠字形区分，
+   不上类型色 —— 站点只有一支青色 accent，加四种颜色会打散近黑钛银的克制感。
+   有内部结构的 skill / subagent 用 accent 点亮，工具类保持灰，层级一眼可辨。 */
+.tr-ico { flex: none; color: var(--faint); font-size: 10px; }
+.tr-row[data-unit="skill"] .tr-ico,
+.tr-row[data-unit="subagent"] .tr-ico { color: var(--ice); }
+
+/* span 事件行：普通工具 / @Prompt 调用是 turn 上的【事件】而非 span ——
+   没有状态圈与耗时，视觉上比 span 行更轻，入参/出参摘要靠省略号收敛。 */
+.tr-ev { gap: 6px; font-size: 11.5px; }
+.tr-ev .tr-evv { flex: none; color: var(--ice); }
+.tr-ev .tr-evtype { flex: none; color: var(--faint); font-size: 10.5px; }
+.tr-ev .tr-name { flex: none; color: #a1a1aa; }
+.tr-io { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
+.tr-ev.error .tr-evv,
+.tr-ev.error .tr-name,
+.tr-ev.error .tr-io { color: #f7768e; }
+
+@keyframes tr-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
