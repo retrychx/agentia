@@ -62,3 +62,12 @@ export interface Trace {
   status: SpanStatus;
   totalUsage: Usage; // run 汇总 = 各 span 求和
 }
+
+/**
+ * trace 出口：run 收尾（成功或失败）后，框架把【完整 Trace】交给每个 sink。
+ * sink 抛错由框架吞掉，绝不影响 run 结果（与 memory 回写同款防护）。
+ * 形状与 OtlpExporter 一致 —— createOtlpExporter() 的返回值天然满足本接口。
+ */
+export interface TraceSink {
+  export(trace: Trace): void | Promise<void>;
+}

@@ -10,6 +10,7 @@ export type {
   SpanKind,
   SpanStatus,
   TraceId,
+  TraceSink,
   UnitType,
   Usage,
 } from './core/trace.js';
@@ -79,7 +80,7 @@ export type {
 } from './toolkit/skill.js';
 export { Prompt, collectPrompts } from './toolkit/prompt.js';
 export type { PromptSpec } from './toolkit/prompt.js';
-export { createApp, AgentApp } from './toolkit/module.js';
+export { createApp, AgentApp, registerDefaultTraceSink } from './toolkit/module.js';
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
 export { defineModule } from './toolkit/module.js';
 export type { AgentModule } from './toolkit/module.js';

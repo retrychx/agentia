@@ -1,4 +1,5 @@
 import type { AgentRunResult, RunAgentOptions } from '../engine/types.js';
+import type { Trace, TraceSink } from '../core/trace.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgent } from '../engine/loop.js';
 import { TraceRecorder } from '../engine/tracer.js';
@@ -97,6 +98,8 @@ export interface ExecuteRunOptions extends RunAgentOptions {
    * 便于把失败 run 落库而非冒泡。
    */
   rethrow?: boolean;
+  /** trace 出口（观测）：run 收尾后逐个投递；sink 抛错被吞，不影响 run */
+  sinks?: TraceSink[];
 }
 
 /**
@@ -127,6 +130,7 @@ export async function executeRun(
           /* ignore */
         }
       }
+      await flushSinks(options.sinks, result.trace);
       return { run, result };
     } catch (e) {
       run.fail(e);
@@ -138,10 +142,23 @@ export async function executeRun(
           /* ignore */
         }
       }
+      await flushSinks(options.sinks, run.result!.trace);
       if (options.rethrow === false) return { run, result: run.result! };
       throw e;
     }
   });
+}
+
+/** 投递 trace 给所有 sink：观测失败（sink 抛错）不得影响 run 结果（同 memory 回写防护） */
+async function flushSinks(sinks: TraceSink[] | undefined, trace: Trace): Promise<void> {
+  if (!sinks || sinks.length === 0) return;
+  for (const sink of sinks) {
+    try {
+      await sink.export(trace);
+    } catch {
+      /* 观测失败不得影响 run */
+    }
+  }
 }
 
 /** 水合：store 值注入 blackboard；contextInit 已写的同名 key 不覆盖（用户种子优先） */

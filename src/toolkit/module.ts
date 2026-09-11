@@ -5,6 +5,7 @@ import { SystemPrompt } from '../runtime/systemPrompt.js';
 import { executeRun } from '../runtime/run.js';
 import type { RunInvocationOptions } from '../runtime/spec.js';
 import type { AgentRunResult } from '../engine/types.js';
+import type { TraceSink } from '../core/trace.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
 import { discoverProviders } from './discover.js';
@@ -45,6 +46,13 @@ export function defineModule(m: AgentModule): AgentModule {
   return m;
 }
 
+const defaultSinks: TraceSink[] = [];
+
+/** 注册全局默认 trace sink（观测 / dev 工具用）。createApp 构造期快照合并，已建应用不受后续注册影响。 */
+export function registerDefaultTraceSink(sink: TraceSink): void {
+  defaultSinks.push(sink);
+}
+
 export interface AppOptions {
   /** 应用名；同时作为 run 名写入 trace */
   name?: string;
@@ -72,6 +80,8 @@ export interface AppOptions {
   toolSources?: Token[];
   /** 单元调用中间件（洋葱模型，链序 = 注册顺序）；装配期包裹整个菜单 */
   middleware?: UnitMiddleware[];
+  /** trace 出口（观测）：每次 run 收尾投递；与全局默认 sink 合并（本字段在前） */
+  sinks?: TraceSink[];
 }
 
 /** 单次调用参数 = 通用调用参数 + 单次可覆盖 system（spec.ts 的 RunInvocationOptions 为单源） */
@@ -96,6 +106,7 @@ export class AgentApp {
     contextPolicy?: ContextPolicy;
   };
   private _tools?: AgentTool[];
+  private readonly sinks: TraceSink[];
 
   constructor(opts: AppOptions) {
     this.name = opts.name ?? 'app';
@@ -113,6 +124,8 @@ export class AgentApp {
     ];
     this.di = new Container().register(...providerList);
     this.system = opts.system;
+    // trace 出口：应用级 sinks 在前，全局默认 sink 在后（构造期快照，注册表后续变化不影响本应用）
+    this.sinks = [...(opts.sinks ?? []), ...defaultSinks];
     this.base = {
       model: opts.model,
       maxTokens: opts.maxTokens,
@@ -234,6 +247,7 @@ export class AgentApp {
       idempotencyKey: opts.idempotencyKey,
       contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
       rethrow: opts.rethrow,
+      sinks: this.sinks,
       contextInit: (ctx) => {
         if (seed) {
           for (const key of Object.keys(seed)) ctx.set(key, seed[key]);
