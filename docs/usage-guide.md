@@ -270,14 +270,58 @@ result.typed;   // { answer: string } | undefined
 
 | API | 说明 |
 |---|---|
-| `createHttpHandler` | `(req,res)` handler：`POST /run` 同步（带 `Accept: text/event-stream` 则 SSE 流式）、`POST /tasks` 异步、`GET /tasks/:id` |
-| `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `resumePending`） |
+| `createHttpHandler` | `(req,res)` handler：`POST /run` 同步（带 `Accept: text/event-stream` 则 SSE 流式）、`POST /tasks` 异步、`GET /tasks/:id`、`GET /healthz`；返回值另带 `drain()` 与 `runner` |
+| `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `resumePending` / `drain`） |
+| `HttpException` | 鉴权钩子抛出以自定 HTTP 状态与响应体（抛别的错误一律按 401 处理） |
 | `Scheduler` | 定时触发（`every` / `at`） |
 | `runSync` | 同步 RPC（`(input, opts?) => result`） |
 | `InMemoryTaskStore` | 内存任务存储（可设 `maxRecords` 做内存闸门） |
 | `FileTaskStore` | JSONL 耐久存储（`compact()` 可压实日志） |
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`） |
+
+### `createHttpHandler(app, opts?: HttpHandlerOptions)`
+
+| 选项 | 说明 |
+|---|---|
+| `authenticate` | 入口鉴权钩子：**除 `/healthz` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
+| `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB |
+| `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限） |
+| `exposeErrors` | 是否把内部异常原文回给调用方；缺省 `false`（细节只进服务端日志） |
+| `runner` | 注入 `AsyncRunner`（共用 store / 并发上限 / `resumePending`）；缺省内部 `new AsyncRunner(app)` |
+
+返回值另外挂着两样（不影响 `(req,res)` 的调用形状）：
+
+- **`handler.drain(opts?)`** —— 优雅停机：拒新单（`POST /run` 与 `/tasks` → 503，`GET /tasks/:id` 仍可轮询）→ 等异步任务与在飞同步 run 收尾 → 强制收口仍开着的 SSE 流。返回是否排空干净；超时返回 `false`，**未完成的任务留在 store 里**，下次启动由 `resumePending` 续跑（不是丢弃）。`timeoutMs` 缺省 0 = 一直等。
+  **框架不订阅信号** —— `process.on('SIGTERM', () => handler.drain())` 是宿主的事（同「框架不读 env」）。
+- **`handler.runner`** —— 内部 `AsyncRunner`，需要时手动控制（`resumePending` / `awaitTask` / `list`）。
+
+```ts
+const handler = createHttpHandler(app, {
+  // 只给缝：token/JWT/签名策略由你的宿主或反代实现
+  authenticate: (req) => {
+    if (req.headers['x-api-key'] !== expected) throw new HttpException(401, { error: '无效凭据' });
+  },
+});
+http.createServer(handler).listen(3000);
+
+process.on('SIGTERM', async () => {
+  const clean = await handler.drain({ timeoutMs: 15_000 });
+  console.log(clean ? '已排空' : '超时收口，剩余任务下次启动续跑');
+  process.exit(0);
+});
+```
+
+### `GET /healthz` → `HealthResponse`
+
+| 字段 | 说明 |
+|---|---|
+| `ok` | 恒 `true` —— 能回这个响应就说明进程活着（停机中也是 `true`，就绪与否看 `draining`） |
+| `inFlight` | 在飞工作量 = 正在处理的同步 run（含 SSE 流）+ 已受理未完成的异步任务（queued + running）；与 `drain()` 等的范围一致 |
+| `uptimeMs` | 本 handler 创建至今的毫秒数 |
+| `draining` | 是否已进入优雅停机 —— 负载均衡据此摘流量 |
+
+**不鉴权**（探针带不了凭据），且停机中也照回 200。非 `GET` 回 405。
 
 ### 取消 / 重试 / 流式
 
@@ -365,6 +409,10 @@ result.typed;   // { answer: string } | undefined
 | 取消要传进客户端才有效 | 传 `signal` 后框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发）；不转发 `signal` 的自定义 `ModelClient` 只能「放弃等待」（请求在后台跑完、产物丢弃） |
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
 | 框架不读 env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外不读环境变量；不含 dev 逻辑 |
+| 鉴权只是缝 | 框架**不实现** token / JWT / 签名策略，也不碰凭据 env —— `authenticate` 只承诺「拦在入口、读 body 之前」；策略是宿主或反代的事 |
+| 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不读 env、不做进程级决策）；信号处理是宿主的 |
+| 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
+| 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
 
 ---
 
@@ -381,6 +429,8 @@ result.typed;   // { answer: string } | undefined
 | TS 里想 `app.my_tool(...)` | 不要这样写：单元由模型选择，不是你的方法。要确定性调用就**直接调类方法** |
 | 子 agent 调不到工具 | `tools` 是 **provider token**（文件夹名）列表，不是工具名 |
 | 长跑内存涨 | 缺省内存 store 不淘汰；设 `InMemoryTaskStore({ maxRecords })` 或换耐久 store |
+| 鉴权钩子抛错，客户端只看到「未通过鉴权」 | 这是设计：非 `HttpException` 的错误原文只进服务端日志（要回给调用方就抛 `HttpException(status, body)`） |
+| 停机后 `POST /tasks` 回 503 | `drain()` 已被调用（或注入的 runner 已 drain）—— 这是「拒新单」的正常行为，任务没丢 |
 | 改了框架源码却看不到效果 | 确认 import 的是同一份构建产物（`npm run build` 后跑 `dist`） |
 
 ---

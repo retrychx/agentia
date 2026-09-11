@@ -162,7 +162,7 @@ export interface RetryOptions {
 
 ---
 
-## 4. Phase B —— 宿主硬化
+## 4. Phase B —— 宿主硬化 ✅ 已落地（2026-09-11）
 
 ### B1. 鉴权缝（只给缝，不给策略）
 
@@ -351,7 +351,9 @@ export function metricsSink(opts?: { export?: 'otlp' | 'prometheus' }): MetricsS
 
 ---
 
-## 7. 待拍板的设计分叉（需要你回复字母）
+## 7. 设计分叉（已拍板：全部按 A，2026-09-11）
+
+> 用户回复「都选 A」。下表「我的建议」列即最终决策，下方逐条记录后果。
 
 | # | 分叉 | 选项 A | 选项 B | 我的建议 |
 |---|---|---|---|---|

@@ -222,6 +222,32 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **③ SSE 流式下发**：`POST /run` 内容协商 —— `Accept: text/event-stream` → `text.delta` / `run.end` / `error` 三类事件（`transport/sse.ts` 零依赖写出器，含 15s 心跳注释帧、`x-accel-buffering: no`）。**流开之后的错误只能以 `error` 事件表达**（HTTP 状态已定），流开之前仍用普通状态码。不带 `Accept` 的请求**逐字保持旧行为**。
   新增导出：`combineSignals`、`isAbortError`、`DEFAULT_RETRY`、`RetryOptions`。测试 225 → 254 例。
 
+- 2026-09-11：**Phase B 落地（宿主硬化）** —— 设计见 `docs/plans/2026-09-11-agent-service-hardening.md` §4。
+  **① 鉴权缝（只给缝，不给策略）**：`HttpHandlerOptions.authenticate?: (req) => unknown | Promise<unknown>`。
+  调用时机锁定为「**读 body 之前**、**除 `/healthz` 外的所有路径**」（含 `GET /tasks/:id` 与未知路径 ——
+  不暴露路径是否存在）。返回任意值即通过（框架**不转交**返回值：per-request 上下文请在钩子自己的闭包里存，
+  不为「暂时没有消费点」的东西发明传递通道）；抛 `HttpException` 按其 `status`/`body` 回（想回 403 就抛 403）；
+  抛其它错误回 401 `{ error: '未通过鉴权' }`，**原文只进服务端日志**（与 `exposeErrors` 同策略，防内部拓扑外泄）。
+  **框架不实现 token/JWT/签名策略、不碰凭据 env** —— 那是宿主或反代的事；不做成 middleware 的理由：
+  middleware 拦的是**单元调用**（run 内部），鉴权要拦的是 **run 入口**。
+  **连接语义（此处锁定）**：鉴权失败时请求 body 未被消费，故 `req.complete` 为假时显式 `connection: close`
+  —— 连接不可复用（残留字节会被当成下一个请求，与 413 同理），这也是「不收 body 省资源」的落点。
+  **② 优雅停机 + 健康检查**：`AsyncRunner` 新增 `drain({ timeoutMs })` / `inFlight` / `isDraining`；
+  `createHttpHandler` 的返回类型由裸函数升为 `HttpHandler`（仍可直接传给 `http.createServer`）——
+  额外挂 `drain(opts?)` 与 `runner`，不破坏 `(req,res)` 调用形状。`drain()` 语义：拒新单 →
+  等异步任务与在飞同步 run 收尾 → **超时后强制收口仍开着的 SSE 流**（其 run 因 `res` close 中止）；
+  返回是否排空干净，超时返回 `false` 且**未完成的任务留在 store 里**（下次启动 `resumePending` 续跑，不是丢弃）。
+  停机后 `POST /run`、`POST /tasks` → 503 + `Retry-After: 1`，而 `GET /tasks/<id>` **仍可轮询**
+  （否则调用方拿不到在飞任务的结果）。**框架不订阅 `SIGTERM`/`SIGINT`**（不读 env、不做进程级决策）——
+  `process.on('SIGTERM', () => handler.drain())` 是宿主的。
+  `GET /healthz` → `HealthResponse { ok, inFlight, uptimeMs, draining }`：**不鉴权**（探针带不了凭据）、
+  停机中也回 200；`ok` 恒 `true`（能回响应即进程活着），就绪与否看 `draining`。
+  **`inFlight` 口径（此处锁定）**：正在处理的同步 run（并发闸门计数，含 SSE 流）**+** 已受理未完成的
+  异步任务（queued + running）—— 与 `drain()` 的等待范围一致，使健康检查与停机判断看同一个数。
+  **`AsyncRunner.submit` 语义变更（在此锁定）**：`drain()` 之后 `submit` 抛错（此前任何时刻都可提交）。
+  新增导出：`HttpException`（值）、`HttpHandler` / `HealthResponse`（类型）。测试 254 → 273 例（+19）。
+  真实 HTTP 实测（非仅单测）：`/healthz` 反映在飞数、鉴权先于读 body、SIGTERM → `drain()` 等慢 run 收尾返回 `true`。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。

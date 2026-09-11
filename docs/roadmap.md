@@ -119,8 +119,8 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 ## R7 候选（下一轮）
 
 - **Agent 服务能力补全**（四期设计见 `docs/plans/2026-09-11-agent-service-hardening.md`）：
-  Phase A（取消传播 / 重试退避 / SSE 流式）**已落地**；余下 B（鉴权缝 / drain+health）、
-  C（成本硬管控 / 工具闸门 / OpenAI 流式+多模态 / 会话持久化 / 完成回调）、
+  Phase A（取消传播 / 重试退避 / SSE 流式）**已落地**；Phase B（鉴权缝 / drain + `/healthz`）**已落地**；
+  余下 C（成本硬管控 / 工具闸门 / OpenAI 流式+多模态 / 会话持久化 / 完成回调）、
   D（MCP 桥 / evals / 指标 / 版本化与配额）待排。
 
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；

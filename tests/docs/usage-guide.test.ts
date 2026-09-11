@@ -33,6 +33,8 @@ const MEMBERSHIP_TYPES = [
   'TrimOptions',
   'CompactOptions',
   'BudgetPolicyOptions',
+  'HttpHandlerOptions',
+  'HealthResponse',
 ];
 
 function srcFiles(dir: string): string[] {
