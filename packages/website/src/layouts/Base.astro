@@ -1,0 +1,44 @@
+---
+// 全站外壳：head（meta/字体/样式）+ 背景层 + Nav + 内容 + Footer。
+// 四个页面共用，消除此前「nav/head/footer 各抄四遍」的重复。
+//
+// 注意：frontmatter 里的 import 在构建期（Node）执行；
+// 客户端脚本一律走 <script> 标签（Astro 会打包并注入为 module）。
+import '@fontsource/space-grotesk/latin-400.css';
+import '@fontsource/space-grotesk/latin-500.css';
+import '@fontsource/space-grotesk/latin-700.css';
+import '@fontsource/jetbrains-mono/latin-400.css';
+import '@fontsource/jetbrains-mono/latin-500.css';
+import '../styles/global.css';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+const { title, description, page = 'home', footerLinks = [] } = Astro.props;
+---
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+    <div class="grain" aria-hidden="true"></div>
+
+    <Nav page={page} />
+
+    <slot />
+
+    <Footer links={footerLinks} />
+
+    <slot name="scripts" />
+  </body>
+</html>
+
+<script>
+  // 窄屏导航折叠：零依赖，四页共用
+  import '../scripts/nav-collapse.js';
+</script>

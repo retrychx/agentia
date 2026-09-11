@@ -31,7 +31,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:cli": "tsc -p packages/cli/tsconfig.json",
-    "deploy:website": "npx wrangler pages deploy packages/website/public --project-name=agentia-web",
+    "build:website": "npm run build -w @migor/website",
+    "deploy:website": "npm run build:website && npx wrangler pages deploy packages/website/dist --project-name=agentia-web",
     "prepublishOnly": "npm run build",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",

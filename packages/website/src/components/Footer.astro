@@ -1,0 +1,13 @@
+---
+// 页脚。links 由各页传入（保留迁移前各页脚链接的既有差异，做到零视觉回归）。
+// 传给 Base 的 footerLinks 形如 [{ href, label, external? }]。
+const { links = [] } = Astro.props;
+---
+<footer class="footer">
+  <div class="footer-links">
+    {links.map((l) => (
+      <a href={l.href} target={l.external ? '_blank' : undefined} rel={l.external ? 'noopener' : undefined}>{l.label}</a>
+    ))}
+  </div>
+  <p>Agentia — 声明式 Agent 服务开发框架</p>
+</footer>

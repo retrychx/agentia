@@ -1,7 +1,12 @@
-/* Agentia 官网动效：canvas 编排网络 + GSAP 滚动动画 + Lenis 平滑滚动 */
+/* Agentia 官网动效：canvas 编排网络 + GSAP 滚动动画 + Lenis 平滑滚动。
+ * Astro 迁移：GSAP / ScrollTrigger / Lenis 从 CDN 全局改为本地打包 import（不再依赖 window 全局）。 */
+import gsap from 'gsap';
+import ScrollTrigger from 'gsap/ScrollTrigger';
+import Lenis from 'lenis';
+
 (() => {
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const hasGsap = typeof window.gsap !== 'undefined';
+  const hasGsap = true; // gsap 由上方 import 保证存在（原先判断 gsap）
 
   /* ---------- Hero canvas：主 agent 调度单元的节点脉冲网络 ---------- */
   const canvas = document.getElementById('orchestra');
@@ -147,11 +152,11 @@
 
   /* ---------- Lenis 平滑滚动 ---------- */
   let lenis = null;
-  if (typeof window.Lenis !== 'undefined') {
-    lenis = new window.Lenis({ lerp: 0.1, wheelMultiplier: 0.95 });
-    lenis.on('scroll', () => window.ScrollTrigger && window.ScrollTrigger.update());
-    window.gsap.ticker.add((t) => lenis.raf(t * 1000));
-    window.gsap.ticker.lagSmoothing(0);
+  if (typeof Lenis !== 'undefined') {
+    lenis = new Lenis({ lerp: 0.1, wheelMultiplier: 0.95 });
+    lenis.on('scroll', () => ScrollTrigger && ScrollTrigger.update());
+    gsap.ticker.add((t) => lenis.raf(t * 1000));
+    gsap.ticker.lagSmoothing(0);
     // 锚点链接走 lenis
     document.querySelectorAll('a[href^="#"]').forEach((a) => {
       a.addEventListener('click', (e) => {
@@ -164,12 +169,12 @@
     });
   }
 
-  window.gsap.registerPlugin(window.ScrollTrigger);
+  gsap.registerPlugin(ScrollTrigger);
   document.documentElement.classList.add('gsap-on');
 
   /* ---------- Hero 入场 ---------- */
-  window.gsap.set('[data-intro]', { opacity: 0, y: 26 });
-  window.gsap
+  gsap.set('[data-intro]', { opacity: 0, y: 26 });
+  gsap
     .timeline({ defaults: { ease: 'power3.out' } })
     .to('.hero-kicker', { opacity: 1, y: 0, duration: 0.7 }, 0.15)
     .to('.hero h1 .line', { opacity: 1, y: 0, duration: 0.9, stagger: 0.12 }, 0.3)
@@ -179,7 +184,7 @@
 
   /* ---------- 区块标题 reveal ---------- */
   document.querySelectorAll('[data-reveal]').forEach((el) => {
-    window.gsap.fromTo(
+    gsap.fromTo(
       el,
       { opacity: 0, y: 28 },
       {
@@ -193,10 +198,10 @@
   });
 
   /* ---------- 卡片批量 stagger ---------- */
-  window.ScrollTrigger.batch('[data-card]', {
+  ScrollTrigger.batch('[data-card]', {
     start: 'top 88%',
     onEnter: (batch) =>
-      window.gsap.fromTo(
+      gsap.fromTo(
         batch,
         { opacity: 0, y: 34 },
         { opacity: 1, y: 0, duration: 0.7, stagger: 0.09, ease: 'power3.out', overwrite: true },
@@ -207,7 +212,7 @@
   const track = document.getElementById('marquee-track');
   if (track) {
     track.innerHTML += track.innerHTML; // 复制一份实现无缝
-    window.gsap.to(track, { xPercent: -50, duration: 28, ease: 'none', repeat: -1 });
+    gsap.to(track, { xPercent: -50, duration: 28, ease: 'none', repeat: -1 });
   }
 
   /* ---------- nav 滚动态 ---------- */

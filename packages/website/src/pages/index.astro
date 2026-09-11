@@ -1,0 +1,19 @@
+---
+// 自动迁移自 public/index.html（body 内容抽到 src/fragments/index.html，经 ?raw 原样注入）。
+// 页面外壳（head/nav/footer）由 Base 统一提供。
+import Base from '../layouts/Base.astro';
+import content from '../fragments/index.html?raw';
+
+const footerLinks = [
+    { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/cli', label: '@migor/cli', external: true },
+];
+---
+<Base title='Agentia — 声明式 Agent 服务开发框架' description='Agentia：装饰器 + DI 声明 agent 流水线服务。主 agent 调度 @Tool / @Skill / @SubAgent / @Prompt 单元，产出结构化结果与完整调用树。' page='home' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../scripts/site.js';
+  </script>
+</Base>

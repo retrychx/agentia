@@ -1,47 +1,4 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>文档 — Agentia</title>
-  <meta name="description" content="Agentia 文档：快速开始、四类单元、目录约定与装配、单元中间件、触发方式、长上下文策略、CLI 命令与环境变量。" />
-  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css" />
-  <script src="./nav.js" defer></script>
-</head>
-<body>
-  <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-  <div class="grain" aria-hidden="true"></div>
-
-  <nav class="nav scrolled">
-    <div class="nav-inner">
-      <a class="brand" href="./index.html">
-        <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="29" height="29" rx="7" stroke="currentColor" stroke-width="1.6"/>
-          <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
-          <circle cx="16" cy="7.6" r="1.8" fill="currentColor" opacity=".7"/>
-          <circle cx="23.4" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
-          <circle cx="8.6" cy="20.6" r="1.8" fill="currentColor" opacity=".7"/>
-        </svg>
-        <span>Agentia</span>
-      </a>
-      <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false" aria-controls="nav-links">
-        <span></span><span></span><span></span>
-      </button>
-      <div class="nav-links" id="nav-links">
-        <a href="./index.html">首页</a>
-        <a href="./playground.html">Playground</a>
-        <a href="./docs.html">文档</a>
-        <a href="./api.html">API</a>
-        <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>
-      </div>
-    </div>
-  </nav>
-
-  <main class="docs-layout">
+<main class="docs-layout">
     <aside class="docs-nav" id="docs-nav">
       <p class="dn-title">CONTENTS</p>
       <a href="#start">快速开始</a>
@@ -385,37 +342,3 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
       </section>
     </div>
   </main>
-
-  <footer class="footer">
-    <div class="footer-links">
-      <a href="./index.html">首页</a>
-      <a href="./playground.html">Playground</a>
-      <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://www.npmjs.com/package/@migor/agentia" target="_blank" rel="noopener">@migor/agentia</a>
-    </div>
-    <p>Agentia — 声明式 Agent 服务开发框架</p>
-  </footer>
-
-  <script>
-    /* 锚点 scrollspy + nav 滚动态（零依赖） */
-    (() => {
-      const nav = document.querySelector('.nav');
-      window.addEventListener('scroll', () => nav.classList.toggle('scrolled', window.scrollY > 24), { passive: true });
-
-      const links = [...document.querySelectorAll('.docs-nav a')];
-      const sections = links
-        .map((a) => document.querySelector(a.getAttribute('href')))
-        .filter(Boolean);
-      const spy = () => {
-        let current = sections[0];
-        for (const sec of sections) {
-          if (sec.getBoundingClientRect().top <= 120) current = sec;
-        }
-        links.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + current.id));
-      };
-      window.addEventListener('scroll', spy, { passive: true });
-      spy();
-    })();
-  </script>
-</body>
-</html>

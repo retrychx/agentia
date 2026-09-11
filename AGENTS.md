@@ -23,7 +23,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
 ├── packages/
 │   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/add），零运行时依赖
-│   └── website/             # 官网静态站（index/playground/docs/api），Cloudflare Pages
+│   └── website/             # 官网（Astro 静态站，构建产物 dist/ 部署 Cloudflare Pages）
+│                            #   src/layouts/Base.astro 全站外壳、src/components/ 共享组件
+│                            #   src/fragments/*.html 页面正文（?raw 注入）、src/scripts/ 客户端脚本
 └── docs/                    # spec.md（锁定决策）、roadmap.md（方向与状态）
 ```
 
@@ -37,3 +39,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 - **验证顺序**：`npm run typecheck && npm run build && npm run build:cli && npm test && npm run e2e` 全绿才算完。
 - **设计决策**：改语义的决定要同步 `docs/spec.md` §10 决策记录；方向性工作更新 `docs/roadmap.md`。
 - **发布**：两包版本同步（@migor/agentia 与 @migor/cli），CLI 模板里的框架依赖版本跟着走。
+- **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
+  构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。
+  - 客户端脚本必须写在 `<script>` 标签里：**frontmatter 里的 import 只在构建期（Node）执行，不会下发到浏览器**。
+  - 页面正文经 `?raw` 片段 + `set:html` 注入——模板里 `{` 会被当表达式解析，而正文含大量 TS 代码块。
+  - `build.format: 'file'` 保持 `*.html` 既有 URL；`build/`、`dist/`、`.astro/` 不进版本库。

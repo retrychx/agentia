@@ -1,0 +1,21 @@
+---
+// 自动迁移自 public/api.html（body 内容抽到 src/fragments/api.html，经 ?raw 原样注入）。
+// 页面外壳（head/nav/footer）由 Base 统一提供。
+import Base from '../layouts/Base.astro';
+import content from '../fragments/api.html?raw';
+
+const footerLinks = [
+    { href: './index.html', label: '首页' },
+    { href: './playground.html', label: 'Playground' },
+    { href: './docs.html', label: '文档' },
+    { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+];
+---
+<Base title='API 参考 — Agentia' description='Agentia 公共 API 参考：core 数据模型、engine 运行时内核与长上下文策略、run 生命周期与触发、container 显式 DI、toolkit 声明式单元与装配。' page='api' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../scripts/scrollspy.js';
+  </script>
+</Base>

@@ -1,0 +1,20 @@
+---
+// 自动迁移自 public/docs.html（body 内容抽到 src/fragments/docs.html，经 ?raw 原样注入）。
+// 页面外壳（head/nav/footer）由 Base 统一提供。
+import Base from '../layouts/Base.astro';
+import content from '../fragments/docs.html?raw';
+
+const footerLinks = [
+    { href: './index.html', label: '首页' },
+    { href: './playground.html', label: 'Playground' },
+    { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+];
+---
+<Base title='文档 — Agentia' description='Agentia 文档：快速开始、四类单元、目录约定与装配、单元中间件、触发方式、长上下文策略、CLI 命令与环境变量。' page='docs' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../scripts/scrollspy.js';
+  </script>
+</Base>

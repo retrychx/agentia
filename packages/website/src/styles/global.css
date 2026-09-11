@@ -1030,6 +1030,17 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .docs-content ul { color: var(--muted); font-size: 14.5px; margin: 0 0 14px 20px; }
 .docs-content li { margin-bottom: 6px; }
 .docs-content .code-block { margin: 16px 0 20px; }
+/* 表格容器全局横向滚动：首列 nowrap 使表 min-content 在 861–1050px 区间
+   （侧栏仍在、内容列被压窄）超出内容列，而内容列是 minmax(0,1fr) 不会撑开，
+   表格便直接顶破页面。此前该规则只写在 ≤560px 断点里，导致中段宽度漏网。 */
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  /* 间距挪到容器上：overflow 容器会阻断子元素 margin 折叠，
+     若留在 .doc-table 上，每张表会多出约 36px 纵向空隙。 */
+  margin: 16px 0 20px;
+}
+.table-wrap > .doc-table { margin: 0; }
 .doc-table {
   width: 100%;
   border-collapse: collapse;
@@ -1144,12 +1155,9 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   .steps { grid-template-columns: minmax(0, 1fr); }
   .step { min-width: 0; }
 
-  /* 表格：容器内横向滚动（全站最宽的溢出源），页面本身不横滚 */
-  .table-wrap {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  .table-wrap .doc-table { min-width: 480px; } /* 别把 3 列挤成逐字竖排 */
+  /* 表格：窄屏进一步锁最小宽度，别把 3 列挤成逐字竖排
+     （容器 overflow-x 已提升为全局规则，见 .table-wrap 定义处） */
+  .table-wrap .doc-table { min-width: 480px; }
 
   /* BYOK 字段解除 min-width：否则 320px 下模型字段与清除按钮各占一行 */
   .pg-byok-field { flex: 1 1 100%; min-width: 0; }
