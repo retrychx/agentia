@@ -268,6 +268,7 @@
     const messages = [{ role: 'user', content: sc.task }];
     const stale = () => pg.state.gen !== gen;
     let openSpanId = null;
+    let runError = null; // run 级错误：收尾时把根 span 一并标红（原先根恒为 ok）
 
     try {
       for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
@@ -308,7 +309,9 @@
             const tu = toolUses[i];
             const unitId = spanId + '-tool-' + i;
             pg.highlightMenu('tool:' + tu.name);
-            pg.traceStart({ id: unitId, parent: 'root', kind: 'unit', name: 'tool:' + tu.name, arg: pg.fmtArg(tu.input) });
+            // 父 span = 【发起它的那个 llm.turn】，与框架 ToolRunContext.parentSpanId 一致；
+            // 挂 root 的话整棵树只有一层，看不出哪一轮调用了哪个工具
+            pg.traceStart({ id: unitId, parent: spanId, kind: 'unit', name: 'tool:' + tu.name, arg: pg.fmtArg(tu.input) });
             pg.panelTool(tu.name, tu.input);
             const out = execTool(tu.name, tu.input);
             pg.panelResult(out.text);
@@ -334,14 +337,15 @@
     } catch (err) {
       if (stale()) return;
       const msg = describeError(err);
+      runError = { type: 'api_error', message: msg };
       if (openSpanId) {
-        pg.traceEnd({ id: openSpanId, ms: Math.round(performance.now() - startedAt), status: 'error', error: { type: 'api_error', message: msg } }, usageAcc);
+        pg.traceEnd({ id: openSpanId, ms: Math.round(performance.now() - startedAt), status: 'error', error: runError }, usageAcc);
         openSpanId = null;
       }
       panelError(msg);
     } finally {
       if (!stale()) {
-        pg.traceFinish(Math.round(performance.now() - startedAt), usageAcc);
+        pg.traceFinish(Math.round(performance.now() - startedAt), usageAcc, runError ? 'error' : 'ok', runError);
         pg.addBlock(pg.el('div', 'tp-note', '— run 结束：usage 为 ' + p.label + ' API 返回的真实 token 计数 —'));
         pg.setRunning(false);
       }

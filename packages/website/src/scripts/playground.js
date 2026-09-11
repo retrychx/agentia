@@ -11,6 +11,8 @@
    *  { think }                         主 agent 思考行
    *  { menu }                          高亮菜单里的单元 chip
    *  { spanStart:{id,parent,kind,name} }  trace 开 span（kind: run/unit/llm.turn）
+   *     parent 语义与框架一致：unit 挂在【发起它的那个 llm.turn】下；主 agent 的
+   *     llm.turn 挂 run 根；子 agent 内部的单元递归成该 unit 的子孙。
    *  { spanEnd:{id,ms,usage} }         trace 收尾（usage 累计到计数器）
    *  { llmOpen:{label,nested} }        终端面板开一个 llm.turn 输出块
    *  { stream }                        打字机流入最近的输出块
@@ -38,14 +40,14 @@
         { stream: '审查类任务会在中间产生大量逐段批注，适合放进隔离的子代理：doc_reviewer 有独立循环和裁剪上下文，只把审查结论回流给我。' },
         { wait: 300, spanEnd: { id: 's1', ms: 1320, usage: { input: 1450, output: 88 } } },
         { wait: 400, menu: 'subagent:doc_reviewer' },
-        { wait: 500, spanStart: { id: 's2', parent: 'root', kind: 'unit', name: 'subagent:doc_reviewer' } },
+        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'subagent:doc_reviewer' } },
         { tool: { name: 'subagent:doc_reviewer', input: { task: '审查 docs/weekly-report.md，指出结构与事实性问题', focus: ['结构', '事实', '数据口径'] } } },
         { wait: 600, note: '— SubAgent 内部（独立上下文，过程不外泄） —' },
         { wait: 300, spanStart: { id: 's3', parent: 's2', kind: 'llm.turn', name: 'claude-opus-5' } },
         { llmOpen: { label: 'llm.turn · doc_reviewer', nested: true } },
         { stream: '先读文档开头两百行，摸清结构，再逐节核对数据引用。' },
         { wait: 200, spanEnd: { id: 's3', ms: 1580, usage: { input: 1180, output: 120 } } },
-        { wait: 350, spanStart: { id: 's4', parent: 's2', kind: 'unit', name: 'tool:read_file' } },
+        { wait: 350, spanStart: { id: 's4', parent: 's3', kind: 'unit', name: 'tool:read_file' } },
         { tool: { name: 'tool:read_file', input: { path: 'docs/weekly-report.md', offset: 0, limit: 200 }, nested: true } },
         { wait: 700, result: { text: '已读取 200 行（全文共 342 行）。章节：摘要 / 核心指标 / 渠道分析 / 附录。', nested: true } },
         { spanEnd: { id: 's4', ms: 210 } },
@@ -81,12 +83,12 @@
         { stream: '分两步：先用 query_metrics 拉上周核心指标，再交给 weekly_report 这个 Skill——它的成稿流程（调几次模型、怎么加工）是代码写死的，产出稳定可复现。' },
         { wait: 300, spanEnd: { id: 's1', ms: 1180, usage: { input: 1320, output: 74 } } },
         { wait: 400, menu: 'tool:query_metrics' },
-        { wait: 500, spanStart: { id: 's2', parent: 'root', kind: 'unit', name: 'tool:query_metrics' } },
+        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'tool:query_metrics' } },
         { tool: { name: 'tool:query_metrics', input: { metrics: ['dau', 'wau', 'retention_d7', 'revenue'], week: '2026-W36' } } },
         { wait: 800, result: { text: 'DAU 均值 118,420（环比 +3.1%）；WAU 402,311；7 日留存 41.2%；营收 ¥2.31M（环比 -1.4%）。' } },
         { spanEnd: { id: 's2', ms: 340 } },
         { wait: 500, menu: 'skill:weekly_report' },
-        { wait: 400, spanStart: { id: 's3', parent: 'root', kind: 'unit', name: 'skill:weekly_report' } },
+        { wait: 400, spanStart: { id: 's3', parent: 's1', kind: 'unit', name: 'skill:weekly_report' } },
         { tool: { name: 'skill:weekly_report', input: { week: '2026-W36', data: '见上一条指标结果' } } },
         { wait: 600, note: '— Skill 内部（ctx.llm() 由代码显式调用） —' },
         { wait: 300, spanStart: { id: 's4', parent: 's3', kind: 'llm.turn', name: 'claude-opus-5' } },
@@ -123,16 +125,16 @@
         { stream: '先查上海和杭州周末的天气；菜单里还有一份 packing_playbook 文本资产，适合拉进上下文辅助给建议。' },
         { wait: 300, spanEnd: { id: 's1', ms: 980, usage: { input: 1150, output: 62 } } },
         { wait: 400, menu: 'tool:get_weather' },
-        { wait: 500, spanStart: { id: 's2', parent: 'root', kind: 'unit', name: 'tool:get_weather' } },
+        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'tool:get_weather' } },
         { tool: { name: 'tool:get_weather', input: { city: '上海' } } },
         { wait: 600, result: { text: '上海：周六晴 24~31°C，周日多云 23~29°C，东南风 3 级。' } },
         { spanEnd: { id: 's2', ms: 180 } },
-        { wait: 450, spanStart: { id: 's3', parent: 'root', kind: 'unit', name: 'tool:get_weather' } },
+        { wait: 450, spanStart: { id: 's3', parent: 's1', kind: 'unit', name: 'tool:get_weather' } },
         { tool: { name: 'tool:get_weather', input: { city: '杭州' } } },
         { wait: 600, result: { text: '杭州：周六阵雨转晴 23~30°C，周日晴 22~28°C，湿度 78%。' } },
         { spanEnd: { id: 's3', ms: 190 } },
         { wait: 500, menu: 'prompt:packing_playbook' },
-        { wait: 400, spanStart: { id: 's4', parent: 'root', kind: 'unit', name: 'prompt:packing_playbook' } },
+        { wait: 400, spanStart: { id: 's4', parent: 's1', kind: 'unit', name: 'prompt:packing_playbook' } },
         { tool: { name: 'prompt:packing_playbook', input: {} } },
         { wait: 500, result: { text: '已拉取文本资产：短途出行清单（雨具 / 防晒 / 证件 / 充电宝……），共 640 字注入上下文。' } },
         { spanEnd: { id: 's4', ms: 40 } },
@@ -440,9 +442,12 @@
     renderTrace();
   }
 
-  function traceFinish(ms, usageAcc) {
+  function traceFinish(ms, usageAcc, status, error) {
     traceRoot.done = true;
     traceRoot.ms = ms;
+    // run 失败时根 span 也要标红：原先 status 恒为 ok，错误只体现在子 span 上
+    traceRoot.status = status || 'ok';
+    traceRoot.error = error || null;
     traceRoot.usage = { input: usageAcc.input, output: usageAcc.output };
     renderTrace();
   }
