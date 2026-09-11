@@ -1,3 +1,4 @@
+import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentRunResult, RunAgentOptions } from '../engine/types.js';
 import type { JsonSchema, SchemaType } from '../core/tool.js';
 import type { Trace, TraceSink } from '../core/trace.js';
@@ -8,6 +9,7 @@ import { classifyError } from '../engine/errors.js';
 import type { RunMeta, RunStatus } from './types.js';
 import { RunContext, withRunContext } from './context.js';
 import type { MemoryStore } from './memory.js';
+import type { SessionStore } from './session.js';
 
 /**
  * Run —— 一次运行的生命周期容器（spec §2/§6.1）。
@@ -94,6 +96,15 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
    */
   memory?: { store: MemoryStore; keys: string[] };
   /**
+   * 会话持久化（C4）：run 开始把 `store.load(id)` 拼在**传入 messages 之前**，
+   * 收尾把「本轮消息 + 回复」`append` 回去。与 `memory`（键值黑板）正交 —— 见 SessionStore。
+   *
+   * 只记**对话轮次**：本轮传入的 messages + 最终回复（`finalText`）。
+   * run 内部的 tool_use / tool_result 往返**不进会话历史**（它们属于这次 run 的内部过程；
+   * 要重建完整过程用 trace 重放 `traceToMessages`）—— 这样历史保持干净、可长期累积。
+   */
+  session?: { store: SessionStore; id: string };
+  /**
    * 硬失败（请求/API 层异常）是否抛出。缺省 true；
    * 异步宿主（AsyncRunner）置 false：失败也以 {run(status=failed), result.error} 返回，
    * 便于把失败 run 落库而非冒泡。
@@ -116,6 +127,7 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
   run.start();
   const ctx = new RunContext(run);
   const memory = options.memory;
+  const session = options.session;
   return withRunContext(ctx, async () => {
     try {
       options.contextInit?.(ctx);
@@ -128,7 +140,12 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
           /* ignore：辅助动作失败不影响 run */
         }
       }
-      const result = await runAgent<S>({ ...options, recorder: run.recorder });
+      const result = await runAgent<S>({
+        ...options,
+        // 会话历史拼在传入 messages **之前**；读不出来就当无历史（同上：辅助动作不击穿 run）
+        messages: await loadSession(session, options.messages),
+        recorder: run.recorder,
+      });
       run.finish(result);
       if (memory) {
         // 回写是辅助动作：失败不得把已成功的 run 翻成 failed（会丢结果与 trace），
@@ -138,6 +155,12 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         } catch {
           /* ignore */
         }
+      }
+      // 只在**跑成功**的轮次回写会话（见 appendSession 的不变量 1）。
+      // 注意判据是 run 的终态而非「有没有抛异常」—— stopReason 为 error / max_tokens /
+      // budget_exceeded / aborted 的 run 同样是「没跑完」，不该进对话历史。
+      if (session && run.status === 'succeeded') {
+        await appendSession(session, options.messages, result.finalText);
       }
       await flushSinks(options.sinks, result.trace);
       return { run, result };
@@ -157,6 +180,52 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       throw e;
     }
   });
+}
+
+/** 没有文本输出时写进会话的占位（保住「历史以 assistant 结尾」这个不变量，见 appendSession） */
+const EMPTY_REPLY_MARK = '（本次无文本输出）';
+
+/**
+ * 读会话历史，拼在传入 messages 之前。失败当「无历史」继续 ——
+ * 与 memory 水合同款防护：辅助动作失败不得击穿 run。
+ */
+async function loadSession(
+  session: { store: SessionStore; id: string } | undefined,
+  incoming: Anthropic.MessageParam[],
+): Promise<Anthropic.MessageParam[]> {
+  if (!session) return incoming;
+  try {
+    const history = await session.store.load(session.id);
+    return history.length > 0 ? [...history, ...incoming] : incoming;
+  } catch {
+    return incoming;
+  }
+}
+
+/**
+ * 把本轮消息 + 回复追加回会话（**只在成功路径调用**）。失败吞掉（同 memory 回写防护）。
+ *
+ * 三条不变量（都是为了下一轮还能把这个历史发出去）：
+ * 1. **只有成功路径回写** —— 失败时若只存下用户的提问，历史就会以 user 结尾，
+ *    下一轮再传入 user 消息即变成「连续两条 user」，撞 API 的角色交替校验；
+ * 2. 历史**以 assistant 结尾**：没有文本输出时补一条占位（`end_turn` 下极罕见）；
+ * 3. 只存**对话轮次**（用户输入 + 最终回复），run 内部的 tool 往返不进历史
+ *    —— 要完整过程请用 trace 重放 `traceToMessages`。
+ */
+async function appendSession(
+  session: { store: SessionStore; id: string } | undefined,
+  incoming: Anthropic.MessageParam[],
+  finalText: string,
+): Promise<void> {
+  if (!session) return;
+  try {
+    await session.store.append(session.id, [
+      ...incoming,
+      { role: 'assistant', content: finalText || EMPTY_REPLY_MARK },
+    ]);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** 投递 trace 给所有 sink：观测失败（sink 抛错）不得影响 run 结果（同 memory 回写防护） */

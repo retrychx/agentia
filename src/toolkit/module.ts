@@ -4,6 +4,7 @@ import type { SystemParam } from '../engine/types.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 import { executeRun } from '../runtime/run.js';
 import type { RunInvocationOptions } from '../runtime/spec.js';
+import type { SessionStore } from '../runtime/session.js';
 import type { AgentRunResult } from '../engine/types.js';
 import type { TraceSink } from '../core/trace.js';
 import { Container } from '../container/container.js';
@@ -70,6 +71,14 @@ export interface AppOptions {
   contextPolicy?: ContextPolicy;
   /** 缺省模型请求重试策略（可被单次 run 覆盖）；见 RunAgentOptions.retry */
   retry?: RetryOptions | false;
+  /** 缺省成本硬管控：整条 run 累计 token 上限（可被单次 run 覆盖） */
+  maxTotalTokens?: number;
+  /** 缺省成本硬管控：累计成本（美元）上限（可被单次 run 覆盖） */
+  maxCostUsd?: number;
+  /** 缺省单个工具执行超时（毫秒，可被单次 run 覆盖）；0/不设 = 不限 */
+  toolTimeoutMs?: number;
+  /** 缺省同回合并行工具上限（可被单次 run 覆盖）；不设 = 不限 */
+  maxToolConcurrency?: number;
   /** 只扫这些 token 的 provider 上的 @Tool；缺省扫全部 providers */
   toolSources?: Token[];
   /** 单元调用中间件（洋葱模型，链序 = 注册顺序）；装配期包裹整个菜单 */
@@ -88,6 +97,14 @@ export interface RunAppOptions<S extends JsonSchema = JsonSchema> extends RunInv
    * 传 `fromZod<T>(...)` 时 `app.run` 的返回类型自动带上 `typed: T | undefined`。
    */
   resultSchema?: S;
+  /**
+   * 会话持久化（C4）：语义同 `ExecuteRunOptions.session` —— run 开始把历史拼在传入
+   * messages 之前，成功收尾把本轮消息 + 回复追加回去。与 `blackboard`（键值黑板）正交。
+   *
+   * 只在程序内直接 `app.run` 时可用（store 实例不可序列化，因此**不在**
+   * transport 的 `RunInvocationOptions` 里 —— 异步宿主不会替你传它）。
+   */
+  session?: { store: SessionStore; id: string };
 }
 
 export interface AgentRunOutput<T = unknown> {
@@ -115,6 +132,10 @@ export class AgentApp {
     maxIterations?: number;
     contextPolicy?: ContextPolicy;
     retry?: RetryOptions | false;
+    maxTotalTokens?: number;
+    maxCostUsd?: number;
+    toolTimeoutMs?: number;
+    maxToolConcurrency?: number;
   };
   private _tools: AgentTool[] = [];
   private readonly sinks: TraceSink[];
@@ -143,6 +164,10 @@ export class AgentApp {
       maxIterations: opts.maxIterations,
       contextPolicy: opts.contextPolicy,
       retry: opts.retry,
+      maxTotalTokens: opts.maxTotalTokens,
+      maxCostUsd: opts.maxCostUsd,
+      toolTimeoutMs: opts.toolTimeoutMs,
+      maxToolConcurrency: opts.maxToolConcurrency,
     };
 
     // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent / @Skill / @Prompt；
@@ -287,7 +312,12 @@ export class AgentApp {
       idempotencyKey: opts.idempotencyKey,
       contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
       retry: opts.retry ?? this.base.retry,
+      maxTotalTokens: opts.maxTotalTokens ?? this.base.maxTotalTokens,
+      maxCostUsd: opts.maxCostUsd ?? this.base.maxCostUsd,
+      toolTimeoutMs: opts.toolTimeoutMs ?? this.base.toolTimeoutMs,
+      maxToolConcurrency: opts.maxToolConcurrency ?? this.base.maxToolConcurrency,
       resultSchema: opts.resultSchema,
+      session: opts.session,
       rethrow: opts.rethrow,
       sinks: this.sinks,
       contextInit: (ctx) => {

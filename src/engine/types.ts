@@ -20,6 +20,11 @@ export type AgentStopReason =
   | 'max_iterations'
   /** 调用方主动取消（AbortSignal）：run 未跑完，按失败收尾 */
   | 'aborted'
+  /**
+   * 成本硬管控触发（C1）：累计 token/成本超限，记账后主动停 run。
+   * **算失败**（run 没跑完）—— 与 `max_iterations` 同类：是护栏拦下的，不是正常收尾。
+   */
+  | 'budget_exceeded'
   /** stop_reason=tool_use 但回合里没有可执行块（畸形响应），防死循环直接停 */
   | 'tool_use_no_blocks'
   /** 模型/网关返回了本框架未识别的 stop_reason：保留文本，但按失败收尾 */
@@ -99,6 +104,33 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 传裸 JsonSchema 时回落 `unknown`。
    */
   resultSchema?: S;
+  /**
+   * 成本硬管控（C1）：整条 run（**含子 agent**）累计 token 上限。每回合记账后判断，
+   * 超限即停，run 以 `stopReason='budget_exceeded'` 收尾（**算失败**）。
+   * 与 `contextPolicy`（发送前的上下文裁剪）分工不同 —— 见 `createBudgetGuard`。
+   *
+   * 口径：input + output + cacheRead + cacheCreation。**不是硬实时**：一回合跑完才判，
+   * 所以实际用量可能略超上限（超一次回合的量）。
+   */
+  maxTotalTokens?: number;
+  /**
+   * 成本硬管控（C1）：累计成本（美元）上限。**依赖模型在价格表内**
+   * （engine/usage.ts）—— 不在表里时成本恒为 0，此护栏不触发；要无条件兜底用 maxTotalTokens。
+   */
+  maxCostUsd?: number;
+  /**
+   * 单个工具执行的超时（毫秒）；缺省 0 = 不限。超时**不杀 run**：
+   * 该条 tool_result 记 `is_error` 回给模型（与「工具抛错不中断 run」同语义，模型可自行换路）。
+   *
+   * ⚠️ 超时 = **放弃等待**，不是取消工具：`AgentTool.run` 没有 signal 参数，
+   * 副作用可能已经发生。想真停的工具请自行读 `ToolRunContext.signal`。
+   */
+  toolTimeoutMs?: number;
+  /**
+   * 同一回合内并行工具调用的上限；缺省 `Infinity`（= 旧行为，全部并行）。
+   * 工具会打外部系统（DB/HTTP）时设个位数，避免一个回合把下游打爆。
+   */
+  maxToolConcurrency?: number;
 }
 
 export interface AgentRunResult<T = unknown> {

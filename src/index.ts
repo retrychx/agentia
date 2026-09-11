@@ -52,6 +52,9 @@ export {
 export type { CompactOptions, TrimOptions } from './engine/trimming.js';
 export { createBudgetPolicy } from './engine/policy.js';
 export type { BudgetPolicyOptions } from './engine/policy.js';
+export { createBudgetGuard } from './engine/budget.js';
+export type { BudgetGuard, BudgetGuardOptions, BudgetSnapshot } from './engine/budget.js';
+export { mapWithConcurrency } from './engine/concurrency.js';
 export { DEFAULT_RETRY } from './engine/retry.js';
 export type { RetryOptions } from './engine/retry.js';
 
@@ -110,6 +113,7 @@ export type {
   AppCallable,
   AsyncRunnerOptions,
   ResumePendingOptions,
+  TaskSink,
 } from './transport/async.js';
 export { Scheduler } from './transport/scheduler.js';
 export type { ScheduleEveryOptions, ScheduleHandle } from './transport/scheduler.js';
@@ -129,6 +133,8 @@ export { createOtlpExporter } from './integrations/otlp.js';
 export { createOpenAIClient } from './integrations/openai.js';
 export { InMemoryMemoryStore } from './runtime/memory.js';
 export type { MemoryStore } from './runtime/memory.js';
+export { InMemorySessionStore } from './runtime/session.js';
+export type { SessionStore } from './runtime/session.js';
 export { RedisTaskStore } from './store/redisStore.js';
 export type { RedisLike, RedisSetOptions, RedisTaskStoreOptions } from './store/redisStore.js';
 export type { MaybePromise } from './store/store.js';

@@ -27,11 +27,24 @@ import { combineSignals } from '../core/abort.js';
  *   返回 Promise 需调用方自行 await。
  */
 
+/**
+ * 任务完成回调（C5）。任务达终态、记录已落库后调用。
+ * **抛错被吞**，绝不影响任务状态（与 trace sink / memory 回写同款防护）。
+ *
+ * webhook 故意**不做进框架**：用本接口 + 你自己的 `fetch` 就能搭（含签名与重试策略），
+ * 而那会引入「出站请求 + 重试 + 签名」一整套复杂度。
+ */
+export interface TaskSink {
+  onFinished(rec: TaskRecord): void | Promise<void>;
+}
+
 export interface AsyncRunnerOptions {
   client?: ModelClient;
   store?: TaskStore;
   /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
   concurrency?: number;
+  /** 任务完成回调（进程内）；见 TaskSink */
+  taskSinks?: TaskSink[];
   /**
    * 单任务执行超时（毫秒）；缺省 0 = 不限。
    *
@@ -75,6 +88,7 @@ export class AsyncRunner {
   private active = 0;
   private draining = false;
   private readonly drainWaiters: Array<() => void> = [];
+  private readonly taskSinks: TaskSink[];
 
   constructor(
     private readonly app: AppCallable,
@@ -82,6 +96,7 @@ export class AsyncRunner {
   ) {
     this.store = opts.store ?? new InMemoryTaskStore();
     this.client = opts.client;
+    this.taskSinks = opts.taskSinks ?? [];
     this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY;
     if (!(this.concurrency > 0)) {
       throw new Error(`concurrency 必须为正数，收到 ${opts.concurrency}`);
@@ -273,8 +288,28 @@ export class AsyncRunner {
     try {
       await this.#executeInner(rec);
     } finally {
-      this.active--;
-      this.#notifyDrained();
+      // 通知在飞递减**之前**：drain() 返回时保证「任务已终态 + 回调已发完」。
+      // 内层 finally 保证回调万一抛错（理论上被吞掉）也不泄漏在飞计数。
+      try {
+        await this.#notifySinks(rec);
+      } finally {
+        this.active--;
+        this.#notifyDrained();
+      }
+    }
+  }
+
+  /** 通知任务完成回调。逐个 await，**sink 抛错被吞** —— 回调失败不得影响任务状态。 */
+  async #notifySinks(rec: TaskRecord): Promise<void> {
+    if (this.taskSinks.length === 0) return;
+    // 传快照：回调拿到的是「此刻的终态」，之后记录再被改动不会串进回调持有的引用
+    const snapshot = { ...rec };
+    for (const sink of this.taskSinks) {
+      try {
+        await sink.onFinished(snapshot);
+      } catch {
+        /* 回调失败不影响任务状态（同 trace sink / memory 回写的防护） */
+      }
     }
   }
 

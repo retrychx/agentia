@@ -31,6 +31,14 @@ export interface RunInvocationOptions {
   /** 硬失败是否抛出；缺省 true（异步宿主置 false 落 failed 记录） */
   rethrow?: boolean;
   tools?: AgentTool[];
+  /** 成本硬管控：整条 run 累计 token 上限；超限以 stopReason='budget_exceeded' 收尾（算失败） */
+  maxTotalTokens?: number;
+  /** 成本硬管控：累计成本（美元）上限；依赖模型在价格表内，见 createBudgetGuard */
+  maxCostUsd?: number;
+  /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */
+  toolTimeoutMs?: number;
+  /** 同回合并行工具上限；缺省不限 */
+  maxToolConcurrency?: number;
 }
 
 /** 一次任务的规范化入参：messages（已由 normalizeMessages 规整） */

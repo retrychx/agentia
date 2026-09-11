@@ -4,6 +4,8 @@ import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError, isAbortError } from './errors.js';
+import { createBudgetGuard } from './budget.js';
+import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
 import { backoffDelay, resolveRetry, sleep } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { TraceRecorder } from './tracer.js';
@@ -69,6 +71,14 @@ interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
    * 所以用对象就地累加，而不是只靠返回值。
    */
   progress?: { iterations: number };
+  /** 成本硬管控（C1）：整条 run 累计 token 上限；记账后判断，超限即停 */
+  maxTotalTokens?: number;
+  /** 成本硬管控（C1）：累计成本（美元）上限；依赖价格表，见 createBudgetGuard */
+  maxCostUsd?: number;
+  /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */
+  toolTimeoutMs?: number;
+  /** 同回合并行工具上限；缺省 Infinity（= 全部并行） */
+  maxToolConcurrency?: number;
 }
 
 export interface AgentLoopResult<T = unknown> {
@@ -135,6 +145,24 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
 
   const signal = args.signal;
   const retryCfg = resolveRetry(args.retry);
+
+  // 成本硬管控（C1）：从数值选项就地装配（把「超限」记进 run 根 span 的事件）。
+  // 只在记账完成后判断 —— 见下面 overBudget 的用法（何时「停」、何时只记事件）。
+  const budget =
+    args.maxTotalTokens != null || args.maxCostUsd != null
+      ? createBudgetGuard({
+          maxTotalTokens: args.maxTotalTokens,
+          maxCostUsd: args.maxCostUsd,
+          onExceed: (snap) => {
+            // 观测是辅助动作：记事件失败不得把「超限」这件事变成崩溃
+            try {
+              if (parentSpanId) recorder.event(parentSpanId, 'budget.exceeded', snap);
+            } catch {
+              /* ignore */
+            }
+          },
+        })
+      : undefined;
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
     // 调用方已取消：不再发起新回合，直接以 aborted 收尾（不抛异常，语义确定）
@@ -221,6 +249,13 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
     recorder.setAttribute(turnId, 'cache_creation_tokens', usage?.cacheCreationTokens ?? 0);
 
+    // 成本硬管控（C1）：本回合 usage 已落账 → 立刻判一次（超限会触发 onExceed 记事件）。
+    // 结果**留到「循环是否还要继续」确定后再用**：
+    // - 模型本回合自然收尾 → 不因「最后一回合把额度用超了」把已成功的 run 改判失败
+    //   （只留 budget.exceeded 事件，可观测）；
+    // - 循环还要继续（模型要求调工具）→ 停在这里，不再发下一个请求 = 不再花钱。
+    const overBudget = budget ? budget.check(recorder.snapshot('ok')) : null;
+
     messages.push({ role: 'assistant', content: message.content });
 
     // —— 终止/边界分支（每个都置 finished，退出循环不再兜底改判）——
@@ -276,9 +311,29 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       break;
     }
 
-    // —— 执行工具：并行；单条 user 消息回全部 tool_result（抑制并行是反模式）——
-    const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
-      toolUses.map(async (use) => {
+    // 成本硬管控（C1）：走得到这里说明循环还要继续（模型要求调工具）—— 超限就停，
+    // 连带不执行这批工具（避免超预算的 run 继续产生副作用）。已产出的文本保留。
+    if (overBudget) {
+      stopReason = 'budget_exceeded';
+      finalText = textOf(message);
+      error = {
+        type: 'budget_exceeded',
+        message:
+          overBudget === 'tokens'
+            ? `累计 token 已超过上限 ${args.maxTotalTokens}`
+            : `累计成本已超过上限 $${args.maxCostUsd}`,
+        retryable: false,
+      };
+      finished = true;
+      break;
+    }
+
+    // —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
+    //    单条 user 消息回全部 tool_result（抑制并行是反模式）——
+    const toolResults: Anthropic.ToolResultBlockParam[] = await mapWithConcurrency(
+      toolUses,
+      args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
+      async (use) => {
         const tool = args.tools.find((t) => t.name === use.name);
         // tool_use_id 一并记账：同名工具并行时，重放只有靠 id 才能把入参出参正确配对
         recorder.event(turnId, 'tool.input', {
@@ -325,7 +380,19 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
               ok = false;
               content = `invalid input: ${invalid}`;
             } else {
-              content = await tool.run(use.input, ctx);
+              // 工具级超时（C2）：超时 = **放弃等待**（AgentTool.run 没有 signal 参数，
+              // 工具内部可能还在跑、副作用可能已发生），该条 tool_result 记 is_error 回模型
+              // —— 与「工具抛错不中断 run」同语义，模型可自行换路。
+              const out = await withTimeout(
+                Promise.resolve(tool.run(use.input, ctx)),
+                args.toolTimeoutMs ?? 0,
+              );
+              if (out === TIMED_OUT) {
+                ok = false;
+                content = `error(timeout): 工具执行超过 ${args.toolTimeoutMs}ms`;
+              } else {
+                content = out;
+              }
             }
           } catch (e) {
             ok = false;
@@ -346,7 +413,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           content: stringifySafe(content),
           is_error: !ok,
         };
-      }),
+      },
     );
 
     messages.push({ role: 'user', content: toolResults });
@@ -395,6 +462,10 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       contextPolicy: options.contextPolicy,
       resultSchema: options.resultSchema,
       progress,
+      maxTotalTokens: options.maxTotalTokens,
+      maxCostUsd: options.maxCostUsd,
+      toolTimeoutMs: options.toolTimeoutMs,
+      maxToolConcurrency: options.maxToolConcurrency,
     });
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
@@ -438,6 +509,10 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（同 RunAgentOptions.resultSchema） */
   resultSchema?: S;
+  /** 单个工具执行超时（毫秒）；同 RunAgentOptions.toolTimeoutMs */
+  toolTimeoutMs?: number;
+  /** 同回合并行工具上限；同 RunAgentOptions.maxToolConcurrency */
+  maxToolConcurrency?: number;
 }): Promise<AgentLoopResult<SchemaType<S>>> {
   return agentLoop<S>({
     client: opts.client ?? new Anthropic(),
@@ -454,6 +529,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     retry: opts.retry,
     contextPolicy: opts.contextPolicy,
     resultSchema: opts.resultSchema,
+    toolTimeoutMs: opts.toolTimeoutMs,
+    maxToolConcurrency: opts.maxToolConcurrency,
   });
 }
 

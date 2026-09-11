@@ -8,18 +8,25 @@ import type { ModelClient } from '../core/tool.js';
  * 响应再翻译回 Anthropic.Message —— 产出的 ModelClient 可直接喂给
  * executeRun / runAgent 的 client 选项。兼容端点（DeepSeek 等）换 baseURL 即可。
  *
- * 边界（近似映射，头部声明）：
- * - 非流式模拟：底层一次性 POST（stream:false），on('text') 回调在
- *   finalMessage() 完成后收到一次完整文本，而非逐 token 增量；
- * - cache token 恒 0：OpenAI 形态无 prompt cache 计量字段；
- * - refusal 为近似：finish_reason=content_filter 映射为 'refusal'，
+ * 剩余边界（**协议层面无法对齐**，不是没做）：
+ * - cache token 恒 0：OpenAI 形态没有 prompt cache 计量字段；
+ * - refusal 为近似：finish_reason=content_filter 近似映射为 'refusal'，
  *   语义上接近但不等同 Anthropic 的流式分类器干预。
+ *
+ * 流式（C3）：默认 `stream: true`，逐 token 触发 `on('text')`；`tool_calls` 的
+ * 分片按 `index` 累积后再汇成完整 `tool_use`。带 `stream_options.include_usage`
+ * 取 token 计量 —— 个别端点不认这个字段，可设 `stream: false` 退回一次性响应。
  */
 export interface OpenAIClientOptions {
   /** 缺省读 env OPENAI_API_KEY */
   apiKey?: string;
   /** 缺省 https://api.openai.com；兼容端点直接替换（如 https://api.deepseek.com） */
   baseURL?: string;
+  /**
+   * 是否用流式（缺省 true，逐 token 回调）。设 false 退回一次性响应：
+   * 兼容端点若不支持 `stream_options` 而报 400，用它兜底。
+   */
+  stream?: boolean;
   /** 测试注入用 */
   fetchImpl?: typeof fetch;
 }
@@ -28,6 +35,7 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
   const baseURL = (opts.baseURL ?? 'https://api.openai.com').replace(/\/+$/, '');
   const fetchImpl = opts.fetchImpl ?? fetch;
   const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
+  const useStream = opts.stream ?? true;
 
   return {
     messages: {
@@ -38,27 +46,42 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
             if (event === 'text') textCallbacks.push(cb);
           },
           async finalMessage(): Promise<Anthropic.Message> {
+            const req = toOpenAIRequest(params);
             const res = await fetchImpl(`${baseURL}/v1/chat/completions`, {
               method: 'POST',
               headers: {
                 'content-type': 'application/json',
                 ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
               },
-              body: JSON.stringify(toOpenAIRequest(params)),
+              // signal 必须转发：否则调用方（含 A1 的取消 / 超时）无法中止在飞请求
+              ...(params.signal ? { signal: params.signal } : {}),
+              body: useStream
+                ? JSON.stringify({ ...req, stream: true, stream_options: { include_usage: true } })
+                : JSON.stringify(req),
             });
             if (!res.ok) {
               const body = await res.text();
               throw new Error(`OpenAI 请求失败 ${res.status}: ${body.slice(0, 200)}`);
             }
-            const data = (await res.json()) as OpenAIChatResponse;
-            const message = toAnthropicMessage(data, params.model);
-            // 非流式模拟：完整文本一次性发给 text 回调
-            const fullText = message.content
-              .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-              .map((b) => b.text)
-              .join('');
-            if (fullText) for (const cb of textCallbacks) cb(fullText);
-            return message;
+
+            // 内容协商：**按响应实际形态**决定怎么解析，而不是按我们请求了什么 ——
+            // 部分兼容端点会忽略 `stream: true` 直接回一整份 JSON（此时退回 JSON 路径，
+            // 行为与旧版本一致，只是没有逐 token 的「打字机」效果）。
+            const ctype = res.headers.get('content-type') ?? '';
+            const isSse = ctype.includes('event-stream');
+            if (!useStream || !isSse) {
+              const data = (await res.json()) as OpenAIChatResponse;
+              const message = toAnthropicMessage(data, params.model);
+              // 非流式：完整文本一次性交给回调（与流式的最终结果一致）
+              const full = textOf(message);
+              if (full) for (const cb of textCallbacks) cb(full);
+              return message;
+            }
+
+            if (!res.body) {
+              throw new Error('OpenAI 流式响应没有 body（端点声明了 event-stream 却没给流）');
+            }
+            return await readStream(res.body, params.model, textCallbacks);
           },
         };
       },
@@ -80,9 +103,14 @@ interface OpenAIToolCall {
   function: { name: string; arguments: string };
 }
 
+/** 多模态内容分片（C3）：文本块与图片块各自对应一种 part */
+type OpenAIContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content?: string | null;
+  content?: string | OpenAIContentPart[] | null;
   tool_call_id?: string;
   tool_calls?: OpenAIToolCall[];
 }
@@ -101,7 +129,31 @@ interface OpenAIChatResponse {
     finish_reason?: string | null;
     message?: { content?: string | null; tool_calls?: OpenAIToolCall[] };
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: OpenAIUsage;
+}
+
+interface OpenAIUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
+/** 流式分片（`data:` 行的 payload） */
+interface OpenAIStreamChunk {
+  id?: string;
+  model?: string;
+  choices?: Array<{
+    finish_reason?: string | null;
+    delta?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
+  /** 只有带 stream_options.include_usage 时，最后一个 chunk 才带 usage */
+  usage?: OpenAIUsage;
 }
 
 type StreamParams = {
@@ -110,6 +162,7 @@ type StreamParams = {
   system?: string | Anthropic.TextBlockParam[];
   tools?: Anthropic.Tool[];
   messages: Anthropic.MessageParam[];
+  signal?: AbortSignal;
 };
 
 /** Anthropic 请求形态 → OpenAI chat.completions 请求 */
@@ -150,7 +203,7 @@ function toOpenAIRequest(params: StreamParams): OpenAIChatRequest {
                 : JSON.stringify(tr.content),
         });
       }
-      if (rest.length > 0) messages.push({ role: 'user', content: renderBlocks(rest) });
+      if (rest.length > 0) messages.push({ role: 'user', content: renderUserContent(rest) });
     } else {
       // assistant：文本部分进 content（无则 null），tool_use → tool_calls
       const blocks = m.content as Anthropic.ContentBlockParam[];
@@ -196,11 +249,195 @@ function toOpenAIRequest(params: StreamParams): OpenAIChatRequest {
   };
 }
 
-/** user 消息中非 tool_result 的 blocks 合成一段文本（text 取文本，其余 JSON 兜底） */
-function renderBlocks(blocks: Anthropic.ContentBlockParam[]): string {
-  return blocks
-    .map((b) => (b.type === 'text' ? (b as Anthropic.TextBlockParam).text : JSON.stringify(b)))
-    .join('\n');
+/**
+ * user 消息的非 tool_result 块 → OpenAI content（C3 多模态）。
+ *
+ * - 文本块 → `{type:'text'}`；
+ * - 图片块 → `{type:'image_url'}`，base64 源编成 data URL，url 源直接透传；
+ * - **没有图片时回落成纯字符串** —— 部分兼容端点只接受 string content，
+ *   无脑上数组会把原本能跑的通路弄坏（旧行为就是纯字符串）。
+ */
+function renderUserContent(blocks: Anthropic.ContentBlockParam[]): string | OpenAIContentPart[] {
+  const parts: OpenAIContentPart[] = [];
+  let hasImage = false;
+  for (const b of blocks) {
+    if (b.type === 'text') {
+      parts.push({ type: 'text', text: (b as Anthropic.TextBlockParam).text });
+      continue;
+    }
+    if (b.type === 'image') {
+      const url = imageUrlOf(b as Anthropic.ImageBlockParam);
+      if (url) {
+        parts.push({ type: 'image_url', image_url: { url } });
+        hasImage = true;
+        continue;
+      }
+    }
+    // 其余块类型 JSON 兜底：宁可把原文交给模型，也不静默丢内容
+    parts.push({ type: 'text', text: JSON.stringify(b) });
+  }
+  if (!hasImage) {
+    return parts.map((p) => (p.type === 'text' ? p.text : '')).join('\n');
+  }
+  return parts;
+}
+
+/** Anthropic image block → OpenAI 能吃的 URL（base64 编 data URL；url 源透传） */
+function imageUrlOf(b: Anthropic.ImageBlockParam): string | null {
+  const src = b.source as { type?: string; media_type?: string; data?: string; url?: string };
+  if (src.type === 'base64' && src.data) {
+    return `data:${src.media_type ?? 'image/png'};base64,${src.data}`;
+  }
+  if (src.type === 'url' && src.url) return src.url;
+  return null;
+}
+
+/** 流式累积器：文本拼接 + tool_calls 按 index 分片累积 */
+interface StreamAccumulator {
+  id?: string;
+  model?: string;
+  text: string;
+  /** index → 半成品（`arguments` 是分片拼接的，这正是「易错」的那一步） */
+  toolCalls: Map<number, { id: string; name: string; args: string }>;
+  finish?: string | null;
+  usage?: OpenAIUsage;
+}
+
+/**
+ * 消费 `text/event-stream` 并组装成 Anthropic.Message。
+ *
+ * 关键点（每条都有对应单测）：
+ * - **`id` / `name` 取首次出现的值**（OpenAI 在第一个分片给全），
+ *   **`arguments` 按分片拼接** —— 一次调用的 JSON 参数会被拆成多片；
+ * - 多个工具并行调用时**必须按 `index` 归并**，不能按到达顺序新建；
+ * - `usage` 在**最后一个 chunk**（choices 为空的那条）才出现；
+ * - `[DONE]` 是结束哨兵，之后不再有数据。
+ */
+async function readStream(
+  body: ReadableStream<Uint8Array>,
+  fallbackModel: string,
+  textCallbacks: Array<(delta: string) => void>,
+): Promise<Anthropic.Message> {
+  const acc: StreamAccumulator = { text: '', toolCalls: new Map() };
+  for await (const line of sseLines(body)) {
+    if (!line.startsWith('data:')) continue; // 忽略 event: / id: / 注释 / 空行
+    const payload = line.slice('data:'.length).trim();
+    if (!payload) continue;
+    if (payload === '[DONE]') break;
+    let chunk: OpenAIStreamChunk;
+    try {
+      chunk = JSON.parse(payload) as OpenAIStreamChunk;
+    } catch {
+      continue; // 半截/畸形分片不该毁掉整个流（后面还有正常数据）
+    }
+    applyChunk(acc, chunk, textCallbacks);
+  }
+  return accumulatorToMessage(acc, fallbackModel);
+}
+
+/** 把一条流式分片并进累积器 */
+function applyChunk(
+  acc: StreamAccumulator,
+  chunk: OpenAIStreamChunk,
+  textCallbacks: Array<(delta: string) => void>,
+): void {
+  if (chunk.id) acc.id ??= chunk.id;
+  if (chunk.model) acc.model ??= chunk.model;
+  if (chunk.usage) acc.usage = chunk.usage;
+
+  const choice = chunk.choices?.[0];
+  if (!choice) return; // 带 usage 的收尾 chunk 没有 choices
+  const delta = choice.delta;
+  if (delta?.content) {
+    acc.text += delta.content;
+    // 逐 token 下发 —— 这就是「打字机」效果的全部来源
+    for (const cb of textCallbacks) cb(delta.content);
+  }
+  for (const tc of delta?.tool_calls ?? []) {
+    const index = tc.index ?? 0;
+    const entry = acc.toolCalls.get(index) ?? { id: '', name: '', args: '' };
+    // id / name 只在首次给全（`??=`）；arguments 必须拼接
+    if (tc.id) entry.id ||= tc.id;
+    if (tc.function?.name) entry.name ||= tc.function.name;
+    if (tc.function?.arguments) entry.args += tc.function.arguments;
+    acc.toolCalls.set(index, entry);
+  }
+  if (choice.finish_reason) acc.finish = choice.finish_reason;
+}
+
+/** 累积器 → Anthropic.Message */
+function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): Anthropic.Message {
+  const content: Anthropic.ContentBlock[] = [];
+  if (acc.text) content.push({ type: 'text', text: acc.text } as Anthropic.TextBlock);
+
+  // 按 index 升序还原调用顺序（Map 保留插入序，但 index 可能乱序到达）
+  const calls = [...acc.toolCalls.entries()].sort((a, b) => a[0] - b[0]);
+  let n = 0;
+  for (const [, tc] of calls) {
+    n++;
+    content.push({
+      // 端点没给 id 时补一个：engine 会把它当 tool_use_id 回传，空 id 会让配对失败
+      id: tc.id || `call_${n}`,
+      type: 'tool_use',
+      name: tc.name,
+      input: parseToolArgs(tc.args),
+    } as Anthropic.ToolUseBlock);
+  }
+
+  const hasToolCalls = calls.length > 0;
+  return {
+    id: acc.id ?? 'chatcmpl-unknown',
+    type: 'message',
+    role: 'assistant',
+    model: acc.model ?? fallbackModel,
+    content,
+    stop_reason: mapStopReason(acc.finish, hasToolCalls),
+    stop_sequence: null,
+    usage: {
+      input_tokens: acc.usage?.prompt_tokens ?? 0,
+      output_tokens: acc.usage?.completion_tokens ?? 0,
+      // OpenAI 形态无 cache 计量：恒 0
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+  } as Anthropic.Message;
+}
+
+/** tool_call 的 arguments 是模型生成的 JSON 字符串；非法时原样交给下游 schema 校验 */
+function parseToolArgs(raw: string): unknown {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** 逐行读 SSE（OpenAI 每条事件都是一行 `data:`，不需要处理多行 payload） */
+async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        yield buf.slice(0, idx).replace(/\r$/, '');
+        buf = buf.slice(idx + 1);
+      }
+    }
+    if (buf) yield buf.replace(/\r$/, '');
+  } finally {
+    // 提前 break（[DONE]）时释放读锁，否则流不会被回收
+    try {
+      await reader.cancel();
+    } catch {
+      /* 已结束/已取消 */
+    }
+  }
 }
 
 /** OpenAI chat.completions 响应 → Anthropic.Message */
@@ -221,18 +458,11 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.
     content.push({ type: 'text', text: msg.content } as Anthropic.TextBlock);
   }
   for (const tc of msg.tool_calls ?? []) {
-    let input: unknown;
-    try {
-      input = JSON.parse(tc.function.arguments);
-    } catch {
-      // arguments 非法 JSON：原样字符串兜底，交给下游 schema 校验报 is_error
-      input = tc.function.arguments;
-    }
     content.push({
       type: 'tool_use',
       id: tc.id,
       name: tc.function.name,
-      input,
+      input: parseToolArgs(tc.function.arguments),
     } as Anthropic.ToolUseBlock);
   }
 
@@ -252,6 +482,14 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.
       cache_read_input_tokens: 0,
     },
   } as Anthropic.Message;
+}
+
+/** 取消息里的全部文本块（非流式路径一次性回调用） */
+function textOf(message: Anthropic.Message): string {
+  return message.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
 }
 
 /**
