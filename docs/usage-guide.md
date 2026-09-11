@@ -270,7 +270,7 @@ result.typed;   // { answer: string } | undefined
 
 | API | 说明 |
 |---|---|
-| `createHttpHandler` | `(req,res)` handler：`POST /run` 同步、`POST /tasks` 异步、`GET /tasks/:id` |
+| `createHttpHandler` | `(req,res)` handler：`POST /run` 同步（带 `Accept: text/event-stream` 则 SSE 流式）、`POST /tasks` 异步、`GET /tasks/:id` |
 | `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `resumePending`） |
 | `Scheduler` | 定时触发（`every` / `at`） |
 | `runSync` | 同步 RPC（`(input, opts?) => result`） |
@@ -278,6 +278,18 @@ result.typed;   // { answer: string } | undefined
 | `FileTaskStore` | JSONL 耐久存储（`compact()` 可压实日志） |
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`） |
+
+### 取消 / 重试 / 流式
+
+| API | 说明 |
+|---|---|
+| `combineSignals` | 合成多个中断源（调用方 / 超时 / 断连），任一触发即中止 |
+| `DEFAULT_RETRY` | 缺省重试参数（maxAttempts=3、指数退避 + 抖动）—— 缺省**开启** |
+| `isAbortError` | 判定异常是否为中断（`name === 'AbortError'`） |
+
+- **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**。
+- **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与 SDK 内置重试叠加 —— 建议二选一调（这里 `maxAttempts: 1` 或把 SDK 的 `maxRetries` 调小）。
+- **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
 
 ### 观测
 
@@ -350,7 +362,7 @@ result.typed;   // { answer: string } | undefined
 | 历史畸形就放弃裁剪 | `trimToolPairs` 遇到非严格交替历史会整体放弃（宁可少裁，也不切出孤立 tool_use 让请求 400） |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
 | 单元引用是 provider 粒度 | 子 agent / skill 的 `tools` 写的是 **provider token**，不是单个工具名 |
-| 模型调用不可中断 | `AsyncRunner.runTimeoutMs` 是「放弃等待」，不是「终止执行」（底层请求没有取消句柄） |
+| 取消要传进客户端才有效 | 传 `signal` 后框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发）；不转发 `signal` 的自定义 `ModelClient` 只能「放弃等待」（请求在后台跑完、产物丢弃） |
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
 | 框架不读 env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外不读环境变量；不含 dev 逻辑 |
 

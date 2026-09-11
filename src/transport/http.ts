@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SpanError, Trace } from '../core/trace.js';
-import type { AgentStopReason } from '../engine/types.js';
+import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
 import { AsyncRunner } from './async.js';
 import type { AppCallable } from './async.js';
+import { sseWriter } from './sse.js';
 import { normalizeMessages } from '../runtime/spec.js';
 import type { RunInvocationOptions } from '../runtime/spec.js';
 import type { TaskRecord } from '../store/store.js';
@@ -89,6 +90,22 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function methodNotAllowed(res: ServerResponse, method: string, allowed: string): void {
   res.setHeader('allow', allowed);
   sendJson(res, 405, { error: `方法 ${method} 不被允许，请用 ${allowed}` });
+}
+
+/** 把 app.run 的产物收成 HTTP 响应体（JSON 与 SSE 的 run.end 共用同一形状） */
+function toHttpBody(out: {
+  run: { runId: string; status: RunStatus };
+  result: AgentRunResult;
+}): RunHttpResponse {
+  return {
+    runId: out.run.runId,
+    status: out.run.status,
+    stopReason: out.result.stopReason,
+    finalText: out.result.finalText,
+    typed: (out.result as { typed?: unknown }).typed,
+    trace: out.result.trace,
+    error: out.result.error,
+  };
 }
 
 type BodyResult = { ok: true; raw: string } | { ok: false; reason: 'too-large' | 'aborted' };
@@ -193,19 +210,33 @@ export function createHttpHandler(
           if (!res.writableEnded) runAc.abort();
         };
         res.once('close', onClose);
+        // 内容协商：`Accept: text/event-stream` → SSE 逐帧下发；否则一元 JSON（旧行为逐字不变）
+        const wantsSse = String(req.headers.accept ?? '').includes('text/event-stream');
         try {
+          if (wantsSse) {
+            const sse = sseWriter(res);
+            const heartbeat = setInterval(() => sse.comment('ping'), 15_000);
+            heartbeat.unref?.();
+            try {
+              // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 run.end 下发（status/error 字段）
+              const out = await app.run(messages, {
+                rethrow: false,
+                signal: runAc.signal,
+                onText: (delta) => sse.event('text.delta', { text: delta }),
+              });
+              sse.event('run.end', toHttpBody(out));
+            } catch (e) {
+              // 流已开（200 与头已发出）→ 只能以 error 事件收尾，不能再改 HTTP 状态码
+              sse.event('error', { message: errMessage(e) });
+            } finally {
+              clearInterval(heartbeat);
+              sse.close();
+            }
+            return;
+          }
           // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 status/error 字段返回 200
           const out = await app.run(messages, { rethrow: false, signal: runAc.signal });
-          const body: RunHttpResponse = {
-            runId: out.run.runId,
-            status: out.run.status,
-            stopReason: out.result.stopReason,
-            finalText: out.result.finalText,
-            typed: (out.result as { typed?: unknown }).typed,
-            trace: out.result.trace,
-            error: out.result.error,
-          };
-          sendJson(res, 200, body);
+          sendJson(res, 200, toHttpBody(out));
         } finally {
           res.off('close', onClose);
           inFlightRuns--;

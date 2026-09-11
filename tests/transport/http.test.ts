@@ -425,4 +425,53 @@ describe('createHttpHandler', () => {
       await close(server);
     }
   });
+
+  it('Accept: text/event-stream → 逐帧 text.delta，末帧 run.end', async () => {
+    const app: AppCallable = {
+      name: 'streamer',
+      async run(_messages, opts) {
+        opts?.onText?.('你好');
+        opts?.onText?.('，世界');
+        return { run: { runId: 'r-sse', status: 'succeeded' }, result: fakeResult('你好，世界') };
+      },
+    };
+    const { server, base } = await start(app);
+    try {
+      const res = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: JSON.stringify({ text: 'hi' }),
+      });
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/);
+      const text = await res.text();
+      assert.equal((text.match(/event: text\.delta/g) ?? []).length, 2, '两帧文本增量');
+      assert.ok(text.includes('你好'), '增量内容在帧里');
+      assert.ok(text.includes('event: run.end'), '末帧是 run.end');
+      // run.end 的 data 就是那份 JSON 响应体
+      const endData = /event: run\.end\ndata: (.*)\n/.exec(text);
+      assert.ok(endData);
+      const body = JSON.parse(endData[1]) as { runId: string; finalText: string };
+      assert.equal(body.runId, 'r-sse');
+      assert.equal(body.finalText, '你好，世界');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('不带 Accept → 仍是一元 JSON（向后兼容）', async () => {
+    const { server, base } = await start(fakeApp());
+    try {
+      const res = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hi' }),
+      });
+      assert.match(res.headers.get('content-type') ?? '', /application\/json/);
+      const body = await readJson(res);
+      assert.equal(body.status, 'succeeded');
+    } finally {
+      await close(server);
+    }
+  });
 });

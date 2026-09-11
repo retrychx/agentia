@@ -216,6 +216,12 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **CLI / 官网**：`doctor` 入口检查改用与框架 `ENTRY_CANDIDATES` 一致的候选集（原只认 `index.ts`，合法 `.js/.mts` 单元被误报）；`add` 的本地路径补 `file:` 协议支持（原注释承诺、代码不认）；`cli.ts` 未知命令复用 `fail()`、用法串改用 `UNIT_TYPES.join`；`dev` 的 `NODE_OPTIONS --import` 路径加引号（含空格安装路径不再静默失效）；`inspector` 的 `text()` 补 `content-length`、body 超限由 500 改 413；脚手架 README 占位链接填真实仓库地址；`trace-view/fromTrace.js` 复用 `view.js` 的 `unitTypeOf`/`UNIT_ICO`；官网 `/llms.txt` 的「已知边界」改为从单源 guide §7 表当场抠出（不再手抄，消除与单源的漂移）；`discover` 对「路径是普通文件」给出明确错误而非原始 ENOTDIR。
   测试 215 → 225 例（框架：loop 四条终止分支、trimming 两条分支、memory `__proto__` 往返、redis `ttlSeconds: NaN`、scheduler `at(Invalid Date)`、discover 非目录）+ CLI 3 → 6 例（`resolvePackageName` 的 `file:` / 版本后缀、doctor 入口候选）。
 
+- 2026-09-11：**Phase A 落地（成本与稳定性）** —— 设计见 `docs/plans/2026-09-11-agent-service-hardening.md`（四期，8 个分叉全按建议 A 拍板），任务计划见同目录 `phase-a-cost-and-stability.md`。
+  **① 取消传播（行为变更，在此锁定）**：`AbortSignal` 从入口贯穿到 `ModelClient.messages.stream`（`stream` 的 params 加可选 `signal`）。新增 `AgentStopReason: 'aborted'`；中断**不冒泡异常**，run 以 `aborted` 收尾（`status=failed`）。`core/abort.ts` 新增 `combineSignals`（Node 18 无 `AbortSignal.any`）。`ToolRunContext.signal` 让工具自行决定是否尊重（框架不强制中断工具 —— 副作用无法回滚）；`@SubAgent`/`@Skill` 从 `ctx.signal` 透传，取消可传播。**`AsyncRunner.runTimeoutMs` 语义升级：从「放弃等待」变「到点 abort」**（对转发 `signal` 的客户端是真中止，token 不再继续烧；不转发者仍是放弃等待）。`createHttpHandler` 的 `POST /run` 在客户端断开（`res` close 且未写完）时中止在飞 run。
+  **② 重试与退避（缺省开启，在此锁定）**：消费 `classifyError().retryable`（此前只产出、无人消费）。`engine/retry.ts`：`RetryOptions` + `DEFAULT_RETRY`（maxAttempts=3、baseDelayMs=500、maxDelayMs=8000、jitter=0.2）+ `resolveRetry`/`backoffDelay`/`sleep`（可中断）。**只重试「本次尝试未产出任何文本」的失败**——已流出的文本无法撤回。每次尝试开**独立 `llm.turn` span**（失败的带 `retry.attempt` 属性 + `llm.retry` 事件），`iterations` 仍只计成功的往返。贯通 `RunAgentOptions` / `RunInvocationOptions` / `AppOptions`（应用级缺省）。⚠️ 与 SDK 内置重试叠加，文档建议二选一调。
+  **③ SSE 流式下发**：`POST /run` 内容协商 —— `Accept: text/event-stream` → `text.delta` / `run.end` / `error` 三类事件（`transport/sse.ts` 零依赖写出器，含 15s 心跳注释帧、`x-accel-buffering: no`）。**流开之后的错误只能以 `error` 事件表达**（HTTP 状态已定），流开之前仍用普通状态码。不带 `Accept` 的请求**逐字保持旧行为**。
+  新增导出：`combineSignals`、`isAbortError`、`DEFAULT_RETRY`、`RetryOptions`。测试 225 → 254 例。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。
