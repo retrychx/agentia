@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { Span, SpanId, Trace } from '../core/trace.js';
+import { stringifySafe, truncateWithMark } from '../core/json.js';
 
 /**
  * Agentia —— trace 重放基底（spec §9.4 开放问题落地，roadmap R6）。
@@ -107,7 +108,7 @@ export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Anthrop
           type: 'tool_result' as const,
           tool_use_id: id,
           content: output
-            ? truncate(output.content ?? '', maxChars)
+            ? truncateWithMark(output.content ?? '', maxChars)
             : '[replay] trace 中缺失对应 tool.output 事件',
           is_error: output ? output.ok === false : true,
         })),
@@ -181,27 +182,17 @@ function eventsOf(turn: Span, name: string): ToolEventIO[] {
 }
 
 function asString(x: unknown): string | undefined {
-  if (x === undefined) return undefined;
-  if (typeof x === 'string') return x;
-  try {
-    return JSON.stringify(x) ?? String(x);
-  } catch {
-    return String(x);
-  }
+  // 与 core/json.ts 的 stringifySafe 同源；仅额外把 undefined 视作「无值」
+  return x === undefined ? undefined : stringifySafe(x);
 }
 
 /** 入参还原：截断后尝试 JSON.parse 回对象，失败包 {_raw}（tool_use.input 必须是 object，否则 API 400） */
 function parseInput(raw: string | undefined, maxChars: number): unknown {
-  const s = truncate(raw ?? '', maxChars);
+  const s = truncateWithMark(raw ?? '', maxChars);
   try {
     const parsed = JSON.parse(s) as unknown;
     return typeof parsed === 'object' && parsed !== null ? parsed : { _raw: s };
   } catch {
     return { _raw: s };
   }
-}
-
-/** 截断到上限字符，超长加省略标记（与 engine/loop.ts 的 limit 同款格式） */
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…(+${s.length - n})` : s;
 }

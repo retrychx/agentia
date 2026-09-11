@@ -85,6 +85,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+/** 405 统一响应（方法不符）：文案与其余错误一致用中文，并带 Allow 头。 */
+function methodNotAllowed(res: ServerResponse, method: string, allowed: string): void {
+  res.setHeader('allow', allowed);
+  sendJson(res, 405, { error: `方法 ${method} 不被允许，请用 ${allowed}` });
+}
+
 type BodyResult = { ok: true; raw: string } | { ok: false; reason: 'too-large' | 'aborted' };
 
 /**
@@ -159,7 +165,7 @@ export function createHttpHandler(
     try {
       if (pathname === '/run') {
         if (method !== 'POST') {
-          sendJson(res, 405, { error: `method ${method} not allowed, use POST` });
+          methodNotAllowed(res, method, 'POST');
           return;
         }
         const input = await parseJsonBody(req, res, maxBodyBytes);
@@ -201,7 +207,7 @@ export function createHttpHandler(
 
       if (pathname === '/tasks') {
         if (method !== 'POST') {
-          sendJson(res, 405, { error: `method ${method} not allowed, use POST` });
+          methodNotAllowed(res, method, 'POST');
           return;
         }
         const body = await parseJsonBody(req, res, maxBodyBytes);
@@ -228,7 +234,7 @@ export function createHttpHandler(
 
       if (pathname.startsWith('/tasks/')) {
         if (method !== 'GET') {
-          sendJson(res, 405, { error: `method ${method} not allowed, use GET` });
+          methodNotAllowed(res, method, 'GET');
           return;
         }
         let taskId: string;

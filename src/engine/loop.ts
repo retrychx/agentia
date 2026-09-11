@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, JsonSchema, ModelClient, RecorderBackend, SchemaType, ToolRunContext } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
-import { stringifySafe } from '../core/json.js';
+import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError } from './errors.js';
 import { TraceRecorder } from './tracer.js';
@@ -24,6 +24,10 @@ export function resolveDefaultModel(over?: string): string {
   if (over) return over;
   return process.env.AGENTIA_MODEL?.trim() || 'claude-opus-5';
 }
+
+/** 缺省单次 maxTokens / 循环上限：runAgent 与 runAgentScoped 共用，避免两处各写一遍漂移。 */
+const DEFAULT_MAX_TOKENS = 64_000;
+const DEFAULT_MAX_ITERATIONS = 40;
 
 /**
  * Agentia —— 主循环（manual loop，流式）—— spec §5。
@@ -119,7 +123,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   let error: SpanError | undefined;
   let finalText = '';
   let finished = false;
-  const iterations = args.progress ?? { iterations: 0 }; // 就地累加，抛错时调用方仍读得到
+  const progress = args.progress ?? { iterations: 0 }; // 就地累加，抛错时调用方仍读得到
   let typed: SchemaType<S> | undefined;
   let submitted = false;
 
@@ -156,7 +160,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       recorder.end(turnId, { status: 'error', error: classifyError(e) });
       throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/unit 与收尾
     }
-    iterations.iterations++;
+    progress.iterations++;
 
     const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
     if (usage) usage.costEstimate = costEstimate(model, usage);
@@ -164,6 +168,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     recorder.setAttribute(turnId, 'input_tokens', usage?.inputTokens ?? 0);
     recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
     recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
+    recorder.setAttribute(turnId, 'cache_creation_tokens', usage?.cacheCreationTokens ?? 0);
 
     messages.push({ role: 'assistant', content: message.content });
 
@@ -304,12 +309,12 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     }
   }
 
-  if (!finished && stopReason === 'end_turn') {
-    // 循环因 maxIterations 上限退出而非正常终止
+  if (!finished) {
+    // 循环因 maxIterations 上限退出而非正常终止（所有置 stopReason 的分支都已同时置 finished）
     stopReason = 'max_iterations';
   }
 
-  return { stopReason, finalText, error, iterations: iterations.iterations, typed };
+  return { stopReason, finalText, error, iterations: progress.iterations, typed };
 }
 
 /** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */
@@ -326,8 +331,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     result = await agentLoop<S>({
       client: options.client ?? new Anthropic(),
       model: resolveDefaultModel(options.model),
-      maxTokens: options.maxTokens ?? 64_000,
-      maxIterations: options.maxIterations ?? 40,
+      maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+      maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
       system: options.system,
       messages: options.messages,
       tools: options.tools ?? [],
@@ -380,8 +385,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   return agentLoop<S>({
     client: opts.client ?? new Anthropic(),
     model: resolveDefaultModel(opts.model),
-    maxTokens: opts.maxTokens ?? 64_000,
-    maxIterations: opts.maxIterations ?? 40,
+    maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+    maxIterations: opts.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     system: opts.system,
     messages: opts.messages,
     tools: opts.tools ?? [],
@@ -409,8 +414,7 @@ function textOf(message: Anthropic.Message): string {
     .join('\n');
 }
 
-/** 截断到上限字符，超长加省略标记 */
+/** 截断到上限字符，超长加省略标记（格式由 core/json.ts 的 truncateWithMark 单一提供） */
 function limit(x: unknown, n: number): string {
-  const s = stringifySafe(x);
-  return s.length > n ? `${s.slice(0, n)}…(+${s.length - n})` : s;
+  return truncateWithMark(stringifySafe(x), n);
 }

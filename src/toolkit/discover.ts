@@ -20,12 +20,16 @@ import { isProvider } from '../container/container.js';
  *
  * 动态 import 决定本函数是异步的 —— createApp 带 discover 时同样返回 Promise。
  */
-const ENTRY_CANDIDATES = ['index.ts', 'index.mts', 'index.js', 'index.mjs'];
+export const ENTRY_CANDIDATES = ['index.ts', 'index.mts', 'index.js', 'index.mjs'];
 
 export async function discoverProviders(dir: string): Promise<Provider[]> {
   const root = isAbsolute(dir) ? dir : resolve(process.cwd(), dir);
   if (!existsSync(root)) {
     throw new Error(`单元目录不存在: ${root}（先创建或用 CLI: agentia g <type> <name>）`);
+  }
+  if (!statSync(root).isDirectory()) {
+    // 存在但是普通文件：readdirSync 会抛原始 ENOTDIR，信息量低且不像配置错误
+    throw new Error(`单元目录不是文件夹: ${root}`);
   }
 
   const providers: Provider[] = [];

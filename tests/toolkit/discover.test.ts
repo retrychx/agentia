@@ -117,3 +117,16 @@ describe('asset（文本资产加载）', () => {
     assert.ok(text.includes('fixture asset content'));
   });
 });
+
+describe('discoverProviders（路径不是目录）', () => {
+  it('路径是普通文件 → 明确报「不是文件夹」而非原始 ENOTDIR', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-notdir-'));
+    const file = join(dir, 'plain.txt');
+    writeFileSync(file, 'x');
+    try {
+      await assert.rejects(discoverProviders(file), /单元目录不是文件夹/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

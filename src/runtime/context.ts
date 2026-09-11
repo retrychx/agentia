@@ -52,9 +52,12 @@ export type BlackboardSeed = [keyof Blackboard] extends [never]
   ? Record<string, unknown>
   : Partial<Blackboard>;
 
-/** 在指定 ctx 下执行（executeRun 内部使用）；当前上下文对外以 current() 读取 */
-export function withRunContext<T>(ctx: RunContext, fn: () => T | Promise<T>): Promise<T> {
-  return store.run(ctx, fn) as Promise<T>;
+/** 在指定 ctx 下执行（executeRun 内部使用）；当前上下文对外以 current() 读取。
+ *  返回类型随 fn 而定：async fn → Promise<T>，同步 fn → T（不再是恒 Promise 的假类型）。 */
+export function withRunContext<T>(ctx: RunContext, fn: () => Promise<T>): Promise<T>;
+export function withRunContext<T>(ctx: RunContext, fn: () => T): T;
+export function withRunContext<T>(ctx: RunContext, fn: () => T | Promise<T>): T | Promise<T> {
+  return store.run(ctx, fn);
 }
 
 export class RunContext {

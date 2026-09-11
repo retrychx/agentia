@@ -109,7 +109,7 @@ console.log(result.finalText);
 export function projectReadme(name: string): string {
   return `# ${name}
 
-基于 [Agentia](https://github.com/) 框架的 agent 应用。
+基于 [Agentia](https://github.com/retrychx/agentia) 框架的 agent 应用。
 
 ## 目录约定
 

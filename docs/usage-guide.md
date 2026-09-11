@@ -71,7 +71,7 @@ npx @migor/cli create my-app     # 脚手架
 cd my-app && npm install
 export ANTHROPIC_API_KEY=sk-ant-...
 npx @migor/cli dev               # tsx watch + 本地 inspector 面板
-npx @migor/cli g tool fetch_weather   # 生成单元文件夹（tool/skill/prompt/subagent）
+npx @migor/cli g tool fetch-weather   # 生成单元文件夹（tool/skill/prompt/subagent）
 npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复）
 ```
 

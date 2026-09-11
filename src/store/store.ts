@@ -18,6 +18,16 @@ import type { RunSpec } from '../runtime/spec.js';
 /** 同步或异步返回值：await 化后两种实现统一（同步值 await 即自身） */
 export type MaybePromise<T> = T | Promise<T>;
 
+/** store 返回值可能是同步值或 Promise —— 区分用（同步门面只在同步值上工作） */
+export function isThenable<T>(x: MaybePromise<T>): x is Promise<T> {
+  return !!x && typeof (x as Promise<T>).then === 'function';
+}
+
+/** 生成任务 id（与具体 store 实现无关；AsyncRunner 等统一从这里取） */
+export function nextTaskId(): string {
+  return `task_${randomUUID()}`;
+}
+
 export interface TaskRecord {
   taskId: string;
   status: RunStatus;
@@ -98,8 +108,5 @@ export class InMemoryTaskStore implements TaskStore {
   clear(): void {
     this.byTask.clear();
     this.byKey.clear();
-  }
-  static nextTaskId(): string {
-    return `task_${randomUUID()}`;
   }
 }

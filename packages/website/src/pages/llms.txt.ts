@@ -31,6 +31,23 @@ export const GET: APIRoute = () => {
     .map(([h, names]) => `- ${h}: ${names.join(', ')}`)
     .join('\n');
 
+  // 从单源 guide 的 §7 表抠出「已知边界」行 —— 不再维护手抄副本（否则必然滞后）
+  const boundaryLines: string[] = [];
+  let inBoundary = false;
+  for (const raw of guide.split('\n')) {
+    const line = raw.trimEnd();
+    if (line.startsWith('## ')) {
+      inBoundary = line.includes('已知边界');
+      continue;
+    }
+    if (!inBoundary) continue;
+    const m = /^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$/.exec(line);
+    if (!m) continue;
+    if (m[1] === '边界' || /^-+$/.test(m[1])) continue; // 表头 / 分隔行
+    // 不额外加 ** 包裹：源单元格自带 `**…**` 时两层会撞出坏粗体
+    boundaryLines.push(`- ${m[1]}: ${m[2]}`);
+  }
+
   const body = `# Agentia
 
 > 面向应用开发者的声明式 agent 服务开发框架：用装饰器 + 显式 DI 声明 tool / skill / subagent / prompt 四类单元，主 agent 编排执行，交付可上线的 Agent 服务。npm 包 \`@migor/agentia\` 与 \`@migor/cli\`；ESM、Node ≥ 18。
@@ -60,11 +77,7 @@ ${apiLines}
 
 ## 已知边界（如实标注）
 
-- \`@Tool\` 方法入参**必须显式标注类型**；TS 不会从 JSON Schema 反向推断方法形参。
-- 不给 \`fromZod<T>\` 时 schema 与方法签名无关联（不校验，仅透传）。
-- 黑板键默认无类型，需用 \`declare module\` 合并 \`Blackboard\` 才有补全。
-- 单元由运行时装饰器注册表收集，故 TS 层**没有**「单元清单」类型。
-- \`strict\` 仅透传给 Anthropic；框架的 schema 校验是**子集**（\`format\`/\`minimum\` 等不校验）。
+${boundaryLines.join('\n')}
 
 ## 可选
 

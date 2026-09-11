@@ -23,18 +23,18 @@ describe('长上下文策略', () => {
     assert.ok(n > 10 && n < 20, `得到 ${n}`);
   });
 
-  it('trimToolPairs：丢旧工具对、保留最近 keepRecent 对', () => {
+  it('trimToolPairs：丢旧工具对、保留最近 keepToolPairs 对', () => {
     const msgs: Anthropic.MessageParam[] = [];
     for (let i = 0; i < 5; i++) {
       msgs.push({ role: 'assistant', content: [{ type: 'tool_use', id: `t${i}`, name: 'x', input: {} }] });
       msgs.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'r' }] });
     }
-    const trimmed = trimToolPairs(msgs, { keepRecent: 2 });
+    const trimmed = trimToolPairs(msgs, { keepToolPairs: 2 });
     assert.equal(trimmed.length, 4); // 5 对丢 3 对留 2 对
     assert.ok(JSON.stringify(trimmed).includes('t3'), '保留的是最近的工具对');
     assert.ok(!JSON.stringify(trimmed).includes('t0'));
     // 无需裁剪时返回原数组引用
-    assert.equal(trimToolPairs(trimmed, { keepRecent: 2 }), trimmed);
+    assert.equal(trimToolPairs(trimmed, { keepToolPairs: 2 }), trimmed);
   });
 
   it('compactMessages：旧前缀变摘要并入尾段首条 user', async () => {
@@ -80,7 +80,7 @@ describe('长上下文策略', () => {
     ];
     // 按相邻性配对会只丢 [1,2] 对，把 t0 的 tool_use 变成孤立块 → 后续请求 400。
     // 检测到畸形即整体放弃裁剪（返回原数组引用）。
-    assert.equal(trimToolPairs(msgs, { keepRecent: 0 }), msgs);
+    assert.equal(trimToolPairs(msgs, { keepToolPairs: 0 }), msgs);
   });
 
   it('trimToolPairs：孤立的 tool_result（上一条不是带 tool_use 的 assistant）→ 放弃裁剪', () => {
@@ -88,7 +88,7 @@ describe('长上下文策略', () => {
       { role: 'user', content: 'go' },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'r0' }] },
     ];
-    assert.equal(trimToolPairs(msgs, { keepRecent: 0 }), msgs);
+    assert.equal(trimToolPairs(msgs, { keepToolPairs: 0 }), msgs);
   });
 
   it('createBudgetPolicy：keepToolPairs 决定编辑保留的「对数」（与 keepRecent 的「条数」分离）', async () => {
@@ -109,5 +109,35 @@ describe('长上下文策略', () => {
     const out = await policy.beforeTurn(msgs, { iteration: 0, model: 'm' });
     assert.ok(JSON.stringify(out).includes('t3'), '保留最近 2 对');
     assert.ok(!JSON.stringify(out).includes('t0'), '丢掉更旧的对');
+  });
+
+  it('compactMessages：尾段以 assistant 开头 → 摘要单独作首条 user（角色交替合法）', async () => {
+    const msgs: Anthropic.MessageParam[] = [
+      { role: 'user', content: 'u0' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'u2' },
+      { role: 'assistant', content: 'a3' },
+      { role: 'assistant', content: 'a4' },
+      { role: 'assistant', content: 'a5' },
+    ];
+    const out = await compactMessages(msgs, { keepRecent: 2, summarize: () => 'SUM' });
+    assert.equal(out.length, 3, '摘要 + 尾段 2 条');
+    assert.equal(out[0].role, 'user');
+    assert.ok(JSON.stringify(out[0]).includes('SUM'));
+    assert.ok(JSON.stringify(out[2]).includes('a5'));
+  });
+
+  it('compactMessages：cut 落在 tool_result 上 → 整对后移进保留段（不拆散工具对）', async () => {
+    const msgs: Anthropic.MessageParam[] = [
+      { role: 'user', content: 'u0' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'x', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'r' }] },
+    ];
+    // keepRecent=1 → cut=2 正指向 tool_result 那条 user → while 后移到 cut=1
+    const out = await compactMessages(msgs, { keepRecent: 1, summarize: () => 'SUM' });
+    assert.equal(out.length, 3);
+    assert.ok(JSON.stringify(out[0]).includes('SUM'), '旧前缀进摘要');
+    assert.ok(!JSON.stringify(out).includes('u0'), 'u0 已被摘要替换');
+    assert.ok(JSON.stringify(out).includes('t9'), '工具对整对保留、未被切散');
   });
 });

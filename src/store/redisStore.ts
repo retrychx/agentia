@@ -76,8 +76,9 @@ export class RedisTaskStore implements TaskStore {
     }
     this.prefix = prefix;
     const ttl = opts.ttlSeconds ?? 0;
-    if (ttl < 0) {
-      throw new Error(`RedisTaskStore 的 ttlSeconds 不能为负，收到 ${opts.ttlSeconds}`);
+    if (!(ttl >= 0)) {
+      // !(ttl >= 0) 同时拦 NaN —— NaN 会让 `ttl > 0` 恒假，静默把 TTL 关掉
+      throw new Error(`RedisTaskStore 的 ttlSeconds 必须为 ≥ 0 的数（0 = 不设 TTL），收到 ${opts.ttlSeconds}`);
     }
     this.ttlSeconds = ttl;
   }

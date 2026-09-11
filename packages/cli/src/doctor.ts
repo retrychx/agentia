@@ -3,6 +3,9 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isValidName } from './templates.js';
 
+/** 单元入口候选（须与框架 src/toolkit/discover.ts 的 ENTRY_CANDIDATES 一致） */
+const ENTRY_CANDIDATES = ['index.ts', 'index.mts', 'index.js', 'index.mjs'];
+
 interface RegistryEntry {
   token: string;
   ident: string;
@@ -55,8 +58,8 @@ export function doctor(): number {
       errors.push(`单元名「${name}」不符合 kebab-case 规范（units/${name}/）`);
       broken = true;
     }
-    if (!existsSync(join(unitsDir, name, 'index.ts'))) {
-      errors.push(`单元 units/${name}/ 缺少入口文件 index.ts`);
+    if (!ENTRY_CANDIDATES.some((f) => existsSync(join(unitsDir, name, f)))) {
+      errors.push(`单元 units/${name}/ 缺少入口文件（${ENTRY_CANDIDATES.join(' / ')}）`);
       broken = true;
     }
     if (!registeredTokens.has(name)) {

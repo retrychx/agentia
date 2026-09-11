@@ -16,11 +16,11 @@ import { stringifySafe } from './json.js';
  */
 export function validateJsonSchema(schema: JsonSchema, input: unknown): string | null {
   // zod 可选接入（toolkit/zod.ts 的 fromZod 挂的隐藏字段）：存在则先走 zod 校验，
-  // 失败即回「$.: <首条错误>」（含 zod 路径）；通过后再叠加 JSON Schema 子集校验。
+  // 失败即回「$: <首条错误>」（含 zod 路径，前缀与原生分支的 `$` 路径一致）；通过后再叠加 JSON Schema 子集校验。
   const zv = (schema as Record<string, unknown>).__zodValidate;
   if (typeof zv === 'function') {
     const err = (zv as (input: unknown) => string | null)(input);
-    if (err) return `$.: ${err}`;
+    if (err) return `$: ${err}`;
   }
   return check(schema, input, '$');
 }

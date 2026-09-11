@@ -26,6 +26,8 @@ export function defaultEstimateTokens(text: string): number {
       (cp >= 0x3400 && cp <= 0x9fff) || // CJK 统一表意文字（扩展A + 基本区）
       (cp >= 0xf900 && cp <= 0xfaff) || // 兼容表意文字
       (cp >= 0x20000 && cp <= 0x2a6df) || // 扩展B
+      (cp >= 0x2a700 && cp <= 0x2ebef) || // 扩展C–F
+      (cp >= 0x30000 && cp <= 0x3134f) || // 扩展G
       (cp >= 0x3000 && cp <= 0x30ff) || // 日文假名 + CJK 标点
       (cp >= 0xff00 && cp <= 0xffef) // 全角字符
     ) {
@@ -98,8 +100,8 @@ export function renderMessages(messages: Anthropic.MessageParam[]): string {
 }
 
 export interface TrimOptions {
-  /** 保留最近几对 tool exchange；缺省 1 */
-  keepRecent?: number;
+  /** 保留最近几对 tool exchange（tool_use→tool_result **对数**）；缺省 1 */
+  keepToolPairs?: number;
 }
 
 /** assistant 消息里的 tool_use id 列表（无则空） */
@@ -142,7 +144,7 @@ function toolBlocksPaired(messages: Anthropic.MessageParam[]): boolean {
 }
 
 /**
- * context editing：丢弃旧的 tool_use→tool_result 对（超出 keepRecent 的），
+ * context editing：丢弃旧的 tool_use→tool_result 对（超出 keepToolPairs 的），
  * 保留最近 N 对以及所有非工具消息。逐对整体移除，保角色交替合法。
  * 返回原数组引用（若无需裁剪）或新数组。
  *
@@ -150,7 +152,7 @@ function toolBlocksPaired(messages: Anthropic.MessageParam[]): boolean {
  * —— 宁可少裁剪，也不能切出孤立 tool_use/tool_result 让后续请求 400。
  */
 export function trimToolPairs(messages: Anthropic.MessageParam[], opts: TrimOptions = {}): Anthropic.MessageParam[] {
-  const keep = Math.max(0, opts.keepRecent ?? 1);
+  const keep = Math.max(0, opts.keepToolPairs ?? 1);
   if (!toolBlocksPaired(messages)) return messages;
   const pairs: Array<[assistant: number, result: number]> = [];
   for (let i = 0; i + 1 < messages.length; i++) {
@@ -168,7 +170,7 @@ export function trimToolPairs(messages: Anthropic.MessageParam[], opts: TrimOpti
     drop.add(pairs[k][1]);
   }
   const out = messages.filter((_, i) => !drop.has(i));
-  return out.length === messages.length ? messages : out;
+  return out;
 }
 
 export interface CompactOptions {
@@ -202,8 +204,8 @@ export async function compactMessages(
   const summary = await opts.summarize(renderMessages(prefix));
   const label = `[此前对话摘要]\n${summary}`;
 
-  if (tail.length === 0) return [{ role: 'user', content: label }];
-
+  // tail 必非空：keepRecent ≥ 1 且上面已早返回 messages.length <= keepRecent，
+  // 故 cut ∈ [1, messages.length)，slice(cut) 至少一条。
   const [first, ...rest] = tail;
   if (first.role === 'user' && !isToolResultMessage(first)) {
     // 并入首条普通 user 消息，保持 user→assistant 交替

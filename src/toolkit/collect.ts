@@ -6,10 +6,9 @@
  * 本模块是这一扫描的唯一实现，四个 collect* 只做各自单元形态的组装。
  */
 
-/** 一次扫描命中：方法 key、原型上的方法函数、登记的 spec。 */
+/** 一次扫描命中：方法 key、登记的 spec。 */
 export interface DecoratedMethod<S> {
   key: string | symbol;
-  fn: Function;
   spec: S;
 }
 
@@ -36,7 +35,7 @@ export function scanDecoratedMethods<S>(
       const spec = registry.get(desc.value as Function);
       if (!spec) continue; // 未装饰的 override 不标 seen，父类 spec 继续生效
       seen.add(key);
-      found.push({ key, fn: desc.value as Function, spec });
+      found.push({ key, spec });
     }
     proto = Object.getPrototypeOf(proto);
   }

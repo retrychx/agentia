@@ -2,6 +2,11 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, JsonSchema, ModelClient } from '../core/tool.js';
 import type { SpanError, Trace } from '../core/trace.js';
 
+/**
+ * engine 对模型端的最小结构面（R4 多模型）：Anthropic SDK 天然满足，
+ * 其他 provider（OpenAI 兼容端点等）只需适配出同一形态。
+ * 定义在 core/tool.js 并从此处转导出。
+ */
 export type { ModelClient } from '../core/tool.js';
 
 export type AgentStopReason =
@@ -28,7 +33,7 @@ export function isSuccessStopReason(reason: AgentStopReason): boolean {
   return reason === 'end_turn' || reason === 'stop_sequence';
 }
 
-/** 可携带 cache_control 的 system 文本块（见 run/systemPrompt.ts） */
+/** 可携带 cache_control 的 system 文本块（见 runtime/systemPrompt.ts） */
 export interface SystemTextBlock {
   type: 'text';
   text: string;
@@ -51,11 +56,6 @@ export interface ContextPolicy {
   ): Promise<Anthropic.MessageParam[]>;
 }
 
-/**
- * engine 对模型端的最小结构面（R4 多模型）：Anthropic SDK 天然满足，
- * 其他 provider（OpenAI 兼容端点等）只需适配出同一形态。
- * 定义在 core/tool.js 并从此处转导出。
- */
 export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
   system?: SystemParam;

@@ -27,6 +27,8 @@ export class SqliteTaskStore implements TaskStore {
     // save 失败静默吞掉（不遮罩主流程），结果是任务记录无声丢失。
     // 内存库同样支持该 pragma（且无争用），无需跳过。
     this.db.exec('PRAGMA busy_timeout = 5000');
+    // status 列是 json 内 status 的反规范化副本：本 store 的 SELECT 只读 json，
+    // 该列专供外部/DBA 直接按状态统计（如 SELECT status, count(*) FROM tasks GROUP BY status）。
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         task_id TEXT PRIMARY KEY,

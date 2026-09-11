@@ -60,7 +60,7 @@ describe('MemoryStore 跨 run 记忆', () => {
       client: first.client,
       memory: { store, keys: ['count'] },
     });
-    assert.deepEqual(store.load(['count']), { count: 41 });
+    assert.deepEqual({ ...store.load(['count']) }, { count: 41 });
 
     // 第二次 run（同 store）：水合进 blackboard，工具读到上次的值
     const second = mockClient([toolUseMsg('read_key', {}), endTurnMsg('ok')]);
@@ -88,8 +88,8 @@ describe('MemoryStore 跨 run 记忆', () => {
 
     assert.ok(JSON.stringify(seen[1]).includes('seed'), 'blackboard 保留 contextInit 种子');
     assert.ok(!JSON.stringify(seen[1]).includes('fromStore'), 'memory 未覆盖同名 key');
-    // 回写的是 blackboard 当前值（即种子）
-    assert.deepEqual(store.load(['k']), { k: 'seed' });
+    // 回写的是 blackboard 当前值（即种子）；load 返回无原型对象，展开成普通对象再比对
+    assert.deepEqual({ ...store.load(['k']) }, { k: 'seed' });
   });
 
   it('失败 run 也回写', async () => {
@@ -123,7 +123,7 @@ describe('MemoryStore 跨 run 记忆', () => {
 
     assert.equal(run.status, 'failed');
     assert.match(result.error?.message ?? '', /api boom/);
-    assert.deepEqual(store.load(['progress']), { progress: 'half' });
+    assert.deepEqual({ ...store.load(['progress']) }, { progress: 'half' });
   });
 
   it('水合只认自有键：key 撞 Object.prototype 属性（toString）不被当记忆值灌进黑板', async () => {
@@ -229,5 +229,18 @@ describe('MemoryStore 跨 run 记忆', () => {
     assert.equal(result.error, undefined);
     // 失败路径同样回写（blackboard 当前值）：工具写过 k
     assert.deepEqual(saved, [{ k: 'v' }]);
+  });
+
+  it('load 用无原型对象：__proto__ 键不被吞（与 flushMemory 对称）', () => {
+    const store = new InMemoryMemoryStore();
+    // 字面量 { __proto__: x } 会设原型而非自有键 —— 显式造一个自有 __proto__ 键
+    const entries: Record<string, unknown> = {};
+    Object.defineProperty(entries, '__proto__', { value: 'kept', enumerable: true, writable: true, configurable: true });
+    store.save(entries);
+
+    const loaded = store.load(['__proto__']);
+    assert.ok(Object.hasOwn(loaded, '__proto__'), 'load 结果必须含自有 __proto__ 键（不能静默丢失）');
+    assert.equal((loaded as Record<string, unknown>)['__proto__'], 'kept');
+    assert.equal(Object.getPrototypeOf(loaded), null, '无原型，绝不污染 Object.prototype');
   });
 });

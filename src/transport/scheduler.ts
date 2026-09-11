@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AsyncRunner } from './async.js';
 import type { RunInvocationOptions } from '../runtime/spec.js';
+import { isThenable } from '../store/store.js';
 
 /**
  * Agentia —— 定时触发（spec §6.3 定时事件）。
@@ -85,6 +86,10 @@ export class Scheduler {
 
   /** 单次触发（指定时刻）。 */
   at(when: Date, input: unknown, opts: ScheduleEveryOptions = {}): ScheduleHandle {
+    if (!(when instanceof Date) || !Number.isFinite(when.getTime())) {
+      // 非法日期 → delay 为 NaN → setTimeout(fn, NaN) 会立即触发且无任何提示
+      throw new Error(`Scheduler.at 需要一个合法 Date（非 Invalid Date），收到 ${String(when)}`);
+    }
     const id = randomUUID();
     const delay = Math.max(0, when.getTime() - Date.now());
     const timer = setTimeout(() => {
@@ -126,8 +131,8 @@ export class Scheduler {
     const forget = (taskId: string) => inFlight.delete(taskId);
     for (const taskId of inFlight) {
       const rec = this.runner.poll(taskId);
-      if (rec && typeof (rec as Promise<unknown>).then === 'function') {
-        void (rec as Promise<{ status: string } | undefined>)
+      if (isThenable(rec)) {
+        void rec
           .then((r) => {
             if (!r || r.status === 'succeeded' || r.status === 'failed') forget(taskId);
           })

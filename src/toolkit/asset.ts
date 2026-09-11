@@ -15,8 +15,9 @@ import { readFileSync } from 'node:fs';
  * }
  * ```
  *
- * 每次调用现读、不缓存：@Prompt 的 volatile 语义（每次调用重算）要求资产新鲜；
- * 文本文件读取开销可忽略。要在模块加载期固化，就在模块顶层调用一次存常量。
+ * 读取时机：本函数在**调用处**读文件。把 `asset(...)` 直接当装饰器 spec 值（下面的例子）
+ * 是**模块加载期读一次**并固化；要「每次调用重算」（@Prompt 的 volatile 语义），应把
+ * `asset(...)` 写在方法体内返回。文本文件读取开销可忽略。
  *
  * @param base 调用方模块的 import.meta.url（相对它解析 rel）
  * @param rel  相对资产路径（'./system.md'）

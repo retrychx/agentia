@@ -62,7 +62,7 @@ export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolic
       // 1) context editing：先丢旧工具对（按「对数」计，见 keepToolPairs）
       let current = messages;
       if (editBeforeCompact) {
-        const trimmed = trimToolPairs(current, { keepRecent: keepToolPairs });
+        const trimmed = trimToolPairs(current, { keepToolPairs });
         if (trimmed.length < current.length) {
           current = trimmed;
           if (estimateMessages(current, estimate) <= budgetTokens) return current;

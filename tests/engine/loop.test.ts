@@ -117,4 +117,51 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal((input.body as { tool_use_id?: string }).tool_use_id, 'tu_xyz');
     assert.equal((output.body as { tool_use_id?: string }).tool_use_id, 'tu_xyz');
   });
+
+  it('refusal：模型拒答 → stopReason=refusal + 保留文本 + 不可重试 error', async () => {
+    const { client } = mockClient([rawMsg('refusal', '我不能帮你做这个')]);
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      rethrow: false,
+    });
+    assert.equal(result.stopReason, 'refusal');
+    assert.equal(result.finalText, '我不能帮你做这个', '已产出的文本不该丢');
+    assert.equal(result.error?.type, 'refusal');
+    assert.equal(result.error?.retryable, false);
+    assert.equal(run.status, 'failed');
+    assert.equal(result.trace.status, 'error');
+  });
+
+  it('max_tokens：截断收尾 → stopReason=max_tokens，文本保留、无 error 对象', async () => {
+    const { client } = mockClient([rawMsg('max_tokens', '被截断的开头')]);
+    const { result } = await executeRun({ messages: [{ role: 'user', content: 'go' }], client });
+    assert.equal(result.stopReason, 'max_tokens');
+    assert.equal(result.finalText, '被截断的开头');
+    assert.equal(result.error, undefined, 'max_tokens 不是异常，只是没跑完');
+  });
+
+  it('pause_turn：无 server tools 时直接停 → stopReason=pause_turn（防死循环）', async () => {
+    const { client } = mockClient([rawMsg('pause_turn', '暂停片段')]);
+    const { result } = await executeRun({ messages: [{ role: 'user', content: 'go' }], client });
+    assert.equal(result.stopReason, 'pause_turn');
+    assert.equal(result.finalText, '暂停片段');
+  });
+
+  it('max_iterations：循环达上限 → stopReason=max_iterations，iterations 如实', async () => {
+    // 每回合都回 tool_use、永不给终态；maxIterations=2 到底后兜底改判
+    const { client } = mockClient([
+      toolUseMsg('echo', {}, 't1'),
+      toolUseMsg('echo', {}, 't2'),
+      toolUseMsg('echo', {}, 't3'),
+    ]);
+    const { result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [{ name: 'echo', description: 'd', inputSchema: OBJ, run: () => 'ok' }],
+      client,
+      maxIterations: 2,
+    });
+    assert.equal(result.stopReason, 'max_iterations');
+    assert.equal(result.iterations, 2, '上限内的 2 次模型往返都要记');
+  });
 });

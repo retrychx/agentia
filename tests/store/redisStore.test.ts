@@ -260,4 +260,8 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     assert.equal((await runner.list()).length, 2);
     assert.equal(await runner.resumePending(), 0); // 无 queued/running 残留
   });
+
+  it('ttlSeconds: NaN → 抛错（原 `ttl < 0` 放过 NaN，会静默关闭 TTL）', () => {
+    assert.throws(() => new RedisTaskStore(new InMemoryRedisFake(), { ttlSeconds: Number.NaN }), /ttlSeconds/);
+  });
 });

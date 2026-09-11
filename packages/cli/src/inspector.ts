@@ -100,7 +100,7 @@ export function startInspector(opts: { port?: number; host?: string } = {}): Pro
   };
 
   const text = (res: ServerResponse, code: number, type: string, body: string): void => {
-    res.writeHead(code, { 'content-type': type });
+    res.writeHead(code, { 'content-type': type, 'content-length': Buffer.byteLength(body) });
     res.end(body);
   };
 
@@ -111,7 +111,9 @@ export function startInspector(opts: { port?: number; host?: string } = {}): Pro
       req.on('data', (c: Buffer) => {
         size += c.length;
         if (size > maxBytes) {
-          reject(new Error('body 过大'));
+          const err = new Error(`请求 body 过大（上限 ${maxBytes} 字节）`) as Error & { statusCode?: number };
+          err.statusCode = 413; // 让 handler 的 catch 回 413 而非 500
+          reject(err);
           req.destroy();
           return;
         }
@@ -182,7 +184,8 @@ export function startInspector(opts: { port?: number; host?: string } = {}): Pro
 
       json(res, 404, { error: 'not found' });
     } catch (e) {
-      json(res, 500, { error: (e as Error).message });
+      const status = (e as { statusCode?: number }).statusCode ?? 500;
+      json(res, status, { error: (e as Error).message });
     }
   };
 

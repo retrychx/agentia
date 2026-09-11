@@ -6,7 +6,7 @@ import { classifyError } from '../engine/errors.js';
 import type { RunStatus } from '../runtime/types.js';
 import { normalizeMessages } from '../runtime/spec.js';
 import type { RunInvocationOptions } from '../runtime/spec.js';
-import { InMemoryTaskStore } from '../store/store.js';
+import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 
 /**
@@ -25,11 +25,6 @@ import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
  *   （推迟到 #execute：同键已有 succeeded 记录则采纳其结果、不重复执行），poll 等
  *   返回 Promise 需调用方自行 await。
  */
-
-/** store 返回值可能是同步值或 Promise —— 区分用（同步门面只在同步值上工作） */
-function isThenable<T>(x: MaybePromise<T>): x is Promise<T> {
-  return !!x && typeof (x as Promise<T>).then === 'function';
-}
 
 export interface AsyncRunnerOptions {
   client?: ModelClient;
@@ -80,7 +75,6 @@ export class AsyncRunner {
     private readonly app: AppCallable,
     opts: AsyncRunnerOptions = {},
   ) {
-    this.app = app;
     this.store = opts.store ?? new InMemoryTaskStore();
     this.client = opts.client;
     this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY;
@@ -118,7 +112,7 @@ export class AsyncRunner {
       }
     }
     const rec: TaskRecord = {
-      taskId: InMemoryTaskStore.nextTaskId(),
+      taskId: nextTaskId(),
       status: 'queued',
       idempotencyKey: opts.idempotencyKey,
       spec: { messages, options: opts.options, source: opts.source ?? 'async' },

@@ -21,16 +21,6 @@ import type { UnitMiddleware } from './middleware.js';
 import type { ContextPolicy } from '../engine/types.js';
 
 /**
- * Agentia —— 应用装配（spec §4/§6：主 agent + 可调工具菜单）。
- *
- * createApp 组装：DI 容器注册 providers（手动和/或 discover 目录发现）→
- * 从容器实例自动扫描 @Tool / @SubAgent / @Skill / @Prompt 收集成本 app 的工具菜单
- * → agent.run(messages) 带着菜单走 executeRun。装配期统一静态校验（§7）：
- * 菜单查重、tools 引用存在性、toolSources 指向。
- * 主 agent 的 system 可由 SystemPrompt 实例给出（内部 build({cache:true})
- * 打稳定前缀 breakpoint），也接受已拼好的 SystemParam 原样透传。
- */
-/**
  * 能力包（roadmap R5）：第三方包把「单元 providers + 中间件」打包成 AgentModule 分发，
  * 应用侧经 AppOptions.modules 一次性装配。模块的 providers 先于应用级 providers 注册
  *（同 token 应用级覆盖模块级）；中间件拼接顺序同样模块在前。
@@ -102,6 +92,16 @@ export interface AgentRunOutput<T = unknown> {
   result: AgentRunResult<T>;
 }
 
+/**
+ * Agentia —— 应用装配（spec §4/§6：主 agent + 可调工具菜单）。
+ *
+ * createApp 组装：DI 容器注册 providers（手动和/或 discover 目录发现）→
+ * 从容器实例自动扫描 @Tool / @SubAgent / @Skill / @Prompt 收集成本 app 的工具菜单
+ * → agent.run(messages) 带着菜单走 executeRun。装配期统一静态校验（§7）：
+ * 菜单查重、tools 引用存在性、toolSources 指向。
+ * 主 agent 的 system 可由 SystemPrompt 实例给出（内部 build({cache:true})
+ * 打稳定前缀 breakpoint），也接受已拼好的 SystemParam 原样透传。
+ */
 export class AgentApp {
   readonly name: string;
   private readonly di: Container;
@@ -112,7 +112,7 @@ export class AgentApp {
     maxIterations?: number;
     contextPolicy?: ContextPolicy;
   };
-  private _tools?: AgentTool[];
+  private _tools: AgentTool[] = [];
   private readonly sinks: TraceSink[];
 
   constructor(opts: AppOptions) {
@@ -248,7 +248,7 @@ export class AgentApp {
 
   /** app 已装配好的工具菜单（构建期即从容器解析，静态稳定） */
   get tools(): AgentTool[] {
-    return this._tools ?? [];
+    return this._tools;
   }
 
   /** 容器访问点 */

@@ -14,14 +14,12 @@
  *   3. usage 只由 llm.turn 累计（unit span 的 usage 是子 span 聚合，计入会双算）。
  */
 
-import { fmtArg } from './view.js';
-
-const UNIT_TYPES = ['tool', 'skill', 'prompt', 'subagent'];
+import { fmtArg, unitTypeOf, UNIT_ICO } from './view.js';
 
 /** 从 span.attributes 认单元类型（框架用 `setAttribute(unitId, 'subagent', name)` 记类型） */
 function spanType(s) {
   const attrs = s.attributes || {};
-  for (const t of UNIT_TYPES) {
+  for (const t of Object.keys(UNIT_ICO)) {
     if (attrs[t] != null) return t;
   }
   return '';
@@ -32,7 +30,7 @@ function displayName(s) {
   const raw = String(s.name || '');
   const t = spanType(s);
   if (!raw) return t || s.kind || '';
-  if (UNIT_TYPES.includes(raw.split(':')[0])) return raw; // 已带前缀
+  if (unitTypeOf(raw)) return raw; // 已带前缀
   return t ? `${t}:${raw}` : raw;
 }
 
@@ -49,7 +47,7 @@ function usageOf(s) {
 /** 事件工具名补前缀：事件体只有裸工具名，靠兄弟 unit span 反查类型，找不到按 tool 算 */
 function eventToolName(bodyTool, typeMap) {
   const raw = String(bodyTool || '?');
-  if (UNIT_TYPES.includes(raw.split(':')[0])) return raw;
+  if (unitTypeOf(raw)) return raw;
   return `${typeMap.get(raw) || 'tool'}:${raw}`;
 }
 

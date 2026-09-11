@@ -72,7 +72,7 @@ export function devServer(): number {
       inspector = srv;
       const here = dirname(fileURLToPath(import.meta.url));
       const preload = pathToFileURL(join(here, 'inspector-preload.js')).href;
-      const merged = `${process.env.NODE_OPTIONS ? process.env.NODE_OPTIONS + ' ' : ''}--import ${preload}`;
+      const merged = `${process.env.NODE_OPTIONS ? process.env.NODE_OPTIONS + ' ' : ''}--import "${preload}"`;
       console.log(`Inspector: http://127.0.0.1:${srv.port}  （看每次 run 的调用树与单元执行）`);
       startChild({ ...process.env, NODE_OPTIONS: merged, AGENTIA_INSPECT_PORT: String(srv.port) });
     })

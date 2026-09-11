@@ -226,4 +226,11 @@ describe('Scheduler', () => {
     assert.throws(() => scheduler.every(Number.NaN, 'x'), /intervalMs 必须为正有限数/);
     assert.equal(scheduler.active, 0, '抛错前不得留下 job');
   });
+
+  it('at：非法 Date → 抛错（原会算出 NaN 延迟并立即触发）', () => {
+    const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
+    assert.throws(() => scheduler.at(new Date('garbage'), 'x'), /合法 Date/);
+    assert.throws(() => scheduler.at('2020-01-01' as unknown as Date, 'x'), /合法 Date/);
+    assert.equal(scheduler.active, 0, '抛错前不得留下 job');
+  });
 });

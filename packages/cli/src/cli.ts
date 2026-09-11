@@ -63,7 +63,7 @@ function main(argv: string[]): number {
   if (command === 'g' || command === 'generate') {
     const [type, name, ...extra] = rest;
     if (type === undefined || name === undefined || extra.length > 0) {
-      return fail('用法：agentia g <type> <name>（type: tool | skill | prompt | subagent）');
+      return fail(`用法：agentia g <type> <name>（type: ${UNIT_TYPES.join(' | ')}）`);
     }
     if (!isUnitType(type)) {
       return fail(`未知单元类型「${type}」，可选：${UNIT_TYPES.join(' | ')}`);
@@ -102,10 +102,9 @@ function main(argv: string[]): number {
     }
   }
 
-  console.error(`错误：未知命令「${command}」\n`);
+  const code = fail(`未知命令「${command}」\n`);
   console.error(USAGE);
-  process.exitCode = 1;
-  return 1;
+  return code;
 }
 
 process.exitCode = main(process.argv.slice(2));

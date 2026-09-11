@@ -7,3 +7,8 @@ export function stringifySafe(x: unknown): string {
     return String(x);
   }
 }
+
+/** 截断到上限字符、超长加省略标记 `…(+N)`。trace 展示（engine/loop）与 replay 共用同一格式。 */
+export function truncateWithMark(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…(+${s.length - n})` : s;
+}
