@@ -2,6 +2,8 @@
  * 全部数据为本地预置脚本（字段参照真实 trace：span 树 + usage），不发起任何真实模型调用。
  * 节奏用 setTimeout/Promise 编排；回放区为终端式面板，trace 树随 span start/end 同步生长。
  */
+import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
+
 (() => {
   'use strict';
 
@@ -165,23 +167,6 @@
   };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fmtNum = (n) => n.toLocaleString('en-US');
-  const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
-  /* span 入参摘要：写进 trace 行，否则同名 unit（如两次 tool:get_weather）无法区分 */
-  const fmtArg = (v) => {
-    if (v == null) return '';
-    let s;
-    if (typeof v === 'object') {
-      const keys = Object.keys(v);
-      if (!keys.length) return ''; // 无入参就不显示，避免行里多一个 "{}"
-      s = '{ ' + keys.slice(0, 4).map((k) => {
-        let sv = typeof v[k] === 'object' ? JSON.stringify(v[k]) : String(v[k]);
-        if (sv.length > 22) sv = sv.slice(0, 21) + '…';
-        return k + ': ' + sv;
-      }).join(', ') + (keys.length > 4 ? ', …' : '') + ' }';
-    } else s = String(v);
-    return s.length > 62 ? s.slice(0, 61) + '…' : s;
-  };
 
   /* ========== 场景选择与按钮 ========== */
   function renderScenarios() {
@@ -369,185 +354,38 @@
     addBlock(block);
   }
 
-  /* ========== trace 树 ========== */
-  let traceRoot = null;
-  const spanMap = new Map();
+  /* ========== trace 树 ==========
+     渲染器已抽到 @migor/trace-view —— 同一份也被 CLI `agentia dev` 的 inspector 复用
+     （那边用 playTrace 吃真实 Trace），官网与本地面板不再各写一套、避免渲染漂移。
+     下面的包装函数保持原有签名，调用方（含 playground-real.js 的共用面）无需改动。 */
+  const view = createTraceView(traceBody, {
+    price: PRICE,
+    usage: { in: uIn, out: uOut, cost: uCost },
+  });
 
   function traceReset(sc) {
-    traceRoot = {
-      id: 'root',
-      kind: 'run',
-      name: 'run · ' + sc.title,
-      children: [],
-      events: [],
-      order: [],
-      done: false,
-      ms: 0,
-      usage: { input: 0, output: 0 },
-    };
-    spanMap.clear();
-    spanMap.set('root', traceRoot);
-    renderTrace();
+    view.reset('run · ' + sc.title);
   }
 
   function traceStart(s) {
-    const node = {
-      id: s.id,
-      kind: s.kind,
-      name: s.name,
-      arg: s.arg || '',
-      children: [],
-      events: [],
-      order: [],
-      done: false,
-      ms: 0,
-      status: 'ok',
-      error: null,
-      usage: null,
-    };
-    spanMap.set(s.id, node);
-    const parent = spanMap.get(s.parent) || traceRoot;
-    parent.children.push(node);
-    parent.order.push({ t: 'span', n: node });
-    renderTrace();
+    view.start(s);
   }
 
-  /* span 事件：框架把普通工具 / @Prompt 调用记成【turn 上的事件】，不给它们建 unit span
-     （只有 skill / subagent 会 recorder.begin('unit', …)，见 engine/loop.ts）。
-     events 与 order 并存：events 是数据、order 负责与子 span 的先后顺序。 */
   function traceEvent(id, type, tool, text, ok) {
-    const node = spanMap.get(id);
-    if (!node) return;
-    const e = { type, tool, text, ok: ok !== false };
-    node.events.push(e);
-    node.order.push({ t: 'ev', e });
-    renderTrace();
+    view.event(id, type, tool, text, ok);
   }
 
-  function traceEnd(s, usageAcc) {
-    const node = spanMap.get(s.id);
-    if (!node) return;
-    node.done = true;
-    node.ms = s.ms || 0;
-    node.status = s.status || 'ok';
-    node.error = s.error || null;
-    if (s.arg) node.arg = s.arg;
-    node.usage = s.usage
-      ? {
-          input: s.usage.input || 0,
-          output: s.usage.output || 0,
-          cacheRead: s.usage.cacheRead || 0,
-          cacheCreation: s.usage.cacheCreation || 0,
-        }
-      : null;
-    // 计数器只累加 llm.turn（unit span 的 usage 是子 span 聚合，重复计入会双算）
-    if (s.usage && node.kind === 'llm.turn') {
-      usageAcc.input += node.usage.input;
-      usageAcc.output += node.usage.output;
-      usageAcc.cacheRead = (usageAcc.cacheRead || 0) + node.usage.cacheRead;
-      usageAcc.cacheCreation = (usageAcc.cacheCreation || 0) + node.usage.cacheCreation;
-      renderUsage(usageAcc);
-    }
-    renderTrace();
+  /* 第二参 usageAcc 由 view 内部维护（旧签名保留，兼容 playground-real.js） */
+  function traceEnd(s) {
+    view.end(s);
   }
 
-  function traceFinish(ms, usageAcc, status, error) {
-    traceRoot.done = true;
-    traceRoot.ms = ms;
-    // run 失败时根 span 也要标红：原先 status 恒为 ok，错误只体现在子 span 上
-    traceRoot.status = status || 'ok';
-    traceRoot.error = error || null;
-    traceRoot.usage = { input: usageAcc.input, output: usageAcc.output };
-    renderTrace();
+  function traceFinish(ms, _usageAcc, status, error) {
+    view.finish(ms, status, error);
   }
 
-  /* 单元类型取自名字前缀（tool: / skill: / prompt: / subagent:）。四类各有标识符，
-     但【不上色】—— 站点只有一支青色 accent，靠字形区分即可，不破坏近黑钛银的克制感。 */
-  const UNIT_ICO = { tool: '⚙', skill: '◆', prompt: '¶', subagent: '⊕' };
-  function unitTypeOf(name) {
-    const t = String(name || '').split(':')[0];
-    return UNIT_ICO[t] ? t : '';
-  }
-
-  function renderTrace() {
-    traceBody.innerHTML = '';
-    const rows = [];
-    /* 每个节点下【事件】与【子 span】按发生顺序混排：tool.input 先于它触发的 unit span、
-       tool.output 后于它，这个先后本身就是语义，不能拍平成一类。 */
-    (function walk(node, prefix, isLast, isRoot) {
-      rows.push({ node, prefix, isRoot, last: isLast, ev: null });
-      const items = node.order || [];
-      items.forEach((it, i) => {
-        const last = i === items.length - 1;
-        const next = isRoot ? '' : prefix + (isLast ? '   ' : '│  ');
-        if (it.t === 'span') walk(it.n, next, last, false);
-        else rows.push({ node, prefix: next, isRoot: false, last, ev: it.e });
-      });
-    })(traceRoot, '', true, true);
-
-    rows.forEach(({ node, prefix, isRoot, last, ev }) => {
-      const branch = isRoot ? '' : prefix + (last ? '└─ ' : '├─ ');
-
-      /* 事件行：没有 status 圈、没有耗时、不参与 usage 计数，只带入参/出参摘要 */
-      if (ev) {
-        const row = el('div', 'tr-row tr-ev' + (ev.ok === false ? ' error' : ''));
-        row.dataset.ev = ev.type;
-        row.dataset.unit = unitTypeOf(ev.tool);
-        row.appendChild(el('span', 'tr-pre', branch));
-        row.appendChild(el('span', 'tr-evv', ev.type === 'tool.output' ? '◂' : '▸'));
-        row.appendChild(el('span', 'tr-evtype', ev.type));
-        row.appendChild(el('span', 'tr-name', ev.tool));
-        const io = el('span', 'tr-io', ev.text || '');
-        io.title = ev.text || '';
-        row.appendChild(io);
-        traceBody.appendChild(row);
-        return;
-      }
-
-      const bad = node.done && node.status === 'error';
-      const row = el('div', 'tr-row' + (node.done ? '' : ' running') + (bad ? ' error' : ''));
-      row.dataset.kind = node.kind;
-      const ut = node.kind === 'unit' ? unitTypeOf(node.name) : '';
-      if (ut) row.dataset.unit = ut;
-      row.appendChild(el('span', 'tr-pre', branch));
-      row.appendChild(el('span', 'tr-dot', node.done ? (bad ? '✕' : '●') : '◌'));
-      if (ut) row.appendChild(el('span', 'tr-ico', UNIT_ICO[ut]));
-      row.appendChild(el('span', 'tr-name', node.name));
-      if (node.arg) {
-        const arg = el('span', 'tr-arg', node.arg);
-        arg.title = node.arg;
-        row.appendChild(arg);
-      }
-      let meta;
-      if (node.done) {
-        const parts = [fmtMs(node.ms)];
-        if (node.usage) {
-          parts.push(fmtNum(node.usage.input + node.usage.output) + ' tok');
-          const cr = node.usage.cacheRead || 0;
-          const cc = node.usage.cacheCreation || 0;
-          if (cr || cc) parts.push('cache ↑' + fmtNum(cr) + ' ↓' + fmtNum(cc));
-        }
-        if (bad) parts.push((node.error && node.error.type) || 'error');
-        meta = parts.join(' · ');
-      } else meta = '…';
-      const metaEl = el('span', 'tr-meta', meta);
-      if (bad && node.error && node.error.message) metaEl.title = node.error.message;
-      row.appendChild(metaEl);
-      traceBody.appendChild(row);
-    });
-  }
-
-
-  /* ========== usage 计数器 ========== */
   function renderUsage(acc) {
-    uIn.textContent = fmtNum(acc.input);
-    uOut.textContent = fmtNum(acc.output);
-    if (PRICE.input == null || PRICE.output == null) {
-      uCost.textContent = '—'; // 无公开单价的端点不做估算（如 DeepSeek）
-      return;
-    }
-    const cost = (acc.input * PRICE.input + acc.output * PRICE.output) / 1e6;
-    uCost.textContent = '$' + cost.toFixed(4);
+    view.setUsage(acc);
   }
 
   /* ========== 回放引擎 ========== */
@@ -663,8 +501,7 @@
     resetPanels,
     setRunning,
     setPrice(p) {
-      PRICE.input = p && p.input != null ? p.input : null;
-      PRICE.output = p && p.output != null ? p.output : null;
+      view.setPrice(p);
     },
   };
 

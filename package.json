@@ -31,7 +31,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:cli": "npm run build -w @migor/trace-view && tsc -p packages/cli/tsconfig.json && node packages/cli/scripts/copy-assets.mjs",
-    "build:website": "npm run build -w @migor/website",
+    "build:website": "npm run build -w @migor/trace-view && npm run build -w @migor/website",
     "deploy:website": "npm run build:website && npx wrangler pages deploy packages/website/dist --project-name=agentia-web",
     "prepublishOnly": "npm run build",
     "dev": "tsx watch src/index.ts",

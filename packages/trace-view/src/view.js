@@ -60,7 +60,7 @@ function el(tag, cls, text) {
  * opts.onUsage = (acc) => void（可选；每次累计后回调，便于宿主自定义展示）
  */
 export function createTraceView(rootEl, opts = {}) {
-  const price = opts.price ?? null;
+  let price = opts.price ?? null;
   const onUsage = opts.onUsage ?? null;
   const usageEls = opts.usage ?? null;
 
@@ -252,6 +252,11 @@ export function createTraceView(rootEl, opts = {}) {
     finish,
     render: renderTrace,
     setUsage: renderUsage,
+    /** 换单价（如真实模式切服务商）：null 表示无公开单价 → 成本显示为 — */
+    setPrice(p) {
+      price = p ?? null;
+      renderUsage(usageAcc);
+    },
     get usage() {
       return usageAcc;
     },
