@@ -81,6 +81,15 @@ export interface AppOptions {
   maxToolConcurrency?: number;
   /** 只扫这些 token 的 provider 上的 @Tool；缺省扫全部 providers */
   toolSources?: Token[];
+  /**
+   * 直接追加到主菜单的**裸工具**（`AgentTool[]`）—— 给「构造期才知道有哪些工具」的场景
+   * （典型：MCP 桥 `mcpTools()` 的返回值，见 integrations/mcp.ts）。
+   *
+   * 与装饰器收集来的单元**完全同等**：同样过中间件链、同样进重名查重、同样受
+   * `toolSources` 之外的一切装配规则约束（不受 `toolSources` 收窄影响 —— 这是显式追加）。
+   * 不经装饰器、不进 DI 容器（它没有 provider token，也不是任何单元的 tools 引用目标）。
+   */
+  tools?: AgentTool[];
   /** 单元调用中间件（洋葱模型，链序 = 注册顺序）；装配期包裹整个菜单 */
   middleware?: UnitMiddleware[];
   /** trace 出口（观测）：每次 run 收尾投递；与全局默认 sink 合并（本字段在前） */
@@ -237,12 +246,17 @@ export class AgentApp {
     const sources = opts.toolSources
       ? [...new Set(opts.toolSources)]
       : providerList.map((p) => p.provide);
-    this._tools = sources.flatMap((token) => {
-      if (!this.di.has(token)) {
-        throw new Error(`toolSources 指向未注册 provider: "${token}"`);
-      }
-      return wrappedByToken.get(token) ?? [];
-    });
+    this._tools = [
+      ...sources.flatMap((token) => {
+        if (!this.di.has(token)) {
+          throw new Error(`toolSources 指向未注册 provider: "${token}"`);
+        }
+        return wrappedByToken.get(token) ?? [];
+      }),
+      // 裸工具（AppOptions.tools）：与装饰器收集来的单元同等 —— 一样过中间件、
+      // 一样进下面的重名查重。**不是旁路**（旁路会绕过鉴权/限流/审计）。
+      ...wrap(opts.tools ?? []),
+    ];
 
     // §7 静态校验（最小落地）：菜单统一查重 —— 重名会让模型在歧义菜单里猜，直接报错。
     const dup = new Map<string, number>();
@@ -317,6 +331,9 @@ export class AgentApp {
       toolTimeoutMs: opts.toolTimeoutMs ?? this.base.toolTimeoutMs,
       maxToolConcurrency: opts.maxToolConcurrency ?? this.base.maxToolConcurrency,
       resultSchema: opts.resultSchema,
+      // 提示词版本化（D4）：system 是 SystemPrompt 实例时自动带上它的 version
+      // （run 根 attribute `system.version`）；传已拼好的 SystemParam 则无版本可记。
+      systemVersion: sys instanceof SystemPrompt ? sys.version : undefined,
       session: opts.session,
       rethrow: opts.rethrow,
       sinks: this.sinks,

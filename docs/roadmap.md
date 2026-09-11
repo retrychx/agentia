@@ -116,12 +116,20 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - 四项测试基线与验证：框架 190 + trace-view 6 + CLI 3 例；真浏览器实测（本地面板 + 线上 playground）。
 - 计划见 `docs/plans/2026-09-11-dev-inspector.md`。
 
-## R7 候选（下一轮）
+## Agent 服务能力补全（四期）✅ 全部落地
 
-- **Agent 服务能力补全**（四期设计见 `docs/plans/2026-09-11-agent-service-hardening.md`）：
-  Phase A（取消传播 / 重试退避 / SSE 流式）**已落地**；Phase B（鉴权缝 / drain + `/healthz`）**已落地**；
-  Phase C（成本硬管控 / 工具超时+并发闸门 / OpenAI 真流式+多模态 / 会话持久化 / 完成回调）**已落地**；
-  余下 D（MCP 桥 / evals / 指标 / 版本化与配额）待排。
+设计见 `docs/plans/2026-09-11-agent-service-hardening.md`（四期 8 个分叉全部按建议 A 拍板）。
+
+- **Phase A（稳定性）** ✅ 取消传播（`AbortSignal` 贯穿到模型请求）/ 重试退避（缺省开启）/ SSE 流式下发。
+- **Phase B（宿主硬化）** ✅ 鉴权缝（拦在入口、读 body 之前）/ 优雅停机 `drain()` / `GET /healthz`。
+- **Phase C（能力成色）** ✅ 成本硬管控 / 工具超时 + 并发闸门 / OpenAI 真流式 + 多模态 / 会话持久化 / 完成回调。
+- **Phase D（生态）** ✅ MCP 桥（duck-typed，框架零依赖；接入点是 `AppOptions.tools` 裸工具缝）/
+  evals（`scriptedClient` + `defineEval`）/ 指标（`metricsSink`，天然满足 `TraceSink`，零新出口）/
+  提示词版本化 + 多租户配额范式（组合既有缝，不做子系统）。
+  真端到端证明 = `npm run e2e:mcp`：真接第三方 MCP server（`uvx mcp-server-time`）走完「映射 → 菜单 → run」，
+  无网机器自动回落 `scripts/mcp-fixture-server.py`。
+
+## R7 候选（下一轮）
 
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
 - Workers 代理版 playground（免 BYOK 的托管演示）；

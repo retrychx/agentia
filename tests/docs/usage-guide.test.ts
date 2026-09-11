@@ -35,6 +35,9 @@ const MEMBERSHIP_TYPES = [
   'BudgetPolicyOptions',
   'HttpHandlerOptions',
   'HealthResponse',
+  'McpToolsOptions',
+  'MetricsSinkOptions',
+  'MetricsSink',
 ];
 
 function srcFiles(dir: string): string[] {

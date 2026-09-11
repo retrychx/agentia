@@ -1,6 +1,6 @@
 # Agent 服务能力补全 —— 设计文档
 
-> **状态**：**已评审**，8 个设计分叉全部按建议 **A** 拍板（见 §7 决策记录）；Phase A 已转为 `docs/plans/2026-09-11-phase-a-cost-and-stability.md` 的逐任务计划并开工。
+> **状态**：**四期全部落地（A / B / C / D，2026-09-11）**，8 个设计分叉全部按建议 **A** 拍板（见 §7 决策记录）。决策记录见 `spec.md §10`，状态见 `roadmap.md`；D1 的接入点在实际落地时被推翻，见 §6 的 ⚠️ 标注。
 > **日期**：2026-09-11
 > **前置**：本文是**设计**，不是逐步实现计划。每个 Phase 的细粒度任务计划见 `docs/plans/` 下对应的 `phase-*.md`。
 
@@ -281,7 +281,7 @@ export interface AsyncRunnerOptions { taskSinks?: TaskSink[] }   // sink 抛错�
 
 ---
 
-## 6. Phase D —— 生态
+## 6. Phase D —— 生态 ✅ 已落地（2026-09-11）
 
 ### D1. MCP 桥（duck-typed，框架零依赖）
 
@@ -310,6 +310,9 @@ export function mcpTools(client: McpClientLike, opts?: McpToolsOptions): Promise
 - **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 直接当 `inputSchema` 用（框架已有子集校验器，天然兼容）。
 - **连接器不进框架**：stdio（spawn 子进程 + JSON-RPC over stdin/stdout）与 HTTP（StreamableHTTP）两种传输的实现放**独立可选包 `@migor/mcp`**（或由用户自己接 SDK 后实现 `McpClientLike`）。框架只留这 20 行桥。
 - **接入点**：`createApp({ providers })` 里放一个 provider（`useFactory` 里 `await mcpTools(...)`）即可 —— 复用现有装配/查重/中间件，**零新机制**。
+  > ⚠️ **落地时此条被推翻（见 spec §10）**：菜单只从装饰器注册表收集，`useFactory` 的返回值**不进菜单**；
+  > 且 `Container.resolve` 是同步的，异步的 `mcpTools()` 塞不进去。实际接入点 = `AppOptions.tools`（裸工具直进主菜单，
+  > 仍过中间件与查重）。
 - **不做**：`sampling`（server 反向请求模型）、`resources`/`prompts` 原语（先只做 tools）、连接池。
 
 ### D2. evals（把 `mockClient` 提升为一等能力）
@@ -401,5 +404,10 @@ npm run e2e && npm run build:website
 - B1/B2：`/healthz` 反映在飞数；drain 生效。
 - C1：超预算 run 以 `budget_exceeded` 收尾。
 - D1：真接一个 MCP server（如 `mcp-server-time`），`agentia doctor` 能看到其工具进菜单。
+  **落地方式（实测）**：`npm run e2e:mcp` —— 真起 `uvx mcp-server-time`（第三方 server，真 stdio JSON-RPC），
+  走完「`tools/list` → `mcpTools()` 映射 → `createApp` 主菜单 → 真跑一轮（模型经它拿到真实时区时间）」。
+  注：`agentia doctor` 是**静态**体检（不 import 用户代码，见 spec §10），它只能看到「MCP 单元已登记且入口齐全」；
+  「工具进了菜单」这条由 e2e 脚本打印 `app.tools` 来证明。无网 / 无 uv 时自动回落
+  `scripts/mcp-fixture-server.py`（同一协议面）。
 
 每期完成后：更新 `roadmap.md` 状态 + `spec.md §10` 决策记录 + `usage-guide.md`（及派生的 `llms.txt`/`dist/AGENTS.md`）。

@@ -12,17 +12,23 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        # SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
-│   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出
+│   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
+│   │                        #   MCP 桥(duck-typed，不含传输)、指标(metricsSink，满足 TraceSink)
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
-│   │                        # 中间件、目录发现(discover)、文本资产(asset)、zod 桥
+│   │                        #   中间件、目录发现(discover)、文本资产(asset)、zod 桥
+│   ├── eval/                # evals（D2）：scriptedClient + defineEval —— **叶子消费模块**，
+│   │                        #   只依赖公共面、零反向依赖（谁都不 import 它）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）
 ├── tests/                   # node:test 单测，目录镜像 src（tests/transport/x → src/transport/x）
-│   ├── helpers.ts           # 共用 mock client（改它影响全部套件，谨慎）
+│   ├── helpers.ts           # 共用 mock client（**忽略 on('text')**；要「真吐字」用 src/eval 的
+│   │                        #   scriptedClient —— 两者定位不同，改 helpers 影响全部套件，谨慎）
 │   ├── fixtures/            # discover/asset 测试夹具
 │   ├── types/               # **类型断言测试**（*.types.ts，只被 typecheck:types 编译、不被 node:test 收）
 │   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
+├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
+├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── packages/
 │   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/add），零运行时依赖
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector）
@@ -39,6 +45,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 
 - **分层单向**：core ← engine ← runtime/store ← transport ← toolkit；`integrations` 只依赖 core
   （模型/trace 适配器）；`container` 是叶子（不 import 任何东西），仅被 toolkit 依赖。core 不依赖任何上层。
+  `eval/` 是**叶子消费模块**（依赖 toolkit 与公共面）：它 import 别人，别人不 import 它。
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
@@ -47,6 +54,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   - `typecheck:types` = **针对构建产物 dist 的类型断言测试**（`tests/types/`，用 `@ts-expect-error`
     断言「应当报错」的场景真的报错）—— 必须先 `build`。它与 src 分开编译是**必须**的：模块增强
     （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
+  - 另有 `npm run e2e:mcp`（真接第三方 MCP server，需要网络 / uv；离线自动回落
+    `scripts/mcp-fixture-server.py`）。它**不并入**上面 8 步，但动了 `integrations/mcp.ts` 就要跑。
+  - 文档改完记得重建派生产物：`npm run build:cli`（→ `dist/AGENTS.md`）与 `npm run build:website`
+    （→ `llms.txt` / `llms-full.txt`），否则线上与实际说明漂移。
 - **设计决策**：改语义的决定要同步 `docs/spec.md` §10 决策记录；方向性工作更新 `docs/roadmap.md`。
 - **使用者向文档单源**：`docs/usage-guide.md` 是**唯一**的框架使用说明（API 速查 + 类型链路 + 已知边界 + 反例）。
   它被三处消费：① `packages/cli` 构建时拷成 `dist/AGENTS.md`，`agentia create` 写进新项目的 `AGENTS.md`；

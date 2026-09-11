@@ -7,13 +7,27 @@
  */
 import {
   createApp,
+  defineEval,
   executeRun,
   fromZod,
+  mcpTools,
+  metricsSink,
   RunContext,
+  scriptedClient,
   SystemPrompt,
   Tool,
 } from '../../dist/index.js';
-import type { BlackboardKey, JsonSchema, Provider } from '../../dist/index.js';
+import type {
+  AgentTool,
+  BlackboardKey,
+  EvalReport,
+  JsonSchema,
+  McpClientLike,
+  MetricsSink,
+  MetricsSnapshot,
+  Provider,
+  TraceSink,
+} from '../../dist/index.js';
 
 /* ================= ④a：Blackboard 声明合并 → 键补全 + 拼写检查 + 值类型 ================= */
 
@@ -135,3 +149,63 @@ void providerChecks;
 
 /* 让上面的函数/类都被引用，避免 noUnusedLocals 类告警（当前未开，留个兜底） */
 void [blackboardChecks, blackboardSeedChecks, typedResultChecks];
+
+/* ============ ⑤ D 期：MCP 桥 / evals / 指标 / 提示词版本 ============ */
+
+async function dPhaseTypeChecks(): Promise<void> {
+  const msgs = [{ role: 'user' as const, content: 'q' }];
+
+  /* D1：duck-typed 结构面 —— 任何带 listTools/callTool 的对象都能当 MCP client（零 SDK 依赖） */
+  const okClient: McpClientLike = {
+    listTools: async () => [{ name: 'x', description: 'd' }],
+    callTool: async (_n: string, _a: Record<string, unknown>) => ({ content: [] }),
+  };
+  // @ts-expect-error 少了 callTool → 不满足结构面
+  const badClient: McpClientLike = { listTools: async () => [] };
+  void badClient;
+
+  /* D1：mcpTools 的产物直接进 AppOptions.tools（裸工具缝，与 @Tool 单元同池） */
+  const tools: AgentTool[] = await mcpTools(okClient, { server: 'time', timeoutMs: 1000 });
+  createApp({ system: new SystemPrompt().add('role', 'r', true), tools });
+  // @ts-expect-error tools 要的是 AgentTool[]（name/description/inputSchema/run 一个不能少）
+  createApp({ system: new SystemPrompt().add('role', 'r', true), tools: [{ name: 'x' }] });
+
+  /* D2：scriptedClient 满足 ModelClient；defineEval 的 expect 拿到推导后的 typed */
+  const evalReport: Promise<EvalReport> = defineEval<{ ok: boolean }>({
+    name: 'e',
+    app: () => createApp({ system: new SystemPrompt().add('role', 'r', true) }),
+    cases: [{ name: 'c', input: 'a', client: scriptedClient([{ id: 'm', content: [] }]) }],
+    expect: (r, ctx) => {
+      const typed: { ok: boolean } | undefined = r.typed;
+      const trace = ctx.trace;
+      void [typed, trace];
+      // @ts-expect-error typed 是 { ok: boolean } | undefined，不是 string
+      const bad: string | undefined = r.typed;
+      void bad;
+    },
+  }).run();
+  void evalReport;
+
+  /* D3：metricsSink 天然满足 TraceSink（能力零新出口），并额外给出 snapshot/render */
+  const asSink: TraceSink = metricsSink();
+  const metrics: MetricsSink = metricsSink({ windowSize: 8, prefix: 'myapp_' });
+  const snap: MetricsSnapshot = metrics.snapshot();
+  const text: string = metrics.render();
+  void [asSink, snap, text];
+  // @ts-expect-error export 只认 'prometheus' | 'otlp'
+  metricsSink({ export: 'statsd' });
+
+  /* D4：提示词版本 —— SystemPrompt({ version })，引擎级选项 systemVersion */
+  const sp = new SystemPrompt({ version: 'v1' });
+  const v: string | undefined = sp.version;
+  void v;
+  // @ts-expect-error version 只读
+  sp.version = 'v2';
+  // @ts-expect-error version 必须是 string
+  void new SystemPrompt({ version: 1 });
+  await executeRun({ messages: msgs, systemVersion: 'v1' });
+  // @ts-expect-error systemVersion 必须是 string
+  await executeRun({ messages: msgs, systemVersion: 1 });
+}
+
+void dPhaseTypeChecks;

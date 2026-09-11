@@ -63,7 +63,7 @@ export { Run, executeRun } from './runtime/run.js';
 export { RunContext, withRunContext } from './runtime/context.js';
 export type { Blackboard, BlackboardKey, BlackboardSeed, BlackboardValue } from './runtime/context.js';
 export { SystemPrompt } from './runtime/systemPrompt.js';
-export type { SystemSection } from './runtime/systemPrompt.js';
+export type { SystemPromptOptions, SystemSection } from './runtime/systemPrompt.js';
 export type { ExecuteRunOptions } from './runtime/run.js';
 export type { RunMeta, RunStatus } from './runtime/types.js';
 
@@ -140,4 +140,23 @@ export type { RedisLike, RedisSetOptions, RedisTaskStoreOptions } from './store/
 export type { MaybePromise } from './store/store.js';
 export { traceToMessages } from './engine/replay.js';
 export type { ReplayOptions } from './engine/replay.js';
+
+// integrations：MCP 桥（D1）—— duck-typed，框架零依赖；连接器在独立包 @migor/mcp
+export { mcpTools, MCP_DEFAULT_TIMEOUT_MS } from './integrations/mcp.js';
+export type { McpClientLike, McpToolInfo, McpToolsOptions } from './integrations/mcp.js';
+// integrations：指标（D3）—— 满足 TraceSink 即可接入，能力零新出口
+export { metricsSink } from './integrations/metrics.js';
+export type { MetricsSink, MetricsSinkOptions, MetricsSnapshot } from './integrations/metrics.js';
+
+// eval：把 mockClient 提升为一等能力（D2）—— 叶子消费模块，只依赖公共面
+export { scriptedClient } from './eval/scripted.js';
+export type { ScriptedStep } from './eval/scripted.js';
+export { defineEval } from './eval/defineEval.js';
+export type {
+  EvalCase,
+  EvalCaseReport,
+  EvalContext,
+  EvalDefinition,
+  EvalReport,
+} from './eval/defineEval.js';
 

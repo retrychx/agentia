@@ -131,6 +131,14 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 工具会打外部系统（DB/HTTP）时设个位数，避免一个回合把下游打爆。
    */
   maxToolConcurrency?: number;
+  /**
+   * 提示词版本号（D4）：写进 run 根 span 的 `system.version` attribute，
+   * trace 里据此可查「哪个版本的提示词产出的结果」。
+   *
+   * 走 `AgentApp.run` 时**不用手填** —— `system` 给 `SystemPrompt({ version })` 实例
+   * 就自动带上（见 runtime/systemPrompt.ts）。
+   */
+  systemVersion?: string;
 }
 
 export interface AgentRunResult<T = unknown> {

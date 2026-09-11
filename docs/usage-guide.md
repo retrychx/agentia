@@ -150,6 +150,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `maxIterations` | 缺省循环上限 |
 | `contextPolicy` | 上下文预算策略（`createBudgetPolicy(...)`） |
 | `toolSources` | 白名单：只把这些 provider 的单元放进主菜单 |
+| `tools` | 直接追加到主菜单的**裸工具**（`AgentTool[]`）：给「构造期才知道有哪些工具」的场合（典型：MCP 桥，见 §6）。与单元**同过中间件、同进重名查重**，不是旁路 |
 | `middleware` | 单元调用中间件（洋葱链，链序 = 注册顺序） |
 | `sinks` | trace 出口，run 收尾投递 |
 | `maxTotalTokens` | 缺省成本硬管控：整条 run 累计 token 上限（可被单次 run 覆盖） |
@@ -355,6 +356,7 @@ process.on('SIGTERM', async () => {
 | `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
 | `TraceRecorder` | 内存 recorder（一次 run 一个） |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖 |
+| `metricsSink` | 指标累加器（Prometheus 文本），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 
 ### 长上下文
 
@@ -429,6 +431,137 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 | `traceToMessages` | 把 trace 还原成 messages（重放基底） |
 | `applyMiddleware` | 手动包裹配置菜单（装配层已自动做） |
 
+### MCP 桥（MCP 是「工具来源」，不是新机制）
+
+| API | 说明 |
+|---|---|
+| `mcpTools` | 把 MCP server 的 `tools/list` 映射成框架 `AgentTool[]`（进 `createApp({ tools })`） |
+| `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
+| `MCP_DEFAULT_TIMEOUT_MS` | 桥的缺省单次调用超时（60000 ms） |
+
+- **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名 / 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
+- **原名**：每次调用写进发起 turn 的 `mcp.tool` attribute —— 审计 / 回放要还原它才能回调 server。
+- **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的子集校验器在 `callTool` **之前**校验（非法入参根本不会发给 server，模型自己会改）。
+- **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了。
+- **连接器不在框架里**（守「零运行时依赖」）：stdio / StreamableHTTP 归独立可选包，或你自己接 SDK 后实现 `McpClientLike`。本仓库 `scripts/e2e-mcp.ts` 有一份最小连接器可参考。
+
+```ts
+// 任意实现了 listTools/callTool 的对象都能接（duck-typed，无需继承）
+const client: McpClientLike = myStdioConnector;
+const tools = await mcpTools(client, { server: 'time' }); // → mcp_time_get_current_time …
+
+// 与本地 @Tool 同池：同过中间件链、同进重名查重
+const app = createApp({ system, providers: [...], tools });
+```
+
+### `McpToolsOptions`（`mcpTools` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `prefix` | 工具名前缀；缺省 `mcp_<server>_`（没给 `server` 时 `mcp_`）；`''` = 不加前缀（撞名自负） |
+| `server` | server 标识，只用于拼缺省前缀（不会发给 server） |
+| `timeoutMs` | 单次 `callTool` 超时（毫秒）；缺省 60000，非正数 = 不限 |
+
+### evals（把 mockClient 提升为一等能力）
+
+| API | 说明 |
+|---|---|
+| `scriptedClient` | 按脚本依次返回模型响应（**真把文本块经 `on('text')` 吐出去**）；脚本耗时报错 |
+| `defineEval` | 定义「用例 + 断言」，`run()` 返回 `EvalReport` |
+
+- **为什么需要**：单测覆盖的是框架语义，evals 覆盖的是**你的 agent 语义** —— 改 prompt / 换模型 / 加工具之后有没有回归，靠断言而不是人眼。
+- 断言源是既有 `Trace`：「先 `search` 才 `summarize`」这类顺序断言全从 trace 读，框架不为此新增埋点。
+- `run()` **不抛**（用例失败进报告，一次跑完能看到所有回归，而不是修一个跑一次）；只有「应用建不起来」才冒泡 —— 那是环境错误，不是回归。失败 case 带 `trace`，直接看现场。
+- `scriptedClient` 的步骤**在 `finalMessage()` 成功返回后才前进**：抛错的步骤（函数步骤 `throw` 模拟 429）会在重试时**重放同一步**，想验重试就这么写。
+
+```ts
+const ev = defineEval<{ summary: string }>({
+  name: 'doc-review',
+  app: () => createApp({ system: new SystemPrompt({ version: 'v3' }).add('role', R), providers: [...] }),
+  // 每 case 可带 opts（透传 app.run）：注入 resultSchema 就能断言 result.typed
+  cases: [{ name: '先检索再总结', input: '总结这份文档', client: scriptedClient([searchMsg, submitMsg]) }],
+  expect: (r, { trace }) => {
+    assert.equal(r.stopReason, 'end_turn');
+    const order = trace.spans.flatMap((s) => s.events)
+      .filter((e) => e.name === 'tool.input')
+      .map((e) => (e.body as { tool: string }).tool);
+    assert.deepEqual(order, ['search', 'summarize']); // 顺序断言从 trace 读
+  },
+});
+const report = await ev.run();
+if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
+```
+
+### 指标（从 trace 派生）
+
+| API | 说明 |
+|---|---|
+| `metricsSink` | 进程内累加 + Prometheus 文本；**天然满足 `TraceSink`** → `createApp({ sinks: [metricsSink()] })` 即接入，零新出口 |
+
+接完 `GET /metrics` 直接回 `render()` 即可（纯文本，零依赖手写，不值得为此引客户端库）。
+
+### `MetricsSinkOptions`（`metricsSink` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `export` | 输出形态；缺省 `'prometheus'`。`'otlp'` **尚未实现** → 构造期抛错（比返回一份看不出问题的空指标好） |
+| `windowSize` | 延迟分位保留的样本数（环形窗口，缺省 1024）；非正数抛错 |
+| `prefix` | 指标名前缀，缺省 `agentia_` |
+
+### `MetricsSink`（`metricsSink()` 的返回值）
+
+| 成员 | 说明 |
+|---|---|
+| `export` | `TraceSink` 的实现（run 收尾投递）—— 也是接进 `sinks` 的形状 |
+| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd }` |
+| `render` | Prometheus 文本（`/metrics` 直接回它） |
+| `reset` | 清空累计（测试 / 多租户轮换用） |
+
+- `tokens` 口径 = **四类之和**（input + output + cacheRead + cacheCreation），与 `BudgetGuard` 一致；分项在 `render()` 里以 label 给出，不会丢。
+- 分位是**窗口内精确值**（最近 rank 法），不是 Prometheus 原生 histogram / summary —— 长跑宿主不会被无界数组拖住内存，代价是分位只反映最近 `windowSize` 条 run。
+- `costUsd` 依赖模型在价格表内（不在表里时该 run 计 0，不会污染总数）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
+
+### 提示词版本化
+
+- `new SystemPrompt({ version: 'git-abc123' })` → 自动写到 **run 根 span 的 `system.version` attribute**：trace 里能查出「这个结果是哪个版本的提示词产出的」（换 prompt 前后对比、排查回归都靠它）。
+- 版本号怎么来（git sha / 语义版本 / 手工）由你决定 —— 框架**不做**版本库与回滚平台。
+- 单次 `app.run(..., { system })` 覆盖时，版本**跟当次那个 `SystemPrompt` 走**；`system` 传已拼好的 `SystemParam` 则无版本可记（不写空串冒充实有版本）。
+- 直连 `runAgent` / `executeRun` 时可用引擎级选项 `systemVersion` 显式给。
+
+### 多租户配额（组合既有缝，不是子系统）
+
+框架不提供配额组件 —— 用 `middleware`（拦在单元调用前）+ `TraceSink`（收尾后记账）+ `BudgetGuard`（单次 run 上限）组合即可，存储与策略是你的事：
+
+```ts
+declare module '@migor/agentia' { interface Blackboard { tenant: string } }
+
+const spentTokens = new Map<string, number>(); // 真实场景换成 Redis / DB
+const TENANT_LIMIT = 200_000;
+
+const quota: UnitMiddleware = async (call, next) => {
+  const tenant = RunContext.current()?.get('tenant');
+  if (tenant && (spentTokens.get(tenant) ?? 0) >= TENANT_LIMIT) {
+    throw new Error(`租户 ${tenant} 的额度已用满`); // → 该条 tool_result 记 is_error，不杀 run
+  }
+  return next(); // 额度内放行
+};
+
+const billing: TraceSink = {
+  export(trace) {
+    const tenant = RunContext.current()?.get('tenant'); // sink 在 run 的 async 上下文里投递，读得到黑板
+    if (!tenant) return;
+    const u = trace.totalUsage;
+    spentTokens.set(tenant, (spentTokens.get(tenant) ?? 0) + u.inputTokens + u.outputTokens);
+  },
+};
+
+createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
+// 单次 run 再有上限就叠加 C1：app.run(msgs, { maxTotalTokens: 50_000 })
+```
+
+- 拦下来的那次 run **仍然要记账**（模型的钱已经花了）—— 记账在 sink 里、拦截在 middleware 里，两者独立。
+- 被拦下的单元**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
+
 ---
 
 ## 7. 已知边界（如实标注，不要指望框架替你兜）
@@ -456,6 +589,15 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 | 工具超时**不取消**工具 | `AgentTool.run` 没有 signal 参数，超时只是「不等了」；副作用可能已发生。想真停请让工具自己读 `ToolRunContext.signal` |
 | 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
+| MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；连接器（stdio / HTTP）不在框架内 |
+| MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
+| MCP 超时同样是「不等了」 | 桥自带的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它与 engine 的 `toolTimeoutMs` **双重计时**，谁短谁生效 |
+| MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool` attribute 里查得到） |
+| MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的单元的 `tools` 引用 —— 引用是 provider 粒度 |
+| 指标分位是窗口内精确值 | 不是 Prometheus 原生 histogram / summary；只反映最近 `windowSize`（缺省 1024）条 run |
+| 指标不做 OTLP metrics | `metricsSink({ export: 'otlp' })` 构造期抛错（后置）；要 OTLP 用 `createOtlpExporter` 走 traces |
+| 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
+| 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 
 ---
 
@@ -478,6 +620,12 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 | 工具超时了，副作用却还是发生了 | 超时是「放弃等待」不是取消（`AgentTool.run` 收不到 signal）。要能真停就得让工具自己读 `ToolRunContext.signal` |
 | 用 OpenAI 端点没看到打字机效果 | 端点没按 `stream:true` 回 `event-stream`（回了一整份 JSON）—— 适配器按响应形态解析，此时退回一次性 |
 | 改了框架源码却看不到效果 | 确认 import 的是同一份构建产物（`npm run build` 后跑 `dist`） |
+| MCP 工具没出现在菜单里 | `mcpTools()` 的返回值没传进 `createApp({ tools })` —— 它不走装饰器收集，也不进 DI 容器（裸工具缝） |
+| 装配期报「归一化后撞名」 | server 侧两个工具名只差非法字符（`a-b` / `a.b`）→ 归一化后同名；给个 `prefix` 或改 server 侧名字 |
+| MCP 调用「成功」但内容是错误文本 | 连接器没把协议层 `isError: true` 转成抛错（框架只认抛错） |
+| eval 里模型调了不存在的工具 | 脚本里的工具名必须是**菜单里的名字**（MCP 工具是归一化后的 `mcp_<server>_<name>`） |
+| `metricsSink` 的数字一直是 0 | 没接进 `createApp({ sinks })`（或 `registerDefaultTraceSink`）—— 它靠 run 收尾投递，不自己埋点 |
+| 拿 `metricsSink({ export: 'otlp' })` 报错 | 这是**故意的**：OTLP metrics 导出后置，构造期响亮失败好过给你一份空指标 |
 
 ---
 
@@ -489,4 +637,5 @@ npm run typecheck:tests  # 测试目录类型（含类型断言测试）
 npm run test             # 单测（node:test）
 ```
 
-框架仓库另有两道：`npm run typecheck:types`（针对构建产物的类型测试）、`npm run e2e`。
+框架仓库另有三道：`npm run typecheck:types`（针对构建产物的类型测试）、`npm run e2e`（CLI 端到端）、
+`npm run e2e:mcp`（真接一个 MCP server 走完「映射 → 菜单 → run」；无网时自动回落本地夹具 server）。

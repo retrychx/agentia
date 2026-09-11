@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { SystemPrompt } from '../../src/index.js';
+import { SystemPrompt, createApp, runAgent } from '../../src/index.js';
+import { mockClient, endTurnMsg } from '../helpers.js';
 
 describe('SystemPrompt（缓存布局）', () => {
   const sp = () =>
@@ -52,5 +53,53 @@ describe('SystemPrompt（缓存布局）', () => {
     const mixed = new SystemPrompt().add('role', '', true).add('clock', 'now', false).build({ cache: true });
     assert.ok(Array.isArray(mixed) && mixed.length === 1);
     assert.equal((mixed[0] as { text: string }).text, 'now');
+  });
+});
+
+describe('提示词版本化（D4）', () => {
+  const rootOf = (trace: { rootSpanId: string; spans: Array<{ spanId: string; attributes: Record<string, unknown> }> }) =>
+    trace.spans.find((s) => s.spanId === trace.rootSpanId)!;
+
+  it('SystemPrompt({ version }) 暴露只读 version；不传则 undefined，add 不改它', () => {
+    assert.equal(new SystemPrompt().version, undefined);
+    assert.equal(new SystemPrompt({ version: 'v3' }).version, 'v3');
+    assert.equal(new SystemPrompt({ version: 'v3' }).add('a', 'b').version, 'v3');
+  });
+
+  it('app.run：SystemPrompt 的 version 落到 run 根 attribute `system.version`', async () => {
+    const app = createApp({
+      name: 'ver-app',
+      system: new SystemPrompt({ version: 'git-abc123' }).add('role', 'r', true),
+    });
+    const { client } = mockClient([endTurnMsg('ok')]);
+    const { result } = await app.run([{ role: 'user', content: 'hi' }], { client });
+    assert.equal(rootOf(result.trace).attributes['system.version'], 'git-abc123');
+  });
+
+  it('单次 system 覆盖时，版本跟当次那个 SystemPrompt 走（不是应用级那个）', async () => {
+    const app = createApp({ name: 'ver-app', system: new SystemPrompt({ version: 'v1' }).add('role', 'r') });
+    const { client } = mockClient([endTurnMsg('ok')]);
+    const { result } = await app.run([{ role: 'user', content: 'hi' }], {
+      client,
+      system: new SystemPrompt({ version: 'v2-experiment' }).add('role', 'r'),
+    });
+    assert.equal(rootOf(result.trace).attributes['system.version'], 'v2-experiment');
+  });
+
+  it('system 是已拼好的 SystemParam（无版本）时不写该 attribute —— 不写空串冒充实有版本', async () => {
+    const app = createApp({ name: 'ver-app', system: 'plain system' });
+    const { client } = mockClient([endTurnMsg('ok')]);
+    const { result } = await app.run([{ role: 'user', content: 'hi' }], { client });
+    assert.equal('system.version' in rootOf(result.trace).attributes, false);
+  });
+
+  it('直连 runAgent 时也能显式给 systemVersion（不强制走 SystemPrompt 实例）', async () => {
+    const { client } = mockClient([endTurnMsg('ok')]);
+    const r = await runAgent({
+      messages: [{ role: 'user', content: 'hi' }],
+      client,
+      systemVersion: 'manual-1',
+    });
+    assert.equal(rootOf(r.trace).attributes['system.version'], 'manual-1');
   });
 });

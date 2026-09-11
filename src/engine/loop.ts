@@ -442,6 +442,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   const recorder = options.recorder ?? new TraceRecorder();
   const rootId = recorder.begin('run', options.runName ?? 'agent.run', null);
   recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
+  // 提示词版本化（D4）：版本号落 run 根，便于按版本筛 trace
+  if (options.systemVersion) recorder.setAttribute(rootId, 'system.version', options.systemVersion);
 
   const progress = { iterations: 0 };
   let result: AgentLoopResult<SchemaType<S>>;

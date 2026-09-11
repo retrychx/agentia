@@ -15,8 +15,25 @@ export interface SystemSection {
   stable?: boolean;
 }
 
+export interface SystemPromptOptions {
+  /** 提示词版本号；见 `SystemPrompt.version` */
+  version?: string;
+}
+
 export class SystemPrompt {
   private sections: SystemSection[] = [];
+
+  /**
+   * 提示词版本号（D4）：给了它就自动落到 run 根的 `system.version` attribute ——
+   * 于是 trace 里能查出「这个结果是哪个版本的提示词产出的」（换 prompt 前后对比
+   * 效果、排查回归都靠它）。框架**不做**版本库 / 回滚平台（YAGNI，见 spec §10）：
+   * 版本号怎么来（git sha / 语义版本 / 手工）由你决定。
+   */
+  readonly version?: string;
+
+  constructor(opts: SystemPromptOptions = {}) {
+    this.version = opts.version;
+  }
 
   add(section: SystemSection): this;
   add(name: string, text: string, stable?: boolean): this;

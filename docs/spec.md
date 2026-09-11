@@ -295,6 +295,56 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   → HTTP 宿主（A3 SSE）→ 客户端**逐帧到达**（+40/157/279/399ms）；带工具的一轮 `maxTotalTokens=100`
   → `stopReason='budget_exceeded'` 且**工具未被执行**。
 
+- 2026-09-11：**Phase D 落地（生态）** —— 设计见 `docs/plans/2026-09-11-agent-service-hardening.md` §6。
+  **① MCP 桥（duck-typed，框架零依赖）**：新增 `integrations/mcp.ts`（只依赖 core）：结构面
+  `McpClientLike { listTools(); callTool(name, args) }` + `mcpTools(client, { prefix, server, timeoutMs }) → AgentTool[]`；
+  **不 import MCP SDK、不含任何传输实现**（stdio / StreamableHTTP 归独立可选包，本仓库 `scripts/e2e-mcp.ts`
+  留了一份最小连接器供参考）。
+  **接入点偏离设计（此处锁定）**：设计写的是「`createApp({ providers })` 里放个 `useFactory` 即可」——
+  **落地时不成立**：菜单只从装饰器注册表收集（`useFactory` 的返回值根本不进菜单），且 `Container.resolve`
+  是同步的（`await mcpTools(...)` 塞不进去）。零新机制的做法是给 `AppOptions` 加 **`tools?: AgentTool[]`**：
+  裸工具直进主菜单，且与装饰器单元**完全同等** —— 同过中间件链、同进重名查重（**不是旁路**，两条用例分别钉住）。
+  **语义**：名字 = `prefix + 归一化原名`（非 `[A-Za-z0-9_]` → `_`，连续分隔符收成一个；缺省 `mcp_<server>_`，
+  没给 `server` 时 `mcp_`）；归一化后**空名 / 撞名 / 超 64 字符一律装配期抛错**（不静默改名 —— 那会得到一个
+  调不回去的名字）；**原名**每次调用写进发起 turn 的 `mcp.tool` attribute（审计 / 回放要还原它才能回调 server）；
+  `inputSchema` 原样透传（engine 的子集校验器在 `callTool` 之前先校验）；`callTool` 抛错 → 该条 `is_error`
+  且**不杀 run**；**协议层 `isError: true` 框架看不见 —— 必须由连接器转成抛错**（否则模型以为成功）。
+  桥自带 `timeoutMs`（缺省 60000）= **放弃等待**（拿不到 server 侧取消句柄），与 engine 的 `toolTimeoutMs`
+  **双重计时、谁短谁生效**。**不做**：`sampling`（server 反向请求模型）/ `resources` / `prompts` 原语、连接池。
+  **② evals**：新增 `src/eval/`（**叶子消费模块**，只依赖公共面、无反向依赖）：`scriptedClient(steps)`
+  与 `defineEval<T>({ name, app, cases, expect })`。**语义锁定**：步骤在 `finalMessage()` **成功返回后才前进**
+  （用函数步骤 `throw` 模拟 429 时，重试会**重放同一步** —— 想验重试就这么写）；`scriptedClient`
+  **真的把文本块经 `on('text')` 吐出去**（onText / SSE 链路在 eval 里按真实路径走；`tests/helpers` 的 mockClient
+  是忽略 `on` 的，两者定位不同）；`run()` **不抛**（用例失败进报告，一次跑完能看到所有回归），只有
+  「应用建不起来」才冒泡（那是环境错误不是回归）；`app()` 一轮只调一次（用例间复用装配，避免掩盖装配期状态泄漏）；
+  失败 case 带 `trace`，报告含 `stopReason`。**补 `EvalCase.opts`**（透传 `app.run`）—— 没有它就**断言不了
+  `result.typed`**：`resultSchema` 是 per-run 的，而 `app` 是不带它的。
+  **③ 指标**：新增 `integrations/metrics.ts` 的 `metricsSink(opts)` —— **天然满足 `TraceSink`**，
+  `createApp({ sinks: [metricsSink()] })` 即接入，**零新出口**（与 `createOtlpExporter` 同款）；另给
+  `snapshot()` / `render()`（Prometheus 文本，手写零依赖）/ `reset()`。**口径锁定**：`tokens` = 四类之和
+  （与 `BudgetGuard` 一致），分项在 `render()` 里以 label 给出（信息不丢）；分位是**窗口内精确值**
+  （最近 rank 法 + 环形窗口，`windowSize` 缺省 1024）—— **不是** Prometheus 原生 histogram / summary，
+  代价是只反映最近 N 条 run，收益是长跑宿主不被无界数组拖住；**根 span 未收尾**（失败路径的半截 trace）
+  的 run 不进延迟样本。`export: 'otlp'` **构造期抛错**（OTLP metrics 后置，响亮失败好过给一份空指标）。
+  **④ 提示词版本化**：`SystemPromptOptions.version` + 只读 `SystemPrompt.version`；`RunAgentOptions.systemVersion`
+  落 **run 根 attribute `system.version`**；`AgentApp.run` 从**当次**的 `SystemPrompt` 实例自动带上
+  （单次 `{ system }` 覆盖时版本跟当次走）。**不放进 `RunInvocationOptions`** —— 版本是提示词的属性，
+  不该由 transport 负载指定。`system` 传已拼好的 `SystemParam` 时**不写该 attribute**（不写空串冒充实有版本）。
+  **不做**：版本库 / 回滚 / A-B 实验平台。
+  **⑤ 多租户配额（不做子系统，给组合范式）**：`middleware`（拦在单元调用前；超限抛错 → 该条 `is_error`、
+  **被拦下的单元不执行**、run 不崩）+ `TraceSink`（收尾后按租户记账 —— sink 在 run 的 async 上下文里投递，
+  **读得到黑板**）+ `BudgetGuard`（单次 run 上限）三者组合；存储（内存 / Redis / DB）与超限策略是使用者的。
+  两条独立：**被拦下的 run 仍然要记账**（模型的钱已经花了）。`usage-guide §6` 里那 20 行示例被单测
+  **真跑一遍**（文档的写法必须真能工作，是仓库既有约定）。
+  **验证**：新增 `npm run e2e:mcp` —— 真接**第三方 server**（`uvx mcp-server-time` v1.30.0，真 stdio JSON-RPC：
+  `initialize` → `notifications/initialized` → `tools/list` → `tools/call`）→ 连接器 → `mcpTools` → `createApp`
+  菜单 → 真跑一轮：模型经 MCP 工具拿到**真实时区时间**并写进最终答案；`system.version` / `mcp.tool` 落 trace；
+  metrics 从这次 run 派生正确；`agentia doctor` 认到 MCP 单元。无网 / 无 uv 的机器自动回落
+  `scripts/mcp-fixture-server.py`（同一协议面；夹具的工具名带 `-`，顺带把归一化那条路径也验了）。
+  测试 322 → 363 例（+41：MCP 13 / 指标 9 / evals 10 / 配额 4 / 提示词版本 5），另在 `tests/types/dx.types.ts`
+  并入 8 处类型断言（`@ts-expect-error` 钉住「应当报错」的场景：缺 `callTool` 的结构面、`tools` 的元素形状、
+  `version` 只读、`systemVersion` 类型、`export` 只认两个字面量等）。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。
