@@ -2,6 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentTool } from '../core/tool.js';
 import type { ContextPolicy } from '../engine/types.js';
+import type { RetryOptions } from '../engine/retry.js';
 import type { BlackboardSeed } from './context.js';
 
 /**
@@ -23,6 +24,8 @@ export interface RunInvocationOptions {
   blackboard?: BlackboardSeed;
   /** 上下文预算策略（compaction / context editing） */
   contextPolicy?: ContextPolicy;
+  /** 模型请求重试策略（覆盖应用级缺省）；见 RunAgentOptions.retry */
+  retry?: RetryOptions | false;
   /** 幂等键：异步宿主的 at-least-once 去重依据 */
   idempotencyKey?: string;
   /** 硬失败是否抛出；缺省 true（异步宿主置 false 落 failed 记录） */

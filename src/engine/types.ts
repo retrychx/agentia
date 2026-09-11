@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, JsonSchema, ModelClient } from '../core/tool.js';
 import type { SpanError, Trace } from '../core/trace.js';
+import type { RetryOptions } from './retry.js';
 
 /**
  * engine 对模型端的最小结构面（R4 多模型）：Anthropic SDK 天然满足，
@@ -81,6 +82,14 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   runName?: string;
   /** 上下文预算策略：每回合发送前可编辑/压缩消息（compaction / context editing） */
   contextPolicy?: ContextPolicy;
+  /**
+   * 模型请求的重试策略（spec §6.5 确定性工程）。缺省**开启**
+   * （maxAttempts=3、指数退避 + 抖动）；`false` 关闭。
+   * 只重试「尚未产出文本」的可重试失败（429 / 5xx / 连接失败）。
+   *
+   * 注意：子 agent / skill 内部的 llm 调用走各自的缺省策略，不受单次 run 的 `false` 影响。
+   */
+  retry?: RetryOptions | false;
   /**
    * 结构化结果 schema（R2）：给出后 engine 追加隐藏工具 submit_result，
    * 模型调用它提交符合 schema 的最终结果，校验通过即结束循环并写入 AgentRunResult.typed；

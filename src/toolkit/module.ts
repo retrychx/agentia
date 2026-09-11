@@ -19,6 +19,7 @@ import { collectPrompts } from './prompt.js';
 import { applyMiddleware } from './middleware.js';
 import type { UnitMiddleware } from './middleware.js';
 import type { ContextPolicy } from '../engine/types.js';
+import type { RetryOptions } from '../engine/retry.js';
 
 /**
  * 能力包（roadmap R5）：第三方包把「单元 providers + 中间件」打包成 AgentModule 分发，
@@ -67,6 +68,8 @@ export interface AppOptions {
   maxIterations?: number;
   /** 缺省上下文预算策略（compaction / context editing） */
   contextPolicy?: ContextPolicy;
+  /** 缺省模型请求重试策略（可被单次 run 覆盖）；见 RunAgentOptions.retry */
+  retry?: RetryOptions | false;
   /** 只扫这些 token 的 provider 上的 @Tool；缺省扫全部 providers */
   toolSources?: Token[];
   /** 单元调用中间件（洋葱模型，链序 = 注册顺序）；装配期包裹整个菜单 */
@@ -111,6 +114,7 @@ export class AgentApp {
     maxTokens?: number;
     maxIterations?: number;
     contextPolicy?: ContextPolicy;
+    retry?: RetryOptions | false;
   };
   private _tools: AgentTool[] = [];
   private readonly sinks: TraceSink[];
@@ -138,6 +142,7 @@ export class AgentApp {
       maxTokens: opts.maxTokens,
       maxIterations: opts.maxIterations,
       contextPolicy: opts.contextPolicy,
+      retry: opts.retry,
     };
 
     // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent / @Skill / @Prompt；
@@ -281,6 +286,7 @@ export class AgentApp {
       runName: this.name,
       idempotencyKey: opts.idempotencyKey,
       contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
+      retry: opts.retry ?? this.base.retry,
       resultSchema: opts.resultSchema,
       rethrow: opts.rethrow,
       sinks: this.sinks,

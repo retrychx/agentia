@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import Anthropic from '@anthropic-ai/sdk';
 import { executeRun } from '../../src/index.js';
 import type { JsonSchema, Span } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
@@ -201,5 +202,86 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal(result.stopReason, 'aborted');
     assert.equal(result.error?.type, 'aborted');
     assert.equal(run.status, 'failed');
+  });
+
+  it('可重试失败（429）自动重试：成功收尾、trace 两个 turn、onRetry 一次', async () => {
+    const rate = new Anthropic.RateLimitError(429, undefined, 'slow down', new Headers());
+    let n = 0;
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            n++;
+            if (n === 1) throw rate;
+            return endTurnMsg('重试后成功');
+          },
+        }),
+      },
+    } as never;
+    const attempts: number[] = [];
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      retry: { maxAttempts: 3, baseDelayMs: 1, jitter: 0, onRetry: (i) => attempts.push(i.attempt) },
+    });
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.finalText, '重试后成功');
+    assert.equal(run.status, 'succeeded');
+    assert.deepEqual(attempts, [1]);
+    const turns = result.trace.spans.filter((s) => s.kind === 'llm.turn');
+    assert.equal(turns.length, 2, '失败尝试与成功尝试各开一个 span');
+    assert.equal(turns[0].status, 'error');
+    assert.equal(turns[1].status, 'ok');
+    assert.equal(turns[1].attributes['retry.attempt'], 2);
+  });
+
+  it('已吐出文本后失败 → 不重试（重试会重复输出）', async () => {
+    const rate = new Anthropic.RateLimitError(429, undefined, 'slow down', new Headers());
+    const client = {
+      messages: {
+        stream: () => ({
+          on(ev: string, cb: (d: string) => void) {
+            if (ev === 'text') cb('半截输出');
+          },
+          finalMessage: async () => {
+            throw rate;
+          },
+        }),
+      },
+    } as never;
+    let retried = 0;
+    const { result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      rethrow: false,
+      retry: { maxAttempts: 3, baseDelayMs: 1, jitter: 0, onRetry: () => (retried += 1) },
+    });
+    assert.equal(retried, 0, '已产出文本就不该重试');
+    assert.equal(result.stopReason, 'error');
+  });
+
+  it('retry:false → 429 直接失败，不重试', async () => {
+    const rate = new Anthropic.RateLimitError(429, undefined, 'slow down', new Headers());
+    let calls = 0;
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            calls++;
+            throw rate;
+          },
+        }),
+      },
+    } as never;
+    const { result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      rethrow: false,
+      retry: false,
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.stopReason, 'error');
   });
 });

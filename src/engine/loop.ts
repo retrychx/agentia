@@ -4,6 +4,8 @@ import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError, isAbortError } from './errors.js';
+import { backoffDelay, resolveRetry, sleep } from './retry.js';
+import type { RetryOptions } from './retry.js';
 import { TraceRecorder } from './tracer.js';
 import type {
   AgentRunResult,
@@ -56,6 +58,8 @@ interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   onText?: (delta: string) => void;
   /** 中断信号：中止后不再发起新回合，以 stopReason='aborted' 收尾 */
   signal?: AbortSignal;
+  /** 模型请求重试策略（缺省开启；false 关闭）。见 engine/retry.ts */
+  retry?: RetryOptions | false;
   /** 上下文预算策略（compaction / context editing），每回合发送前调用 */
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（见 RunAgentOptions.resultSchema） */
@@ -130,6 +134,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   let submitted = false;
 
   const signal = args.signal;
+  const retryCfg = resolveRetry(args.retry);
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
     // 调用方已取消：不再发起新回合，直接以 aborted 收尾（不抛异常，语义确定）
@@ -154,30 +159,57 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       }
     }
 
-    const turnId = recorder.begin('llm.turn', model, parentSpanId);
-
-    let message: Anthropic.Message;
-    try {
-      const stream = client.messages.stream({
-        model,
-        max_tokens: args.maxTokens,
-        ...(system ? { system } : {}),
-        ...(apiTools.length ? { tools: apiTools } : {}),
-        messages,
-        ...(signal ? { signal } : {}),
-      });
-      stream.on('text', (delta) => args.onText?.(delta));
-      message = await stream.finalMessage();
-    } catch (e) {
-      recorder.end(turnId, { status: 'error', error: classifyError(e) });
-      // 中断不作异常冒泡：以确定的 stopReason 收尾，调用方能区分「取消」与「故障」
-      if (isAbortError(e) || signal?.aborted) {
-        stopReason = 'aborted';
-        error = { type: 'aborted', message: 'run 已被取消', retryable: false };
-        finished = true;
+    // —— 一次逻辑回合：可能含多次尝试（重试）；每次尝试开自己的 llm.turn span ——
+    let turnId: SpanId = '';
+    let message: Anthropic.Message | undefined;
+    let aborted = false;
+    let emitted = false; // 本回合是否已吐出过文本（吐过就不能重试，否则会重复输出）
+    for (let attempt = 1; ; attempt++) {
+      turnId = recorder.begin('llm.turn', model, parentSpanId);
+      if (attempt > 1) recorder.setAttribute(turnId, 'retry.attempt', attempt);
+      try {
+        const stream = client.messages.stream({
+          model,
+          max_tokens: args.maxTokens,
+          ...(system ? { system } : {}),
+          ...(apiTools.length ? { tools: apiTools } : {}),
+          messages,
+          ...(signal ? { signal } : {}),
+        });
+        stream.on('text', (delta) => {
+          emitted = true;
+          args.onText?.(delta);
+        });
+        message = await stream.finalMessage();
         break;
+      } catch (e) {
+        const errInfo = classifyError(e);
+        recorder.end(turnId, { status: 'error', error: errInfo });
+        // 中断：不冒泡、不重试 —— 以确定语义收尾
+        if (isAbortError(e) || signal?.aborted) {
+          aborted = true;
+          break;
+        }
+        // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
+        const canRetry =
+          retryCfg !== null && attempt < retryCfg.maxAttempts && retryCfg.isRetryable(e) && !emitted;
+        if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/unit 与收尾
+        const delayMs = backoffDelay(attempt, retryCfg);
+        recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
+        retryCfg.onRetry({ attempt, delayMs, error: errInfo });
+        try {
+          await sleep(delayMs, signal);
+        } catch {
+          aborted = true; // 退避期间被取消
+          break;
+        }
       }
-      throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/unit 与收尾
+    }
+    if (aborted || !message) {
+      stopReason = 'aborted';
+      error = { type: 'aborted', message: 'run 已被取消', retryable: false };
+      finished = true;
+      break;
     }
     progress.iterations++;
 
@@ -359,6 +391,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       parentSpanId: rootId,
       onText: options.onText,
       signal: options.signal,
+      retry: options.retry,
       contextPolicy: options.contextPolicy,
       resultSchema: options.resultSchema,
       progress,
@@ -400,6 +433,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   onText?: (delta: string) => void;
   /** 中断信号（由发起它的单元从 ToolRunContext.signal 透传，取消能传播到子 agent） */
   signal?: AbortSignal;
+  /** 模型请求重试策略（缺省开启） */
+  retry?: RetryOptions | false;
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（同 RunAgentOptions.resultSchema） */
   resultSchema?: S;
@@ -416,6 +451,7 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     parentSpanId: opts.parentSpanId,
     onText: opts.onText,
     signal: opts.signal,
+    retry: opts.retry,
     contextPolicy: opts.contextPolicy,
     resultSchema: opts.resultSchema,
   });

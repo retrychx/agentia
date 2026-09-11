@@ -52,6 +52,8 @@ export {
 export type { CompactOptions, TrimOptions } from './engine/trimming.js';
 export { createBudgetPolicy } from './engine/policy.js';
 export type { BudgetPolicyOptions } from './engine/policy.js';
+export { DEFAULT_RETRY } from './engine/retry.js';
+export type { RetryOptions } from './engine/retry.js';
 
 // run：run 生命周期
 export { Run, executeRun } from './runtime/run.js';
