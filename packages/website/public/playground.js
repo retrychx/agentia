@@ -258,15 +258,83 @@
     addBlock(block);
   }
 
+  /* ========== 轻量 Markdown 渲染（零依赖、先转义后转换，杜绝 HTML 注入） ==========
+     模型返回的是 Markdown（粗体 / 标题 / 有序列表 / 行内代码 / 代码块），早期实现按纯文本
+     直出，`**上海**`、`#`、`1.` 都原样显示。这里做一个够用的子集渲染器；不用 CDN 脚本。 */
+  const escHtml = (s) =>
+    s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function mdInline(s) {
+    return escHtml(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) =>
+        /^(https?:|mailto:)/i.test(u) ? '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>' : m);
+  }
+
+  /* 结构用原文解析（`>`/`*`/`#` 这类标记不能被提前转义），行内文本进入 mdInline 时才转义 */
+  function mdToHtml(src) {
+    const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+    let out = '';
+    let inCode = false;
+    let codeBuf = [];
+    let listType = null;
+    let para = [];
+    const flushPara = () => {
+      if (para.length) { out += '<p>' + para.map(mdInline).join('<br />') + '</p>'; para = []; }
+    };
+    const closeList = () => { if (listType) { out += '</' + listType + '>'; listType = null; } };
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) {
+        if (!inCode) { flushPara(); closeList(); inCode = true; codeBuf = []; }
+        else { inCode = false; out += '<pre class="md-pre"><code>' + escHtml(codeBuf.join('\n')) + '</code></pre>'; }
+        continue;
+      }
+      if (inCode) { codeBuf.push(line); continue; }
+
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { flushPara(); closeList(); out += '<h' + h[1].length + '>' + mdInline(h[2].trim()) + '</h' + h[1].length + '>'; continue; }
+
+      if (/^\s*[-*•]\s+/.test(line)) {
+        flushPara();
+        if (listType !== 'ul') { closeList(); out += '<ul>'; listType = 'ul'; }
+        out += '<li>' + mdInline(line.replace(/^\s*[-*•]\s+/, '')) + '</li>';
+        continue;
+      }
+      const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (ol) {
+        flushPara();
+        if (listType !== 'ol') { closeList(); out += '<ol>'; listType = 'ol'; }
+        out += '<li>' + mdInline(ol[1]) + '</li>';
+        continue;
+      }
+
+      closeList();
+      if (/^\s*>\s?/.test(line)) { flushPara(); out += '<blockquote>' + mdInline(line.replace(/^\s*>\s?/, '')) + '</blockquote>'; continue; }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); out += '<hr />'; continue; }
+      if (line.trim() === '') { flushPara(); continue; }
+      para.push(line);
+    }
+    flushPara();
+    if (inCode) out += '<pre class="md-pre"><code>' + escHtml(codeBuf.join('\n')) + '</code></pre>'; // 未闭合的代码块
+    closeList();
+    return out;
+  }
+
   async function panelStream(text, gen) {
     if (!streamEl) panelLlmOpen('llm.turn');
     const target = streamEl;
+    target.classList.add('md'); // 交给 Markdown 样式（white-space 由 normal 接管）
     for (let i = 0; i < text.length; i += 2) {
       if (state.gen !== gen) return;
-      target.textContent += text.slice(i, i + 2);
+      target.__raw = (target.__raw || '') + text.slice(i, i + 2);
+      target.innerHTML = mdToHtml(target.__raw);
       scrollTerm();
       await sleep(14);
     }
+    target.innerHTML = mdToHtml(target.__raw || '');
     target.classList.remove('tp-caret');
   }
 
