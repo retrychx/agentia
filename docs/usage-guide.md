@@ -297,6 +297,35 @@ result.typed;   // { answer: string } | undefined
 | `compactMessages` | compaction：旧前缀做摘要（摘要器由你注入，框架不替你造 token） |
 | `estimateMessages` | 估算 token（预算决策用，不是精确记账） |
 
+选项字段（`TrimOptions` / `CompactOptions` / `BudgetPolicyOptions`）：
+
+### `TrimOptions`（`trimToolPairs` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `keepToolPairs` | 保留的最近工具**对数**（tool_use→tool_result）；缺省 1 |
+
+### `CompactOptions`（`compactMessages` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `keepRecent` | 保留的最近消息**条数**；缺省 20 |
+| `summarize` | 摘要器：输入被弃旧前缀的渲染文本，返回摘要（框架不替你造 token） |
+
+### `BudgetPolicyOptions`（`createBudgetPolicy` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `budgetTokens` | 预算（估算 input tokens）；缺省 60000 |
+| `keepRecent` | compaction 保留的最近消息**条数**；缺省 20 |
+| `keepToolPairs` | context editing 保留的最近工具**对数**；缺省 1 |
+| `estimateTokens` | token 估算函数（预算决策用，非精确记账） |
+| `editBeforeCompact` | 超预算时是否先编辑再压缩；缺省 true |
+| `summarize` | 提供则允许 compaction（旧前缀→摘要） |
+| `compactEvery` | 距上次压缩至少隔几个回合（滞回）；缺省 1 |
+
+> `keepRecent`（**消息条数**，compaction 用）与 `keepToolPairs`（**工具对数**，context editing 用）是两种单位，刻意分开命名 —— 别拿同一个值套过去。
+
 ### 多模型 / 记忆 / 重放
 
 | API | 说明 |

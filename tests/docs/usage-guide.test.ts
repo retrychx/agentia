@@ -30,6 +30,9 @@ const MEMBERSHIP_TYPES = [
   'PromptSpec',
   'RunContext',
   'SkillContext',
+  'TrimOptions',
+  'CompactOptions',
+  'BudgetPolicyOptions',
 ];
 
 function srcFiles(dir: string): string[] {
