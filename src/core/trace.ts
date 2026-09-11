@@ -6,8 +6,11 @@
 export type TraceId = string;
 export type SpanId = string;
 
-/** span 层级：run=整次运行；unit=对单个单元(tool/skill/prompt/subagent)的调用；llm.turn=unit 内每次模型往返 */
-export type SpanKind = 'run' | 'unit' | 'llm.turn' | 'internal';
+/** span 层级：run=整次运行；unit=对单元的调用；llm.turn=每次模型往返。
+ *  注意 unit span 只由 skill / subagent 创建（toolkit/skill.ts、toolkit/subagent.ts 里的
+ *  recorder.begin('unit', …)）；普通工具与 @Prompt 资产【不建 span】，只记 turn 上的
+ *  tool.input / tool.output 事件（engine/loop.ts）。 */
+export type SpanKind = 'run' | 'unit' | 'llm.turn';
 
 export type UnitType = 'tool' | 'skill' | 'prompt' | 'subagent';
 

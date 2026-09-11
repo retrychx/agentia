@@ -307,20 +307,15 @@
           const results = [];
           for (let i = 0; i < toolUses.length; i++) {
             const tu = toolUses[i];
-            const unitId = spanId + '-tool-' + i;
             pg.highlightMenu('tool:' + tu.name);
-            // 父 span = 【发起它的那个 llm.turn】，与框架 ToolRunContext.parentSpanId 一致；
-            // 挂 root 的话整棵树只有一层，看不出哪一轮调用了哪个工具
-            pg.traceStart({ id: unitId, parent: spanId, kind: 'unit', name: 'tool:' + tu.name, arg: pg.fmtArg(tu.input) });
+            // 框架里普通工具【不建 unit span】，只记 turn 上的两个事件
+            // （engine/loop.ts: recorder.event(turnId, 'tool.input' | 'tool.output', …)）——
+            // 所以入参与出参都挂到【发起它的那个 llm.turn】上，而不是给工具建行。
+            pg.traceEvent(spanId, 'tool.input', 'tool:' + tu.name, pg.fmtArg(tu.input));
             pg.panelTool(tu.name, tu.input);
             const out = execTool(tu.name, tu.input);
             pg.panelResult(out.text);
-            pg.traceEnd({
-              id: unitId,
-              ms: out.ms,
-              status: out.isError ? 'error' : 'ok',
-              error: out.isError ? { type: 'tool_error', message: String(out.text).slice(0, 200) } : null,
-            }, usageAcc);
+            pg.traceEvent(spanId, 'tool.output', 'tool:' + tu.name, out.text, !out.isError);
             const r = { type: 'tool_result', tool_use_id: tu.id, content: out.text };
             if (out.isError) r.is_error = true;
             results.push(r);

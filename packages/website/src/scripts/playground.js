@@ -13,11 +13,13 @@
    *  { spanStart:{id,parent,kind,name} }  trace 开 span（kind: run/unit/llm.turn）
    *     parent 语义与框架一致：unit 挂在【发起它的那个 llm.turn】下；主 agent 的
    *     llm.turn 挂 run 根；子 agent 内部的单元递归成该 unit 的子孙。
+   *     unit span 只给 skill / subagent —— 框架里只有它们会 recorder.begin('unit',…)；
+   *     普通工具与 @Prompt 资产是 turn 上的【事件】（见下方 tool / result），不建 span。
    *  { spanEnd:{id,ms,usage} }         trace 收尾（usage 累计到计数器）
    *  { llmOpen:{label,nested} }        终端面板开一个 llm.turn 输出块
    *  { stream }                        打字机流入最近的输出块
-   *  { tool:{name,input,nested} }      tool_use 卡片（入参 JSON）
-   *  { result:{text,nested} }          tool_result 卡片
+   *  { tool:{name,input,nested} }      tool_use 卡片 + 在最近一个 llm.turn 上记 tool.input 事件
+   *  { result:{text,nested} }          tool_result 卡片 + 在同一 turn 上记 tool.output 事件
    *  { note }                          分区说明（如「SubAgent 内部」）
    *  { finalOpen } / { done }          最终报告块 / run 收尾
    */
@@ -40,17 +42,15 @@
         { stream: '审查类任务会在中间产生大量逐段批注，适合放进隔离的子代理：doc_reviewer 有独立循环和裁剪上下文，只把审查结论回流给我。' },
         { wait: 300, spanEnd: { id: 's1', ms: 1320, usage: { input: 1450, output: 88 } } },
         { wait: 400, menu: 'subagent:doc_reviewer' },
-        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'subagent:doc_reviewer' } },
         { tool: { name: 'subagent:doc_reviewer', input: { task: '审查 docs/weekly-report.md，指出结构与事实性问题', focus: ['结构', '事实', '数据口径'] } } },
+        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'subagent:doc_reviewer' } },
         { wait: 600, note: '— SubAgent 内部（独立上下文，过程不外泄） —' },
         { wait: 300, spanStart: { id: 's3', parent: 's2', kind: 'llm.turn', name: 'claude-opus-5' } },
         { llmOpen: { label: 'llm.turn · doc_reviewer', nested: true } },
         { stream: '先读文档开头两百行，摸清结构，再逐节核对数据引用。' },
         { wait: 200, spanEnd: { id: 's3', ms: 1580, usage: { input: 1180, output: 120 } } },
-        { wait: 350, spanStart: { id: 's4', parent: 's3', kind: 'unit', name: 'tool:read_file' } },
         { tool: { name: 'tool:read_file', input: { path: 'docs/weekly-report.md', offset: 0, limit: 200 }, nested: true } },
         { wait: 700, result: { text: '已读取 200 行（全文共 342 行）。章节：摘要 / 核心指标 / 渠道分析 / 附录。', nested: true } },
-        { spanEnd: { id: 's4', ms: 210 } },
         { wait: 400, spanStart: { id: 's5', parent: 's2', kind: 'llm.turn', name: 'claude-opus-5' } },
         { llmOpen: { label: 'llm.turn · doc_reviewer', nested: true } },
         { stream: '发现三处问题：①「核心指标」环比口径与附录不一致；②第 3 节引用的 DAU 与摘要对不上；③渠道分析缺少数据来源标注。继续读完剩余部分后汇总结论。' },
@@ -83,13 +83,11 @@
         { stream: '分两步：先用 query_metrics 拉上周核心指标，再交给 weekly_report 这个 Skill——它的成稿流程（调几次模型、怎么加工）是代码写死的，产出稳定可复现。' },
         { wait: 300, spanEnd: { id: 's1', ms: 1180, usage: { input: 1320, output: 74 } } },
         { wait: 400, menu: 'tool:query_metrics' },
-        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'tool:query_metrics' } },
         { tool: { name: 'tool:query_metrics', input: { metrics: ['dau', 'wau', 'retention_d7', 'revenue'], week: '2026-W36' } } },
         { wait: 800, result: { text: 'DAU 均值 118,420（环比 +3.1%）；WAU 402,311；7 日留存 41.2%；营收 ¥2.31M（环比 -1.4%）。' } },
-        { spanEnd: { id: 's2', ms: 340 } },
         { wait: 500, menu: 'skill:weekly_report' },
-        { wait: 400, spanStart: { id: 's3', parent: 's1', kind: 'unit', name: 'skill:weekly_report' } },
         { tool: { name: 'skill:weekly_report', input: { week: '2026-W36', data: '见上一条指标结果' } } },
+        { wait: 400, spanStart: { id: 's3', parent: 's1', kind: 'unit', name: 'skill:weekly_report' } },
         { wait: 600, note: '— Skill 内部（ctx.llm() 由代码显式调用） —' },
         { wait: 300, spanStart: { id: 's4', parent: 's3', kind: 'llm.turn', name: 'claude-opus-5' } },
         { llmOpen: { label: 'ctx.llm() · 数据解读', nested: true } },
@@ -125,19 +123,13 @@
         { stream: '先查上海和杭州周末的天气；菜单里还有一份 packing_playbook 文本资产，适合拉进上下文辅助给建议。' },
         { wait: 300, spanEnd: { id: 's1', ms: 980, usage: { input: 1150, output: 62 } } },
         { wait: 400, menu: 'tool:get_weather' },
-        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'tool:get_weather' } },
         { tool: { name: 'tool:get_weather', input: { city: '上海' } } },
         { wait: 600, result: { text: '上海：周六晴 24~31°C，周日多云 23~29°C，东南风 3 级。' } },
-        { spanEnd: { id: 's2', ms: 180 } },
-        { wait: 450, spanStart: { id: 's3', parent: 's1', kind: 'unit', name: 'tool:get_weather' } },
         { tool: { name: 'tool:get_weather', input: { city: '杭州' } } },
         { wait: 600, result: { text: '杭州：周六阵雨转晴 23~30°C，周日晴 22~28°C，湿度 78%。' } },
-        { spanEnd: { id: 's3', ms: 190 } },
         { wait: 500, menu: 'prompt:packing_playbook' },
-        { wait: 400, spanStart: { id: 's4', parent: 's1', kind: 'unit', name: 'prompt:packing_playbook' } },
         { tool: { name: 'prompt:packing_playbook', input: {} } },
         { wait: 500, result: { text: '已拉取文本资产：短途出行清单（雨具 / 防晒 / 证件 / 充电宝……），共 640 字注入上下文。' } },
-        { spanEnd: { id: 's4', ms: 40 } },
         { wait: 600, spanStart: { id: 's5', parent: 'root', kind: 'llm.turn', name: 'claude-opus-5' } },
         { finalOpen: {} },
         { stream: '出行建议 · 上海 → 杭州（周末）\n\n天气：杭州周六上午有阵雨，午后转晴；周日全晴。建议周六午后再进景区。\n衣物：白天 28~30°C 短袖即可，湿度大，备一件速干外套。\n装备：折叠伞必带；防晒 SPF30+；高铁往返注意返程末班。\n行程：周六午后西湖东线，周日早起灵隐寺避开人流。' },
@@ -387,6 +379,8 @@
       kind: 'run',
       name: 'run · ' + sc.title,
       children: [],
+      events: [],
+      order: [],
       done: false,
       ms: 0,
       usage: { input: 0, output: 0 },
@@ -403,6 +397,8 @@
       name: s.name,
       arg: s.arg || '',
       children: [],
+      events: [],
+      order: [],
       done: false,
       ms: 0,
       status: 'ok',
@@ -412,6 +408,19 @@
     spanMap.set(s.id, node);
     const parent = spanMap.get(s.parent) || traceRoot;
     parent.children.push(node);
+    parent.order.push({ t: 'span', n: node });
+    renderTrace();
+  }
+
+  /* span 事件：框架把普通工具 / @Prompt 调用记成【turn 上的事件】，不给它们建 unit span
+     （只有 skill / subagent 会 recorder.begin('unit', …)，见 engine/loop.ts）。
+     events 与 order 并存：events 是数据、order 负责与子 span 的先后顺序。 */
+  function traceEvent(id, type, tool, text, ok) {
+    const node = spanMap.get(id);
+    if (!node) return;
+    const e = { type, tool, text, ok: ok !== false };
+    node.events.push(e);
+    node.order.push({ t: 'ev', e });
     renderTrace();
   }
 
@@ -452,26 +461,57 @@
     renderTrace();
   }
 
+  /* 单元类型取自名字前缀（tool: / skill: / prompt: / subagent:）。四类各有标识符，
+     但【不上色】—— 站点只有一支青色 accent，靠字形区分即可，不破坏近黑钛银的克制感。 */
+  const UNIT_ICO = { tool: '⚙', skill: '◆', prompt: '¶', subagent: '⊕' };
+  function unitTypeOf(name) {
+    const t = String(name || '').split(':')[0];
+    return UNIT_ICO[t] ? t : '';
+  }
+
   function renderTrace() {
     traceBody.innerHTML = '';
     const rows = [];
+    /* 每个节点下【事件】与【子 span】按发生顺序混排：tool.input 先于它触发的 unit span、
+       tool.output 后于它，这个先后本身就是语义，不能拍平成一类。 */
     (function walk(node, prefix, isLast, isRoot) {
-      rows.push({ node, prefix, isRoot });
-      const kids = node.children;
-      kids.forEach((kid, i) => {
-        const last = i === kids.length - 1;
+      rows.push({ node, prefix, isRoot, last: isLast, ev: null });
+      const items = node.order || [];
+      items.forEach((it, i) => {
+        const last = i === items.length - 1;
         const next = isRoot ? '' : prefix + (isLast ? '   ' : '│  ');
-        walk(kid, next, last, false);
+        if (it.t === 'span') walk(it.n, next, last, false);
+        else rows.push({ node, prefix: next, isRoot: false, last, ev: it.e });
       });
     })(traceRoot, '', true, true);
 
-    rows.forEach(({ node, prefix, isRoot }, idx) => {
+    rows.forEach(({ node, prefix, isRoot, last, ev }) => {
+      const branch = isRoot ? '' : prefix + (last ? '└─ ' : '├─ ');
+
+      /* 事件行：没有 status 圈、没有耗时、不参与 usage 计数，只带入参/出参摘要 */
+      if (ev) {
+        const row = el('div', 'tr-row tr-ev' + (ev.ok === false ? ' error' : ''));
+        row.dataset.ev = ev.type;
+        row.dataset.unit = unitTypeOf(ev.tool);
+        row.appendChild(el('span', 'tr-pre', branch));
+        row.appendChild(el('span', 'tr-evv', ev.type === 'tool.output' ? '◂' : '▸'));
+        row.appendChild(el('span', 'tr-evtype', ev.type));
+        row.appendChild(el('span', 'tr-name', ev.tool));
+        const io = el('span', 'tr-io', ev.text || '');
+        io.title = ev.text || '';
+        row.appendChild(io);
+        traceBody.appendChild(row);
+        return;
+      }
+
       const bad = node.done && node.status === 'error';
       const row = el('div', 'tr-row' + (node.done ? '' : ' running') + (bad ? ' error' : ''));
       row.dataset.kind = node.kind;
-      const branch = isRoot ? '' : prefix + (idx === rows.length - 1 || isLastChild(node) ? '└─ ' : '├─ ');
+      const ut = node.kind === 'unit' ? unitTypeOf(node.name) : '';
+      if (ut) row.dataset.unit = ut;
       row.appendChild(el('span', 'tr-pre', branch));
       row.appendChild(el('span', 'tr-dot', node.done ? (bad ? '✕' : '●') : '◌'));
+      if (ut) row.appendChild(el('span', 'tr-ico', UNIT_ICO[ut]));
       row.appendChild(el('span', 'tr-name', node.name));
       if (node.arg) {
         const arg = el('span', 'tr-arg', node.arg);
@@ -497,20 +537,6 @@
     });
   }
 
-  /* 脚本里 tool 事件紧跟其 unit span 的 spanStart：把入参挂到同名、尚未带入参的最后一个 span 上 */
-  function attachSpanArg(name, input) {
-    let target = null;
-    for (const n of spanMap.values()) if (n.kind === 'unit' && n.name === name && !n.arg) target = n;
-    if (target) {
-      target.arg = fmtArg(input);
-      renderTrace();
-    }
-  }
-
-  function isLastChild(node) {
-    const parent = [...spanMap.values()].find((n) => n.children.includes(node));
-    return parent ? parent.children[parent.children.length - 1] === node : true;
-  }
 
   /* ========== usage 计数器 ========== */
   function renderUsage(acc) {
@@ -545,6 +571,8 @@
     streamEl = null;
     const usageAcc = { input: 0, output: 0 };
     const startedAt = performance.now();
+    let lastTurnId = null; // 最近一个 llm.turn：工具调用按框架语义记成它的事件
+    const pending = [];    // 未收到 result 的工具调用栈（嵌套单元先内后外收口）
 
     for (const ev of sc.script) {
       if (state.gen !== gen) return; // 已被取消
@@ -558,15 +586,26 @@
           c.classList.toggle('on', c.dataset.name === ev.menu),
         );
       }
-      if (ev.spanStart) traceStart(ev.spanStart);
+      if (ev.spanStart) {
+        traceStart(ev.spanStart);
+        if (ev.spanStart.kind === 'llm.turn') lastTurnId = ev.spanStart.id;
+      }
       if (ev.spanEnd) traceEnd(ev.spanEnd, usageAcc);
       if (ev.llmOpen) panelLlmOpen(ev.llmOpen.label, ev.llmOpen.nested);
       if (ev.stream) await panelStream(ev.stream, gen);
       if (ev.tool) {
         panelTool(ev.tool.name, ev.tool.input, ev.tool.nested);
-        attachSpanArg(ev.tool.name, ev.tool.input);
+        if (lastTurnId) traceEvent(lastTurnId, 'tool.input', ev.tool.name, fmtArg(ev.tool.input));
+        pending.push({ name: ev.tool.name, turnId: lastTurnId });
       }
-      if (ev.result) panelResult(ev.result.text, ev.result.nested);
+      if (ev.result) {
+        panelResult(ev.result.text, ev.result.nested);
+        /* 出参事件要挂回【发起它的那个 turn】。嵌套单元（subagent/skill）的 result 在
+           它内部所有调用都收口之后才到达，所以只能按栈 LIFO 配对 —— 用「最近一次
+           工具调用」会把子代理的结论错配到它内部最后调用的那个工具上。 */
+        const call = pending.pop();
+        if (call && call.turnId) traceEvent(call.turnId, 'tool.output', call.name, ev.result.text);
+      }
       if (ev.note) panelNote(ev.note);
       if (ev.finalOpen) panelFinalOpen();
       if (ev.done) {
@@ -618,6 +657,7 @@
     traceReset,
     traceStart,
     traceEnd,
+    traceEvent,
     traceFinish,
     renderUsage,
     resetPanels,
