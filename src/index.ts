@@ -116,8 +116,14 @@ export type { ScheduleEveryOptions, ScheduleHandle } from './transport/scheduler
 export { runSync, createSyncHandler } from './transport/transport.js';
 
 // run：宿主与导出（R3/R4）
-export { createHttpHandler } from './transport/http.js';
-export type { HttpHandlerOptions, RunHttpResponse, TaskSubmitBody } from './transport/http.js';
+export { createHttpHandler, HttpException } from './transport/http.js';
+export type {
+  HttpHandlerOptions,
+  HttpHandler,
+  HealthResponse,
+  RunHttpResponse,
+  TaskSubmitBody,
+} from './transport/http.js';
 export { SqliteTaskStore } from './store/sqliteStore.js';
 export { createOtlpExporter } from './integrations/otlp.js';
 export { createOpenAIClient } from './integrations/openai.js';

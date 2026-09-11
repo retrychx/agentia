@@ -71,6 +71,10 @@ export class AsyncRunner {
   private readonly runTimeoutMs: number;
   private running = 0;
   private readonly waitQueue: Array<() => void> = [];
+  /** 已受理但未达终态的任务数（queued + running）—— /healthz 与 drain 共用 */
+  private active = 0;
+  private draining = false;
+  private readonly drainWaiters: Array<() => void> = [];
 
   constructor(
     private readonly app: AppCallable,
@@ -99,6 +103,10 @@ export class AsyncRunner {
     input: unknown,
     opts: { idempotencyKey?: string; source?: string; options?: RunInvocationOptions } = {},
   ): TaskRecord {
+    // 停机中不接单（drain 之后）；宿主据此回 503。放在最前：连入参规整都省了。
+    if (this.draining) {
+      throw new Error('runner 正在优雅停机，不再接受新任务');
+    }
     const messages = normalizeMessages(input);
     if (opts.idempotencyKey) {
       const existing = this.store.byIdempotency(opts.idempotencyKey);
@@ -149,6 +157,53 @@ export class AsyncRunner {
 
   list(): MaybePromise<TaskRecord[]> {
     return this.store.list();
+  }
+
+  /** 已受理但未达终态的任务数（queued + running）—— 健康检查与 drain 共用同一口径 */
+  get inFlight(): number {
+    return this.active;
+  }
+
+  /** 是否已进入优雅停机（drain 之后为 true）—— HTTP 宿主据此对新单回 503 */
+  get isDraining(): boolean {
+    return this.draining;
+  }
+
+  /**
+   * 优雅停机：停止接单（此后 `submit` 抛错），等待已受理任务排空（或超时）。
+   *
+   * 返回是否排空干净：超时仍返回 `false`，**未完成的任务留在 store 里**，下次启动由
+   * `resumePending` 续跑（所以 drain 不是「丢弃」，是「不再往前推」）。
+   * - `timeoutMs` 缺省 0 = 一直等。
+   * - 等待的是**所有已受理**的任务（queued 的也在内），不只是正在占槽位的那些。
+   */
+  async drain(opts: { timeoutMs?: number } = {}): Promise<boolean> {
+    this.draining = true;
+    const timeoutMs = opts.timeoutMs ?? 0;
+    if (this.active === 0) return true;
+    const drained = new Promise<boolean>((resolve) =>
+      this.drainWaiters.push(() => resolve(true)),
+    );
+    if (timeoutMs <= 0) return drained;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        drained,
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+          timer.unref?.(); // 兜底计时器不该让宿主为它续命
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** 排空通知：只在确无在飞任务时唤醒等待者（drain 的唯一出口） */
+  #notifyDrained(): void {
+    if (this.active !== 0 || this.drainWaiters.length === 0) return;
+    const waiters = this.drainWaiters.splice(0, this.drainWaiters.length);
+    for (const w of waiters) w();
   }
 
   /** 等到任务终态；超时抛错。 */
@@ -208,7 +263,22 @@ export class AsyncRunner {
     return pending.length;
   }
 
+  /**
+   * 在飞计数包裹层：#executeInner 是状态机主体，这里只负责 active 计数与排空通知。
+   * 计数在**同步段**（第一个 await 之前）自增 —— 所以 `void this.#execute(rec)` 一返回，
+   * 该任务就已经计入了，drain 不会漏掉「刚 submit、还没开始跑」的任务。
+   */
   async #execute(rec: TaskRecord): Promise<void> {
+    this.active++;
+    try {
+      await this.#executeInner(rec);
+    } finally {
+      this.active--;
+      this.#notifyDrained();
+    }
+  }
+
+  async #executeInner(rec: TaskRecord): Promise<void> {
     // 顶层容错：异步 store（网络客户端）任何一处 reject 都不得逃逸成
     // unhandled rejection（Node ≥15 默认终止进程）——任务标记失败尽力落库。
     try {
