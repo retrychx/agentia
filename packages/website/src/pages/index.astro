@@ -10,7 +10,7 @@ const footerLinks = [
     { href: 'https://www.npmjs.com/package/@migor/cli', label: '@migor/cli', external: true },
 ];
 ---
-<Base title='Agentia — 声明式 Agent 服务开发框架' description='Agentia：装饰器 + DI 声明 agent 流水线服务。主 agent 调度 @Tool / @Skill / @SubAgent / @Prompt 单元，产出结构化结果与完整调用树。' page='home' footerLinks={footerLinks}>
+<Base title='Agentia — 声明式 Agent 服务开发框架' description='Agentia：用装饰器声明 Tool / Skill / SubAgent / Prompt 四类单元，主 agent 编排执行。run 结束即得到结构化结果与完整调用树，可回放、可审计、可上线。' page='home' footerLinks={footerLinks}>
   <Fragment set:html={content} />
 
   <script>

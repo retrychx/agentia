@@ -14,6 +14,11 @@
   --ice-dim: rgba(122, 162, 247, 0.10);
   --ice-border: rgba(122, 162, 247, 0.32);
   --accent-dim: rgba(217, 226, 238, 0.09);
+  /* 统一内容容器：header 与所有内容区共用同一宽度、同一档侧边距。
+     此前 nav/section/docs 用 1080、playground 用 1280、footer 不限宽、
+     .section-alt>* 无侧边距 —— 四页在超宽屏下两两对不齐。 */
+  --content-max: 1200px;
+  --gutter: 24px;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --sans: "Space Grotesk", -apple-system, "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", sans-serif;
@@ -57,7 +62,7 @@ code {
 .grid-lines {
   position: fixed;
   inset: 0;
-  max-width: 1080px;
+  max-width: var(--content-max);
   margin: 0 auto;
   pointer-events: none;
   z-index: 0;
@@ -89,9 +94,9 @@ code {
 }
 .nav-inner {
   position: relative; /* 窄屏折叠菜单的定位锚 */
-  max-width: 1080px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 16px 24px;
+  padding: 16px var(--gutter);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -158,7 +163,7 @@ code {
   justify-content: center;
   text-align: center;
   overflow: hidden;
-  padding: 120px 24px 80px;
+  padding: 120px var(--gutter) 80px;
 }
 #orchestra {
   position: absolute;
@@ -328,13 +333,30 @@ code {
 .section {
   position: relative;
   z-index: 2;
-  max-width: 1080px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 110px 24px;
+  padding: 110px var(--gutter);
   border-top: 1px solid var(--border);
 }
-.section-alt { background: var(--bg-alt); max-width: none; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.section-alt > * { max-width: 1080px; margin-left: auto; margin-right: auto; }
+/* 全宽色带：背景/分隔线铺满视口，内部子元素回到与 header 相同的容器。
+   原写法子元素 max-width:1080 且无侧边距（border-box 下比 header 内容区宽 24px）。
+   选择器写成 .section.section-alt：与 .section 拉开优先级，否则窄屏媒体查询里的
+   .section{padding:72px var(--gutter)} 会把它重新压回 20px，变成双层内边距。 */
+.section.section-alt {
+  background: var(--bg-alt);
+  max-width: none;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding-left: 0;
+  padding-right: 0;
+}
+.section-alt > * {
+  max-width: var(--content-max);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--gutter);
+  padding-right: var(--gutter);
+}
 .sec-label {
   font-family: var(--mono);
   font-size: 12px;
@@ -502,10 +524,18 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   position: relative;
   z-index: 2;
   border-top: 1px solid var(--border);
-  padding: 44px 24px 52px;
+  padding: 44px 0 52px;   /* 横向内边距交给子元素，见下方 .footer > * */
   text-align: center;
   color: var(--faint);
   font-size: 13.5px;
+}
+/* 页脚内容纳入统一容器：居中排布观感不变，但结构上与 header 一致 */
+.footer > * {
+  max-width: var(--content-max);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--gutter);
+  padding-right: var(--gutter);
 }
 .footer-links {
   display: flex;
@@ -542,9 +572,9 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .pg-head {
   position: relative;
   z-index: 2;
-  max-width: 1280px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 140px 24px 36px;
+  padding: 140px var(--gutter) 36px;
 }
 .pg-badge {
   display: inline-flex;
@@ -576,9 +606,9 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .pg-layout {
   position: relative;
   z-index: 2;
-  max-width: 1280px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 0 24px 90px;
+  padding: 0 var(--gutter) 90px;
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr) 330px;
   gap: 14px;
@@ -902,9 +932,9 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .pg-byok {
   position: relative;
   z-index: 2;
-  max-width: 1280px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 0 24px 26px;
+  padding: 0 var(--gutter) 26px;
 }
 .pg-byok-note {
   border: 1px solid var(--ice-border);
@@ -983,9 +1013,9 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .docs-layout {
   position: relative;
   z-index: 2;
-  max-width: 1080px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 128px 24px 90px;
+  padding: 128px var(--gutter) 90px;
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
   gap: 48px;
@@ -1108,7 +1138,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
     flex-direction: column;
     align-items: stretch;
     gap: 0;
-    padding: 4px 20px 12px;
+    padding: 4px var(--gutter) 12px;
     background: rgba(10, 10, 11, 0.97);
     backdrop-filter: blur(14px);
     border-bottom: 1px solid var(--border);
@@ -1137,14 +1167,17 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 }
 
 @media (max-width: 560px) {
-  /* 页面留白收一档：360px 下 24px 边距 + 110px 顶距太奢侈 */
-  .hero { padding: 96px 20px 64px; }
-  .section { padding: 72px 20px; }
-  .pg-head { padding: 112px 20px 28px; }
-  .pg-layout { padding: 0 20px 64px; }
-  .pg-byok { padding: 0 20px 22px; }
-  .docs-layout { padding: 108px 20px 64px; }
-  .footer { padding: 36px 20px 44px; }
+  /* 侧边距收一档：走 token，header 与所有内容区一起收。
+     此前 header 固定 24px、其余写死 20px，手机端两边差 4px 对不齐。 */
+  :root { --gutter: 20px; }
+  /* 页面留白收一档：360px 下 20px 边距 + 110px 顶距太奢侈 */
+  .hero { padding: 96px var(--gutter) 64px; }
+  .section { padding: 72px var(--gutter); }
+  .pg-head { padding: 112px var(--gutter) 28px; }
+  .pg-layout { padding: 0 var(--gutter) 64px; }
+  .pg-byok { padding: 0 var(--gutter) 22px; }
+  .docs-layout { padding: 108px var(--gutter) 64px; }
+  .footer { padding: 36px 0 44px; }
   .footer-links { flex-wrap: wrap; gap: 8px 20px; }
   .footer-links a { padding: 10px 0; }
 
