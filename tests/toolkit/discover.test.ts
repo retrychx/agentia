@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { asset, discoverProviders, createApp, SystemPrompt } from '../../src/index.js';
 
 const fixtures = fileURLToPath(new URL('../fixtures', import.meta.url));
@@ -37,6 +39,46 @@ describe('discoverProviders（目录发现）', () => {
       assert.ok(e.cause instanceof Error, '应把原始异常保留在 cause 上');
       return true;
     });
+  });
+
+  it('软链目录（pnpm/monorepo）同样识别为单元目录', async () => {
+    const real = mkdtempSync(join(tmpdir(), 'agentia-unit-'));
+    const root = mkdtempSync(join(tmpdir(), 'agentia-units-'));
+    try {
+      const unitDir = join(real, 'linked');
+      mkdirSync(unitDir, { recursive: true });
+      writeFileSync(join(unitDir, 'index.ts'), 'export default class Linked {}\n');
+      symlinkSync(unitDir, join(root, 'linked'), 'dir');
+
+      const providers = await discoverProviders(root);
+      assert.deepEqual(providers.map((p) => p.provide), ['linked'], '软链目录不该被静默漏掉');
+    } finally {
+      rmSync(real, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('无入口的目录：跳过但留告警（菜单少单元时可排查）', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentia-units-'));
+    const warns: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...a: unknown[]) => {
+      warns.push(a.join(' '));
+    };
+    try {
+      mkdirSync(join(root, 'assets'), { recursive: true });
+      writeFileSync(join(root, 'assets', 'note.md'), 'x');
+      mkdirSync(join(root, 'real'), { recursive: true });
+      writeFileSync(join(root, 'real', 'index.ts'), 'export default class R {}\n');
+
+      const providers = await discoverProviders(root);
+      assert.deepEqual(providers.map((p) => p.provide), ['real']);
+      assert.equal(warns.length, 1);
+      assert.match(warns[0], /\[agentia:discover\].*assets/);
+    } finally {
+      console.warn = realWarn;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('发现的单元可直接装配出菜单', async () => {

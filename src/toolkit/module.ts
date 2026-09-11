@@ -1,9 +1,9 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool } from '../core/tool.js';
 import type { SystemParam } from '../engine/types.js';
-import { SystemPrompt } from '../run/systemPrompt.js';
-import { executeRun } from '../run/run.js';
-import type { RunInvocationOptions } from '../run/spec.js';
+import { SystemPrompt } from '../runtime/systemPrompt.js';
+import { executeRun } from '../runtime/run.js';
+import type { RunInvocationOptions } from '../runtime/spec.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
@@ -81,7 +81,7 @@ export interface RunAppOptions extends RunInvocationOptions {
 }
 
 export interface AgentRunOutput {
-  run: import('../run/run.js').Run;
+  run: import('../runtime/run.js').Run;
   result: AgentRunResult;
 }
 
@@ -147,7 +147,12 @@ export class AgentApp {
       return () => resolved;
     };
 
-    const sources = opts.toolSources ?? providerList.map((p) => p.provide);
+    // toolSources 是「取哪些 provider 的单元」的白名单，同一 token 写重只该取一次：
+    // 不去重则会 flatMap 收两遍该 provider 的单元，最后撞上「菜单单元重名」——
+    // 报错指向单元定义（错误来源），而真正的问题是这份清单里重复写了 token。
+    const sources = opts.toolSources
+      ? [...new Set(opts.toolSources)]
+      : providerList.map((p) => p.provide);
     this._tools = sources.flatMap((token) => {
       if (!this.di.has(token)) {
         throw new Error(`toolSources 指向未注册 provider: "${token}"`);

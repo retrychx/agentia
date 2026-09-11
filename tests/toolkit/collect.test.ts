@@ -58,6 +58,41 @@ describe('collect*（装饰器单元收集）', () => {
     assert.equal(await tools[0].run({}), 'child');
   });
 
+  it('override 语义：@Skill / @Prompt 也调到子类实现（不绕过未装饰的 override）', async () => {
+    class P {
+      @Skill({ description: 'd' })
+      async run_skill(): Promise<string> {
+        return 'parent-skill';
+      }
+
+      @Prompt({ description: 'd' })
+      asset(): string {
+        return 'parent-asset';
+      }
+    }
+    class C extends P {
+      override async run_skill(): Promise<string> {
+        return 'child-skill';
+      }
+      override asset(): string {
+        return 'child-asset';
+      }
+    }
+    const inst = new C();
+
+    const skills = collectSkills(inst);
+    assert.equal(skills.length, 1, '父类 spec 继承，只出一个单元');
+    assert.equal(
+      await skills[0].invoke({}, { llm: async () => ({ text: '' }) }),
+      'child-skill',
+      '必须调用实例上的实现',
+    );
+
+    const prompts = collectPrompts(inst);
+    assert.equal(prompts.length, 1);
+    assert.equal(await prompts[0].run({}), 'child-asset');
+  });
+
   it('@SubAgent / @Skill / @Prompt 各自收集出单元', async () => {
     class M {
       @SubAgent({ description: 'd', schema: OBJ, system: 's' })
@@ -99,6 +134,23 @@ describe('collect*（装饰器单元收集）', () => {
     assert.throws(
       () => Tool({ description: 'd', schema: OBJ })(() => {}, { kind: 'field', name: 'x' }),
       /只能修饰类方法/,
+    );
+  });
+
+  it('四类装饰器都拒绝私有方法（#method 会被收集器静默漏掉）', () => {
+    // 直接以标准 context 形态调用（私有方法的 kind 同样是 'method'，只是 private: true）
+    const ctx = { kind: 'method', name: '#secret', private: true };
+    assert.throws(() => Tool({ description: 'd', schema: OBJ })(() => {}, ctx), /不支持私有方法/);
+    assert.throws(() => Skill({ description: 'd' })(() => {}, ctx), /不支持私有方法/);
+    assert.throws(
+      () => SubAgent({ description: 'd', schema: OBJ, system: 's' })(() => {}, ctx),
+      /不支持私有方法/,
+    );
+    assert.throws(() => Prompt({ description: 'd' })(() => {}, ctx), /不支持私有方法/);
+
+    // 非私有（含静态）照常登记
+    assert.doesNotThrow(() =>
+      Tool({ description: 'd', schema: OBJ })(() => {}, { kind: 'method', name: 'x', private: false }),
     );
   });
 

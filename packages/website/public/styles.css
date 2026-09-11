@@ -88,6 +88,7 @@ code {
   border-bottom-color: var(--border);
 }
 .nav-inner {
+  position: relative; /* 窄屏折叠菜单的定位锚 */
   max-width: 1080px;
   margin: 0 auto;
   padding: 16px 24px;
@@ -123,6 +124,30 @@ code {
   transition: border-color 0.2s, background 0.2s !important;
 }
 .nav-cta:hover { border-color: var(--ice); background: var(--ice-dim); }
+/* 折叠开关：桌面隐藏，≤520px 才出现（见文件末尾的窄屏块） */
+.nav-toggle {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 44px;
+  height: 44px;
+  padding: 0 11px;
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.nav-toggle span {
+  display: block;
+  height: 1.5px;
+  background: var(--text);
+  border-radius: 1px;
+  transition: transform 0.2s, opacity 0.2s;
+}
+.nav-toggle[aria-expanded="true"] span:nth-child(1) { transform: translateY(3.25px) rotate(45deg); }
+.nav-toggle[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+.nav-toggle[aria-expanded="true"] span:nth-child(3) { transform: translateY(-3.25px) rotate(-45deg); }
 
 /* hero */
 .hero {
@@ -984,7 +1009,11 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 }
 
 @media (max-width: 860px) {
-  .docs-layout { grid-template-columns: 1fr; }
+  /* minmax(0,1fr) 而非 1fr：1fr 的下限是 auto，网格会为了「内容的最小宽度」撑开——
+     文档表首列 nowrap 后最小宽度 ~700px，整条轨道连同 .docs-nav 一起被撑到 700+，
+     于是 360px 屏上出现 391px 的页面级横滚。min-width:0 同理，缺了它子项也不会收缩。 */
+  .docs-layout { grid-template-columns: minmax(0, 1fr); }
+  .docs-nav, .docs-content { min-width: 0; }
   .docs-nav {
     position: static;
     display: flex;
@@ -996,4 +1025,108 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   }
   .docs-nav a { padding: 4px 0; border-left: none; }
   .docs-nav .dn-title { width: 100%; padding-left: 0; }
+}
+
+/* ================= 窄屏收口（手机端） =================
+   分三档：≤520px 导航折叠、≤560px 布局与触控、≤420px 字号下限。
+   只做「布局不再溢出」，不以缩字号代替布局修正；字号下限 12px。
+   放在文件末尾：同优先级下覆盖上面更宽的断点。 */
+@media (max-width: 520px) {
+  /* 导航：5 个链接 + 品牌在 390px 下必然溢出 → 收进折叠菜单（main.js 无关，nav.js 驱动） */
+  .nav-toggle { display: inline-flex; }
+  .nav-links {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 4px 20px 12px;
+    background: rgba(10, 10, 11, 0.97);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-links.open { display: flex; }
+  .nav-links a {
+    padding: 13px 0;
+    font-size: 15px;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-links a:last-child { border-bottom: none; }
+  .nav-links .nav-cta {
+    margin: 10px 0 6px;
+    padding: 12px 14px;
+    text-align: center;
+    font-size: 13.5px !important;
+    border: 1px solid var(--border-strong);
+  }
+  /* 菜单展开时给透明导航一条实底，否则浮在 hero 上读不清 */
+  .nav.menu-open {
+    background: rgba(10, 10, 11, 0.97);
+    backdrop-filter: blur(14px);
+    border-bottom-color: var(--border);
+  }
+  .hero { padding-top: 88px; }
+}
+
+@media (max-width: 560px) {
+  /* 页面留白收一档：360px 下 24px 边距 + 110px 顶距太奢侈 */
+  .hero { padding: 96px 20px 64px; }
+  .section { padding: 72px 20px; }
+  .pg-head { padding: 112px 20px 28px; }
+  .pg-layout { padding: 0 20px 64px; }
+  .pg-byok { padding: 0 20px 22px; }
+  .docs-layout { padding: 108px 20px 64px; }
+  .footer { padding: 36px 20px 44px; }
+  .footer-links { flex-wrap: wrap; gap: 8px 20px; }
+  .footer-links a { padding: 10px 0; }
+
+  /* .steps 的隐式 auto 轨道下限是内容的 min-content：pre 里最长的命令行
+     （agentia g subagent doc-reviewer）不换行，把整条轨道撑到 431px，
+     360px 屏上溢出 91px。轨道改 minmax(0,1fr)，子项补 min-width:0 才收得住；
+     收进来之后长命令由 pre 自己的 overflow-x 滚。 */
+  .steps { grid-template-columns: minmax(0, 1fr); }
+  .step { min-width: 0; }
+
+  /* 表格：容器内横向滚动（全站最宽的溢出源），页面本身不横滚 */
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .table-wrap .doc-table { min-width: 480px; } /* 别把 3 列挤成逐字竖排 */
+
+  /* BYOK 字段解除 min-width：否则 320px 下模型字段与清除按钮各占一行 */
+  .pg-byok-field { flex: 1 1 100%; min-width: 0; }
+  .pg-byok-model { flex: 1 1 100%; min-width: 0; }
+  .pg-byok-clear { width: 100%; }
+
+  /* 终端高度跟视口走，而不是钉死 440px（小屏横放时 440 会顶出屏幕） */
+  .pg-term-body { height: min(60svh, 440px); }
+  /* trace 树随嵌套缩进增长，窄屏让它自己滚而不是硬溢出 */
+  .pg-trace { overflow-x: auto; }
+  .pg-scenario h3 { font-size: 15px; }
+
+  /* 触控目标 ≥44px */
+  .copy, .tp-retry, .pg-mode-btn { min-height: 44px; }
+  .tp-retry { padding: 10px 20px; }
+
+  /* 10.5–11.5px 的标签在手机上要眯眼：统一抬到 12px */
+  .tp-head, .tp-note, .pg-usage .u-note, .doc-planned,
+  .pg-scenario .pg-sc-kind, .pg-byok-field span, .tr-meta, .pg-col-label,
+  .docs-nav .dn-title { font-size: 12px; }
+}
+
+@media (max-width: 420px) {
+  .hero h1 { font-size: clamp(30px, 9.5vw, 42px); }
+  .section h2 { font-size: clamp(24px, 7vw, 30px); }
+  .pg-head h1 { font-size: clamp(26px, 8vw, 34px); }
+  .docs-content h2 { font-size: 21px; }
+  .hero-kicker { letter-spacing: 0.22em; } /* 0.32em 在 360px 下把 kicker 挤换行 */
+  .hero-sub { font-size: 15.5px; }
+  .hero-install { width: 100%; }
+  .step { padding: 18px; gap: 14px; }
+  .card, .feature { padding: 20px 18px; }
+  .pg-chip { padding: 7px 12px; } /* 触控目标：字号 12px + 上下 7px ≈ 44px 高 */
 }

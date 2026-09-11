@@ -38,4 +38,19 @@ describe('SystemPrompt（缓存布局）', () => {
     const out = new SystemPrompt().add('role', 'r', true).build({ cache: true });
     assert.ok(Array.isArray(out) && out.length === 1);
   });
+
+  it('空段不产出空 text block；完全无段时回 ""（而非 []）', () => {
+    // 只有空文本的稳定段：不能产出「空 text + breakpoint」块
+    const empty = new SystemPrompt().add('role', '', true).build({ cache: true });
+    assert.equal(empty, '');
+
+    const none = new SystemPrompt().build({ cache: true });
+    assert.equal(none, '', 'engine 对 [] 判真会照发一个空 system');
+    assert.equal(new SystemPrompt().build(), '');
+
+    // 空稳定段 + 有内容 volatile：只出 volatile 块
+    const mixed = new SystemPrompt().add('role', '', true).add('clock', 'now', false).build({ cache: true });
+    assert.ok(Array.isArray(mixed) && mixed.length === 1);
+    assert.equal((mixed[0] as { text: string }).text, 'now');
+  });
 });

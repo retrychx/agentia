@@ -1,10 +1,12 @@
-import { scanDecoratedMethods, unitName } from './collect.js';
+import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
+import type { UnitDecoratorContext } from './collect.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { SystemParam, SystemTextBlock } from '../engine/types.js';
+import { isSuccessStopReason } from '../engine/types.js';
 import { runAgentScoped } from '../engine/loop.js';
 import { classifyError } from '../engine/errors.js';
-import { SystemPrompt } from '../run/systemPrompt.js';
+import { SystemPrompt } from '../runtime/systemPrompt.js';
 
 /**
  * Agentia —— 子 agent 单元（spec §3/§5：独立 agent 循环 + 裁剪上下文 + 隔离报告）。
@@ -57,13 +59,8 @@ const subAgentSpecs = new WeakMap<Function, SubAgentSpec>();
 
 /** 方法装饰器：登记子 agent spec。被装饰方法体不执行 —— 运行时拉起独立循环。 */
 export function SubAgent(spec: SubAgentSpec) {
-  return function (
-    value: Function,
-    context: { kind: string; name: string | symbol },
-  ): void {
-    if (context.kind !== 'method') {
-      throw new Error(`@SubAgent 只能修饰类方法，收到 kind=${String(context.kind)}`);
-    }
+  return function (value: Function, context: UnitDecoratorContext): void {
+    assertMethodTarget(context, '@SubAgent');
     subAgentSpecs.set(value, spec);
   };
 }
@@ -145,7 +142,7 @@ export function subagentToTool(
         });
         recorder.setAttribute(unitId, 'stop_reason', loop.stopReason);
 
-        if (loop.stopReason === 'end_turn') {
+        if (isSuccessStopReason(loop.stopReason)) {
           close({ status: 'ok' });
           // 隔离报告：默认只回最终文本。子 agent 提交了结构化结果（resultSchema +
           // submit_result 校验通过）时，连同报告以结构化 tool_result 交回 —— engine 会把

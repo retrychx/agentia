@@ -5,7 +5,7 @@ import {
   defaultEstimateTokens,
   estimateMessages,
   trimToolPairs,
-} from './context.js';
+} from './trimming.js';
 
 /**
  * Agentia —— 预算驱动的上下文策略（spec §5 compaction / §6 budget）。

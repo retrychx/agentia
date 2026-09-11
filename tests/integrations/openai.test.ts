@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type Anthropic from '@anthropic-ai/sdk';
 import { executeRun } from '../../src/index.js';
 import type { AgentTool } from '../../src/index.js';
-import { createOpenAIClient } from '../../src/run/openai.js';
+import { createOpenAIClient } from '../../src/integrations/openai.js';
 import { toolUseMsg, endTurnMsg, mockClient } from '../helpers.js';
 
 /** 构造顺序返回脚本化 OpenAI 响应的 fetchImpl，并记录请求体 */
@@ -194,6 +194,33 @@ describe('createOpenAIClient', () => {
     assert.equal(m1.stop_reason, 'max_tokens');
     assert.equal(m2.stop_reason, 'refusal');
     assert.deepEqual(m2.content, []);
+  });
+
+  it('带 tool_calls 但 finish_reason=stop（DeepSeek/vLLM/Ollama）：stop_reason 仍为 tool_use', async () => {
+    const { fetchImpl } = fakeFetch([
+      {
+        body: chatResponse({
+          choices: [
+            {
+              finish_reason: 'stop', // 兼容端点的真实回法：有工具调用却报 stop
+              message: {
+                content: null,
+                tool_calls: [
+                  { id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } },
+                ],
+              },
+            },
+          ],
+        }),
+      },
+    ]);
+    const client = createOpenAIClient({ fetchImpl });
+    const msg = await client.messages
+      .stream({ model: 'm', max_tokens: 1, messages: [] })
+      .finalMessage();
+    // 映射成 end_turn 会让 engine 在提取工具块前收尾 → 工具调用被静默丢弃
+    assert.equal(msg.stop_reason, 'tool_use');
+    assert.equal(msg.content.length, 1);
   });
 
   it('tool_calls arguments 非法 JSON：原样字符串兜底', async () => {

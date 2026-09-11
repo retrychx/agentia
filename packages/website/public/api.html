@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
+  <script src="./nav.js" defer></script>
 </head>
 <body>
   <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
@@ -27,7 +28,10 @@
         </svg>
         <span>Agentia</span>
       </a>
-      <div class="nav-links">
+      <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false" aria-controls="nav-links">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="nav-links" id="nav-links">
         <a href="./index.html">首页</a>
         <a href="./playground.html">Playground</a>
         <a href="./docs.html">文档</a>
@@ -53,7 +57,7 @@
       <section id="core">
         <h2>core · 数据模型</h2>
         <p>所有公共导出来自 <code>@migor/agentia</code> 包根（<code>src/index.ts</code>）。core 层是零依赖的数据模型与结构面：四类单元最终都编译成 <code>AgentTool</code>，一次 run 沉淀为一条 <code>Trace</code>。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>AgentTool&lt;I, O&gt;</td><td><code>{ name; description; inputSchema; strict?; run(input: I, ctx?: ToolRunContext) }</code></td><td>模型可见工具的最小结构面。run 抛错被包成 is_error 的 tool_result 回给模型，run 不中断。</td></tr>
@@ -71,13 +75,13 @@
             <tr><td>SpanStatus / SpanId / TraceId</td><td><code>'ok' | 'error'</code> / <code>string</code> / <code>string</code></td><td>基础类型别名。</td></tr>
             <tr><td>validateJsonSchema</td><td><code>(schema: JsonSchema, input: unknown) → string | null</code></td><td>JSON Schema 子集校验（fromZod 接入时先走 zod），返回首条错误消息或 null。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="engine">
         <h2>engine · 运行时内核</h2>
         <p>流式 manual loop：模型往返 + 递归工具调用，直到 <code>end_turn</code> / 循环上限 / <code>submit_result</code> 提交结构化结果。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>runAgent</td><td><code>(options: RunAgentOptions) → Promise&lt;AgentRunResult&gt;</code></td><td>主循环入口；不注入 recorder 时内部新建，traceId 即 runId。</td></tr>
@@ -89,10 +93,10 @@
             <tr><td>ContextPolicy</td><td><code>{ budgetTokens?; beforeTurn(messages, { iteration, model }) → Promise&lt;messages&gt; }</code></td><td>上下文预算策略面：每回合发送前可编辑 / 压缩消息。</td></tr>
             <tr><td>SystemParam / SystemTextBlock</td><td><code>string | SystemTextBlock[]</code></td><td>system 参数：纯文本，或带 <code>cache_control</code> breakpoint 的可缓存块数组。</td></tr>
           </tbody>
-        </table>
+        </table></div>
 
         <h3>RunAgentOptions 选项</h3>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>选项</th><th>类型</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>messages（必填）</td><td><code>MessageParam[]</code></td><td>初始消息；由调用方给 user 起始消息。</td></tr>
@@ -108,13 +112,13 @@
             <tr><td>contextPolicy</td><td><code>ContextPolicy</code></td><td>每回合发送前的上下文预算策略（compaction / context editing）。</td></tr>
             <tr><td>resultSchema</td><td><code>JsonSchema</code></td><td>给出后追加隐藏工具 <code>submit_result</code>，模型提交校验通过的结果写入 <code>result.typed</code> 并结束循环。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="context">
         <h2>engine · 长上下文策略</h2>
         <p>预算驱动的上下文护栏：估算 ≤ 预算走快路径原样放行；超预算先 context editing（不调模型）；仍超且有 <code>summarize</code> 才 compaction，并带滞回避免每回合反复压缩。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>createBudgetPolicy</td><td><code>(opts?: BudgetPolicyOptions) → ContextPolicy</code></td><td>上述三段降级的开箱实现；框架不替你造 token，可注入按 /count_tokens 的 estimate。</td></tr>
@@ -127,13 +131,13 @@
             <tr><td>renderMessages</td><td><code>(messages) → string</code></td><td>消息渲染成纯文本，作摘要器输入。</td></tr>
             <tr><td>TrimOptions / CompactOptions</td><td><code>{ keepRecent? }</code> / <code>{ keepRecent?; summarize }</code></td><td>上述两函数的选项类型。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="run">
         <h2>run · 生命周期与触发</h2>
         <p>一次 run 的完整生命周期（RunContext + recorder + 记忆水合/回写），以及同步 RPC、异步任务、定时调度三类触发 —— 共用同一份输入契约，换宿主不换语义。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>executeRun</td><td><code>(options: ExecuteRunOptions) → Promise&lt;{ run; result }&gt;</code></td><td>run 生命周期入口：RunContext 作用域内跑 runAgent，finish / fail 收口。</td></tr>
@@ -159,13 +163,13 @@
             <tr><td>SqliteTaskStore</td><td><code>new SqliteTaskStore(path)</code></td><td>node:sqlite 落库（WAL 读写不互斥），支持 <code>':memory:'</code>。</td></tr>
             <tr><td>RedisTaskStore</td><td><code>new RedisTaskStore(client, { prefix? })</code></td><td>duck-typed Redis 客户端（ioredis/node-redis 均可，可选 peer），TaskStore 方法支持异步。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="hosting">
         <h2>run · 宿主与导出</h2>
         <p>同一份应用一行接入 HTTP；trace 可导出到任何 OTLP 收集器；OpenAI 兼容端点一行接入多模型。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>createHttpHandler</td><td><code>(app: AppCallable, opts?: { runner? }) → (req, res) =&gt; Promise&lt;void&gt;</code></td><td>node:http 接入：<code>POST /run</code>（同步）、<code>POST /tasks</code>（异步）、<code>GET /tasks/:id</code>（轮询）。</td></tr>
@@ -174,13 +178,13 @@
             <tr><td>MemoryStore</td><td><code>interface：load(keys) / save(entries)</code></td><td>跨 run 记忆存储面（可同步或异步实现）。</td></tr>
             <tr><td>InMemoryMemoryStore</td><td><code>class（MemoryStore）</code></td><td>Map 实现：进程内，无持久化。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="container">
         <h2>container · 显式 DI</h2>
         <p>显式 provider 注册，覆盖式语义（后注册覆盖先注册）；resolve 单例缓存并做循环依赖检测。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>Container</td><td><code>class：register(...providers) / has(token) / resolve&lt;T&gt;(token)</code></td><td>DI 容器；register 返回 this 可链式。</td></tr>
@@ -190,13 +194,13 @@
             <tr><td>ClassProvider</td><td><code>{ provide; useClass; deps? }</code></td><td>类实例化；deps 按序注入构造器参数。</td></tr>
             <tr><td>FactoryProvider</td><td><code>{ provide; useFactory; deps? }</code></td><td>工厂函数；deps 与 useFactory 形参一一对应。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="toolkit">
         <h2>toolkit · 声明式单元与装配</h2>
         <p>装饰器声明四类单元，<code>createApp</code> 装配：DI 注册 → 扫描收集菜单 → 装配期静态校验（菜单查重、tools 引用存在性、toolSources 指向、DI 循环依赖）。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>createApp</td><td><code>(opts: AppOptions) → AgentApp</code>；带 discover 时 <code>→ Promise&lt;AgentApp&gt;</code></td><td>装配应用；目录发现走动态 import，故返回 Promise。</td></tr>
@@ -228,7 +232,7 @@
             <tr><td>UnitCall / UnitNext</td><td><code>{ unit; input; ctx? }</code> / <code>(input?) =&gt; unknown</code></td><td>入参 schema 校验已过；<code>next(newInput)</code> 可改写入参。</td></tr>
             <tr><td>fromZod</td><td><code>(jsonSchema: JsonSchema, zod: unknown) → JsonSchema</code></td><td>zod 可选接入（peer）：校验走 zod safeParse（结构面识别，框架不 import zod），错误路径原样回给模型自我修正。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
     </div>
   </main>

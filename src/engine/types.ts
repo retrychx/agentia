@@ -5,13 +5,28 @@ import type { SpanError, Trace } from '../core/trace.js';
 export type { ModelClient } from '../core/tool.js';
 
 export type AgentStopReason =
+  /** 模型自然结束（含 stop_sequence：命中 stop 序列同样是正常收尾） */
   | 'end_turn'
+  | 'stop_sequence'
   | 'max_tokens'
   | 'refusal'
   | 'pause_turn'
   | 'max_iterations'
+  /** stop_reason=tool_use 但回合里没有可执行块（畸形响应），防死循环直接停 */
   | 'tool_use_no_blocks'
+  /** 模型/网关返回了本框架未识别的 stop_reason：保留文本，但按失败收尾 */
+  | 'unknown_stop_reason'
   | 'error';
+
+/**
+ * 是否「正常收尾」：end_turn（自然结束）与 stop_sequence（命中 stop 序列）都算。
+ * run 状态机 / trace 状态 / 子 agent 交回判定共用这一把尺子 —— 三处各写各的
+ * `=== 'end_turn'` 时，新增一个正常收尾原因就会漏改其中一处（stop_sequence 落地时
+ * 就出现过：loop 判成功、Run 判失败）。
+ */
+export function isSuccessStopReason(reason: AgentStopReason): boolean {
+  return reason === 'end_turn' || reason === 'stop_sequence';
+}
 
 /** 可携带 cache_control 的 system 文本块（见 run/systemPrompt.ts） */
 export interface SystemTextBlock {

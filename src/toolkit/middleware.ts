@@ -33,14 +33,24 @@ export function applyMiddleware(tools: AgentTool[], middleware: UnitMiddleware[]
   return tools.map((tool) => ({
     ...tool,
     run: (input: unknown, ctx?: ToolRunContext) => {
-      const invoke = (i: number, inp: unknown): unknown =>
-        i >= middleware.length
-          ? tool.run(inp, ctx)
-          : middleware[i](
-              { unit: tool, input: inp, ctx },
-              (nextInput: unknown = inp) => invoke(i + 1, nextInput),
-            );
-      return invoke(0, input);
+      const step = (i: number, inp: unknown): unknown => {
+        if (i >= middleware.length) return tool.run(inp, ctx);
+        let passed = false;
+        return middleware[i](
+          { unit: tool, input: inp, ctx },
+          // rest 形参而非默认值：`next(undefined)` 是「把入参改写成 undefined」，
+          // 与 `next()`（沿用当前入参）语义不同，默认值写法分不开这两者。
+          // 连调两次会让单元体跑两遍（有副作用的单元尤其危险）——直接报错。
+          (...a: unknown[]) => {
+            if (passed) {
+              throw new Error(`中间件链上 next() 被重复调用（单元 ${tool.name}）：一次调用只能放行一次`);
+            }
+            passed = true;
+            return step(i + 1, a.length > 0 ? a[0] : inp);
+          },
+        );
+      };
+      return step(0, input);
     },
   }));
 }

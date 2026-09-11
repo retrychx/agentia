@@ -1,6 +1,6 @@
 {
   "name": "@migor/cli",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Agentia 框架命令行工具：create 脚手架 + g 单元生成器",
   "type": "module",
   "bin": {
@@ -10,6 +10,7 @@
     "dist"
   ],
   "repository": "retrychx/agentia",
+  "license": "MIT",
   "keywords": [
     "agentia",
     "agent",

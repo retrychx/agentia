@@ -19,7 +19,7 @@ agentia g tool weather                 # 生成 units/weather/index.ts 并登记
 agentia g subagent doc-reviewer        # 生成 units/doc-reviewer/{index.ts,system.md}
 agentia g skill note-writer            # 生成 units/note-writer/index.ts
 agentia g prompt style-guide           # 生成 units/style-guide/{index.ts,asset.md}
-npm run dev                            # 运行 src/main.ts
+npm run dev                            # 运行脚手架生成的入口（src/main.ts）
 ```
 
 **目录约定**：`units/<name>/` 一单元一文件夹，`index.ts` default export 一个 provider 类，DI token 缺省 = 文件夹名；长文本放文件夹内 `.md`，代码里用 `asset(import.meta.url, './system.md')` 读取。

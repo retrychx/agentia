@@ -66,4 +66,11 @@ describe('Container（显式 DI）', () => {
     );
     assert.equal(c.resolve('k'), 2);
   });
+
+  it('覆盖发生在 resolve 之后也生效：重注册使缓存失效', () => {
+    const c = new Container().register({ provide: 'k', useValue: 1 });
+    assert.equal(c.resolve('k'), 1);
+    c.register({ provide: 'k', useValue: 2 });
+    assert.equal(c.resolve('k'), 2, '已缓存的旧实例必须被重注册冲掉');
+  });
 });

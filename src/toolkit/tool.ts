@@ -1,5 +1,6 @@
 import type { AgentTool, JsonSchema } from '../core/tool.js';
-import { scanDecoratedMethods, unitName } from './collect.js';
+import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
+import type { UnitDecoratorContext } from './collect.js';
 
 /**
  * Agentia —— 声明式工具层（spec §4：标准装饰器 + 显式 DI，无 param 反射）。
@@ -37,11 +38,9 @@ const toolSpecs = new WeakMap<Function, ToolSpec>();
 export function Tool<I = any, O = any>(spec: ToolSpec) {
   return function (
     value: (input: I) => O | Promise<O>,
-    context: { kind: string; name: string | symbol },
+    context: UnitDecoratorContext,
   ): void {
-    if (context.kind !== 'method') {
-      throw new Error(`@Tool 只能修饰类方法，收到 kind=${String(context.kind)}`);
-    }
+    assertMethodTarget(context, '@Tool');
     toolSpecs.set(value, spec);
   };
 }

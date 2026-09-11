@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AsyncRunner } from './async.js';
-import type { RunInvocationOptions } from './spec.js';
+import type { RunInvocationOptions } from '../runtime/spec.js';
 
 /**
  * Agentia —— 定时触发（spec §6.3 定时事件）。
@@ -25,6 +25,9 @@ interface Job {
   options?: RunInvocationOptions;
   source?: string;
   prefix?: string;
+  /** 未到终态的已派发任务（仅 'every'）：用于 maxInFlight 闸门 */
+  inFlight?: Set<string>;
+  maxInFlight?: number;
 }
 
 export interface ScheduleEveryOptions {
@@ -34,6 +37,12 @@ export interface ScheduleEveryOptions {
   idempotencyPrefix?: string;
   /** 覆盖触发来源标记 */
   source?: string;
+  /**
+   * 同时未终态的任务数上限；缺省 1（上一片没跑完就跳过本次 tick）。
+   * 没有它时 `every(1000)` + 60s 任务会每个 tick 都 submit 一次，任务无上限堆积。
+   * 传 `Infinity` 关闭闸门（旧行为）。'at' 单发天然不受影响。
+   */
+  maxInFlight?: number;
 }
 
 export interface ScheduleHandle {
@@ -63,6 +72,8 @@ export class Scheduler {
       options: opts.options,
       source: opts.source,
       prefix: opts.idempotencyPrefix,
+      inFlight: new Set<string>(),
+      maxInFlight: opts.maxInFlight ?? 1,
     });
     return { id, cancel: () => this.cancel(id) };
   }
@@ -76,6 +87,8 @@ export class Scheduler {
       this.jobs.delete(id);
       if (job) this.dispatch(job);
     }, delay);
+    // 与 every() 一致：定时器不阻止进程退出（宿主 stop() 仍可显式取消）
+    if (typeof timer === 'object' && 'unref' in timer) (timer as ReturnType<typeof setTimeout>).unref?.();
     this.jobs.set(id, {
       id,
       kind: 'at',
@@ -103,7 +116,34 @@ export class Scheduler {
     return this.jobs.size;
   }
 
+  /** 清掉已到终态的追踪项（异步 store 下 poll 返回 Promise，到货后再清） */
+  private pruneInFlight(inFlight: Set<string>): void {
+    const forget = (taskId: string) => inFlight.delete(taskId);
+    for (const taskId of inFlight) {
+      const rec = this.runner.poll(taskId);
+      if (rec && typeof (rec as Promise<unknown>).then === 'function') {
+        void (rec as Promise<{ status: string } | undefined>)
+          .then((r) => {
+            if (!r || r.status === 'succeeded' || r.status === 'failed') forget(taskId);
+          })
+          .catch(() => forget(taskId)); // 查不到就别再挡住后续 tick
+        continue;
+      }
+      const r = rec as { status?: string } | undefined;
+      if (!r || r.status === 'succeeded' || r.status === 'failed') forget(taskId);
+    }
+  }
+
   private dispatch(job: Job): void {
+    // maxInFlight 闸门（仅周期任务）：上一片还在跑就跳过本次 tick —— 否则
+    // every(1000) + 60s 任务会每个 tick 都派发，任务无上限堆积。
+    // Infinity = 闸门关闭：也不追踪（否则 inFlight 集合随 tick 无界增长）。
+    const maxInFlight = job.maxInFlight ?? 1;
+    const track = maxInFlight === Number.POSITIVE_INFINITY ? undefined : job.inFlight;
+    if (track) {
+      this.pruneInFlight(track);
+      if (track.size >= maxInFlight) return;
+    }
     // 'at' 单发：有 prefix 则用固定键（同次重复提交去重）；周期任务用窗口键
     const idempotencyKey = job.prefix
       ? job.kind === 'every'
@@ -111,11 +151,15 @@ export class Scheduler {
         : job.prefix
       : undefined;
     try {
-      this.runner.submit(job.input, {
+      const rec = this.runner.submit(job.input, {
         idempotencyKey,
         options: job.options,
         source: job.source ?? `schedule:${job.id.slice(0, 8)}`,
       });
+      // 追踪未终态的派发（去重命中已有终态记录时不计入）
+      if (track && (rec.status === 'queued' || rec.status === 'running')) {
+        track.add(rec.taskId);
+      }
     } catch (e) {
       // 调度触发不应崩掉宿主进程：入参非法等以 console 形式暴露
       console.error(`[agentia:scheduler] ${job.id} 触发失败`, (e as Error)?.message ?? e);

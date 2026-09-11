@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Provider } from '../container/container.js';
@@ -30,13 +30,18 @@ export async function discoverProviders(dir: string): Promise<Provider[]> {
 
   const providers: Provider[] = [];
   const entries = readdirSync(root, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter((e) => isDirLike(join(root, e.name), e))
     .map((e) => e.name)
     .sort(); // 排序保证装配顺序稳定（菜单顺序 = 目录名序，可复现）
 
   for (const name of entries) {
     const entry = ENTRY_CANDIDATES.map((f) => join(root, name, f)).find(existsSync);
-    if (!entry) continue; // 无入口的目录视为非单元目录（如 assets/），跳过
+    if (!entry) {
+      // 静默跳过过一次（无入口的目录视为非单元目录，如 assets/）：
+      // 但「菜单莫名少一个单元」需要留痕，否则只能靠猜
+      console.warn(`[agentia:discover] 跳过 ${name}/：无 ${ENTRY_CANDIDATES.join(' / ')} 入口`);
+      continue;
+    }
     let mod: unknown;
     try {
       mod = await import(pathToFileURL(entry).href);
@@ -50,6 +55,21 @@ export async function discoverProviders(dir: string): Promise<Provider[]> {
     providers.push(...normalizeExport(name, exported, entry));
   }
   return providers;
+}
+
+/**
+ * 目录判定：**软链目录**（pnpm store / monorepo 里 `units/foo` 常是软链）的
+ * `isDirectory()` 为 false，直接用会把真单元目录静默漏掉、菜单空着却不报错 ——
+ * 软链要 stat 解引用后再判。悬空软链按非目录处理。
+ */
+function isDirLike(full: string, e: { isDirectory(): boolean; isSymbolicLink(): boolean }): boolean {
+  if (e.isDirectory()) return true;
+  if (!e.isSymbolicLink()) return false;
+  try {
+    return statSync(full).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function normalizeExport(name: string, exported: unknown, entry: string): Provider[] {

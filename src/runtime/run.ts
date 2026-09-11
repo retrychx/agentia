@@ -1,4 +1,5 @@
 import type { AgentRunResult, RunAgentOptions } from '../engine/types.js';
+import { isSuccessStopReason } from '../engine/types.js';
 import { runAgent } from '../engine/loop.js';
 import { TraceRecorder } from '../engine/tracer.js';
 import { classifyError } from '../engine/errors.js';
@@ -56,7 +57,7 @@ export class Run {
   finish(result: AgentRunResult): void {
     this._result = result;
     this.finishedAt = Date.now();
-    this._status = result.stopReason === 'end_turn' ? 'succeeded' : 'failed';
+    this._status = isSuccessStopReason(result.stopReason) ? 'succeeded' : 'failed';
   }
 
   fail(error: unknown): void {
@@ -117,7 +118,15 @@ export async function executeRun(
       if (memory) await hydrateMemory(memory, ctx);
       const result = await runAgent({ ...options, recorder: run.recorder });
       run.finish(result);
-      if (memory) await flushMemory(memory, ctx);
+      if (memory) {
+        // 回写是辅助动作：失败不得把已成功的 run 翻成 failed（会丢结果与 trace），
+        // 与下面失败路径的 flushMemory 同款防护。
+        try {
+          await flushMemory(memory, ctx);
+        } catch {
+          /* ignore */
+        }
+      }
       return { run, result };
     } catch (e) {
       run.fail(e);
@@ -142,7 +151,9 @@ async function hydrateMemory(
 ): Promise<void> {
   const loaded = await memory.store.load(memory.keys);
   for (const key of memory.keys) {
-    if (key in loaded && !ctx.has(key)) ctx.set(key, loaded[key]);
+    // Object.hasOwn 而非 `in`：`in` 会命中 Object.prototype 的继承属性 ——
+    // key='toString'/'constructor' 之类会把原型上的函数当成记忆值水合进黑板
+    if (Object.hasOwn(loaded, key) && !ctx.has(key)) ctx.set(key, loaded[key]);
   }
 }
 
@@ -151,7 +162,9 @@ async function flushMemory(
   memory: { store: MemoryStore; keys: string[] },
   ctx: RunContext,
 ): Promise<void> {
-  const entries: Record<string, unknown> = {};
+  // 无原型对象：`entries['__proto__'] = v` 在 {} 上会走 Object.prototype 的 setter
+  // （改掉原型而非建属性），该 key 的回写值会静默丢失
+  const entries: Record<string, unknown> = Object.create(null);
   for (const key of memory.keys) {
     if (ctx.has(key)) entries[key] = ctx.get(key);
   }

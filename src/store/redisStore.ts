@@ -10,6 +10,7 @@ import type { TaskRecord, TaskStore } from './store.js';
  * 存储模型（prefix 缺省 'agentia:'）：
  * - `${prefix}task:<taskId>` → 整行记录 JSON（save = SET 覆写，last-wins）；
  * - `${prefix}idem:<idempotencyKey>` → taskId（同键重提覆写，byIdempotency last-wins）。
+ * 两者都按 `ttlSeconds`（若设）带 EX 过期，见该选项。
  *
  * 语义对照 FileTaskStore / SqliteTaskStore：save 覆写、byIdempotency 取最近、
  * clear 清空本前缀全部 key。差异在 list 序：Redis 本身无序，按 createdAt
@@ -23,9 +24,16 @@ import type { TaskRecord, TaskStore } from './store.js';
  * await 后再 SET idem 索引」的写入顺序（见 async.ts #execute 注释）——若改为
  * 先写索引或 MULTI 事务，需同步复核该去重路径。
  */
+/** SET 选项（ioredis / node-redis 的 `EX` 形态；仅 ttlSeconds 用到） */
+export interface RedisSetOptions {
+  /** 过期秒数（EX）；<= 0 视为不过期 */
+  EX?: number;
+}
+
 export interface RedisLike {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<unknown>;
+  /** opts 为可选第三参（ioredis / node-redis 均兼容）；老 fake 只实现两参也照常工作 */
+  set(key: string, value: string, opts?: RedisSetOptions): Promise<unknown>;
   /** 单键删除（ioredis / node-redis 的公共最小面；批量清理由多次单删组成） */
   del(key: string): Promise<unknown>;
   /** 模式枚举（node-redis / ioredis 均有）；与 scanIterator 至少提供其一 */
@@ -40,10 +48,19 @@ export interface RedisLike {
 export interface RedisTaskStoreOptions {
   /** key 前缀，缺省 'agentia:' */
   prefix?: string;
+  /**
+   * 每条记录的过期秒数；缺省不设（永不过期）。
+   *
+   * 不设时任务记录（含完整 trace，可能很大）永久驻留，`list()` 的全库 SCAN 也
+   * 无界增长。设了之后**任务的查询窗口就是 TTL**：过期即 404，调用方需在窗口内
+   * 取走结果。<= 0 视为不设。
+   */
+  ttlSeconds?: number;
 }
 
 export class RedisTaskStore implements TaskStore {
   private readonly prefix: string;
+  private readonly ttlSeconds: number;
 
   constructor(
     private readonly client: RedisLike,
@@ -52,7 +69,17 @@ export class RedisTaskStore implements TaskStore {
     if (!client.scanIterator && !client.keys) {
       throw new Error('RedisTaskStore 需要 client 提供 scanIterator 或 keys 之一（list/clear 依赖按键枚举）');
     }
-    this.prefix = opts.prefix ?? 'agentia:';
+    const prefix = opts.prefix ?? 'agentia:';
+    if (!prefix) {
+      // 空前缀 = 无命名空间：clear() 的 `${prefix}*` 会 SCAN/DEL 整个库
+      throw new Error('RedisTaskStore 的 prefix 不能为空串（clear 会清空整个库）');
+    }
+    this.prefix = prefix;
+    const ttl = opts.ttlSeconds ?? 0;
+    if (ttl < 0) {
+      throw new Error(`RedisTaskStore 的 ttlSeconds 不能为负，收到 ${opts.ttlSeconds}`);
+    }
+    this.ttlSeconds = ttl;
   }
 
   private taskKey(taskId: string): string {
@@ -64,8 +91,12 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async save(rec: TaskRecord): Promise<void> {
-    await this.client.set(this.taskKey(rec.taskId), JSON.stringify(rec));
-    if (rec.idempotencyKey) await this.client.set(this.idemKey(rec.idempotencyKey), rec.taskId);
+    const opts = this.ttlSeconds > 0 ? { EX: this.ttlSeconds } : undefined;
+    await this.client.set(this.taskKey(rec.taskId), JSON.stringify(rec), opts);
+    // 每次覆写都刷新 TTL：任务的查询窗口从「最后一次状态推进」起算，而不是创建时刻
+    if (rec.idempotencyKey) {
+      await this.client.set(this.idemKey(rec.idempotencyKey), rec.taskId, opts);
+    }
   }
 
   async get(taskId: string): Promise<TaskRecord | undefined> {

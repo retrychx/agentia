@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { RedisTaskStore } from '../../src/run/redisStore.js';
-import type { RedisLike } from '../../src/run/redisStore.js';
-import type { TaskRecord, TaskStore } from '../../src/run/store.js';
-import { AsyncRunner } from '../../src/run/async.js';
-import type { AppCallable } from '../../src/run/async.js';
+import { RedisTaskStore } from '../../src/store/redisStore.js';
+import type { RedisLike } from '../../src/store/redisStore.js';
+import type { TaskRecord, TaskStore } from '../../src/store/store.js';
+import { AsyncRunner } from '../../src/transport/async.js';
+import type { AppCallable } from '../../src/transport/async.js';
 import type { AgentRunResult } from '../../src/engine/types.js';
 
 /** 内存版 RedisLike：Map 实现 get/set/del/keys/scanIterator，驱动全部用例 */
@@ -152,6 +152,41 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
       del: async () => 0,
     };
     assert.throws(() => new RedisTaskStore(noEnum), /scanIterator 或 keys/);
+    // 空前缀 = 无命名空间，clear 的 `${prefix}*` 会清掉整个库
+    assert.throws(() => new RedisTaskStore(fake, { prefix: '' }), /prefix 不能为空/);
+  });
+
+  it('ttlSeconds：save 的记录与幂等索引都带 EX；缺省不设；负数抛错', async () => {
+    const inner = new InMemoryRedisFake();
+    const calls: Array<{ key: string; opts?: { EX?: number } }> = [];
+    const spy: RedisLike = {
+      get: (k) => inner.get(k),
+      set: async (key, value, opts) => {
+        calls.push({ key, opts });
+        return inner.set(key, value);
+      },
+      del: (k) => inner.del(k),
+      keys: (p) => inner.keys(p),
+    };
+
+    const ttlStore = new RedisTaskStore(spy, { ttlSeconds: 60 });
+    await ttlStore.save(rec({ idempotencyKey: 'k' })); // 无幂等键的 save 只写记录
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls.map((c) => c.opts), [{ EX: 60 }, { EX: 60 }]);
+    assert.match(calls[0].key, /task:/);
+    assert.match(calls[1].key, /idem:k/);
+
+    // 缺省不设 EX（老行为：记录永不过期）
+    calls.length = 0;
+    await new RedisTaskStore(spy).save(rec());
+    assert.deepEqual(calls.map((c) => c.opts), [undefined]);
+
+    // 0 也视为不设（便于用 0 明确关闭）
+    calls.length = 0;
+    await new RedisTaskStore(spy, { ttlSeconds: 0 }).save(rec());
+    assert.deepEqual(calls.map((c) => c.opts), [undefined]);
+
+    assert.throws(() => new RedisTaskStore(spy, { ttlSeconds: -1 }), /ttlSeconds/);
   });
 
   it('满足 TaskStore 接口（MaybePromise）：await 化后与同步 store 用法一致', async () => {

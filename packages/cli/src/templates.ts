@@ -59,7 +59,7 @@ export function projectPackageJson(name: string): string {
         dev: 'tsx src/main.ts',
         typecheck: 'tsc --noEmit -p tsconfig.json',
       },
-      dependencies: { '@migor/agentia': '^0.2.0' },
+      dependencies: { '@migor/agentia': '^0.2.2' },
       devDependencies: {
         tsx: '^4.19.0',
         typescript: '^7.0.2',

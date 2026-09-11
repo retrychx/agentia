@@ -46,17 +46,20 @@ export class SystemPrompt {
       return [...stable, ...volatile].filter(Boolean).join('\n\n');
     }
 
+    // 判空必须按**过滤后的文本**：空段（text: ''）不该产出空 text block + breakpoint
+    const stableText = stable.filter(Boolean).join('\n\n');
     const blocks: SystemTextBlock[] = [];
-    if (stable.length) {
+    if (stableText) {
       blocks.push({
         type: 'text',
-        text: stable.join('\n\n'),
+        text: stableText,
         cache_control: { type: 'ephemeral' },
       });
     }
     for (const v of volatile) {
       if (v) blocks.push({ type: 'text', text: v });
     }
-    return blocks;
+    // 无任何段时回 '' 而非 []：engine 对 [] 判真会照发一个空 system
+    return blocks.length > 0 ? blocks : '';
   }
 }

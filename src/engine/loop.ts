@@ -12,6 +12,7 @@ import type {
   RunAgentOptions,
   SystemParam,
 } from './types.js';
+import { isSuccessStopReason } from './types.js';
 import { costEstimate, usageFromAnthropic } from './usage.js';
 
 /**
@@ -53,6 +54,11 @@ interface AgentLoopArgs {
   contextPolicy?: ContextPolicy;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（见 RunAgentOptions.resultSchema） */
   resultSchema?: JsonSchema;
+  /**
+   * 模型往返计数的外部持有者。抛错路径（请求失败）也要能报出**已发生**的往返次数，
+   * 所以用对象就地累加，而不是只靠返回值。
+   */
+  progress?: { iterations: number };
 }
 
 export interface AgentLoopResult {
@@ -111,7 +117,7 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
   let error: SpanError | undefined;
   let finalText = '';
   let finished = false;
-  let iterations = 0;
+  const iterations = args.progress ?? { iterations: 0 }; // 就地累加，抛错时调用方仍读得到
   let typed: unknown;
   let submitted = false;
 
@@ -148,7 +154,7 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
       recorder.end(turnId, { status: 'error', error: classifyError(e) });
       throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/unit 与收尾
     }
-    iterations++;
+    iterations.iterations++;
 
     const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
     if (usage) usage.costEstimate = costEstimate(model, usage);
@@ -182,14 +188,32 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
     if (message.stop_reason === 'pause_turn') {
       // 无 server tools 时正常不会到；避免无限循环直接停
       stopReason = 'pause_turn';
+      finalText = textOf(message);
+      finished = true;
+      break;
+    }
+    if (message.stop_reason === 'stop_sequence') {
+      // 命中 stop 序列 = 正常收尾（与 end_turn 同类），不是失败
+      stopReason = 'stop_sequence';
+      finalText = textOf(message);
       finished = true;
       break;
     }
 
     const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
     if (toolUses.length === 0) {
-      // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停
-      stopReason = 'tool_use_no_blocks';
+      // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
+      // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开，
+      // 后者保留已产出的文本并挂一条可诊断的 error（run 仍按失败收尾）。
+      stopReason = message.stop_reason === 'tool_use' ? 'tool_use_no_blocks' : 'unknown_stop_reason';
+      finalText = textOf(message);
+      if (stopReason === 'unknown_stop_reason') {
+        error = {
+          type: 'agent_error',
+          message: `模型返回了未识别的 stop_reason: ${String(message.stop_reason)}`,
+          retryable: false,
+        };
+      }
       finished = true;
       break;
     }
@@ -198,7 +222,12 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUses.map(async (use) => {
         const tool = args.tools.find((t) => t.name === use.name);
-        recorder.event(turnId, 'tool.input', { tool: use.name, input: limit(use.input, 2000) });
+        // tool_use_id 一并记账：同名工具并行时，重放只有靠 id 才能把入参出参正确配对
+        recorder.event(turnId, 'tool.input', {
+          tool: use.name,
+          tool_use_id: use.id,
+          input: limit(use.input, 2000),
+        });
 
         const ctx: ToolRunContext = { client, recorder, parentSpanId: turnId };
         let ok = true;
@@ -221,21 +250,28 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
         } else {
           // 模型给的 input 先过 schema 校验：不合法直接回 is_error（含路径，
           // 模型可自我修正），不进方法体 —— schema 是方法与模型间的运行时契约。
-          const invalid = validateJsonSchema(tool.inputSchema, use.input);
-          if (invalid) {
-            ok = false;
-            content = `invalid input: ${invalid}`;
-          } else {
-            try {
-              content = await tool.run(use.input, ctx);
-            } catch (e) {
+          // 校验本身也在 try 内：畸形 schema（$ref 成环等）只该废掉这一个调用，
+          // 不该让整次 run 以 error 收场。
+          try {
+            const invalid = validateJsonSchema(tool.inputSchema, use.input);
+            if (invalid) {
               ok = false;
-              const err = classifyError(e);
-              content = `error(${err.type}): ${err.message}`;
+              content = `invalid input: ${invalid}`;
+            } else {
+              content = await tool.run(use.input, ctx);
             }
+          } catch (e) {
+            ok = false;
+            const err = classifyError(e);
+            content = `error(${err.type}): ${err.message}`;
           }
         }
-        recorder.event(turnId, 'tool.output', { tool: use.name, ok, content: ok ? limit(content, 2000) : limit(content, 1000) });
+        recorder.event(turnId, 'tool.output', {
+          tool: use.name,
+          tool_use_id: use.id,
+          ok,
+          content: ok ? limit(content, 2000) : limit(content, 1000),
+        });
 
         return {
           type: 'tool_result',
@@ -262,7 +298,7 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
     stopReason = 'max_iterations';
   }
 
-  return { stopReason, finalText, error, iterations, typed };
+  return { stopReason, finalText, error, iterations: iterations.iterations, typed };
 }
 
 /** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */
@@ -271,6 +307,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
   const rootId = recorder.begin('run', options.runName ?? 'agent.run', null);
   recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
 
+  const progress = { iterations: 0 };
   let result: AgentLoopResult;
   try {
     result = await agentLoop({
@@ -286,12 +323,14 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       onText: options.onText,
       contextPolicy: options.contextPolicy,
       resultSchema: options.resultSchema,
+      progress,
     });
   } catch (e) {
-    result = { stopReason: 'error', finalText: '', error: classifyError(e), iterations: 0 };
+    // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
+    result = { stopReason: 'error', finalText: '', error: classifyError(e), iterations: progress.iterations };
   }
 
-  const runStatus = result.stopReason === 'end_turn' ? 'ok' : 'error';
+  const runStatus = isSuccessStopReason(result.stopReason) ? 'ok' : 'error';
   recorder.setAttribute(rootId, 'stop_reason', result.stopReason);
   recorder.end(rootId, { status: runStatus, ...(result.error ? { error: result.error } : {}) });
   const trace = recorder.snapshot(runStatus);

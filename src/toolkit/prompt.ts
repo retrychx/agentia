@@ -1,4 +1,5 @@
-import { scanDecoratedMethods, unitName } from './collect.js';
+import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
+import type { UnitDecoratorContext } from './collect.js';
 import type { AgentTool, JsonSchema } from '../core/tool.js';
 
 /**
@@ -33,13 +34,8 @@ const EMPTY_SCHEMA: JsonSchema = {
 
 /** 方法装饰器（实例或 static 均可）：登记 prompt spec。返回值 = 资产文本。 */
 export function Prompt(spec: PromptSpec) {
-  return function (
-    value: Function,
-    context: { kind: string; name: string | symbol },
-  ): void {
-    if (context.kind !== 'method') {
-      throw new Error(`@Prompt 只能修饰方法（static 方法亦可），收到 kind=${String(context.kind)}`);
-    }
+  return function (value: Function, context: UnitDecoratorContext): void {
+    assertMethodTarget(context, '@Prompt');
     promptSpecs.set(value, spec);
   };
 }
@@ -50,19 +46,27 @@ export function Prompt(spec: PromptSpec) {
  */
 export function collectPrompts(instance: object): AgentTool[] {
   const tools: AgentTool[] = [];
-  const pushTool = (name: string, fn: Function, thisArg: unknown, spec: PromptSpec): void => {
+  // 传 key 而非捕获的 fn：子类「未装饰地 override」时 spec 继承自父类，
+  // 但实现必须取**实例/类上**的（否则会绕开子类实现，与 @Tool 语义不一致）。
+  const pushTool = (
+    name: string,
+    target: Record<string | symbol, unknown>,
+    key: string | symbol,
+    spec: PromptSpec,
+  ): void => {
     tools.push({
       name: spec.name ?? name,
       description: spec.description,
       inputSchema: spec.schema ?? EMPTY_SCHEMA,
-      run: (input: unknown) => Reflect.apply(fn, thisArg, [input]),
+      run: (input: unknown) => Reflect.apply(target[key] as Function, target, [input]),
     });
   };
 
   // 实例方法（沿原型链）
   const found = scanDecoratedMethods(instance, promptSpecs);
-  for (const { key, fn, spec } of found) {
-    pushTool(unitName(spec, key, '@Prompt'), fn, instance, spec);
+  const inst = instance as Record<string | symbol, unknown>;
+  for (const { key, spec } of found) {
+    pushTool(unitName(spec, key, '@Prompt'), inst, key, spec);
   }
 
   // 静态方法（类自身属性）；已被实例方法占用的 key 跳过
@@ -77,7 +81,7 @@ export function collectPrompts(instance: object): AgentTool[] {
       const spec = promptSpecs.get(fn as Function);
       if (!spec) continue;
       seen.add(key);
-      pushTool(key, fn as Function, cls as object, spec);
+      pushTool(key, ctor as Record<string | symbol, unknown>, key, spec);
     }
   }
   return tools;

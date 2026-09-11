@@ -1,4 +1,12 @@
-import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 import type { TaskRecord, TaskStore } from './store.js';
 
@@ -33,6 +41,7 @@ export class FileTaskStore implements TaskStore {
     } catch {
       return; // 读失败按空宿主启动（宿主可另行告警）
     }
+    this.healTail(raw);
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
@@ -43,6 +52,31 @@ export class FileTaskStore implements TaskStore {
       } catch {
         // 单条损坏跳过，不整库崩
       }
+    }
+  }
+
+  /**
+   * 尾部残行自愈：文件不以 `\n` 结尾说明最后一次 append 写残了（进程被杀、磁盘满、断电）。
+   * 不处理的话后续 append 会把新记录**粘在残行尾部**——两行并一行，重启后两条一起丢。
+   * - 残行本身是完整记录（只是丢了换行）→ 补一个换行，记录不丢；
+   * - 残行是半截 JSON → 截到最后一个换行处，之后 append 从干净的边界开始。
+   */
+  private healTail(raw: string): void {
+    if (!raw || raw.endsWith('\n')) return;
+    const cut = raw.lastIndexOf('\n') + 1; // 最后一个完整行的末尾（字符下标）
+    const tail = raw.slice(cut);
+    let complete = false;
+    try {
+      const rec = JSON.parse(tail) as TaskRecord | null;
+      complete = !!rec && typeof rec.taskId === 'string';
+    } catch {
+      complete = false;
+    }
+    try {
+      if (complete) appendFileSync(this.file, '\n'); // 记录是完整的，只差换行
+      else truncateSync(this.file, Buffer.byteLength(raw.slice(0, cut), 'utf8'));
+    } catch {
+      // 修不了就照旧读：能解析的行照常入内存，损坏行由下面的 parse 守卫跳过
     }
   }
 

@@ -1,7 +1,6 @@
 # Agentia —— Roadmap
 
-状态：v0.1.0 已发布（`@migor/agentia` + `@migor/cli`），R1–R5 已全部落地。本文档记录规划与落地状态，
-后续方向见文末「R6 候选」。原文如下（各 R 标题后的 ✅ 为 v0.1.0 落地标记）。
+状态：v0.2.1 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式（v0.2.2 待发布）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
 与 `docs/spec.md`（已锁定决策）互补：spec 记录"已经怎么定的"，本文记录"接下来往哪走"。
 
 ## R1 —— 中间件（拦截器链）+ 静态校验补全 ✅
@@ -57,7 +56,23 @@
 - 文档站演进：docs.html + api.html（API 参考）；
 - 真实 LLM playground：BYOK 模式（key 只存 localStorage，浏览器直连 Anthropic）。
 
+## 评审修复轮（v0.2.2 待发布）
+
+对 v0.2.1 做了一轮全量评审（三个子系统深读 + 官网审计 + 耦合图），结论：**主干质量高，问题全集中在佐助路径**——
+落库失败会杀进程、记忆回写失败会毁掉成功的 run、子 agent 绕过鉴权、trace 重放在缺省模型上是 400。
+
+- **`src/` 目录重构**：`run/` 按职责拆为 `runtime/` + `transport/` + `store/` + `integrations/`，
+  `engine/context.ts` → `engine/trimming.ts`；`src/index.ts` 导出面逐字不变，与 §11 的包拆分方向对齐；
+- **发布阻塞 7 条**：AsyncRunner 落库/槽位容错、`readBody` 限流与中断兜底、`traceToMessages` 末条补 user、
+  `@Skill`/`@Prompt` override 动态查表、成功路径 memory 回写不翻 run 状态、OpenAI 兼容端点 `stop`+`tool_calls`；
+- **新增公开选项**：HTTP 并发闸门（默认 32）+ body 上限 + `exposeErrors`、AsyncRunner 超时与
+  `resumePending` 认领过滤（`ownerId`）、Redis TTL、Scheduler `maxInFlight`；
+- **官网全面响应式**：窄机断点（≤420px）+ 汉堡导航，20 组「页面×宽度」零横向溢出；
+- 许可证补齐 MIT；测试 142 → 182 例。
+
 ## R7 候选（下一轮）
+
+- `InMemoryTaskStore` 无界增长（长期驻留进程需上限/淘汰策略）；
 
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
 - Workers 代理版 playground（免 BYOK 的托管演示）；

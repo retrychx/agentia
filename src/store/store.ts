@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
 import type { SpanError } from '../core/trace.js';
-import type { RunStatus } from './types.js';
-import type { RunSpec } from './spec.js';
+import type { RunStatus } from '../runtime/types.js';
+import type { RunSpec } from '../runtime/spec.js';
 
 /**
  * Agentia —— run 存储（spec §6.6：异步耐久 = 换宿主不换语义）。
@@ -28,6 +28,12 @@ export interface TaskRecord {
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /**
+   * 认领该任务的进程标识（AsyncRunner 在 submit/重派时写入）。
+   * 多进程共用一个 store 时，`resumePending` 靠它跳过「自己进程的记录」——
+   * 本进程的记录一定还在内存里跑，重派只会让它跑两遍。
+   */
+  ownerId?: string;
   result?: AgentRunResult;
   error?: SpanError;
 }

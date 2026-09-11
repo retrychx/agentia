@@ -52,10 +52,11 @@ describe('runSync / createSyncHandler（同步传输）', () => {
     );
   });
 
-  it('空字符串入参 → 空 messages（不抛错）', async () => {
+  it('空字符串入参 → 与 []、{prompt:""} 一致报错（不带空 messages 去调模型）', async () => {
     const { app, calls } = recordingApp();
-    await runSync(app, '');
-    assert.deepEqual(calls[0].messages, []);
+    assert.throws(() => runSync(app, ''), /任务 messages 不能为空/);
+    assert.throws(() => runSync(app, { prompt: '' }), /无法识别为任务输入/);
+    assert.equal(calls.length, 0);
   });
 
   it('无法识别的入参同步抛错，不触碰 app.run', async () => {

@@ -1,6 +1,6 @@
 import type { AppCallable } from './async.js';
-import type { RunInvocationOptions } from './spec.js';
-import { normalizeMessages } from './spec.js';
+import type { RunInvocationOptions } from '../runtime/spec.js';
+import { normalizeMessages } from '../runtime/spec.js';
 
 /**
  * Agentia —— 同步 RPC 传输（spec §6.3 同步请求 / §6.6 v1 边界）。

@@ -6,14 +6,18 @@
 agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── src/
 │   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验），零依赖
-│   ├── engine/              # 运行时内核：agent loop、trace 记账、长上下文策略、错误分类、replay
-│   ├── run/                 # run 生命周期、上下文(ALS)、触发（同步/异步/定时/HTTP）、
-│   │                        # 任务存储（memory/file/sqlite/redis）、OTLP、OpenAI 适配、MemoryStore
-│   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps）
+│   ├── engine/              # 运行时内核：agent loop、trace 记账、长上下文裁剪(trimming)、
+│   │                        # 预算策略(policy)、错误分类、replay
+│   ├── runtime/             # run 生命周期与调用契约：run 状态机、上下文(ALS)、RunSpec/RunInput、
+│   │                        # SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
+│   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
+│   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
+│   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出
+│   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        # 中间件、目录发现(discover)、文本资产(asset)、zod 桥
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）
-├── tests/                   # node:test 单测，目录镜像 src（tests/run/x → src/run/x）
+├── tests/                   # node:test 单测，目录镜像 src（tests/transport/x → src/transport/x）
 │   ├── helpers.ts           # 共用 mock client（改它影响全部套件，谨慎）
 │   └── fixtures/            # discover/asset 测试夹具
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
@@ -25,7 +29,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 
 ## 硬约定
 
-- **分层单向**：core ← engine ← run ← toolkit（container 独立），core 不依赖任何上层。
+- **分层单向**：core ← engine ← runtime/store ← transport ← toolkit；`integrations` 只依赖 core
+  （模型/trace 适配器）；`container` 是叶子（不 import 任何东西），仅被 toolkit 依赖。core 不依赖任何上层。
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。

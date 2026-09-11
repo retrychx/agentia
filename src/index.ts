@@ -20,6 +20,7 @@ export { validateJsonSchema } from './core/schema.js';
 export { runAgent, resolveDefaultModel } from './engine/loop.js';
 export { TraceRecorder } from './engine/tracer.js';
 export { classifyError } from './engine/errors.js';
+export { isSuccessStopReason } from './engine/types.js';
 export type {
   AgentRunResult,
   AgentStopReason,
@@ -36,18 +37,18 @@ export {
   renderMessages,
   trimToolPairs,
   compactMessages,
-} from './engine/context.js';
-export type { CompactOptions, TrimOptions } from './engine/context.js';
+} from './engine/trimming.js';
+export type { CompactOptions, TrimOptions } from './engine/trimming.js';
 export { createBudgetPolicy } from './engine/policy.js';
 export type { BudgetPolicyOptions } from './engine/policy.js';
 
 // run：run 生命周期
-export { Run, executeRun } from './run/run.js';
-export { RunContext, withRunContext } from './run/context.js';
-export { SystemPrompt } from './run/systemPrompt.js';
-export type { SystemSection } from './run/systemPrompt.js';
-export type { ExecuteRunOptions } from './run/run.js';
-export type { RunMeta, RunStatus } from './run/types.js';
+export { Run, executeRun } from './runtime/run.js';
+export { RunContext, withRunContext } from './runtime/context.js';
+export { SystemPrompt } from './runtime/systemPrompt.js';
+export type { SystemSection } from './runtime/systemPrompt.js';
+export type { ExecuteRunOptions } from './runtime/run.js';
+export type { RunMeta, RunStatus } from './runtime/types.js';
 
 // container：显式 DI
 export { Container } from './container/container.js';
@@ -85,27 +86,32 @@ export type { AgentModule } from './toolkit/module.js';
 export { fromZod } from './toolkit/zod.js';
 
 // run：触发传输 + run 存储
-export { normalizeMessages } from './run/spec.js';
-export type { RunInput, RunSpec, RunInvocationOptions } from './run/spec.js';
-export { InMemoryTaskStore } from './run/store.js';
-export type { TaskRecord, TaskStore } from './run/store.js';
-export { FileTaskStore } from './run/fsStore.js';
-export { AsyncRunner } from './run/async.js';
-export type { AsyncRunnerOptions, AppCallable } from './run/async.js';
-export { Scheduler } from './run/scheduler.js';
-export type { ScheduleEveryOptions, ScheduleHandle } from './run/scheduler.js';
-export { runSync, createSyncHandler } from './run/transport.js';
+export { normalizeMessages } from './runtime/spec.js';
+export type { RunInput, RunSpec, RunInvocationOptions } from './runtime/spec.js';
+export { InMemoryTaskStore } from './store/store.js';
+export type { TaskRecord, TaskStore } from './store/store.js';
+export { FileTaskStore } from './store/fsStore.js';
+export { AsyncRunner } from './transport/async.js';
+export type {
+  AppCallable,
+  AsyncRunnerOptions,
+  ResumePendingOptions,
+} from './transport/async.js';
+export { Scheduler } from './transport/scheduler.js';
+export type { ScheduleEveryOptions, ScheduleHandle } from './transport/scheduler.js';
+export { runSync, createSyncHandler } from './transport/transport.js';
 
 // run：宿主与导出（R3/R4）
-export { createHttpHandler } from './run/http.js';
-export { SqliteTaskStore } from './run/sqliteStore.js';
-export { createOtlpExporter } from './run/otlp.js';
-export { createOpenAIClient } from './run/openai.js';
-export { InMemoryMemoryStore } from './run/memory.js';
-export type { MemoryStore } from './run/memory.js';
-export { RedisTaskStore } from './run/redisStore.js';
-export type { RedisLike } from './run/redisStore.js';
-export type { MaybePromise } from './run/store.js';
+export { createHttpHandler } from './transport/http.js';
+export type { HttpHandlerOptions, RunHttpResponse, TaskSubmitBody } from './transport/http.js';
+export { SqliteTaskStore } from './store/sqliteStore.js';
+export { createOtlpExporter } from './integrations/otlp.js';
+export { createOpenAIClient } from './integrations/openai.js';
+export { InMemoryMemoryStore } from './runtime/memory.js';
+export type { MemoryStore } from './runtime/memory.js';
+export { RedisTaskStore } from './store/redisStore.js';
+export type { RedisLike, RedisSetOptions, RedisTaskStoreOptions } from './store/redisStore.js';
+export type { MaybePromise } from './store/store.js';
 export { traceToMessages } from './engine/replay.js';
 export type { ReplayOptions } from './engine/replay.js';
 

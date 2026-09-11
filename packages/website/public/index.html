@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
+  <script src="./nav.js" defer></script>
 </head>
 <body>
   <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
@@ -27,7 +28,10 @@
         </svg>
         <span>Agentia</span>
       </a>
-      <div class="nav-links">
+      <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false" aria-controls="nav-links">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="nav-links" id="nav-links">
         <a href="#units">单元</a>
         <a href="#features">特性</a>
         <a href="#quickstart">快速开始</a>

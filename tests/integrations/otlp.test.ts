@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { createOtlpExporter } from '../../src/run/otlp.js';
+import { createOtlpExporter } from '../../src/integrations/otlp.js';
 import type { Trace } from '../../src/core/trace.js';
 
 function sampleTrace(): Trace {

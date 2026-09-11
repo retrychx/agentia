@@ -1,11 +1,13 @@
-import { scanDecoratedMethods, unitName } from './collect.js';
+import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
+import type { UnitDecoratorContext } from './collect.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { AgentStopReason } from '../engine/types.js';
+import { isSuccessStopReason } from '../engine/types.js';
 import { runAgentScoped } from '../engine/loop.js';
 import { classifyError } from '../engine/errors.js';
-import { SystemPrompt } from '../run/systemPrompt.js';
+import { SystemPrompt } from '../runtime/systemPrompt.js';
 
 /**
  * Agentia —— Skill 单元（spec §3：指令 + 脚本，受限子运行，回产物/结论）。
@@ -79,26 +81,24 @@ const EMPTY_SCHEMA: JsonSchema = {
 
 /** 方法装饰器：登记 skill spec。被装饰方法体由运行时以 (input, skillCtx) 调用。 */
 export function Skill(spec: SkillSpec) {
-  return function (
-    value: Function,
-    context: { kind: string; name: string | symbol },
-  ): void {
-    if (context.kind !== 'method') {
-      throw new Error(`@Skill 只能修饰类方法，收到 kind=${String(context.kind)}`);
-    }
+  return function (value: Function, context: UnitDecoratorContext): void {
+    assertMethodTarget(context, '@Skill');
     skillSpecs.set(value, spec);
   };
 }
 
 /** 把容器实例上所有 @Skill 方法收集成 SkillUnit[]（沿原型链）。 */
 export function collectSkills(instance: object): SkillUnit[] {
-  return scanDecoratedMethods(instance, skillSpecs).map(({ key, fn, spec }) => ({
+  // 动态查表而非捕获 fn：子类「未装饰地 override」时 spec 继承自父类，
+  // 实现必须取实例上的（与 @Tool 的 run 同款），否则子类 override 被静默绕过。
+  const inst = instance as Record<string | symbol, unknown>;
+  return scanDecoratedMethods(instance, skillSpecs).map(({ key, spec }) => ({
     name: unitName(spec, key, '@Skill'),
     description: spec.description,
     inputSchema: spec.schema ?? EMPTY_SCHEMA,
     spec,
     invoke: (input: unknown, skillCtx: SkillContext) =>
-      Reflect.apply(fn, instance, [input, skillCtx]),
+      Reflect.apply(inst[key] as Function, instance, [input, skillCtx]),
   }));
 }
 
@@ -158,7 +158,7 @@ export function skillToTool(
             recorder,
             parentSpanId: unitId,
           });
-          if (loop.stopReason !== 'end_turn') {
+          if (!isSuccessStopReason(loop.stopReason)) {
             const report = `skill "${name}".llm ${loop.stopReason}: ${
               (loop.finalText || loop.error?.message || '').slice(0, 2000)
             }`;
@@ -167,6 +167,10 @@ export function skillToTool(
               message: report,
               retryable: true,
             };
+            // 先把丰富错误挂到 unit span（loop.error 的 type/retryable 比新造的
+            // Error 信息量大），再抛出走外层 catch 的通用收尾 —— 外层 close 幂等，
+            // 不会覆盖这里写的 error（与 subagent.ts 同款）。
+            close({ status: 'error', error });
             throw new Error(report);
           }
           return { text: loop.finalText, stopReason: loop.stopReason };

@@ -50,10 +50,11 @@ describe('traceToMessages（trace 重放基底）', () => {
   it('role 交替合法、tool_use/tool_result 配对完整、同名优先配对', () => {
     const msgs = traceToMessages(buildTrace());
 
-    // 首条为合成 user（API 硬要求）；随后时序线性化：t1 + tool_result + t2 子 agent + tool_result + t3
+    // 首尾均为合成 user（API 硬要求）；中间时序线性化：
+    // t1 + tool_result + t2 子 agent + tool_result + t3
     assert.deepEqual(
       msgs.map((m) => m.role),
-      ['user', 'assistant', 'user', 'assistant', 'user', 'assistant'],
+      ['user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user'],
     );
     assert.ok(String(msgs[0].content).includes('[replay]'));
 
@@ -80,8 +81,10 @@ describe('traceToMessages（trace 重放基底）', () => {
     // 入参 JSON.parse 还原为对象
     assert.deepEqual(uses[0].input, { q: 'x' });
 
-    // t3 纯文本收尾回合：只有标注文本，不跟 user 消息
+    // t3 纯文本收尾回合：只有标注文本，不跟 tool_result
     assert.deepEqual(blocks(msgs[5]).map((b) => b.type), ['text']);
+    // 末条是收尾 user：以 assistant 结尾即 prefill，缺省模型上 400
+    assert.ok(String(msgs[6].content).includes('以上是全部回合'));
   });
 
   it('嵌套 llm.turn 被线性化并标注来源 unit；主 agent 回合标注 run', () => {
@@ -109,10 +112,45 @@ describe('traceToMessages（trace 重放基底）', () => {
     assert.equal(fetchOut, `${'F'.repeat(100)}…(+4900)`);
   });
 
-  it('includeToolIO: false —— 只留标注文本；连续 assistant 合并、首条补 user', () => {
+  it('同名工具并行：按 tool_use_id 配对（完成序 ≠ 发起序）', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const t = r.begin('llm.turn', 'model-a', root);
+    // 同一回合两次 read（同名并行）：只有 id 能把入参出参对上
+    r.event(t, 'tool.input', { tool: 'read', tool_use_id: 'tu_a', input: JSON.stringify({ file: 'a.txt' }) });
+    r.event(t, 'tool.input', { tool: 'read', tool_use_id: 'tu_b', input: JSON.stringify({ file: 'b.txt' }) });
+    // 输出按完成序：b 先回来
+    r.event(t, 'tool.output', { tool: 'read', tool_use_id: 'tu_b', ok: true, content: 'B 文件内容' });
+    r.event(t, 'tool.output', { tool: 'read', tool_use_id: 'tu_a', ok: true, content: 'A 文件内容' });
+    r.end(t);
+    r.end(root);
+
+    const msgs = traceToMessages(r.snapshot('ok'));
+    const results = blocks(msgs[2]).filter((b) => b.type === 'tool_result');
+    // 输出顺序是 B→A，但 tool_use 顺序是 a→b：结果必须跟着 id 走（否则 a.txt 读到 B 的内容）
+    assert.deepEqual(results.map((b) => b.content), ['A 文件内容', 'B 文件内容']);
+  });
+
+  it('老 trace（事件体无 tool_use_id）回落同名配对，仍不漏配', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const t = r.begin('llm.turn', 'model-a', root);
+    r.event(t, 'tool.input', { tool: 'read', input: JSON.stringify({ file: 'a.txt' }) });
+    r.event(t, 'tool.input', { tool: 'read', input: JSON.stringify({ file: 'b.txt' }) });
+    r.event(t, 'tool.output', { tool: 'read', ok: true, content: '先回来的' });
+    r.event(t, 'tool.output', { tool: 'read', ok: true, content: '后回来的' });
+    r.end(t);
+    r.end(root);
+
+    const results = blocks(traceToMessages(r.snapshot('ok'))[2]).filter((b) => b.type === 'tool_result');
+    assert.deepEqual(results.map((b) => b.content), ['先回来的', '后回来的']);
+    assert.ok(results.every((b) => b.is_error === false));
+  });
+
+  it('includeToolIO: false —— 只留标注文本；连续 assistant 合并、首尾补 user', () => {
     const msgs = traceToMessages(buildTrace(), { includeToolIO: false });
-    // 三个纯文本回合合并为一条 assistant，前置合成 user
-    assert.deepEqual(msgs.map((m) => m.role), ['user', 'assistant']);
+    // 三个纯文本回合合并为一条 assistant，前置 + 后置合成 user
+    assert.deepEqual(msgs.map((m) => m.role), ['user', 'assistant', 'user']);
     assert.deepEqual(
       blocks(msgs[1]).map((b) => b.type),
       ['text', 'text', 'text'],
@@ -137,10 +175,29 @@ describe('traceToMessages（trace 重放基底）', () => {
     assert.ok((results[1].content as string).includes('缺失'));
   });
 
-  it('空 trace（无 llm.turn）→ 空消息序列', () => {
+  it('空 trace（无 llm.turn）→ 单条合成 user（空 messages 同样非法）', () => {
     const r = new TraceRecorder();
     const root = r.begin('run', 'app', null);
     r.end(root);
-    assert.deepEqual(traceToMessages(r.snapshot('ok')), []);
+    const msgs = traceToMessages(r.snapshot('ok'));
+    assert.deepEqual(msgs.map((m) => m.role), ['user']);
+    assert.ok(String(msgs[0].content).includes('[replay]'));
+  });
+
+  it('末条必为 user：任何 trace 产出都不是 assistant prefill', () => {
+    // 只含一个 assistant 回合的 trace（典型 end_turn 收尾）
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const t = r.begin('llm.turn', 'model-a', root);
+    r.end(t);
+    r.end(root);
+    const msgs = traceToMessages(r.snapshot('ok'));
+    assert.equal(msgs[msgs.length - 1].role, 'user');
+
+    // includeToolIO 两种取值下都不例外
+    for (const includeToolIO of [true, false]) {
+      const out = traceToMessages(buildTrace(), { includeToolIO });
+      assert.equal(out[out.length - 1].role, 'user');
+    }
   });
 });

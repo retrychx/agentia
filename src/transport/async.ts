@@ -1,12 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { classifyError } from '../engine/errors.js';
-import type { RunStatus } from './types.js';
-import { normalizeMessages } from './spec.js';
-import type { RunInvocationOptions } from './spec.js';
-import { InMemoryTaskStore } from './store.js';
-import type { MaybePromise, TaskRecord, TaskStore } from './store.js';
+import type { RunStatus } from '../runtime/types.js';
+import { normalizeMessages } from '../runtime/spec.js';
+import type { RunInvocationOptions } from '../runtime/spec.js';
+import { InMemoryTaskStore } from '../store/store.js';
+import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -35,6 +36,25 @@ export interface AsyncRunnerOptions {
   store?: TaskStore;
   /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
   concurrency?: number;
+  /**
+   * 单任务执行超时（毫秒）；缺省 0 = 不限。
+   *
+   * **只是「放弃等待」，不是「终止执行」**：底层模型请求没有可中断句柄，超时后
+   * 那次 run 仍在后台跑完（其产物被丢弃），槽位则立即回收。因此超时值应大于
+   * 任务的正常耗时上限，把它当兜底而不是调度手段；被放弃的任务若仍在跑，
+   * 实际并发会短暂高于 concurrency。
+   */
+  runTimeoutMs?: number;
+}
+
+/** resumePending 的启动扫描选项 */
+export interface ResumePendingOptions {
+  /**
+   * 他进程任务的「保鲜期」（毫秒）；缺省 0 = 不判断，一律重派（重启即续跑）。
+   * > 0 时跳过 startedAt/createdAt 距今不足该值的他进程记录 —— 那些任务大概
+   * 正在别的进程里跑着，抢过来会重复执行。0 适合单进程部署（旧语义）。
+   */
+  staleAfterMs?: number;
 }
 
 /** 应用最小调用面（agent 装配无关，避免 run 层向上依赖 toolkit） */
@@ -48,8 +68,11 @@ export interface AppCallable {
 
 export class AsyncRunner {
   readonly store: TaskStore;
+  /** 本进程标识：写进认领的 TaskRecord.ownerId，供 resumePending 区分他我 */
+  readonly ownerId: string;
   private readonly client?: ModelClient;
   private readonly concurrency: number;
+  private readonly runTimeoutMs: number;
   private running = 0;
   private readonly waitQueue: Array<() => void> = [];
 
@@ -64,6 +87,11 @@ export class AsyncRunner {
     if (!(this.concurrency > 0)) {
       throw new Error(`concurrency 必须为正数，收到 ${opts.concurrency}`);
     }
+    this.runTimeoutMs = opts.runTimeoutMs ?? 0;
+    if (this.runTimeoutMs < 0) {
+      throw new Error(`runTimeoutMs 不能为负，收到 ${opts.runTimeoutMs}`);
+    }
+    this.ownerId = `p${process.pid}-${randomUUID().slice(0, 8)}`;
   }
 
   /**
@@ -90,6 +118,7 @@ export class AsyncRunner {
       idempotencyKey: opts.idempotencyKey,
       spec: { messages, options: opts.options, source: opts.source ?? 'async' },
       createdAt: Date.now(),
+      ownerId: this.ownerId,
     };
     const saved = this.store.save(rec);
     if (isThenable(saved)) {
@@ -98,7 +127,7 @@ export class AsyncRunner {
         rec.status = 'failed';
         rec.error = classifyError(e);
         rec.finishedAt = Date.now();
-        void Promise.resolve(this.store.save(rec)).catch(() => {});
+        void this.#safeSave(rec);
       });
     }
     void this.#execute(rec);
@@ -142,17 +171,35 @@ export class AsyncRunner {
    * 宿主重启续跑：把 store 里 queued | running 的记录重新派发执行
    * （running 视为进程中断）。返回重派数量（异步 store 下返回 Promise<number>）。
    * 幂等键去重照常生效。
+   *
+   * 多进程共用一个 store 时靠 `ownerId` 区分他我：
+   * - 本进程的记录一律跳过（它还在本进程内存里跑，重派 = 跑两遍）；
+   * - `staleAfterMs > 0` 时，startedAt/createdAt 距今不足该值的他进程记录也跳过
+   *   （大概正被那个进程执行）。缺省 0 = 不判断、一律重派（单进程旧语义）。
    */
-  resumePending(): number | Promise<number> {
+  resumePending(opts: ResumePendingOptions = {}): number | Promise<number> {
     const listed = this.store.list();
-    if (isThenable(listed)) return listed.then((recs) => this.#redispatch(recs));
-    return this.#redispatch(listed);
+    const staleAfterMs = opts.staleAfterMs ?? 0;
+    if (isThenable(listed)) {
+      return listed.then((recs) => this.#redispatch(recs, staleAfterMs));
+    }
+    return this.#redispatch(listed, staleAfterMs);
   }
 
-  #redispatch(recs: TaskRecord[]): number {
-    const pending = recs.filter((r) => r.status === 'queued' || r.status === 'running');
+  #redispatch(recs: TaskRecord[], staleAfterMs: number): number {
+    const now = Date.now();
+    const pending = recs.filter((r) => {
+      if (r.status !== 'queued' && r.status !== 'running') return false;
+      if (r.ownerId === this.ownerId) return false; // 自己的一定还活着
+      if (staleAfterMs > 0 && r.ownerId !== undefined) {
+        const since = r.startedAt ?? r.createdAt;
+        if (now - since < staleAfterMs) return false; // 他进程刚起的，别抢
+      }
+      return true;
+    });
     for (const rec of pending) {
       rec.status = 'queued'; // 重新入队，由 #execute 统一推进
+      rec.ownerId = this.ownerId; // 认领：此后本进程的记录不再被（自己）重派
       void this.#execute(rec);
     }
     return pending.length;
@@ -176,7 +223,8 @@ export class AsyncRunner {
           rec.result = existing.result;
           rec.error = existing.error;
           rec.finishedAt = Date.now();
-          await this.store.save(rec);
+          // 采纳既有结果：落库失败也不该把一次已知成功的任务翻成 failed
+          await this.#safeSave(rec);
           return;
         }
       }
@@ -194,7 +242,10 @@ export class AsyncRunner {
             idempotencyKey: rec.idempotencyKey,
             rethrow: false, // 硬失败也以 failed 记录落库
           };
-          const out = await this.app.run(rec.spec.messages, callOpts);
+          const out = await this.#raceTimeout(
+            this.app.run(rec.spec.messages, callOpts),
+            rec.taskId,
+          );
           rec.runId = out.run.runId;
           rec.status = out.run.status;
           rec.result = out.result;
@@ -205,16 +256,61 @@ export class AsyncRunner {
         }
       } finally {
         rec.finishedAt = Date.now();
-        // 落库失败不遮罩、槽位必须释放
-        await Promise.resolve(this.store.save(rec)).catch(() => {});
-        this.#releaseSlot();
+        // 落库失败不遮罩、槽位必须释放：释放放在内层 finally，即便落库实现抛错也必达
+        try {
+          await this.#safeSave(rec);
+        } finally {
+          this.#releaseSlot();
+        }
       }
     } catch (e) {
       rec.status = 'failed';
       rec.error = classifyError(e);
       rec.finishedAt = Date.now();
-      await Promise.resolve(this.store.save(rec)).catch(() => {});
+      await this.#safeSave(rec);
       console.error(`[agentia] task ${rec.taskId} 执行异常:`, e);
+    }
+  }
+
+  /**
+   * 尽力落库：**先包成 Promise 再挂 catch**。
+   *
+   * 同步 store（FileTaskStore 的 writeFileSync、node:sqlite）的 save 是**同步抛错**的。
+   * 若写成 `Promise.resolve(this.store.save(rec)).catch(...)`，`this.store.save(rec)`
+   * 会在 `Promise.resolve` 之前求值并同步抛出 —— 异常逃出 finally（跳过 #releaseSlot，
+   * 并发槽位永久泄漏），再被外层 catch 里同一写法抛第二次，最终逃出 #execute 变成
+   * unhandled rejection（Node ≥15 默认终止宿主进程）。
+   */
+  async #safeSave(rec: TaskRecord): Promise<void> {
+    try {
+      await Promise.resolve().then(() => this.store.save(rec));
+    } catch {
+      // 落库失败不遮罩主流程：任务结果仍在内存记录里可见
+    }
+  }
+
+  /**
+   * 超时竞速（runTimeoutMs > 0 时）：超时即 reject → 任务按 failed 落库、槽位回收。
+   * 底层 run 没有取消句柄，Promise.race 只是**停止等待**；被放弃的那次执行仍在后台
+   * 跑完（结果被丢弃）。race 已订阅该 Promise，所以它此后的 reject 不会变成
+   * unhandled rejection。timer 必须 clear（否则每次任务都留一个定时器）。
+   */
+  async #raceTimeout<T>(p: Promise<T>, taskId: string): Promise<T> {
+    if (this.runTimeoutMs <= 0) return p;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        p,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`task ${taskId} 执行超时（${this.runTimeoutMs}ms）`)),
+            this.runTimeoutMs,
+          );
+          timer.unref?.(); // 兜底计时器不该让宿主为它续命
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

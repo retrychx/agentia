@@ -86,6 +86,23 @@ describe('createApp 装配期静态校验', () => {
     assert.equal(app.tools.length, 1);
   });
 
+  it('toolSources 里写重同一 token：只收一份菜单，不误报「菜单单元重名」', () => {
+    class A {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_a(): string {
+        return 'a';
+      }
+    }
+    // 白名单重复写 token 是笔误，不是单元定义重名：报「菜单单元重名」会把诊断
+    // 指向单元（错误来源），真正的问题在这份清单本身
+    const app = createApp({
+      providers: [{ provide: 'a', useClass: A }],
+      toolSources: ['a', 'a'],
+      system: sys(),
+    });
+    assert.deepEqual(app.tools.map((t) => t.name), ['tool_a']);
+  });
+
   it('toolSources 指向未注册 token → 抛错', () => {
     assert.throws(
       () => createApp({ providers: [], toolSources: ['ghost'], system: sys() }),

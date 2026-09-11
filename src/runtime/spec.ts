@@ -44,7 +44,9 @@ export type RunInput =
 /** 把任意任务入参规范成 messages（首条缺省包成 user）。 */
 export function normalizeMessages(input: RunInput | unknown): Anthropic.MessageParam[] {
   if (typeof input === 'string') {
-    return input ? [{ role: 'user', content: input }] : [];
+    // 空串与 []、{prompt:''} 一致报错：返回 [] 会带着空 messages 去调模型
+    if (!input) throw new Error('任务 messages 不能为空');
+    return [{ role: 'user', content: input }];
   }
   if (Array.isArray(input)) {
     if (input.length === 0) throw new Error('任务 messages 不能为空');

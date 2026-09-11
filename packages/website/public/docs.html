@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
+  <script src="./nav.js" defer></script>
 </head>
 <body>
   <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
@@ -27,7 +28,10 @@
         </svg>
         <span>Agentia</span>
       </a>
-      <div class="nav-links">
+      <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false" aria-controls="nav-links">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="nav-links" id="nav-links">
         <a href="./index.html">首页</a>
         <a href="./playground.html">Playground</a>
         <a href="./docs.html">文档</a>
@@ -351,7 +355,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
       <section id="cli">
         <h2>CLI 命令参考</h2>
         <p>全局安装 <code>npm i -g @migor/cli</code> 后使用 <code>agentia</code> 命令。</p>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead>
             <tr><th>命令</th><th>作用</th></tr>
           </thead>
@@ -362,13 +366,13 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
             <tr><td>agentia doctor</td><td>装配体检：未登记/悬空单元、命名规范、重复条目。</td></tr>
             <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方单元包（@AgentModule）并登记到注册表。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <!-- 环境变量 -->
       <section id="env">
         <h2>环境变量</h2>
-        <table class="doc-table">
+        <div class="table-wrap"><table class="doc-table">
           <thead>
             <tr><th>变量</th><th>说明</th></tr>
           </thead>
@@ -377,7 +381,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
             <tr><td>AGENTIA_MODEL</td><td>可选。全局缺省模型覆盖，无则回落 <code>claude-opus-5</code>；显式传参优先级最高。</td></tr>
             <tr><td>OPENAI_API_KEY</td><td>可选。OpenAI 兼容 provider 的密钥，多 provider 场景使用。</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
     </div>
   </main>

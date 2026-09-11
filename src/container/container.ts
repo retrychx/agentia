@@ -55,6 +55,9 @@ export class Container {
         throw new Error(`非法 provider: ${JSON.stringify(p)}`);
       }
       this.bindings.set(p.provide, p);
+      // 已解析过的缓存必须一起失效：否则「后注册覆盖先注册」只在首次 resolve 前成立
+      // （重复 module 装配是常见场景，升级了 provider 却仍拿到旧实例）
+      this.cache.delete(p.provide);
     }
     return this;
   }

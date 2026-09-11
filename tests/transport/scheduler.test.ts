@@ -29,6 +29,28 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 describe('Scheduler', () => {
+  it('at：定时器 unref（与 every 一致，不阻止宿主进程退出）', () => {
+    const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
+    const g = globalThis as unknown as {
+      setTimeout: (fn: () => void, ms?: number) => unknown;
+    };
+    const real = g.setTimeout;
+    let captured: { hasRef(): boolean } | undefined;
+    g.setTimeout = (fn, ms) => {
+      captured = real(fn, ms) as { hasRef(): boolean };
+      return captured;
+    };
+    try {
+      const h = scheduler.at(new Date(Date.now() + 60_000), 'later');
+      assert.ok(captured, 'at 应挂一个 timer');
+      assert.equal(captured!.hasRef(), false, 'at 的 timer 必须 unref');
+      h.cancel();
+      assert.equal(scheduler.active, 0);
+    } finally {
+      g.setTimeout = real;
+    }
+  });
+
   it('every：周期触发多次，cancel 后不再触发', async () => {
     const app = fakeApp();
     const runner = new AsyncRunner(app);
@@ -111,6 +133,61 @@ describe('Scheduler', () => {
       await waitFor(() => app.calls === 1);
     } finally {
       scheduler.stop();
+    }
+  });
+
+  it('maxInFlight 缺省 1：上一片未终态则跳过本次 tick（任务不再无上限堆积）', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let calls = 0;
+    const slow: AppCallable = {
+      name: 'slow',
+      async run() {
+        calls++;
+        await gate;
+        return { run: { runId: `r-${calls}`, status: 'succeeded' as const }, result: {} as AgentRunResult };
+      },
+    };
+    const runner = new AsyncRunner(slow);
+    const scheduler = new Scheduler(runner);
+    try {
+      scheduler.every(10, 'tick');
+      await sleep(120); // 十来个 tick
+      assert.equal(calls, 1, '上一片还在跑：后续 tick 全部跳过');
+      assert.equal(runner.list().length, 1);
+
+      // 上一片终态后恢复派发（闸门不会永久关闭）
+      release();
+      await waitFor(() => runner.list().length >= 2);
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  it('maxInFlight: Infinity → 关闭闸门（旧行为：每 tick 都派发）', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let calls = 0;
+    const slow: AppCallable = {
+      name: 'slow',
+      async run() {
+        calls++;
+        await gate;
+        return { run: { runId: `r-${calls}`, status: 'succeeded' as const }, result: {} as AgentRunResult };
+      },
+    };
+    const runner = new AsyncRunner(slow);
+    const scheduler = new Scheduler(runner);
+    try {
+      scheduler.every(10, 'tick', { maxInFlight: Number.POSITIVE_INFINITY });
+      await waitFor(() => calls >= 3, 3000);
+    } finally {
+      scheduler.stop();
+      release();
     }
   });
 

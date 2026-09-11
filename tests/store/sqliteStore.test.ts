@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SqliteTaskStore } from '../../src/run/sqliteStore.js';
-import { FileTaskStore } from '../../src/run/fsStore.js';
-import type { TaskRecord, TaskStore } from '../../src/run/store.js';
+import { SqliteTaskStore } from '../../src/store/sqliteStore.js';
+import { FileTaskStore } from '../../src/store/fsStore.js';
+import type { TaskRecord, TaskStore } from '../../src/store/store.js';
 
 let n = 0;
 function rec(over: Partial<TaskRecord> = {}): TaskRecord {

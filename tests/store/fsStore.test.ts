@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, appendFileSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  appendFileSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileTaskStore } from '../../src/index.js';
@@ -95,6 +102,49 @@ describe('FileTaskStore', () => {
       assert.equal(s2.list().length, 1);
       assert.deepEqual(s2.get(good.taskId), good);
       assert.equal(s2.byIdempotency('k')?.taskId, good.taskId);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('尾部残行自愈：半截 JSON 截掉后，新记录不会与残行粘成一行', () => {
+    const { dir, file } = tmp();
+    try {
+      const s1 = new FileTaskStore(file);
+      const a = rec({ idempotencyKey: 'k' });
+      s1.save(a);
+      // 模拟写残：第二行只写了一半、且没有结尾换行
+      appendFileSync(file, '{"taskId":"task_torn","status":"que');
+
+      const s2 = new FileTaskStore(file);
+      assert.deepEqual(s2.get(a.taskId), a, '完整记录照常读回');
+      assert.equal(s2.list().length, 1, '残行不产生记录');
+      assert.ok(readFileSync(file, 'utf8').endsWith('\n'), '残行被截到干净边界');
+
+      const b = rec();
+      s2.save(b);
+      // 关键：重启后两条都在（不修的话 append 会粘成 `…que{"taskId":…}` 一行，两条一起丢）
+      const s3 = new FileTaskStore(file);
+      assert.deepEqual(s3.get(a.taskId), a);
+      assert.deepEqual(s3.get(b.taskId), b);
+      assert.equal(s3.list().length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('尾部是完整记录但缺结尾换行：补换行而非丢弃', () => {
+    const { dir, file } = tmp();
+    try {
+      const a = rec({ idempotencyKey: 'k' });
+      writeFileSync(file, JSON.stringify(a)); // 完整记录，无结尾换行
+      const s = new FileTaskStore(file);
+      assert.deepEqual(s.get(a.taskId), a, '完整记录不该被当成残行丢掉');
+      assert.ok(readFileSync(file, 'utf8').endsWith('\n'));
+
+      const b = rec();
+      s.save(b);
+      assert.equal(new FileTaskStore(file).list().length, 2);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

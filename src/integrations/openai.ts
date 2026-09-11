@@ -234,7 +234,7 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.
     role: 'assistant',
     model: data.model ?? model,
     content,
-    stop_reason: mapStopReason(choice?.finish_reason),
+    stop_reason: mapStopReason(choice?.finish_reason, (msg.tool_calls?.length ?? 0) > 0),
     stop_sequence: null,
     usage: {
       input_tokens: data.usage?.prompt_tokens ?? 0,
@@ -246,8 +246,15 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.
   } as Anthropic.Message;
 }
 
-/** finish_reason → Anthropic stop_reason（content_filter→refusal 为近似映射） */
-function mapStopReason(finish: string | null | undefined): Anthropic.StopReason {
+/**
+ * finish_reason → Anthropic stop_reason（content_filter→refusal 为近似映射）。
+ *
+ * hasToolCalls：**只要响应带 tool_calls 就必须是 tool_use**，不看 finish_reason ——
+ * DeepSeek / vLLM / Ollama 等兼容端点在带工具调用时回的是 `stop`；若映射成 end_turn，
+ * engine 会在提取工具块之前就收尾（loop 的 end_turn 即终态），工具调用被静默丢弃。
+ */
+function mapStopReason(finish: string | null | undefined, hasToolCalls: boolean): Anthropic.StopReason {
+  if (hasToolCalls) return 'tool_use';
   switch (finish) {
     case 'tool_calls':
       return 'tool_use';

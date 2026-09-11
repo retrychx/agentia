@@ -71,6 +71,42 @@ describe('单元调用中间件（R1）', () => {
     void result;
   });
 
+  it('next(undefined) 与 next() 可区分：显式 undefined 真的把入参改写成 undefined', async () => {
+    const seen: unknown[] = [];
+    class Probe {
+      @Tool({ description: 'd', schema: OBJ })
+      probe(input: unknown): string {
+        seen.push(input);
+        return 'ok';
+      }
+    }
+    const clearInput: UnitMiddleware = (_call, next) => next(undefined); // 显式传 undefined
+    const app = createApp({
+      providers: [{ provide: 'p', useClass: Probe }],
+      system: sys(),
+      middleware: [clearInput],
+    });
+    const { client } = mockClient([toolUseMsg('probe', { a: 1 }), endTurnMsg('ok')]);
+    await app.run([{ role: 'user', content: 'go' }], { client });
+    assert.equal(seen[0], undefined, 'next(undefined) 应改写为 undefined，而非沿用原入参');
+  });
+
+  it('next() 重复调用直接报错（否则单元体跑两遍，有副作用的单元尤其危险）', async () => {
+    const twice: UnitMiddleware = async (_call, next) => {
+      await next();
+      return next(); // 编程错误：一次调用只能放行一次
+    };
+    const app = createApp({
+      providers: [{ provide: 'e', useClass: Echo }],
+      system: sys(),
+      middleware: [twice],
+    });
+    const { client, seen } = mockClient([toolUseMsg('echo', {}), endTurnMsg('ok')]);
+    await app.run([{ role: 'user', content: 'go' }], { client });
+    const result = JSON.stringify(seen[1]);
+    assert.ok(result.includes('重复调用'), '重复 next 报错应以 is_error 回给模型');
+  });
+
   it('中间件抛错按单元失败处理（is_error 回模型，run 不中断）', async () => {
     const guard: UnitMiddleware = () => {
       throw new Error('forbidden');
