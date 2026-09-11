@@ -18,8 +18,8 @@
   const providerSel = $('#byok-provider');
   const keyInput = $('#byok-key');
   const keyLabel = $('#byok-key-label');
-  const modelInput = $('#byok-model');
-  const modelsList = $('#byok-models');
+  const modelInput = $('#byok-model');          // <select>：本服务商预设模型 + 「自定义…」
+  const modelCustom = $('#byok-model-custom');  // 仅「自定义…」时露出的文本框
   const noteLead = $('#byok-note-lead');
   const btnClear = $('#byok-clear');
   const uNote = $('#u-note');
@@ -66,6 +66,9 @@
   const LS_PROVIDER = 'agentia.byok.provider';
   const lsKeyOf = (p) => 'agentia.byok.key.' + p;
   const lsModelOf = (p) => 'agentia.byok.model.' + p;
+
+  /* 「自定义…」在下拉里的哨兵值 —— 不是模型名，选中它才露出文本框 */
+  const CUSTOM_MODEL = '__custom__';
 
   let providerId = 'anthropic'; // 当前服务商
   const prov = () => PROVIDERS[providerId];
@@ -254,7 +257,7 @@
     }
 
     const sc = pg.state.scenario;
-    const model = modelInput.value.trim() || p.defaultModel;
+    const model = currentModel();
     const system = SYSTEMS[sc.id] || SYSTEMS['weather-trip'];
     const gen = ++pg.state.gen;
     pg.setRunning(true);
@@ -353,14 +356,51 @@
     providerSel.value = providerId;
     keyInput.placeholder = p.keyPlaceholder;
     keyLabel.textContent = p.label + ' API Key';
-    modelsList.innerHTML = '';
+    // 模型下拉：本服务商预设模型 + 「自定义…」兜底（兼容端点 / 新模型名）。
+    // 用下拉而不是 datalist：Chrome 会用框内现有文本过滤建议，预填默认模型后
+    // 同服务商的其他模型（如选 DeepSeek 时的 deepseek-flash）会被静默过滤掉。
+    modelInput.innerHTML = '';
     p.models.forEach((m) => {
       const o = document.createElement('option');
       o.value = m;
-      modelsList.appendChild(o);
+      o.textContent = m;
+      modelInput.appendChild(o);
     });
+    const custom = document.createElement('option');
+    custom.value = CUSTOM_MODEL;
+    custom.textContent = '自定义…';
+    modelInput.appendChild(custom);
+    syncModelVisibility();
     noteLead.textContent = '你的 key 只存浏览器 localStorage，直接发往 ' + p.host + '，不经过任何服务器。';
-    modelInput.placeholder = p.defaultModel;
+  }
+
+  /** 「自定义…」时露出文本框并给出占位提示 */
+  function syncModelVisibility() {
+    const isCustom = modelInput.value === CUSTOM_MODEL;
+    modelCustom.hidden = !isCustom;
+    if (isCustom) modelCustom.placeholder = '自定义模型名（缺省 ' + prov().defaultModel + '）';
+  }
+
+  /** 把「模型名」写进控件：命中预设则选中它，否则走「自定义…」并填文本框；空 → 该服务商默认模型 */
+  function setModelValue(model) {
+    const p = prov();
+    if (model && p.models.includes(model)) {
+      modelInput.value = model;
+      modelCustom.value = '';
+    } else if (model) {
+      modelInput.value = CUSTOM_MODEL;
+      modelCustom.value = model;
+    } else {
+      modelInput.value = p.defaultModel;
+      modelCustom.value = '';
+    }
+    syncModelVisibility();
+  }
+
+  /** 当前生效的模型名：自定义时取文本框（空则回落该服务商默认模型） */
+  function currentModel() {
+    if (modelInput.value !== CUSTOM_MODEL) return modelInput.value;
+    return modelCustom.value.trim() || prov().defaultModel;
   }
 
   function setMode(mode) {
@@ -401,13 +441,16 @@
     providerId = PROVIDERS[id] ? id : 'anthropic';
     const p = prov();
     try { localStorage.setItem(LS_PROVIDER, providerId); } catch (_) {}
+    let savedModel = '';
     try {
       keyInput.value = localStorage.getItem(lsKeyOf(providerId)) || '';
-      modelInput.value = localStorage.getItem(lsModelOf(providerId)) || p.defaultModel;
+      savedModel = localStorage.getItem(lsModelOf(providerId)) || '';
     } catch (_) {
-      modelInput.value = p.defaultModel;
+      keyInput.value = '';
     }
+    // 先按本服务商重建下拉，再回填模型（预设命中则选中，否则落到「自定义…」）
     applyProviderUI();
+    setModelValue(savedModel || p.defaultModel);
     if (pg.state.mode === 'real') {
       const c = copyReal(p);
       badgeText.textContent = c.badge;
@@ -422,7 +465,7 @@
     // 先把当前输入存到旧服务商名下，再切到新服务商
     try {
       localStorage.setItem(lsKeyOf(providerId), keyInput.value.trim());
-      localStorage.setItem(lsModelOf(providerId), modelInput.value.trim());
+      localStorage.setItem(lsModelOf(providerId), currentModel());
     } catch (_) {}
     pg.state.gen++; // key 已变，作废任何残留循环
     loadProvider(providerSel.value);
@@ -433,7 +476,12 @@
     try { localStorage.setItem(lsKeyOf(providerId), keyInput.value.trim()); } catch (_) {}
   });
   modelInput.addEventListener('change', () => {
-    try { localStorage.setItem(lsModelOf(providerId), modelInput.value.trim()); } catch (_) {}
+    syncModelVisibility();
+    try { localStorage.setItem(lsModelOf(providerId), currentModel()); } catch (_) {}
+    if (modelInput.value === CUSTOM_MODEL) modelCustom.focus();
+  });
+  modelCustom.addEventListener('input', () => {
+    try { localStorage.setItem(lsModelOf(providerId), currentModel()); } catch (_) {}
   });
   btnClear.addEventListener('click', () => {
     keyInput.value = '';
@@ -441,7 +489,7 @@
       localStorage.removeItem(lsKeyOf(providerId));
       localStorage.removeItem(lsModelOf(providerId));
     } catch (_) {}
-    modelInput.value = prov().defaultModel;
+    setModelValue(prov().defaultModel);
     keyInput.focus();
   });
 

@@ -971,6 +971,8 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
 .pg-byok-field select { color-scheme: dark; cursor: pointer; }
 .pg-byok-provider { flex: 0 1 170px; min-width: 150px; }
 .pg-byok-model { flex: 0 1 320px; min-width: 220px; }
+/* 「自定义…」露出时与下拉堆叠，留 6px 呼吸位 */
+.pg-byok-model input[type="text"] { margin-top: 6px; }
 .pg-byok-clear { flex: 0 0 auto; padding: 10px 22px; }
 .pg-byok-pulse .pg-byok-note { animation: pg-byok-pulse 0.8s ease-in-out 2; }
 @keyframes pg-byok-pulse {
