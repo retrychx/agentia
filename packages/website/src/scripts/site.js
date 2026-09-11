@@ -12,7 +12,7 @@ import Lenis from 'lenis';
   const canvas = document.getElementById('orchestra');
   if (canvas) {
     const ctx = canvas.getContext('2d');
-    const ACCENT = '122, 162, 247';
+    const ACCENT = '52, 203, 224';
     let W = 0;
     let H = 0;
     let dpr = 1;

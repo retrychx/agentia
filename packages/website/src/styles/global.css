@@ -10,9 +10,11 @@
   --faint: #71717a;
   --accent: #d9e2ee;
   --steel: #8b98ab;
-  --ice: #7aa2f7;
-  --ice-dim: rgba(122, 162, 247, 0.10);
-  --ice-border: rgba(122, 162, 247, 0.32);
+  /* 极光青（降饱和）：青色段色差远小于纯蓝，长时间看不会"字缘发虚"。
+     188° 73% 54%，相对亮度 ≈0.48、对比 10:1，亮而不过曝。 */
+  --ice: #34cbe0;
+  --ice-dim: rgba(52, 203, 224, 0.10);
+  --ice-border: rgba(52, 203, 224, 0.32);
   --accent-dim: rgba(217, 226, 238, 0.09);
   /* 统一内容容器：header 与所有内容区共用同一宽度、同一档侧边距。
      此前 nav/section/docs 用 1080、playground 用 1280、footer 不限宽、
@@ -46,7 +48,7 @@ code {
   border-radius: 3px;
 }
 
-::selection { background: rgba(122, 162, 247, 0.24); }
+::selection { background: rgba(52, 203, 224, 0.24); }
 
 /* 细颗粒噪点纹理：近黑底上的"纸质/金属"质感 */
 .grain {
@@ -475,18 +477,17 @@ code {
 }
 .step > div:last-child { flex: 1; min-width: 0; }
 .step h3 { font-size: 15.5px; margin-bottom: 12px; font-family: var(--mono); font-weight: 500; }
-.cmd { color: var(--ice); font-weight: 500; }
+.cmd { color: #8be9fd; font-weight: 500; }   /* 命令行 · 青 */
 pre {
-  background: #0c0c0e;
-  border: 1px solid var(--border);
+  background: #282a36;   /* Dracula 底色（代码块整体换「吸血鬼」主题） */
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 4px;
   padding: 14px 18px;
   overflow-x: auto;
   font-size: 13px;
   line-height: 1.7;
 }
-pre code { background: none; padding: 0; color: #d4d4d8; }
-.cm { color: var(--faint); }
+pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
 
 .code-block {
   border: 1px solid var(--border);
@@ -494,8 +495,8 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   overflow: hidden;
 }
 .code-title {
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
+  background: #21222c;   /* Dracula 更暗一档，与代码块底色区分 */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   padding: 10px 16px;
   display: flex;
   align-items: center;
@@ -513,11 +514,13 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   margin-left: 8px;
 }
 .code-block pre { border: none; border-radius: 0; }
-/* Tokyo Night 风格的克制度语法色 */
-.kw { color: #bb9af7; }
-.str { color: #9ece6a; }
-.fn { color: #7aa2f7; }
-.dec { color: var(--ice); }
+/* Dracula（吸血鬼）主题语法色：粉 / 黄 / 绿 / 紫 / 青 / 蓝灰 */
+.cm { color: #6272a4; font-style: italic; }   /* 注释 */
+.kw { color: #ff79c6; }                        /* 关键字 */
+.str { color: #f1fa8c; }                       /* 字符串 */
+.fn { color: #50fa7b; }                        /* 函数 / 方法 */
+.dec { color: #bd93f9; }                       /* 装饰器 */
+.op { color: #ff79c6; }
 
 /* footer */
 .footer {
@@ -638,7 +641,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   transition: border-color 0.2s, transform 0.15s;
 }
 .pg-scenario:hover { border-color: var(--ice-border); }
-.pg-scenario.active { border-color: var(--ice); background: rgba(122, 162, 247, 0.05); }
+.pg-scenario.active { border-color: var(--ice); background: rgba(52, 203, 224, 0.05); }
 .pg-scenario h3 { font-size: 14.5px; margin-bottom: 4px; }
 .pg-scenario p { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 .pg-scenario .pg-sc-kind {
@@ -694,7 +697,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
   color: var(--ice);
   border-color: var(--ice);
   background: var(--ice-dim);
-  box-shadow: 0 0 14px rgba(122, 162, 247, 0.22);
+  box-shadow: 0 0 14px rgba(52, 203, 224, 0.22);
 }
 .pg-chip.on::before { color: var(--ice); }
 
@@ -783,7 +786,7 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .tp-result .tp-body { padding: 10px 14px; color: var(--muted); }
 .tp-final {
   border: 1px solid var(--ice-border);
-  background: rgba(122, 162, 247, 0.05);
+  background: rgba(52, 203, 224, 0.05);
   border-radius: 4px;
   padding: 12px 14px;
 }
@@ -989,8 +992,8 @@ pre code { background: none; padding: 0; color: #d4d4d8; }
 .pg-byok-clear { flex: 0 0 auto; padding: 10px 22px; }
 .pg-byok-pulse .pg-byok-note { animation: pg-byok-pulse 0.8s ease-in-out 2; }
 @keyframes pg-byok-pulse {
-  0%, 100% { box-shadow: 0 0 0 rgba(122, 162, 247, 0); }
-  50% { box-shadow: 0 0 22px rgba(122, 162, 247, 0.35); }
+  0%, 100% { box-shadow: 0 0 0 rgba(52, 203, 224, 0); }
+  50% { box-shadow: 0 0 22px rgba(52, 203, 224, 0.35); }
 }
 
 .tp-error {
