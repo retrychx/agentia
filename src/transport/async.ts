@@ -107,8 +107,13 @@ export class AsyncRunner {
     const messages = normalizeMessages(input);
     if (opts.idempotencyKey) {
       const existing = this.store.byIdempotency(opts.idempotencyKey);
-      // 异步 store 返回 Promise —— 同步门面无法 await，去重交给 #execute
-      if (existing && !isThenable(existing) && existing.status !== 'failed') {
+      if (isThenable(existing)) {
+        // 异步 store 返回 Promise —— 同步门面无法 await，去重交给 #execute。
+        // 但**必须订阅它**：byIdempotency 的 reject（Redis 抖动等）若无人处理就是
+        // unhandledRejection（Node ≥15 默认终止宿主进程）。这里只做「查不到既有记录」
+        // 处理，拒绝即视为无记录，交 #execute 的去重兜底。
+        existing.catch(() => undefined);
+      } else if (existing && existing.status !== 'failed') {
         return { ...existing }; // at-least-once 去重：不重复执行
       }
     }
@@ -122,8 +127,11 @@ export class AsyncRunner {
     };
     const saved = this.store.save(rec);
     if (isThenable(saved)) {
-      // 异步落库失败：尽力把任务标记为 failed 重存，避免静默吞错 / unhandled rejection
+      // 异步落库失败：尽力把任务标记为 failed 重存，避免静默吞错 / unhandled rejection。
+      // 但只在任务**尚未被 #execute 推进**时改判：初始 save 的 reject 可能迟到，
+      // 那时 run 已跑完并写了成功终态，无条件覆写会把成功翻成失败（落库终态与真实结果相反）。
       saved.catch((e) => {
+        if (rec.status !== 'queued' || rec.finishedAt !== undefined) return;
         rec.status = 'failed';
         rec.error = classifyError(e);
         rec.finishedAt = Date.now();

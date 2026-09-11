@@ -21,7 +21,7 @@ export interface ToolSpec {
   description: string;
   /** input_schema：v1 用裸 JSON Schema（对应 engine/core 的 JsonSchema） */
   schema: JsonSchema;
-  /** strict 参数校验：需 additionalProperties:false + required 齐全 */
+  /** strict 参数校验（透传给 Anthropic 的 strict 模式） */
   strict?: boolean;
 }
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createApp, SystemPrompt, Tool, SubAgent } from '../../src/index.js';
 import { defineModule } from '../../src/toolkit/module.js';
 import type { UnitMiddleware } from '../../src/toolkit/middleware.js';
+import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 const sys = () => new SystemPrompt().add('role', 'r', true);
@@ -166,5 +167,46 @@ describe('modules 能力包装配（R5）', () => {
     const app = createApp({ modules: [mod], middleware: [mw('app')], system: sys() });
     app.tools[0].run({});
     assert.deepEqual(order, ['module', 'app']);
+  });
+
+  it('嵌套单元（子 agent 内部工具）也走中间件 —— 不绕过鉴权/限流/审计', async () => {
+    class Tools {
+      @Tool({ description: 'd', schema: OBJ })
+      inner_tool(): string {
+        return 'inner';
+      }
+    }
+    class Agents {
+      @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: ['tools'] })
+      runner_agent(_input: unknown): void {}
+    }
+    const calls: string[] = [];
+    const mw: UnitMiddleware = (call, next) => {
+      calls.push(call.unit.name);
+      return next();
+    };
+    const app = createApp({
+      providers: [
+        { provide: 'tools', useClass: Tools },
+        { provide: 'agents', useClass: Agents },
+      ],
+      middleware: [mw],
+      system: sys(),
+    });
+
+    // 主循环 → 调 runner_agent；子 agent 内部 → 调 inner_tool；随后各自 end_turn
+    const { client } = mockClient([
+      toolUseMsg('runner_agent', {}),
+      toolUseMsg('inner_tool', {}),
+      endTurnMsg('子报告'),
+      endTurnMsg('主收尾'),
+    ]);
+    const out = await app.run([{ role: 'user', content: 'go' }], { client });
+
+    assert.equal(out.result.stopReason, 'end_turn');
+    assert.ok(calls.includes('runner_agent'), '子 agent 调用走中间件');
+    // 修复点：子 agent 的 tools 引用必须解析到「中间件包装后」的菜单，
+    // 否则内部工具调用完全绕过中间件（鉴权/限流/审计全失效）
+    assert.ok(calls.includes('inner_tool'), '子 agent 内部工具也必须走中间件');
   });
 });

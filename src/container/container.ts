@@ -56,10 +56,31 @@ export class Container {
       }
       this.bindings.set(p.provide, p);
       // 已解析过的缓存必须一起失效：否则「后注册覆盖先注册」只在首次 resolve 前成立
-      // （重复 module 装配是常见场景，升级了 provider 却仍拿到旧实例）
+      // （重复 module 装配是常见场景，升级了 provider 却仍拿到旧实例）。
+      // 传递失效：依赖它的下游若已解析并缓存，也必须一起失效 —— 否则拿到的是
+      // 「旧依赖构造出来的」旧实例，升级对下游完全不可见。
       this.cache.delete(p.provide);
+      for (const dep of this.dependentsOf(p.provide)) this.cache.delete(dep);
     }
     return this;
+  }
+
+  /** token 的全部传递下游（直接或间接依赖它的 token），用于注册时传递失效缓存 */
+  private dependentsOf(root: Token): Set<Token> {
+    const out = new Set<Token>();
+    const queue: Token[] = [root];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const [token, binding] of this.bindings) {
+        if (token === root || out.has(token)) continue;
+        const deps = (binding as { deps?: Token[] }).deps;
+        if (deps?.includes(cur)) {
+          out.add(token);
+          queue.push(token);
+        }
+      }
+    }
+    return out;
   }
 
   has(token: Token): boolean {

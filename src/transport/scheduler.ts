@@ -57,6 +57,11 @@ export class Scheduler {
 
   /** 周期触发（毫秒间隔）。首次触发在 intervalMs 之后。 */
   every(intervalMs: number, input: unknown, opts: ScheduleEveryOptions = {}): ScheduleHandle {
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+      // setInterval(0) 会退化成「尽快重复」的空转循环，把事件循环打满（Node 会把
+      // 0 钳到 1ms 但仍是每毫秒一次的忙轮询）。这是配置错误，直接报错。
+      throw new Error(`Scheduler.every 的 intervalMs 必须为正有限数，收到 ${intervalMs}`);
+    }
     const id = randomUUID();
     const timer = setInterval(() => {
       const job = this.jobs.get(id);

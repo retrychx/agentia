@@ -147,18 +147,52 @@ export class AgentApp {
       promptsByToken.set(p.provide, collectPrompts(inst));
     }
 
+    // 单元调用中间件：装配期包裹整个菜单（洋葱模型，对 engine 零侵入）；
+    // 模块级中间件在前（更外层），应用级在后。
+    const middleware = [...modules.flatMap((m) => m.middleware ?? []), ...(opts.middleware ?? [])];
+    const wrap = (tools: AgentTool[]): AgentTool[] =>
+      middleware.length ? applyMiddleware(tools, middleware) : tools;
+
+    /**
+     * 中间件包装**之后**的每 provider 菜单。
+     *
+     * 嵌套单元（子 agent / skill）解析自身 tools 引用时必须从这里取 —— 若取
+     * 「中间件包装之前的原始菜单」，子 agent 内部调用的每一个工具都会绕过中间件
+     * （鉴权 / 限流 / 审计 / 结果缓存全部失效），是 spec §10 记录在案的既知问题。
+     * 该 map 在 resolveRefTools 的 thunk 被真正调用（运行时）前已填充完毕。
+     */
+    const wrappedByToken = new Map<Token, AgentTool[]>();
+
     // 装配期立即解析 tools 引用（§7 启动期静态校验）：引用未注册 provider 在
-    // createApp 即抛错，不延迟到模型调用该单元的运行时。
+    // createApp 即抛错，不延迟到模型调用该单元的运行时。实际取值延迟到运行时
+    // （惰性 thunk）—— 那时 wrappedByToken 已就绪。
     const resolveRefTools = (owner: string, refs: string[] | undefined): (() => AgentTool[]) => {
-      const resolved = (refs ?? []).flatMap((t) => {
-        const inner = plainByToken.get(t);
-        if (!inner) {
+      for (const t of refs ?? []) {
+        if (!plainByToken.has(t)) {
           throw new Error(`${owner} tools 引用未注册 provider: "${t}"`);
         }
-        return inner;
-      });
-      return () => resolved;
+      }
+      return () => (refs ?? []).flatMap((t) => wrappedByToken.get(t) ?? []);
     };
+
+    const buildSlice = (token: Token): AgentTool[] => {
+      const plain = plainByToken.get(token) ?? [];
+      const subTools = (unitsByToken.get(token) ?? []).map((unit) =>
+        subagentToTool(unit, resolveRefTools(`@SubAgent "${unit.name}"`, unit.spec.tools)),
+      );
+      const skillTools = (skillsByToken.get(token) ?? []).map((unit) =>
+        skillToTool(unit, resolveRefTools(`@Skill "${unit.name}"`, unit.spec.tools)),
+      );
+      const promptTools = promptsByToken.get(token) ?? [];
+      return [...plain, ...subTools, ...skillTools, ...promptTools];
+    };
+
+    // 全部 provider 都切片并包装：主菜单只取 sources，但被 toolSources 排除的
+    // provider 上的单元仍可被其他单元的 tools 引用（引用是作者显式声明，不受收窄影响）——
+    // 因此包装必须覆盖全部 provider，否则 ref 解析会拿到未包装（可绕过中间件）的工具。
+    for (const p of providerList) {
+      wrappedByToken.set(p.provide, wrap(buildSlice(p.provide)));
+    }
 
     // toolSources 是「取哪些 provider 的单元」的白名单，同一 token 写重只该取一次：
     // 不去重则会 flatMap 收两遍该 provider 的单元，最后撞上「菜单单元重名」——
@@ -170,15 +204,7 @@ export class AgentApp {
       if (!this.di.has(token)) {
         throw new Error(`toolSources 指向未注册 provider: "${token}"`);
       }
-      const plain = plainByToken.get(token) ?? [];
-      const subTools = (unitsByToken.get(token) ?? []).map((unit) =>
-        subagentToTool(unit, resolveRefTools(`@SubAgent "${unit.name}"`, unit.spec.tools)),
-      );
-      const skillTools = (skillsByToken.get(token) ?? []).map((unit) =>
-        skillToTool(unit, resolveRefTools(`@Skill "${unit.name}"`, unit.spec.tools)),
-      );
-      const promptTools = promptsByToken.get(token) ?? [];
-      return [...plain, ...subTools, ...skillTools, ...promptTools];
+      return wrappedByToken.get(token) ?? [];
     });
 
     // §7 静态校验（最小落地）：菜单统一查重 —— 重名会让模型在歧义菜单里猜，直接报错。
@@ -191,7 +217,9 @@ export class AgentApp {
       );
     }
 
-    // 孤儿单元告警：toolSources 显式收窄时，被排除 provider 上的单元不可达
+    // 孤儿单元告警：toolSources 显式收窄时，被排除 provider 上的单元不在主菜单
+    // （模型无法直接调用）；但**仍可被其他单元的 tools 引用**（引用是作者显式声明），
+    // 所以只是「不在主菜单」而非「不可达」。
     if (opts.toolSources) {
       const included = new Set(opts.toolSources);
       for (const p of providerList) {
@@ -203,17 +231,11 @@ export class AgentApp {
           (promptsByToken.get(p.provide)?.length ?? 0);
         if (orphanCount > 0) {
           console.warn(
-            `[agentia] 孤儿单元告警：provider "${p.provide}" 上的 ${orphanCount} 个单元不在 toolSources 内，不可达`,
+            `[agentia] 孤儿单元告警：provider "${p.provide}" 上的 ${orphanCount} 个单元不在 toolSources 内，` +
+              `不进主菜单（模型无法直接调用）；若被其他单元的 tools 引用仍可被调用`,
           );
         }
       }
-    }
-
-    // 单元调用中间件：装配期包裹整个菜单（洋葱模型，对 engine 零侵入）；
-    // 模块级中间件在前（更外层），应用级在后。
-    const middleware = [...modules.flatMap((m) => m.middleware ?? []), ...(opts.middleware ?? [])];
-    if (middleware.length) {
-      this._tools = applyMiddleware(this._tools, middleware);
     }
   }
 
@@ -222,7 +244,7 @@ export class AgentApp {
     return this._tools ?? [];
   }
 
-  /** 容器访问点（后续 trace 拦截器/生命周期回调可用） */
+  /** 容器访问点 */
   get container(): Container {
     return this.di;
   }
@@ -266,7 +288,10 @@ export function createApp(opts: AppOptions): AgentApp;
 export function createApp(opts: AppOptions): AgentApp | Promise<AgentApp> {
   if (opts.discover) {
     return discoverProviders(opts.discover).then(
-      (found) => new AgentApp({ ...opts, providers: [...(opts.providers ?? []), ...found] }),
+      // 显式 providers 放在发现结果**之后**：AppOptions.providers 是应用级显式声明，
+      // 同 token 时应覆盖「目录里扫出来的」（后注册覆盖先注册）。反过来会让
+      // units/ 下一个同名文件夹悄悄顶掉调用方手写的 provider。
+      (found) => new AgentApp({ ...opts, providers: [...found, ...(opts.providers ?? [])] }),
     );
   }
   return new AgentApp(opts);

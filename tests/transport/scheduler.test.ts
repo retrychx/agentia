@@ -211,4 +211,12 @@ describe('Scheduler', () => {
       scheduler.stop();
     }
   });
+
+  it('every(0) / 负值 / 非有限数：占位空转是配置错误，直接抛错', () => {
+    const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
+    assert.throws(() => scheduler.every(0, 'x'), /intervalMs 必须为正有限数/);
+    assert.throws(() => scheduler.every(-5, 'x'), /intervalMs 必须为正有限数/);
+    assert.throws(() => scheduler.every(Number.NaN, 'x'), /intervalMs 必须为正有限数/);
+    assert.equal(scheduler.active, 0, '抛错前不得留下 job');
+  });
 });

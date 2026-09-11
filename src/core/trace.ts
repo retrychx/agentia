@@ -49,7 +49,12 @@ export interface Span {
   endedAt?: number;
   status: SpanStatus;
   error?: SpanError;
-  /** unit / llm.turn 的聚合用量 */
+  /**
+   * usage —— 语义按 kind 区分：
+   * - `llm.turn`：该次模型往返的**自身计量**，是 Trace.totalUsage 的唯一来源；
+   * - `unit`（skill / subagent）：其**子孙 llm.turn 的聚合**，仅供展示（看某个单元花了多少），
+   *   **不**计入 totalUsage（否则与子孙重复计数）。
+   */
   usage?: Usage;
   attributes: Record<string, string | number | boolean>;
   events: SpanEvent[];
@@ -60,7 +65,7 @@ export interface Trace {
   rootSpanId: SpanId;
   spans: Span[];
   status: SpanStatus;
-  totalUsage: Usage; // run 汇总 = 各 span 求和
+  totalUsage: Usage; // run 汇总 = 各 llm.turn span 求和（不含 unit 聚合，避免重复计数）
 }
 
 /**

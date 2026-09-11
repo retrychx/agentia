@@ -205,4 +205,29 @@ describe('MemoryStore 跨 run 记忆', () => {
     // save 收到的是**无原型对象**（见 flushMemory）——展开成普通对象再比对
     assert.deepEqual(saved.map((e) => ({ ...e })), [{ k: 'async-v' }]);
   });
+
+  it('水合 load 失败：不杀死 run（辅助动作失败 → 当无记忆继续），回写仍发生', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const store: MemoryStore = {
+      load: () => {
+        throw new Error('redis down'); // 水合是辅助动作：store 故障不得击穿主路径
+      },
+      save: (entries) => {
+        saved.push({ ...entries });
+      },
+    };
+    const { client } = mockClient([toolUseMsg('write_key', {}), endTurnMsg('ok')]);
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [writeTool('k', 'v')],
+      client,
+      memory: { store, keys: ['k'] },
+    });
+
+    assert.equal(run.status, 'succeeded', '水合失败不得把 run 打成 failed');
+    assert.equal(result.finalText, 'ok');
+    assert.equal(result.error, undefined);
+    // 失败路径同样回写（blackboard 当前值）：工具写过 k
+    assert.deepEqual(saved, [{ k: 'v' }]);
+  });
 });

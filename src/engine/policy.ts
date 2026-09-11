@@ -24,8 +24,16 @@ import {
 export interface BudgetPolicyOptions {
   /** 预算（估算 input tokens）；缺省 60_000 */
   budgetTokens?: number;
-  /** compaction 保留的最近消息条数；缺省 20 */
+  /** compaction 保留的最近消息**条数**；缺省 20（喂给 compactMessages） */
   keepRecent?: number;
+  /**
+   * context editing（trimToolPairs）保留的最近工具**对数**；缺省 1。
+   *
+   * 与 `keepRecent` 刻意分开：一个是「消息条数」（compaction 用），一个是
+   * 「tool_use→tool_result 对数」（编辑用）——同一个值套两种单位会让调用方
+   * 调出来的效果与预期不符。
+   */
+  keepToolPairs?: number;
   /** token 估算函数（预算决策用，非精确记账）；缺省 CJK 感知启发式 */
   estimateTokens?: (text: string) => number;
   /** 是否先编辑再压缩；缺省 true */
@@ -39,6 +47,7 @@ export interface BudgetPolicyOptions {
 export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolicy {
   const budgetTokens = opts.budgetTokens ?? 60_000;
   const keepRecent = Math.max(1, opts.keepRecent ?? 20);
+  const keepToolPairs = Math.max(0, opts.keepToolPairs ?? 1);
   const estimate = opts.estimateTokens ?? defaultEstimateTokens;
   const editBeforeCompact = opts.editBeforeCompact ?? true;
   const summarize = opts.summarize;
@@ -50,10 +59,10 @@ export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolic
     async beforeTurn(messages, info) {
       if (estimateMessages(messages, estimate) <= budgetTokens) return messages;
 
-      // 1) context editing：先丢旧工具对
+      // 1) context editing：先丢旧工具对（按「对数」计，见 keepToolPairs）
       let current = messages;
       if (editBeforeCompact) {
-        const trimmed = trimToolPairs(current, { keepRecent });
+        const trimmed = trimToolPairs(current, { keepRecent: keepToolPairs });
         if (trimmed.length < current.length) {
           current = trimmed;
           if (estimateMessages(current, estimate) <= budgetTokens) return current;

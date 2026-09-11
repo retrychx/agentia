@@ -3,7 +3,7 @@
 状态：v0.2.1 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站**（v0.2.2 待发布）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
 与 `docs/spec.md`（已锁定决策）互补：spec 记录"已经怎么定的"，本文记录"接下来往哪走"。
 
-## R1 —— 中间件（拦截器链）+ 静态校验补全 ✅
+## R1 —— 中间件（拦截器链）✅
 
 **中间件是下一个大块的框架能力**，spec §9.2 已留伏笔（"对齐拦截器：每次单元调用包一层"）。
 
@@ -14,8 +14,6 @@
   （幂等工具直接短路）、调用日志/审计、超时包装。
 - 设计约束：链式 `next()` 语义；顺序 = 注册顺序；拦截器只见 `ToolRunContext` +
   单元描述，不碰 engine 内部；异步安全（ALS 上下文天然透传）。
-- **静态校验补全**（spec §7 剩余项）：`canCall` 能力边声明与环检测、孤儿单元告警、
-  `@Tool` schema 合法性深度检查（strict 模式约定）——全部装配期完成。
 
 ## R2 —— 结构化结果 + 类型打通 ✅
 
@@ -43,7 +41,7 @@
 ## R5 —— 生态与体验 ✅
 
 - **CLI**：`agentia dev`（watch + 热重装配）、`agentia add <pkg>`（第三方单元包安装
-  并登记）、`agentia doctor`（装配体检：孤儿单元、canCall 环、命名规范）。
+  并登记）、`agentia doctor`（装配体检：未登记 / 悬空单板 / 命名规范 / 重复条目）。
 - **模块系统**：`@AgentModule` 能力包（单元 + providers + 拦截器打包分发），
   spec §4 草图的正式落地；property-injection 便利写法（spec §11 待定项）。
 - **官网**：文档站（指南 + API 参考），从单页宣传站演进。
@@ -69,6 +67,23 @@
   `resumePending` 认领过滤（`ownerId`）、Redis TTL、Scheduler `maxInFlight`；
 - **官网全面响应式**：窄机断点（≤420px）+ 汉堡导航，20 组「页面×宽度」零横向溢出；
 - 许可证补齐 MIT；测试 142 → 182 例。
+
+### 第二轮回评（并入 v0.2.2 未发布窗口）
+
+第一轮修的缝里还有漏的，且新增一处安全缺陷：**子 agent 内部工具调用整体绕过中间件**（`tools` 引用解析的是中间件包装前的菜单）；
+另有「同一函数内一防一漏」（`AsyncRunner` 订阅了 `save` 的 rejection 却丢弃 `byIdempotency` 的）、
+异步落库迟到 reject 把成功 run 覆写成 failed、`submit_result` 校验未包 try（畸形 schema 掀翻整次 run）、
+水合失败杀死 run（回写却有防护）、`totalUsage` 对 unit 聚合用量双算的口径矛盾、SQLite 只有 WAL 没有 busy_timeout、
+`every(0)` 空转、Redis prefix 未转义 glob、`keepRecent` 在编辑与压缩间单位混用、`trimToolPairs` 对畸形历史切出孤立块、
+容器重注册不传递失效、`discover` 覆盖显式 provider、OpenAI 空 `choices` 静默记成成功。全部修复，各带回归用例（190 → 210 例）。
+
+- **安全**：嵌套单元 `tools` 引用改从中间件包装后的菜单解析（关闭 spec 记档的既知缺陷）；
+- **正确性**：`submit_result` 校验入 try、水合失败不杀 run、迟到 reject 不覆写终态、空 `choices` 抛错；
+- **契约**：`Trace.totalUsage` 只累加 `llm.turn`；`createBudgetPolicy.keepToolPairs` 与 `keepRecent` 解耦；
+  `discover` 与显式 providers 同 token 时显式优先；`Container.register` 传递失效；`Scheduler.every` 拒绝非正有限数；
+- **资源**：`FileTaskStore.compact()`、`InMemoryTaskStore({ maxRecords })`、`SqliteTaskStore` 补 `busy_timeout`；
+- **文档**：删掉与代码不符的承诺（roadmap R1「静态校验补全」、spec §7 未实现的检查清单、CLI doctor 的 canCall 环、
+  `ToolSpec.strict` 的合规要求、`AgentApp.container` 的「生命周期回调」）。
 
 ## Dev Inspector（本地调试面板）✅ 已落地
 

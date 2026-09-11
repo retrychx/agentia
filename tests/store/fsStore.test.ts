@@ -187,4 +187,32 @@ describe('FileTaskStore', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('compact()：把 append-only 日志压成「每 task 一行」，语义不变', () => {
+    const { dir, file } = tmp();
+    try {
+      const s1 = new FileTaskStore(file);
+      const a = rec({ idempotencyKey: 'k', status: 'running' });
+      s1.save(a);
+      // 同一 task 反复推进 → 日志线性膨胀
+      for (let i = 0; i < 5; i++) s1.save({ ...a, status: i % 2 ? 'running' : 'succeeded' });
+      assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 6, 'append-only：6 行');
+
+      s1.compact();
+      assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 1, '压成每 task 一行');
+
+      // 压实不改变语义：新实例读回同一终态
+      const s2 = new FileTaskStore(file);
+      assert.equal(s2.list().length, 1);
+      assert.deepEqual(s2.get(a.taskId), s1.get(a.taskId));
+      assert.equal(s2.byIdempotency('k')?.taskId, a.taskId);
+
+      // 压实后继续 save 仍能正常追加
+      const b = rec();
+      s2.save(b);
+      assert.equal(new FileTaskStore(file).list().length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

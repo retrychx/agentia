@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { asset, discoverProviders, createApp, SystemPrompt } from '../../src/index.js';
+import { asset, discoverProviders, createApp, SystemPrompt, Tool } from '../../src/index.js';
 
 const fixtures = fileURLToPath(new URL('../fixtures', import.meta.url));
 
@@ -88,6 +88,26 @@ describe('discoverProviders（目录发现）', () => {
     });
     assert.deepEqual(app.tools.map((t) => t.name), ['alpha_tool']);
     assert.equal(await app.tools[0].run({}), 'alpha');
+  });
+
+  it('discover + 显式 providers：同 token 时显式覆盖发现结果', async () => {
+    class Explicit {
+      @Tool({ description: 'd', schema: { type: 'object', properties: {} } })
+      explicit_tool(): string {
+        return 'explicit';
+      }
+    }
+    const app = await createApp({
+      discover: `${fixtures}/units`,
+      providers: [{ provide: 'alpha', useClass: Explicit }], // 显式声明应压过 units/alpha/
+      system: new SystemPrompt().add('role', 'r', true),
+    });
+    assert.deepEqual(
+      app.tools.map((t) => t.name),
+      ['explicit_tool'],
+      'units/ 下同名文件夹不得悄悄顶掉调用方手写的 provider',
+    );
+    assert.ok(app.container.resolve('alpha') instanceof Explicit);
   });
 });
 

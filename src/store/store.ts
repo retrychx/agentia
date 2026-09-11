@@ -50,11 +50,41 @@ export interface TaskStore {
 export class InMemoryTaskStore implements TaskStore {
   private readonly byTask = new Map<string, TaskRecord>();
   private readonly byKey = new Map<string, string>(); // idempotencyKey → taskId
+  /** 记录条数上限；Infinity = 不限（缺省，保持旧行为） */
+  private readonly maxRecords: number;
+
+  /**
+   * `maxRecords` 给长期运行的宿主一个内存闸门：超过上限时从最旧的**已终态**记录起
+   * 淘汰（queued/running 在飞的记录永不淘汰）。缺省 Infinity = 不淘汰 ——
+   * 每条记录含完整 trace（可能很大），长跑宿主（尤其 createHttpHandler 的缺省
+   * runner）应显式设一个上限或换耐久 store。
+   */
+  constructor(opts: { maxRecords?: number } = {}) {
+    const max = opts.maxRecords ?? Number.POSITIVE_INFINITY;
+    if (max !== Number.POSITIVE_INFINITY && !(max > 0)) {
+      throw new Error(`InMemoryTaskStore 的 maxRecords 必须为正数或 Infinity，收到 ${opts.maxRecords}`);
+    }
+    this.maxRecords = max;
+  }
 
   save(rec: TaskRecord): void {
     this.byTask.set(rec.taskId, rec);
     if (rec.idempotencyKey) this.byKey.set(rec.idempotencyKey, rec.taskId);
+    if (this.byTask.size > this.maxRecords) this.evict();
   }
+
+  /** 超过上限时按插入序淘汰已终态记录（在飞记录跳过，避免丢正在跑的任务） */
+  private evict(): void {
+    for (const [taskId, rec] of this.byTask) {
+      if (this.byTask.size <= this.maxRecords) break;
+      if (rec.status === 'queued' || rec.status === 'running') continue;
+      this.byTask.delete(taskId);
+      if (rec.idempotencyKey && this.byKey.get(rec.idempotencyKey) === taskId) {
+        this.byKey.delete(rec.idempotencyKey);
+      }
+    }
+  }
+
   get(taskId: string): TaskRecord | undefined {
     return this.byTask.get(taskId);
   }

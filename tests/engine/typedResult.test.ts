@@ -171,6 +171,32 @@ describe('typed 结构化结果（hidden submit_result）', () => {
     assert.ok(result.error?.message.includes('submit_result'), result.error?.message);
     assert.equal(result.trace.status, 'error');
   });
+
+  it('畸形 resultSchema（required 非数组）：只废掉这次提交，整次 run 不失败', async () => {
+    // required: 5 会让校验器抛 TypeError（5 不可迭代）——校验本身在 try 内，
+    // 只该回 is_error，不该让整次 run 以 error 收场（否则 trace 把该回合记成 ok、
+    // 与 run 结论自相矛盾）。
+    const brokenSchema = { type: 'object', properties: {}, required: 5 } as unknown as JsonSchema;
+    const { client } = mockClient([
+      toolUseMsg('submit_result', { a: 'x' }, 'tu1'),
+      endTurnMsg('普通收尾'),
+    ]);
+    const result = await runAgent({
+      client,
+      messages: [{ role: 'user', content: 'q' }],
+      tools: [echoTool()],
+      resultSchema: brokenSchema,
+    });
+    assert.equal(result.stopReason, 'end_turn', '畸形 schema 不得把 run 打成 error');
+    assert.equal(result.typed, undefined);
+    assert.equal(result.trace.status, 'ok');
+
+    // 那次提交以 is_error 回给模型（含 classify 后的类型），而非掀翻整次 run
+    const turn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;
+    const out = turn.events.find((e) => e.name === 'tool.output')!;
+    assert.equal((out.body as { ok: boolean }).ok, false);
+    assert.match((out.body as { content: string }).content, /^error\(/);
+  });
 });
 
 describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', () => {

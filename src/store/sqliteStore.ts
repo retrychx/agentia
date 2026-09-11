@@ -22,6 +22,11 @@ export class SqliteTaskStore implements TaskStore {
       // WAL：读写不互斥，多进程共库的基础（内存库不支持，跳过）
       this.db.exec('PRAGMA journal_mode = WAL');
     }
+    // busy_timeout：写事务争用时不立即报 SQLITE_BUSY，而是等待至多 5s 再重试。
+    // 没有它，多进程共库时第二个写者立即失败 —— 而 AsyncRunner 的 #safeSave 会把
+    // save 失败静默吞掉（不遮罩主流程），结果是任务记录无声丢失。
+    // 内存库同样支持该 pragma（且无争用），无需跳过。
+    this.db.exec('PRAGMA busy_timeout = 5000');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         task_id TEXT PRIMARY KEY,

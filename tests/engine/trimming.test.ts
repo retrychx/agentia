@@ -63,4 +63,51 @@ describe('长上下文策略', () => {
     const c2 = await policy.beforeTurn(big, { iteration: 2, model: 'm' });
     assert.ok(!JSON.stringify(c2).includes('S'));
   });
+
+  it('trimToolPairs：非严格交替（连续两条 assistant 带 tool_use）→ 放弃裁剪，不切出孤立块', () => {
+    const msgs: Anthropic.MessageParam[] = [
+      { role: 'user', content: 'go' },
+      // 畸形：两条 assistant 各带 tool_use，结果挤在第三条 user 里
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'x', input: {} }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'x', input: {} }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't0', content: 'r0' },
+          { type: 'tool_result', tool_use_id: 't1', content: 'r1' },
+        ],
+      },
+    ];
+    // 按相邻性配对会只丢 [1,2] 对，把 t0 的 tool_use 变成孤立块 → 后续请求 400。
+    // 检测到畸形即整体放弃裁剪（返回原数组引用）。
+    assert.equal(trimToolPairs(msgs, { keepRecent: 0 }), msgs);
+  });
+
+  it('trimToolPairs：孤立的 tool_result（上一条不是带 tool_use 的 assistant）→ 放弃裁剪', () => {
+    const msgs: Anthropic.MessageParam[] = [
+      { role: 'user', content: 'go' },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'r0' }] },
+    ];
+    assert.equal(trimToolPairs(msgs, { keepRecent: 0 }), msgs);
+  });
+
+  it('createBudgetPolicy：keepToolPairs 决定编辑保留的「对数」（与 keepRecent 的「条数」分离）', async () => {
+    // 每条消息都很大，确保超预算；5 对工具交换
+    const msgs: Anthropic.MessageParam[] = [{ role: 'user', content: 'x'.repeat(400) }];
+    for (let i = 0; i < 5; i++) {
+      msgs.push({
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: `t${i}`, name: 'x', input: { pad: 'y'.repeat(200) } }],
+      });
+      msgs.push({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'z'.repeat(200) }],
+      });
+    }
+    // 无摘要器 → 只做 context editing，不会压缩；budgetTokens 故意极小
+    const policy = createBudgetPolicy({ budgetTokens: 10, editBeforeCompact: true, keepToolPairs: 2 });
+    const out = await policy.beforeTurn(msgs, { iteration: 0, model: 'm' });
+    assert.ok(JSON.stringify(out).includes('t3'), '保留最近 2 对');
+    assert.ok(!JSON.stringify(out).includes('t0'), '丢掉更旧的对');
+  });
 });

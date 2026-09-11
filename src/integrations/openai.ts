@@ -206,7 +206,15 @@ function renderBlocks(blocks: Anthropic.ContentBlockParam[]): string {
 /** OpenAI chat.completions 响应 → Anthropic.Message */
 function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.Message {
   const choice = data.choices?.[0];
-  const msg = choice?.message ?? {};
+  if (!choice) {
+    // 200 但 choices 为空/缺失：上游故障（兼容端点 bug、被网关截断）。
+    // 不得静默映射成「成功」——空文本 + usage 全 0 + end_turn 会把一次上游故障
+    // 记成正常收尾，run 结论与真实情况相反。抛出交 engine 按 error 收尾。
+    throw new Error(
+      `OpenAI 兼容端点返回空 choices（id=${data.id ?? 'unknown'}）；响应无可用补全，按上游故障处理`,
+    );
+  }
+  const msg = choice.message ?? {};
 
   const content: Anthropic.ContentBlock[] = [];
   if (typeof msg.content === 'string' && msg.content) {

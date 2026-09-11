@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { Worker } from 'node:worker_threads';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -114,6 +115,46 @@ describe('SqliteTaskStore', () => {
       assert.deepEqual(sqliteStore.list(), fileStore.list());
     } finally {
       (sqliteStore as SqliteTaskStore).close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('busy_timeout：他进程占住写锁时等锁重试，而非立即 SQLITE_BUSY', async () => {
+    // 多进程共库的承诺靠 WAL + busy_timeout 兑现；只设 WAL 时第二个写者立即
+    // SQLITE_BUSY，而 AsyncRunner 的 #safeSave 会把失败静默吞掉 → 记录无声丢失。
+    // 用 worker 线程持锁（同进程不同连接，等价于另一个宿主进程）。
+    const { dir, file } = tmpFile('busy.db');
+    const store = new SqliteTaskStore(file);
+    const holder = new Worker(
+      `const { parentPort, workerData } = require('node:worker_threads');
+       const { DatabaseSync } = require('node:sqlite');
+       const db = new DatabaseSync(workerData.file);
+       db.exec('PRAGMA journal_mode = WAL');
+       db.exec('BEGIN IMMEDIATE');
+       parentPort.postMessage('locked');
+       setTimeout(() => {
+         try { db.exec('COMMIT'); } catch {}
+         parentPort.postMessage('released');
+       }, 200);`,
+      { eval: true, workerData: { file } },
+    );
+    let locked!: () => void;
+    let released!: () => void;
+    const gotLocked = new Promise<void>((r) => (locked = r));
+    const gotReleased = new Promise<void>((r) => (released = r));
+    holder.on('message', (m) => {
+      if (m === 'locked') locked();
+      else if (m === 'released') released();
+    });
+    try {
+      await gotLocked; // 写锁已被他进程占住
+      const a = rec();
+      store.save(a); // 无 busy_timeout 会在此立即抛 SQLITE_BUSY
+      await gotReleased;
+      assert.deepEqual(store.get(a.taskId), a, '等锁后写入成功');
+    } finally {
+      await holder.terminate();
+      store.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -42,4 +42,22 @@ describe('TraceRecorder', () => {
     assert.equal(r.rootStarted, true);
     assert.throws(() => r.begin('run', 'again', null), /run root already started/);
   });
+
+  it('totalUsage 只累加 llm.turn：unit 的聚合用量不参与求和（不双算）', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const unit = r.begin('unit', 'subagent:reviewer', root);
+    const turn = r.begin('llm.turn', 'model-x', unit);
+    const u = { inputTokens: 100, outputTokens: 40, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    r.end(turn, { usage: u });
+    // unit span 写入「子孙聚合」用量（子 agent 展示用）——不得计进 totalUsage
+    r.end(unit, { usage: u });
+    r.end(root, { status: 'ok' });
+
+    const trace = r.snapshot('ok');
+    assert.equal(trace.totalUsage.inputTokens, 100, 'unit 聚合不得与 llm.turn 重复计数');
+    assert.equal(trace.totalUsage.outputTokens, 40);
+    // 但 unit span 自身的 usage 仍保留在 span 上（供展示）
+    assert.equal(trace.spans.find((s) => s.spanId === unit)?.usage?.inputTokens, 100);
+  });
 });

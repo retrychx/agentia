@@ -79,8 +79,11 @@ export class TraceRecorder {
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
     };
+    // 只累加「自身计量」的 span（llm.turn 是唯一 token 来源）。
+    // unit span 的 usage 语义是**其子孙的聚合**（见 core/trace.ts Span.usage），
+    // 若一并求和，skill/subagent 一旦写入聚合值就会把同一批 token 计两遍。
     for (const s of this.spans) {
-      if (!s.usage) continue;
+      if (!s.usage || s.kind !== 'llm.turn') continue;
       totalUsage.inputTokens += s.usage.inputTokens;
       totalUsage.outputTokens += s.usage.outputTokens;
       totalUsage.cacheReadTokens += s.usage.cacheReadTokens;

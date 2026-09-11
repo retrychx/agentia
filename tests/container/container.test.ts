@@ -73,4 +73,19 @@ describe('Container（显式 DI）', () => {
     c.register({ provide: 'k', useValue: 2 });
     assert.equal(c.resolve('k'), 2, '已缓存的旧实例必须被重注册冲掉');
   });
+
+  it('重注册**传递**失效：依赖它的下游也重建（仅失效 token 自身不够）', () => {
+    const c = new Container().register(
+      { provide: 'cfg', useValue: { v: 1 } },
+      { provide: 'svc', useFactory: (cfg: { v: number }) => ({ cfg }), deps: ['cfg'] },
+      { provide: 'app', useFactory: (svc: { cfg: { v: number } }) => ({ svc }), deps: ['svc'] },
+    );
+    const first = c.resolve<{ svc: { cfg: { v: number } } }>('app');
+    assert.equal(first.svc.cfg.v, 1);
+
+    // 升级 cfg：svc/app 已在缓存里，若不传递失效会继续用「旧 cfg 造出来的」旧实例
+    c.register({ provide: 'cfg', useValue: { v: 2 } });
+    assert.equal(c.resolve<{ svc: { cfg: { v: number } } }>('app').svc.cfg.v, 2, '下游必须跟着重建');
+    assert.notEqual(c.resolve('app'), first);
+  });
 });

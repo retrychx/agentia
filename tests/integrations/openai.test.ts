@@ -250,6 +250,22 @@ describe('createOpenAIClient', () => {
     ]);
   });
 
+  it('200 但 choices 为空/缺失：抛错按上游故障处理，不得静默映射成「成功」', async () => {
+    const { fetchImpl } = fakeFetch([
+      { body: chatResponse({ choices: [] }) },
+      { body: { id: 'x', model: 'm' } }, // 连 choices 字段都没有
+    ]);
+    const client = createOpenAIClient({ fetchImpl });
+    await assert.rejects(
+      client.messages.stream({ model: 'm', max_tokens: 1, messages: [] }).finalMessage(),
+      /空 choices/,
+    );
+    await assert.rejects(
+      client.messages.stream({ model: 'm', max_tokens: 1, messages: [] }).finalMessage(),
+      /空 choices/,
+    );
+  });
+
   it('非 2xx：抛错含 status 与 body 前 200 字', async () => {
     const { fetchImpl } = fakeFetch([{ status: 500, body: 'x'.repeat(300) }]);
     const client = createOpenAIClient({ fetchImpl });

@@ -200,6 +200,32 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     assert.deepEqual(await store.list(), []);
   });
 
+  it('prefix 含 glob 元字符：MATCH 模式里的前缀被转义（否则 list/clear 查错 key）', async () => {
+    const fake = new InMemoryRedisFake();
+    const patterns: string[] = [];
+    const spy: RedisLike = {
+      get: (k) => fake.get(k),
+      set: (k, v) => fake.set(k, v),
+      del: (k) => fake.del(k),
+      keys: (p) => {
+        patterns.push(p);
+        return fake.keys(p);
+      },
+    };
+    const store = new RedisTaskStore(spy, { prefix: 'app[1]:' });
+    await store.save(rec({ idempotencyKey: 'k' }));
+    await store.list();
+    await store.clear();
+    assert.ok(
+      patterns.every((p) => p.startsWith('app\\[1\\]:')),
+      `前缀必须转义，实际模式: ${patterns.join(' | ')}`,
+    );
+    assert.ok(
+      patterns.some((p) => p === 'app\\[1\\]:task:*'),
+      'list 的模式应为 转义前缀 + task:*',
+    );
+  });
+
   it('接入 AsyncRunner：异步 store 全链路执行 + 执行前去重（采纳 succeeded 结果）', async () => {
     const app: AppCallable & { calls: number } = {
       name: 'fake',

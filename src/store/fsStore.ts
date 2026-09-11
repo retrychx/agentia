@@ -109,4 +109,17 @@ export class FileTaskStore implements TaskStore {
     this.byKey.clear();
     if (existsSync(this.file)) rmSync(this.file);
   }
+
+  /**
+   * 压实日志：把「一 task 一行」的最新快照整体重写回文件，丢弃同一 task 的历史覆写行。
+   *
+   * append-only 的 JSONL 每 save 一次就追加一行，**容量随 save 次数线性增长**（构造期
+   * load 也全量读回）——长期运行的宿主迟早要压。本方法是 TaskStore 接口之外的能力，
+   * 由宿主按需周期性调用（如低频 cron）；压实时文件短暂不含历史行，但内存态不受影响。
+   */
+  compact(): void {
+    mkdirSync(dirname(this.file), { recursive: true });
+    const body = [...this.byTask.values()].map((r) => `${JSON.stringify(r)}\n`).join('');
+    writeFileSync(this.file, body);
+  }
 }

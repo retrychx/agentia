@@ -102,13 +102,56 @@ export interface TrimOptions {
   keepRecent?: number;
 }
 
+/** assistant 消息里的 tool_use id 列表（无则空） */
+function toolUseIds(msg: Anthropic.MessageParam): string[] {
+  if (msg.role !== 'assistant' || typeof msg.content === 'string') return [];
+  return msg.content.filter((b) => b.type === 'tool_use').map((b) => (b as Anthropic.ToolUseBlockParam).id);
+}
+
+/** user 消息里的 tool_result 对应 id 列表（无则空） */
+function toolResultIds(msg: Anthropic.MessageParam): string[] {
+  if (msg.role !== 'user' || typeof msg.content === 'string') return [];
+  return msg.content
+    .filter((b) => b.type === 'tool_result')
+    .map((b) => (b as Anthropic.ToolResultBlockParam).tool_use_id);
+}
+
+/**
+ * 历史是否「工具块严格成对」—— 只有这种历史才能安全地整对丢弃。
+ *
+ * 若历史非严格交替（例如连续两条 assistant 各带 tool_use，结果挤在第三条 user 里），
+ * 按「相邻性」配对会只丢掉后一对，把前一条 assistant 的 tool_use 变成**孤立块**
+ * → 下一次请求被 API 以 400 拒绝。检测到畸形即整体放弃裁剪，返回原数组更安全。
+ */
+function toolBlocksPaired(messages: Anthropic.MessageParam[]): boolean {
+  for (let i = 0; i < messages.length; i++) {
+    const useIds = toolUseIds(messages[i]);
+    if (useIds.length > 0) {
+      const next = messages[i + 1];
+      if (!next || toolResultIds(next).length === 0) return false; // tool_use 无对应结果消息
+      const resultIds = new Set(toolResultIds(next));
+      if (!useIds.every((id) => resultIds.has(id))) return false; // 结果未覆盖全部 tool_use
+    }
+    const resultIds = toolResultIds(messages[i]);
+    if (resultIds.length > 0) {
+      const prev = messages[i - 1];
+      if (!prev || toolUseIds(prev).length === 0) return false; // 孤立的 tool_result
+    }
+  }
+  return true;
+}
+
 /**
  * context editing：丢弃旧的 tool_use→tool_result 对（超出 keepRecent 的），
  * 保留最近 N 对以及所有非工具消息。逐对整体移除，保角色交替合法。
  * 返回原数组引用（若无需裁剪）或新数组。
+ *
+ * 前置：历史必须是工具块严格成对的（toolBlocksPaired）。畸形历史直接返回原数组
+ * —— 宁可少裁剪，也不能切出孤立 tool_use/tool_result 让后续请求 400。
  */
 export function trimToolPairs(messages: Anthropic.MessageParam[], opts: TrimOptions = {}): Anthropic.MessageParam[] {
   const keep = Math.max(0, opts.keepRecent ?? 1);
+  if (!toolBlocksPaired(messages)) return messages;
   const pairs: Array<[assistant: number, result: number]> = [];
   for (let i = 0; i + 1 < messages.length; i++) {
     if (hasToolUse(messages[i]) && isToolResultMessage(messages[i + 1])) {

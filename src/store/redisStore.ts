@@ -109,7 +109,7 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async list(): Promise<TaskRecord[]> {
-    const keys = await this.enumerate(`${this.prefix}task:*`);
+    const keys = await this.enumerate(this.taskPattern());
     const recs: TaskRecord[] = [];
     for (const k of keys) {
       const rec = parseRecord(await this.client.get(k));
@@ -122,8 +122,13 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async clear(): Promise<void> {
-    const keys = await this.enumerate(`${this.prefix}*`);
+    const keys = await this.enumerate(`${escapeGlob(this.prefix)}*`);
     for (const k of keys) await this.client.del(k);
+  }
+
+  /** `${prefix}task:*` —— prefix 里的 glob 元字符必须转义，否则会被当模式解释 */
+  private taskPattern(): string {
+    return `${escapeGlob(this.prefix)}task:*`;
   }
 
   /** 按键枚举：优先 scanIterator，缺则退回 keys(pattern) */
@@ -138,6 +143,15 @@ export class RedisTaskStore implements TaskStore {
     }
     return this.client.keys!(pattern);
   }
+}
+
+/**
+ * 转义 Redis glob 元字符（`\ * ? [ ]`）—— 用于把**字面前缀**拼进 MATCH 模式。
+ * 不转义时，prefix 含 `[` 等字符会让模式被解释成字符类（如 `app[1]:*` 匹配不到
+ * 字面 `app[1]:`），list/clear 静默查错 key。
+ */
+function escapeGlob(s: string): string {
+  return s.replace(/[\\*?[\]]/g, '\\$&');
 }
 
 /** 解析整行 JSON；单条损坏按缺失处理，不整库崩（与 FileTaskStore 对齐） */

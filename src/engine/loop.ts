@@ -235,14 +235,22 @@ async function agentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
         if (args.resultSchema && use.name === SUBMIT_RESULT) {
           // 隐藏提交工具：校验通过即携结果收尾（循环在下方 break）；
           // 校验失败回 is_error（含路径，模型可自我修正），同回合其他工具照常执行。
-          const invalid = validateJsonSchema(args.resultSchema, use.input);
-          if (invalid) {
+          // 校验本身也在 try 内：畸形 resultSchema（$ref 成环等）只该废掉这一次提交，
+          // 不该让整次 run 以 error 收场（否则 trace 把该回合记成 ok，与 run 结论矛盾）。
+          try {
+            const invalid = validateJsonSchema(args.resultSchema, use.input);
+            if (invalid) {
+              ok = false;
+              content = `invalid input: ${invalid}`;
+            } else {
+              content = 'submitted';
+              typed = use.input;
+              submitted = true;
+            }
+          } catch (e) {
             ok = false;
-            content = `invalid input: ${invalid}`;
-          } else {
-            content = 'submitted';
-            typed = use.input;
-            submitted = true;
+            const err = classifyError(e);
+            content = `error(${err.type}): ${err.message}`;
           }
         } else if (!tool) {
           ok = false;

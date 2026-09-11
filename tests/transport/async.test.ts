@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { AsyncRunner, InMemoryTaskStore } from '../../src/index.js';
 import type { AppCallable } from '../../src/index.js';
 import type { AgentRunResult } from '../../src/index.js';
-import type { TaskRecord } from '../../src/index.js';
+import type { TaskRecord, TaskStore } from '../../src/index.js';
 
 /** 模拟 fsStore/sqliteStore 这类**同步** store：终态落库时同步抛错（磁盘满、库锁） */
 class SyncThrowOnTerminalStore extends InMemoryTaskStore {
@@ -203,5 +203,67 @@ describe('AsyncRunner', () => {
 
   it('runTimeoutMs 校验：负数抛错', () => {
     assert.throws(() => new AsyncRunner(fakeApp(), { runTimeoutMs: -1 }), /runTimeoutMs/);
+  });
+
+  it('异步 store 的 byIdempotency reject：同步门面必须订阅，不得逃逸成 unhandled rejection', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown) => rejections.push(e);
+    process.on('unhandledRejection', onRejection);
+    try {
+      const map = new Map<string, TaskRecord>();
+      let lookups = 0;
+      const store: TaskStore = {
+        save: (rec) => {
+          map.set(rec.taskId, { ...rec });
+        },
+        get: (id) => map.get(id),
+        // 异步 store：**submit 的即时去重**这一次 lookup 直接 reject（Redis 抖动）。
+        // submit 的同步门面无法 await，但必须订阅该 Promise —— 否则就是
+        // unhandledRejection（Node ≥15 终止宿主）。后续 #execute 的 lookup 正常。
+        byIdempotency: () => {
+          lookups++;
+          return lookups === 1 ? Promise.reject(new Error('redis down')) : undefined;
+        },
+        list: () => [...map.values()],
+        clear: () => map.clear(),
+      };
+      const runner = new AsyncRunner(fakeApp(), { store });
+      const t = runner.submit('a', { idempotencyKey: 'k' });
+      const rec = await runner.awaitTask(t.taskId, { timeoutMs: 2_000 });
+      assert.equal(rec.status, 'succeeded', '即时去重的 lookup 失败不得影响任务执行');
+      await new Promise((r) => setTimeout(r, 20));
+      assert.deepEqual(rejections, [], '被拒的 Promise 必须已订阅，不得逃逸');
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('初始 save 迟到 reject：不得把已成功的 run 覆写成 failed', async () => {
+    let rejectInitial!: (e: unknown) => void;
+    const initialSave = new Promise<void>((_, rej) => {
+      rejectInitial = rej;
+    });
+    let saveCalls = 0;
+    const map = new Map<string, TaskRecord>();
+    const store: TaskStore = {
+      save: (rec) => {
+        saveCalls++;
+        map.set(rec.taskId, { ...rec }); // 本地已落，但**初始 save 的 Promise 稍后 reject**
+        return saveCalls === 1 ? initialSave : undefined;
+      },
+      get: (id) => map.get(id),
+      byIdempotency: () => undefined,
+      list: () => [...map.values()],
+      clear: () => map.clear(),
+    };
+    const runner = new AsyncRunner(fakeApp(), { store });
+    const t = runner.submit('a');
+    const rec = await runner.awaitTask(t.taskId, { timeoutMs: 2_000 });
+    assert.equal(rec.status, 'succeeded');
+
+    // 此刻 run 已成功落库；初始 save 的 reject 迟到 —— 不得改判为 failed
+    rejectInitial(new Error('disk full'));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(map.get(t.taskId)?.status, 'succeeded', '落库终态必须与真实结果一致');
   });
 });

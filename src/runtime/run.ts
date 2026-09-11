@@ -118,7 +118,15 @@ export async function executeRun(
   return withRunContext(ctx, async () => {
     try {
       options.contextInit?.(ctx);
-      if (memory) await hydrateMemory(memory, ctx);
+      if (memory) {
+        // 水合是辅助动作：store 故障（Redis 挂掉等）不得杀死本次 run ——
+        // 与下面 flushMemory 对称（那里已有同款防护）。失败即当「无记忆」继续跑。
+        try {
+          await hydrateMemory(memory, ctx);
+        } catch {
+          /* ignore：辅助动作失败不影响 run */
+        }
+      }
       const result = await runAgent({ ...options, recorder: run.recorder });
       run.finish(result);
       if (memory) {
