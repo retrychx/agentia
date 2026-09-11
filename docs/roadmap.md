@@ -70,6 +70,13 @@
 - **官网全面响应式**：窄机断点（≤420px）+ 汉堡导航，20 组「页面×宽度」零横向溢出；
 - 许可证补齐 MIT；测试 142 → 182 例。
 
+## Dev Inspector（本地调试面板，进行中）
+
+`agentia dev` 内置本地 inspector：run 列表 + 调用树，展示每个单元（tool/skill/prompt/subagent）的
+入参 / 出参 / 耗时 / token / cache / 错误状态。框架侧加 trace 出口缝（`TraceSink`、`AppOptions.sinks`、
+`registerDefaultTraceSink`）；渲染器抽为 `@migor/trace-view` 供官网与面板共用；dev 注入走 CLI 侧
+`--import` preload（框架不读 env）。计划见 `docs/plans/2026-09-11-dev-inspector.md`。
+
 ## R7 候选（下一轮）
 
 - `InMemoryTaskStore` 无界增长（长期驻留进程需上限/淘汰策略）；

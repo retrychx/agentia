@@ -103,8 +103,10 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 - 一次 run == 一条 trace；v1 里 `traceId == runId`，1:1。
 - 树形层级：
   - `run`（根 span）= 整次运行
-  - `unit` span = 每次对单元（tool/skill/prompt/subagent）的调用
-  - `llm.turn` span = unit 内部每次模型往返，挂 usage（model / input / output / cache_read）
+  - `unit` span = 对 **skill / subagent** 单元的调用（这两类才在内部开子循环、产生子 span）
+  - `llm.turn` span = 每次模型往返，挂 usage（model / input / output / cache_read）
+  - 普通工具与 `@Prompt` 资产**不建 span**，只记在发起它们的 `llm.turn` 上的
+    `tool.input` / `tool.output` 事件（`engine/loop.ts`）
   - 子 agent = 一个 unit span，其内部单元递归成它的子孙
 - span 属性：model、input/output/cache tokens、成本估计、状态、错误类型。
 - 事件（logs）：工具入参/出参**默认截断 + 脱敏**，完整内容 opt-in。
@@ -121,6 +123,10 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 - v1：内存 trace store，随 run 结果/运行记录返回（结构化输出 / JSONL），便于回放调试。
 - 生产：OTLP 导出 + span 与 run 记录同库存储。
 - 成本：span 级 usage 聚合自 API usage 字段（`cache_read_input_tokens` 等），run 汇总 = 各 span 求和。
+- **trace 出口（sink）**：`TraceSink { export(trace) }` —— run 收尾（成功 / 失败两条路径）后框架把
+  完整 trace 交给每个 sink；sink 抛错被吞，不影响 run。装配层 `AppOptions.sinks` 与
+  `registerDefaultTraceSink()`（全局默认，构造期快照合并）；`createOtlpExporter()` 的返回值天然满足
+  该接口。`agentia dev` 的本地 inspector 即经此出口取数（框架不读 env、不含 dev 逻辑）。
 
 ### 9.4 开放问题
 
@@ -155,6 +161,14 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **两处 Astro 陷阱（此处锁定）**：① frontmatter 的 import 只在构建期（Node）执行，**客户端脚本必须写在 `<script>` 标签里**才会下发；② 模板中 `{` 是表达式起始，而正文含大量 TS 代码块，故正文走 `?raw` 片段注入而非内联。
   **验证标准是零回归**：`build.format: 'file'` 保持 `*.html` 既有 URL；CDP 探针在 11 档宽度 × 4 页比对迁移前后——文档高度逐像素一致（除下述修复项）、渲染文本逐字节一致，gsap/lenis/canvas/marquee、窄屏导航折叠、docs/api scrollspy、playground 完整回放全绿，运行时零外部请求。
   **顺带修复（迁移前既有，非本次引入）**：`.table-wrap` 的 `overflow-x: auto` 原本只写在 ≤560px 断点内，导致 861–1050px 区间（侧栏仍在、内容列被压窄，而内容列是 `minmax(0,1fr)` 不会撑开）表格 min-content 直接顶破页面——900px 溢出 57px、861px 溢出 96px。提升为全局规则，并把表格纵向 margin 挪到容器上（overflow 容器会阻断子元素 margin 折叠，否则每张表多出约 36px 空隙）。副作用：≤560px 的表格间距与宽屏统一（移动端此前多出的空隙属非预期行为）。
+
+- 2026-09-11：**trace 出口缝（Dev Inspector 前置）**。`TraceSink { export(trace) }` 升格为框架一等出口
+  （形状复用 `OtlpExporter`，`createOtlpExporter()` 返回值天然满足）；`executeRun` 成功 / 失败两条路径
+  均投递，sink 抛错吞掉不影响 run。装配层 `AppOptions.sinks` 与 `registerDefaultTraceSink()`
+  （全局默认，构造期快照合并）。框架**不读 env、不含 dev 逻辑**——dev 注入由 CLI 侧 `--import`
+  preload 完成（`registerDefaultTraceSink` 为公开扩展点）。**顺带修正 §9.1 口径**：unit span 只由
+  skill / subagent 创建，普通工具与 `@Prompt` 走 turn 上的事件（此前描述为四类单元一律建 span，
+  与实现不符）。
 
 ## 11. 开放项
 
