@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { EventEmitter } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { createHttpHandler, HttpException } from '../../src/index.js';
 import { AsyncRunner } from '../../src/index.js';
@@ -199,7 +200,7 @@ describe('B1 鉴权缝（authenticate）', () => {
       await withSilencedErr(async () => {
         const res = await fetch(`${failing.base}/run`, { method: 'POST', body: big });
         assert.equal(res.status, 401, '鉴权必须在读 body 之前，否则会先撞 413');
-        assert.equal(res.headers.get('connection'), 'close', '未消费 body → 连接不可复用');
+        // 连接不可复用的判定由「拒绝响应」组用假 req/res 确定性覆盖（不依赖分包时序）
       });
     } finally {
       await close(failing.server);
@@ -266,6 +267,59 @@ describe('B1 鉴权缝（authenticate）', () => {
       const res = await fetch(`${base}/run`, { method: 'POST', body: JSON.stringify('hi') });
       assert.equal(res.status, 200);
       assert.equal((await fetch(`${base}/nope`)).status, 404);
+    } finally {
+      await close(server);
+    }
+  });
+});
+
+describe('拒绝响应：body 未消费时标记连接不可复用', () => {
+  /**
+   * 用假 req/res 直接验判定，不依赖真实 socket 的分包时序。
+   * `complete=false`（body 还没收到）= 我们没消费它 → 连接必须关，否则残留字节会被
+   * 当成下一个请求（与 413 同理）；`complete=true` 时 Node 会 dump 掉未读 body，连接可复用。
+   */
+  function fakeReqRes(complete: boolean) {
+    const emitter = new EventEmitter();
+    Object.assign(emitter, { method: 'POST', url: '/run', complete, headers: {} });
+    const headers: Record<string, string> = {};
+    const res = {
+      setHeader: (k: string, v: string) => {
+        headers[k.toLowerCase()] = v;
+      },
+      writeHead: () => {},
+      end: () => {},
+    };
+    return {
+      req: emitter as unknown as IncomingMessage,
+      res: res as unknown as ServerResponse,
+      headers,
+    };
+  }
+
+  it('401（HttpException）', async () => {
+    const handler = createHttpHandler(fakeApp(), {
+      authenticate: () => {
+        throw new HttpException(401, { error: 'no' });
+      },
+    });
+    const incomplete = fakeReqRes(false);
+    await handler(incomplete.req, incomplete.res);
+    assert.equal(incomplete.headers.connection, 'close', 'body 未消费必须关连接');
+
+    const done = fakeReqRes(true);
+    await handler(done.req, done.res);
+    assert.equal(done.headers.connection, undefined, 'body 已收全 → Node 会 dump，连接可复用');
+  });
+
+  it('503（停机中拒新单）', async () => {
+    const { server, handler } = await listen(fakeApp());
+    try {
+      await handler.drain();
+      const incomplete = fakeReqRes(false);
+      await handler(incomplete.req, incomplete.res);
+      assert.equal(incomplete.headers['retry-after'], '1');
+      assert.equal(incomplete.headers.connection, 'close');
     } finally {
       await close(server);
     }

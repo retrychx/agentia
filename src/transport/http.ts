@@ -250,23 +250,25 @@ function sendUnauthorized(
   e: unknown,
   exposeErrors: boolean,
 ): void {
+  // 在读到 body 之前就回了响应：请求体没被消费 → 连接不能复用
+  // （残留字节会被当成下一个请求，与 413 同理）。这也正是「不收 body 省资源」的落点。
+  if (!req.complete) res.setHeader('connection', 'close');
   if (e instanceof HttpException) {
-    if (!req.complete) res.setHeader('connection', 'close');
     sendJson(res, e.status, e.body);
     return;
   }
   if (exposeErrors) {
-    if (!req.complete) res.setHeader('connection', 'close');
     sendJson(res, 401, { error: errMessage(e) });
     return;
   }
   console.error('[agentia:http] 鉴权钩子异常:', e);
-  if (!req.complete) res.setHeader('connection', 'close');
   sendJson(res, 401, { error: '未通过鉴权' });
 }
 
 /** 503：停机中不再接单（在读 body 之前就拒，省一次传输） */
-function sendShuttingDown(res: ServerResponse): void {
+function sendShuttingDown(req: IncomingMessage, res: ServerResponse): void {
+  // 同 sendUnauthorized：body 未消费 → 连接不可复用
+  if (!req.complete) res.setHeader('connection', 'close');
   res.setHeader('retry-after', RETRY_AFTER_SECONDS);
   sendJson(res, 503, { error: '服务正在优雅停机，不再接受新任务' });
 }
@@ -353,7 +355,7 @@ export function createHttpHandler(
           return;
         }
         if (draining) {
-          sendShuttingDown(res);
+          sendShuttingDown(req, res);
           return;
         }
         const input = await parseJsonBody(req, res, maxBodyBytes);
@@ -428,7 +430,7 @@ export function createHttpHandler(
         }
         // 停机中不再接单（含直接 drain 了 runner 的情况）；GET /tasks/<id> 不受影响
         if (draining || runner.isDraining) {
-          sendShuttingDown(res);
+          sendShuttingDown(req, res);
           return;
         }
         const body = await parseJsonBody(req, res, maxBodyBytes);

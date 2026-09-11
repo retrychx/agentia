@@ -245,7 +245,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **`inFlight` 口径（此处锁定）**：正在处理的同步 run（并发闸门计数，含 SSE 流）**+** 已受理未完成的
   异步任务（queued + running）—— 与 `drain()` 的等待范围一致，使健康检查与停机判断看同一个数。
   **`AsyncRunner.submit` 语义变更（在此锁定）**：`drain()` 之后 `submit` 抛错（此前任何时刻都可提交）。
-  新增导出：`HttpException`（值）、`HttpHandler` / `HealthResponse`（类型）。测试 254 → 273 例（+19）。
+  新增导出：`HttpException`（值）、`HttpHandler` / `HealthResponse`（类型）。测试 254 → 275 例（+21）。
   真实 HTTP 实测（非仅单测）：`/healthz` 反映在飞数、鉴权先于读 body、SIGTERM → `drain()` 等慢 run 收尾返回 `true`。
 
 ## 11. 开放项
