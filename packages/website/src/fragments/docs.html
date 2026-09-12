@@ -287,7 +287,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
 
       <section id="hosting">
         <h2>宿主与导出</h2>
-        <p>同一份应用，一行接入 HTTP；任务记录可落 SQLite；trace 可导出到任何 OTLP 收集器。</p>
+        <p>下面这份 <code>server.ts</code> 把 HTTP 宿主、SQLite 任务存储与 OTLP 导出接起来。</p>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>server.ts</em></div>
         <pre><code><span class="kw">import</span> { createServer } <span class="kw">from</span> <span class="str">'node:http'</span>;
 <span class="kw">import</span> { createHttpHandler, SqliteTaskStore, AsyncRunner, createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;

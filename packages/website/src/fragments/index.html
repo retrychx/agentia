@@ -75,8 +75,8 @@
         <p>菜单查重、引用存在性、DI 循环依赖——在启动时失败，而不是在线上。</p>
       </div>
       <div class="feature" data-card>
-        <h3>长上下文三策略</h3>
-        <p>先丢旧工具对，再摘要压缩，预算护栏带滞回防抖；CJK 感知 token 估算。</p>
+        <h3>长上下文与预算</h3>
+        <p>先丢旧工具对，再摘要压缩，上下文预算护栏带滞回防抖；CJK 感知 token 估算。<code>maxTotalTokens</code> / <code>maxCostUsd</code> 记账后硬停，超限以 <code>budget_exceeded</code> 收尾。</p>
       </div>
       <div class="feature" data-card>
         <h3>三类触发</h3>
@@ -91,16 +91,12 @@
         <p>标准 Stage 3 装饰器 + 显式 DI，不押 reflect-metadata；tsx / esbuild / tsgo 全兼容。</p>
       </div>
       <div class="feature" data-card>
-        <h3>成本硬管控</h3>
-        <p><code>maxTotalTokens</code> / <code>maxCostUsd</code> 记账后硬停，超限以 <code>budget_exceeded</code> 收尾；同回合还有工具超时与并发闸门。</p>
-      </div>
-      <div class="feature" data-card>
         <h3>MCP 与 evals</h3>
         <p>MCP server 的工具一行映射成菜单项（框架零依赖、不含传输）；<code>defineEval</code> 把「改 prompt 有没有回归」变成对 trace 的断言。</p>
       </div>
       <div class="feature" data-card>
         <h3>可观测与护栏</h3>
-        <p>trace 出口（OTLP / 自建 sink）、Prometheus 指标、鉴权缝、优雅停机与 <code>/healthz</code> —— 全走既有缝，不加新机制。</p>
+        <p>trace 出口（OTLP / 自建 sink）、Prometheus 指标、鉴权缝、优雅停机与 <code>/healthz</code>。</p>
       </div>
     </div>
   </section>
