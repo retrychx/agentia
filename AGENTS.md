@@ -25,7 +25,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   scriptedClient —— 两者定位不同，改 helpers 影响全部套件，谨慎）
 │   ├── fixtures/            # discover/asset 测试夹具
 │   ├── types/               # **类型断言测试**（*.types.ts，只被 typecheck:types 编译、不被 node:test 收）
-│   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核）
+│   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核；api.html 的导出表
+│                            #   正向核 + **反向全覆盖**：导出面的每个导出都必须在页面上出现）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
@@ -72,3 +73,6 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   - 客户端脚本必须写在 `<script>` 标签里：**frontmatter 里的 import 只在构建期（Node）执行，不会下发到浏览器**。
   - 页面正文经 `?raw` 片段 + `set:html` 注入——模板里 `{` 会被当表达式解析，而正文含大量 TS 代码块。
   - `build.format: 'file'` 保持 `*.html` 既有 URL；`build/`、`dist/`、`.astro/` 不进版本库。
+  - **`src/fragments/api.html` 是手写的导出速查**（不像 `llms.txt` 从 usage-guide 派生）：新增 / 改名
+    导出必须同步补进它 —— `tests/docs/api-page.test.ts` 做反向全覆盖校验，漏写即失败。`docs.html` /
+    `index.html` 的正文与统计数字（如 hero 的单测数）同样要跟着改，它们没有自动校验。

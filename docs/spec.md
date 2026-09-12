@@ -344,6 +344,15 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   测试 322 → 363 例（+41：MCP 13 / 指标 9 / evals 10 / 配额 4 / 提示词版本 5），另在 `tests/types/dx.types.ts`
   并入 8 处类型断言（`@ts-expect-error` 钉住「应当报错」的场景：缺 `callTool` 的结构面、`tools` 的元素形状、
   `version` 只读、`systemVersion` 类型、`export` 只认两个字面量等）。
+  **顺带修官网 API 页（既有漂移，非本次引入）**：`packages/website/src/fragments/api.html` 是**手写**的导出速查
+  （不像 `llms.txt` 从 `usage-guide.md` 派生），此前已漂：`SpanKind` 写成含不存在的 `'internal'`、
+  `trimToolPairs` 还挂着改名前的 `keepRecent`、A/B/C 三期的导出（`createBudgetGuard` / `mapWithConcurrency` /
+  `combineSignals` / `InMemorySessionStore` / `TaskSink` / `HttpException` / `HealthResponse` / `TraceSink` …）
+  大量缺失 —— 而 D 期四个新的全没进。本次逐项补齐到**对导出面零缺口**，并新增守卫测试
+  `tests/docs/api-page.test.ts`：① 正向（「X 选项」表首列必须是 `X` 的成员含继承链，其余表必须是 `src/index.ts`
+  的导出名）；② **反向全覆盖**（导出面的每个导出都必须在页面上出现 —— 防「代码有了、文档没写」）。
+  `index.html` 的 hero 数字（「140+ 例单测」）与 `docs.html`（新增「稳定性与流式 / 宿主硬化 / 成本硬管控 /
+  生态与观测」四节）同步更新。测试 363 → 367。
 
 ## 11. 开放项
 

@@ -22,7 +22,7 @@
       </div>
       <div class="hero-stats" data-intro>
         <span><b>4</b> 类单元</span><i></i>
-        <span><b>140+</b> 例单测</span><i></i>
+        <span><b>360+</b> 例单测</span><i></i>
         <span><b>3</b> 类触发</span><i></i>
         <span><b>0</b> 反射</span>
       </div>
@@ -32,7 +32,7 @@
 
   <div class="marquee" aria-hidden="true">
     <div class="marquee-track" id="marquee-track">
-      <span>runId == traceId</span><span>装配期静态校验</span><span>一单元一文件夹</span><span>幂等键去重</span><span>CJK 感知预算</span><span>隔离子代理</span><span>零反射装饰器</span><span>换宿主不换语义</span>
+      <span>runId == traceId</span><span>装配期静态校验</span><span>一单元一文件夹</span><span>幂等键去重</span><span>CJK 感知预算</span><span>隔离子代理</span><span>零反射装饰器</span><span>换宿主不换语义</span><span>MCP 工具即菜单项</span><span>成本硬管控</span><span>预算护栏带滞回</span><span>SSE 逐帧下发</span>
     </div>
   </div>
 
@@ -110,6 +110,18 @@
       <div class="feature" data-card>
         <h3>零反射装饰器</h3>
         <p>标准 Stage 3 装饰器 + 显式 DI，不押 reflect-metadata；tsx / esbuild / tsgo 全兼容。</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>成本硬管控</h3>
+        <p><code>maxTotalTokens</code> / <code>maxCostUsd</code> 记账后硬停，超限以 <code>budget_exceeded</code> 收尾；同回合还有工具超时与并发闸门。</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>MCP 与 evals</h3>
+        <p>MCP server 的工具一行映射成菜单项（框架零依赖、不含传输）；<code>defineEval</code> 把「改 prompt 有没有回归」变成对 trace 的断言。</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>可观测与护栏</h3>
+        <p>trace 出口（OTLP / 自建 sink）、Prometheus 指标、鉴权缝、优雅停机与 <code>/healthz</code> —— 全走既有缝，不加新机制。</p>
       </div>
     </div>
   </section>
