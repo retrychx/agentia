@@ -306,31 +306,6 @@ code {
   60% { transform: translateY(12px); opacity: 0.15; }
 }
 
-/* marquee */
-.marquee {
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  overflow: hidden;
-  padding: 14px 0;
-  background: var(--bg-alt);
-  position: relative;
-  z-index: 2;
-}
-.marquee-track {
-  display: flex;
-  gap: 56px;
-  width: max-content;
-  will-change: transform;
-}
-.marquee-track span {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  letter-spacing: 0.14em;
-  color: var(--faint);
-  white-space: nowrap;
-}
-.marquee-track span::before { content: "// "; color: var(--ice); }
-
 /* sections */
 .section {
   position: relative;
@@ -406,48 +381,6 @@ code {
   color: var(--text);
 }
 .feature h3::before { content: "▸ "; color: var(--ice); }
-
-/* pipeline（how it works） */
-.pipeline {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  margin-top: 12px;
-}
-.pipe-box {
-  flex: 1;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 20px 18px;
-  transition: border-color 0.25s;
-}
-.pipe-box:hover { border-color: var(--ice-border); }
-.pipe-box em {
-  display: block;
-  font-family: var(--mono);
-  font-style: normal;
-  font-size: 13px;
-  color: var(--ice);
-  margin-bottom: 10px;
-  letter-spacing: 0.08em;
-}
-.pipe-box span {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.8;
-}
-.pipe-arrow {
-  align-self: center;
-  padding: 0 14px;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 15px;
-}
-@media (max-width: 900px) {
-  .pipeline { flex-direction: column; gap: 10px; }
-  .pipe-arrow { transform: rotate(90deg); padding: 2px 0; text-align: center; }
-}
 
 /* steps */
 .steps { display: grid; gap: 14px; margin: 40px 0 28px; }

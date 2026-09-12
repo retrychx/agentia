@@ -208,13 +208,6 @@ import Lenis from 'lenis';
       ),
   });
 
-  /* ---------- marquee 无缝滚动 ---------- */
-  const track = document.getElementById('marquee-track');
-  if (track) {
-    track.innerHTML += track.innerHTML; // 复制一份实现无缝
-    gsap.to(track, { xPercent: -50, duration: 28, ease: 'none', repeat: -1 });
-  }
-
   /* ---------- nav 滚动态 ---------- */
   const nav = document.querySelector('.nav');
   const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 24);
