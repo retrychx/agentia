@@ -13,9 +13,37 @@
     </aside>
 
     <div class="docs-content">
+      <header class="api-hero">
+        <p class="api-kicker">REFERENCE · @migor/agentia</p>
+        <h1>公共 API 参考</h1>
+        <p class="api-lede">
+          全部导出都来自包根 <code>@migor/agentia</code>（<code>src/index.ts</code> 是唯一出口）。
+          分层单向、<strong>零运行时依赖</strong> —— 可选能力（zod / Redis / MCP）一律 duck-typed，
+          不合适的依赖永不进框架。
+        </p>
+        <div class="api-chips">
+          <span class="api-chip"><b>160</b> 个导出</span>
+          <span class="api-chip"><b>9</b> 个层次</span>
+          <span class="api-chip"><b>0</b> 运行时依赖</span>
+          <span class="api-chip"><b>4</b> 类单元</span>
+        </div>
+      </header>
+
+      <nav class="layer-grid" aria-label="层次索引">
+        <a class="layer-card" href="#core"><span class="lc-k">CORE</span><span class="lc-n">数据模型与结构面</span></a>
+        <a class="layer-card" href="#engine"><span class="lc-k">ENGINE</span><span class="lc-n">运行时内核</span></a>
+        <a class="layer-card" href="#context"><span class="lc-k">CONTEXT</span><span class="lc-n">长上下文策略</span></a>
+        <a class="layer-card" href="#run"><span class="lc-k">RUN</span><span class="lc-n">生命周期与触发</span></a>
+        <a class="layer-card" href="#hosting"><span class="lc-k">HOST</span><span class="lc-n">宿主与导出</span></a>
+        <a class="layer-card" href="#integrations"><span class="lc-k">INTEGRATIONS</span><span class="lc-n">MCP 与指标</span></a>
+        <a class="layer-card" href="#eval"><span class="lc-k">EVAL</span><span class="lc-n">回归断言</span></a>
+        <a class="layer-card" href="#container"><span class="lc-k">CONTAINER</span><span class="lc-n">显式 DI</span></a>
+        <a class="layer-card" href="#toolkit"><span class="lc-k">TOOLKIT</span><span class="lc-n">单元与装配</span></a>
+      </nav>
+
       <section id="core">
         <h2>core · 数据模型</h2>
-        <p>所有公共导出来自 <code>@migor/agentia</code> 包根（<code>src/index.ts</code>）。core 层是零依赖的数据模型与结构面：四类单元最终都编译成 <code>AgentTool</code>，一次 run 沉淀为一条 <code>Trace</code>。</p>
+        <p>core 层是零依赖的数据模型与结构面：四类单元最终都编译成 <code>AgentTool</code>，一次 run 沉淀为一条 <code>Trace</code>。</p>
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
@@ -259,5 +287,13 @@
           </tbody>
         </table></div>
       </section>
+
+      <aside class="api-cta">
+        <p>参数看明白了，想直接上手？</p>
+        <p class="api-cta-links">
+          <a href="./docs.html">使用指南：四类单元怎么声明 →</a>
+          <a href="./playground.html">Playground：用真实模型跑一次 →</a>
+        </p>
+      </aside>
     </div>
   </main>

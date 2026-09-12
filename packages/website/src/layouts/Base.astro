@@ -24,7 +24,7 @@ const { title, description, page = 'home', footerLinks = [] } = Astro.props;
     <meta name="description" content={description} />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   </head>
-  <body>
+  <body class={`page-${page}`}>
     <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
     <div class="grain" aria-hidden="true"></div>
 

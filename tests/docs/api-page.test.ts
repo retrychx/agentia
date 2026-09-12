@@ -204,4 +204,35 @@ describe('官网 api.html 与源码一致', () => {
       `这些导出已存在于 src/index.ts，但官网 API 页没写：\n${missing.join('\n')}`,
     );
   });
+
+  it('页头统计与层次索引卡不自说自话（数字对源码、锚点对节）', () => {
+    const chips = [...html.matchAll(/<span class="api-chip">\s*<b>(\d+)<\/b>\s*([^<]+)<\/span>/g)].map(
+      (m) => ({ n: Number(m[1]), label: m[2].trim() }),
+    );
+    const sections = [...html.matchAll(/<section id="([^"]+)"/g)].map((m) => m[1]);
+
+    const exportsChip = chips.find((c) => c.label.includes('导出'));
+    assert.ok(exportsChip, '页头缺「导出」计数 chip');
+    assert.equal(
+      exportsChip.n,
+      exported.size,
+      `页头写「${exportsChip.n} 个导出」，但 src/index.ts 实际导出 ${exported.size} 个 —— 手写数字必须跟着改`,
+    );
+
+    const layersChip = chips.find((c) => c.label.includes('层次'));
+    assert.ok(layersChip, '页头缺「层次」计数 chip');
+    assert.equal(
+      layersChip.n,
+      sections.length,
+      `页头写「${layersChip.n} 个层次」，但页面实际有 ${sections.length} 个 section`,
+    );
+
+    const cards = [...html.matchAll(/<a class="layer-card" href="#([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(cards.length > 0, '页头缺层次索引卡');
+    assert.deepEqual(
+      [...cards].sort(),
+      [...sections].sort(),
+      '层次索引卡必须与 section 一一对应（防漏项与死链）',
+    );
+  });
 });
