@@ -1195,8 +1195,13 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
 .doc-table tbody tr:hover { background: var(--ice-dim); }
 .doc-table tbody tr:hover td:first-child { color: var(--ice); }
 
-/* API 页的中列是「签名 / 类型」，用代码片呈现；overflow-wrap 让超长签名就地断行，
-   不会把表的最小宽度撑大（表容器仍可横向滚动，见 .table-wrap） */
+/* API 页的中列是「签名 / 类型」，用代码片呈现。
+   ⚠️ 这里**绝对不能用 `overflow-wrap: anywhere`**：`anywhere`（不同于 `break-word`）
+   会参与**固有尺寸**计算，把该列的 min-content 压成 1 个字 —— 于是表格最小宽度被锁死在
+   ~764px（首列 nowrap 490 + 中列 55 + 末列 219），中列无论容器多宽都只分到 55px：
+   长签名竖成一列字，一行表高 1294px。1024px 的桌面窗口与 iPhone 是同一种烂法。
+   上一轮只验了「页面不横向溢出」，表确实没撑破页面 —— 于是检查全绿而内容已经烂了。
+   `break-word` 只在必要时断行、不改变固有尺寸，配合下面的 min-width 给列宽兜底。 */
 .page-api .doc-table td:nth-child(2) code {
   display: inline-block;
   max-width: 100%;
@@ -1207,8 +1212,16 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   color: var(--accent);
   line-height: 1.5;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
+
+/* 列宽下限：首列的名字可以很长（`Blackboard / BlackboardKey / BlackboardValue / …`），
+   全局的 nowrap 把它撑到 490px —— 窄容器里它不肯让位，被牺牲的必然是中列。
+   放开换行（有空间时仍是单行），三列各给下限，空间不够时宁可横向滚动也不逐字竖排。 */
+.page-api .doc-table td:first-child { white-space: normal; }
+.page-api .doc-table th:nth-child(1), .page-api .doc-table td:nth-child(1) { min-width: 132px; }
+.page-api .doc-table th:nth-child(2), .page-api .doc-table td:nth-child(2) { min-width: 248px; }
+.page-api .doc-table th:nth-child(3), .page-api .doc-table td:nth-child(3) { min-width: 156px; }
 
 .api-cta {
   margin-top: 4px;
@@ -1340,4 +1353,39 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   .step { padding: 18px; gap: 14px; }
   .card, .feature { padding: 20px 18px; }
   .pg-chip { padding: 7px 12px; } /* 触控目标：字号 12px + 上下 7px ≈ 44px 高 */
+}
+
+/* ================= API 页窄屏：三列表 → 卡片 =================
+   ≤768px 不再让三列硬挤：把每一行拆成一张卡 ——
+   导出名做标题、签名整宽代码块、说明在下方。手机端横向滚动读三列表等于没法读
+   （首列 alone 就 490px，一屏放不下），列宽下限只能救「不至于逐字竖排」，救不了可读性。
+
+   断点取 768 而非 640：641–768px 区间内容列只有 ~590–720px，三列下最长的签名
+   （`AppOptions`，约 150 字符）要折 12 行 —— 卡片版式在该区间明显更好读。
+
+   必须放在文件末尾：与上面的断点同优先级，靠源码顺序取胜。 */
+@media (max-width: 768px) {
+  /* 卡片模式下不再需要横向滚动兜底 */
+  .page-api .table-wrap { overflow-x: visible; }
+  .page-api .doc-table { min-width: 0; display: block; }
+  .page-api .doc-table thead { display: none; } /* 列头失去意义：每张卡自解释 */
+  .page-api .doc-table tbody { display: block; }
+  .page-api .doc-table tbody tr {
+    display: block;
+    padding: 13px 15px;
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.012);
+  }
+  .page-api .doc-table tbody tr:last-child { margin-bottom: 0; }
+  /* 悬停高亮在触屏上无意义，但保留桌面窄窗口的体验 */
+  .page-api .doc-table tbody tr:hover { background: var(--ice-dim); border-color: var(--ice-border); }
+  .page-api .doc-table tbody tr:hover td:first-child { color: var(--ice); }
+  .page-api .doc-table td { display: block; padding: 0; border: none; min-width: 0; }
+  .page-api .doc-table td:nth-child(1) { font-size: 13.5px; }
+  .page-api .doc-table td:nth-child(2) { margin-top: 9px; }
+  /* 签名铺满卡片宽度，超长签名按 `break-word` 折行（不参与固有尺寸，见上面的注释） */
+  .page-api .doc-table td:nth-child(2) code { display: block; box-sizing: border-box; }
+  .page-api .doc-table td:nth-child(3) { margin-top: 9px; font-size: 13.5px; }
 }

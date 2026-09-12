@@ -26,7 +26,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── fixtures/            # discover/asset 测试夹具
 │   ├── types/               # **类型断言测试**（*.types.ts，只被 typecheck:types 编译、不被 node:test 收）
 │   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核；api.html 的导出表
-│                            #   正向核 + **反向全覆盖**：导出面的每个导出都必须在页面上出现）
+│                            #   正向核 + **反向全覆盖**：导出面的每个导出都必须在页面上出现；
+│                            #   website-css.test.ts 钉官网表格版式不变量，见 packages/website 段）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
@@ -76,3 +77,14 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   - **`src/fragments/api.html` 是手写的导出速查**（不像 `llms.txt` 从 usage-guide 派生）：新增 / 改名
     导出必须同步补进它 —— `tests/docs/api-page.test.ts` 做反向全覆盖校验，漏写即失败。`docs.html` /
     `index.html` 的正文与统计数字（如 hero 的单测数）同样要跟着改，它们没有自动校验。
+  - **表格版式三条不变量**（`tests/docs/website-css.test.ts` 钉住，改 CSS 前先读它）：
+    ① API 页签名列**只能用 `overflow-wrap: break-word`，绝不能用 `anywhere`** —— `anywhere`
+       会参与**固有尺寸**计算，把该列 min-content 压成 1 个字，表格最小宽度锁死 ~764px，
+       中列无论容器多宽都只分到 55px（长签名竖成一列字，一行表高 1294px）。
+    ② 三列都要有 `min-width` 下限，否则容器一窄就牺牲某一列。
+    ③ ≤768px 必须卡片化（行变 block、`thead` 隐藏、表格 `min-width:0`）——
+       列宽下限只能救「不至于逐字竖排」，救不了「一屏放不下 490px 的首列」。
+  - **只验「页面不横向溢出」是不够的**：那次签名列被挤死时页面**没有**横向溢出（表在
+    `.table-wrap` 里滚），所以溢出检查全绿而内容已经烂了。要看**列宽与折行数**：
+    `td:nth-child(2)` 的宽度、签名代码块的渲染行数，在 360 / 390 / 641 / 768 / 1024 / 1600
+    各档都要量。
