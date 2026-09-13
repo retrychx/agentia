@@ -90,7 +90,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   - `build.format: 'file'` 保持 `*.html` 既有 URL；`build/`、`dist/`、`.astro/` 不进版本库。
   - **`src/fragments/api.html` 是手写的导出速查**（不像 `llms.txt` 从 usage-guide 派生）：新增 / 改名
     导出必须同步补进它 —— `tests/docs/api-page.test.ts` 做反向全覆盖校验，漏写即失败。`docs.html` /
-    `index.html` 的正文与统计数字（如 hero 的单测数）同样要跟着改，它们没有自动校验。
+    `index.html` 的正文与统计数字同样要跟着改，它们没有自动校验。
   - **表格版式三条不变量**（`tests/docs/website-css.test.ts` 钉住，改 CSS 前先读它）：
     ① API 页签名列**只能用 `overflow-wrap: break-word`，绝不能用 `anywhere`** —— `anywhere`
        会参与**固有尺寸**计算，把该列 min-content 压成 1 个字，表格最小宽度锁死 ~764px，

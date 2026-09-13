@@ -51,7 +51,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
       <!-- 四类单元 -->
       <section id="units">
         <h2>四类单元</h2>
-        <p>单元即服务的组成阶段。四类单元对主 agent 都是菜单里的可调用项，共用命名空间，装配期统一查重。</p>
+        <p>单元是服务的组成部分。四类单元对主 agent 都是菜单里的可调用项，共用命名空间，装配期统一查重。</p>
 
         <h3>@Tool — 函数调用</h3>
         <p>类方法即工具。入参按 JSON Schema 解析，先校验再执行；失败回 <code>is_error</code>，run 不中断。</p>
@@ -317,9 +317,9 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         <h2>稳定性与流式</h2>
         <p>取消、重试、流式三件事共用同一份单次调用参数，从入口贯穿到模型请求。</p>
         <ul>
-          <li><strong>取消传播</strong>：<code>signal</code> 一路传到 <code>ModelClient.messages.stream</code>（内置 Anthropic / OpenAI 适配器都转发）；中断不冒泡异常，run 以 <code>stopReason='aborted'</code> 收尾。HTTP 宿主内置「客户端断开即中止」，<code>AsyncRunner.runTimeoutMs</code> 到点是<strong>真中止</strong>而不只是不等了。</li>
+          <li><strong>取消传播</strong>：<code>signal</code> 一路传到 <code>ModelClient.messages.stream</code>（内置 Anthropic / OpenAI 适配器都转发）；中断不冒泡异常，run 以 <code>stopReason='aborted'</code> 收尾。HTTP 宿主内置「客户端断开即中止」，<code>AsyncRunner.runTimeoutMs</code> 到点会<strong>中止在飞 run</strong>。</li>
           <li><strong>重试与退避</strong>：缺省开启（<code>maxAttempts=3</code>、指数退避 + 抖动），只重试「本次尝试<strong>尚未产出任何文本</strong>」的失败 —— 已流出的字无法撤回。每次尝试开独立的 <code>llm.turn</code> span。</li>
-          <li><strong>SSE 流式</strong>：<code>POST /run</code> 带 <code>Accept: text/event-stream</code> → <code>text.delta</code> / <code>run.end</code> / <code>error</code> 逐帧下发；不带该头仍回一元 JSON（旧行为逐字不变）。</li>
+          <li><strong>SSE 流式</strong>：<code>POST /run</code> 带 <code>Accept: text/event-stream</code> → <code>text.delta</code> / <code>run.end</code> / <code>error</code> 逐帧下发；不带该头仍回一元 JSON。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>run.ts</em></div>
         <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
@@ -331,7 +331,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
 
       <section id="hardening">
         <h2>宿主硬化</h2>
-        <p><strong>只给缝、不给策略</strong>：框架不实现 token / JWT，也不订阅进程信号 —— 那是宿主或反代的事。</p>
+        <p>框架不实现 token / JWT 鉴权，也不订阅进程信号 —— 那是宿主或反向代理的事。</p>
         <ul>
           <li><code>authenticate</code> 拦在入口、<strong>读 body 之前</strong>（含未知路径，不暴露路径是否存在）；抛 <code>HttpException</code> 按其 status / body 回，抛其它错回 401 且原文只进服务端日志。</li>
           <li><code>drain({ timeoutMs })</code>：拒新单 → 等在飞收尾 → 超时强制收口仍开着的 SSE 流；<strong>未完成的任务留在 store 里</strong>，下次启动 <code>resumePending()</code> 续跑（不是丢弃）。</li>
@@ -353,7 +353,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
         <ul>
           <li><code>maxTotalTokens</code> / <code>maxCostUsd</code>：每回合记账后判断，超限以 <code>stopReason='budget_exceeded'</code> 收尾（算失败）并在 run 根记一条 <code>budget.exceeded</code> 事件。口径是<strong>整条 run</strong>（含子 agent）。</li>
           <li>两处刻意的语义：<strong>模型自然收尾的那一回合超限不改判失败</strong>（那次任务其实做完了）；超限时<strong>连带不执行本回合的工具</strong>（不继续产生副作用）。</li>
-          <li><code>toolTimeoutMs</code>：超时<strong>不杀 run</strong>，该条 tool_result 记 <code>is_error</code> 让模型换路；<code>maxToolConcurrency</code> 给同回合的并行工具设上限。⚠️ 超时是「不等了」不是取消，<code>AgentTool.run</code> 收不到 signal。</li>
+          <li><code>toolTimeoutMs</code>：超时<strong>不杀 run</strong>，该条 tool_result 记 <code>is_error</code> 让模型换路；<code>maxToolConcurrency</code> 给同回合的并行工具设上限。⚠️ 超时是「放弃等待」而非取消，<code>AgentTool.run</code> 收不到 signal。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>guards.ts</em></div>
         <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
@@ -366,12 +366,12 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
 
       <section id="ecosystem">
         <h2>生态与观测</h2>
-        <p>三件事都走既有缝，<strong>不加新机制</strong>：MCP 工具就是一个 <code>AgentTool</code>，指标就是一个 <code>TraceSink</code>，evals 就是对 trace 写断言。</p>
+        <p>三件事都走既有扩展点：MCP 工具就是一个 <code>AgentTool</code>，指标就是一个 <code>TraceSink</code>，evals 就是对 trace 写断言。</p>
         <ul>
-          <li><strong>MCP</strong>：<code>mcpTools(client, { server })</code> 把 server 的 <code>tools/list</code> 映射成菜单项。<strong>duck-typed、框架零依赖</strong>（不 import MCP SDK，也不含 stdio / HTTP 传输 —— 连接器在独立包或你自己的代码里）。名字里对 LLM 不友好的字符会归一化成 <code>_</code>，<strong>原名</strong>记进 <code>mcp.tool</code> attribute 供审计 / 回放。</li>
+          <li><strong>MCP</strong>：<code>mcpTools(client, { server })</code> 把 server 的 <code>tools/list</code> 映射成菜单项。<strong>duck-typed、框架零依赖</strong>（不 import MCP SDK，也不含 stdio / HTTP 传输 —— 连接器自行提供）。名字里对 LLM 不友好的字符会归一化成 <code>_</code>，<strong>原名</strong>记进 <code>mcp.tool</code> attribute 供审计 / 回放。</li>
           <li><strong>evals</strong>：<code>scriptedClient([...])</code> 脚本化模型往返 + <code>defineEval({ app, cases, expect })</code> 对 trace 写断言 —— 改 prompt / 换模型 / 加工具之后有没有回归，靠断言而不是人眼。失败 case 带完整 trace。</li>
           <li><strong>指标</strong>：<code>metricsSink()</code> 天然满足 <code>TraceSink</code>，<code>render()</code> 出 Prometheus 文本（零依赖手写），<code>/metrics</code> 直接回它。</li>
-          <li><strong>提示词版本</strong>：<code>new SystemPrompt({ version })</code> 把版本号写进 run 根 <code>system.version</code>，trace 里能查「这个结果是哪个版本的提示词产出的」。<strong>多租户配额</strong>不做子系统：<code>middleware</code>（拦）+ <code>TraceSink</code>（记账）+ BudgetGuard（单次上限）组合即可。</li>
+          <li><strong>提示词版本</strong>：<code>new SystemPrompt({ version })</code> 把版本号写进 run 根 <code>system.version</code>，trace 里能查「这个结果是哪个版本的提示词产出的」。<strong>多租户配额</strong>：<code>middleware</code>（拦）+ <code>TraceSink</code>（记账）+ BudgetGuard（单次上限）组合即可。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>ecosystem.ts</em></div>
         <pre><code><span class="kw">import</span> { createApp, mcpTools, metricsSink, defineEval, scriptedClient } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;

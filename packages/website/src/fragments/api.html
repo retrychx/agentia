@@ -17,9 +17,8 @@
         <p class="api-kicker">REFERENCE · @migor/agentia</p>
         <h1>公共 API 参考</h1>
         <p class="api-lede">
-          全部导出都来自包根 <code>@migor/agentia</code>（<code>src/index.ts</code> 是唯一出口）。
-          分层单向、<strong>零运行时依赖</strong> —— 可选能力（zod / Redis / MCP）一律 duck-typed，
-          不合适的依赖永不进框架。
+          全部导出都来自包根 <code>@migor/agentia</code>，<strong>零运行时依赖</strong> ——
+          可选能力（zod / Redis / MCP）一律 duck-typed。
         </p>
         <div class="api-chips">
           <span class="api-chip"><b>160</b> 个导出</span>
@@ -63,9 +62,9 @@
             <tr><td>TraceSink</td><td><code>{ export(trace) → void | Promise&lt;void&gt; }</code></td><td>trace 出口：run 收尾（成功 / 失败）都投递，sink 抛错被吞、不影响 run。OTLP 导出器与 <code>metricsSink()</code> 都天然满足它。</td></tr>
             <tr><td>validateJsonSchema</td><td><code>(schema: JsonSchema, input: unknown) → string | null</code></td><td>JSON Schema 子集校验（fromZod 接入时先走 zod），返回首条错误消息或 null。</td></tr>
             <tr><td>combineSignals</td><td><code>(...signals: (AbortSignal | undefined)[]) → AbortSignal</code></td><td>合成多个中断源（调用方 / 超时 / 断连），任一触发即中止（Node 18 无 <code>AbortSignal.any</code>）。</td></tr>
-            <tr><td>Blackboard / BlackboardKey / BlackboardValue / BlackboardSeed</td><td><code>interface Blackboard {}</code> 等</td><td>黑板类型链路：声明合并 <code>Blackboard</code> 后，<code>RunContext.get/set</code> 与 <code>run({ blackboard })</code> 种子获得键补全 + 拼写检查 + 值类型；不声明则与旧行为逐字一致（键 <code>string</code>、值 <code>unknown</code>）。</td></tr>
+            <tr><td>Blackboard / BlackboardKey / BlackboardValue / BlackboardSeed</td><td><code>interface Blackboard {}</code> 等</td><td>黑板类型链路：声明合并 <code>Blackboard</code> 后，<code>RunContext.get/set</code> 与 <code>run({ blackboard })</code> 种子获得键补全 + 拼写检查 + 值类型；不声明时键为 <code>string</code>、值为 <code>unknown</code>。</td></tr>
             <tr><td>TypedSchema&lt;T&gt; / SchemaType&lt;S&gt; / SchemaInput&lt;S&gt;</td><td><code>SchemaType&lt;TypedSchema&lt;T&gt;&gt; = T</code></td><td>schema 即单一事实来源：<code>fromZod&lt;T&gt;()</code> 返回 <code>TypedSchema&lt;T&gt;</code>，据此自动推导 <code>result.typed</code> 与 <code>@Tool</code> 方法入参类型（不匹配即编译期报错）。</td></tr>
-            <tr><td>AGENTIA_VERSION</td><td><code>string</code></td><td>框架版本号常量（与已发布的包版本同步）。</td></tr>
+            <tr><td>AGENTIA_VERSION</td><td><code>string</code></td><td>框架版本号常量。</td></tr>
           </tbody>
         </table></div>
       </section>
@@ -90,7 +89,7 @@
             <tr><td>SystemParam / SystemTextBlock</td><td><code>string | SystemTextBlock[]</code></td><td>system 参数：纯文本，或带 <code>cache_control</code> breakpoint 的可缓存块数组。</td></tr>
             <tr><td>createBudgetGuard / BudgetGuard</td><td><code>(opts?: BudgetGuardOptions) → { check(trace) → 'tokens' | 'cost' | null }</code></td><td>成本硬管控底座（每回合记账后判）；也可以只拿它自己记账。</td></tr>
             <tr><td>BudgetGuardOptions / BudgetSnapshot</td><td><code>{ maxTotalTokens?; maxCostUsd?; onExceed? }</code> / <code>{ kind; limit; actual; totalTokens; costUsd }</code></td><td>超限快照同时记进 run 根的 <code>budget.exceeded</code> 事件并回调 onExceed。</td></tr>
-            <tr><td>mapWithConcurrency</td><td><code>(items, limit, fn) → Promise&lt;R[]&gt;</code></td><td>有界并发 map，<strong>结果顺序与输入一致</strong>；limit 非正 / 非有限 = 不限（旧行为）。同回合并行工具的底座。</td></tr>
+            <tr><td>mapWithConcurrency</td><td><code>(items, limit, fn) → Promise&lt;R[]&gt;</code></td><td>有界并发 map，<strong>结果顺序与输入一致</strong>；limit 非正 / 非有限 = 不限。同回合并行工具的底座。</td></tr>
           </tbody>
         </table></div>
 
@@ -163,7 +162,7 @@
             <tr><td>AsyncRunner</td><td><code>new AsyncRunner(app, { client?, store?, concurrency?, runTimeoutMs?, taskSinks? })：submit / resumePending(opts?) / drain(opts?) / inFlight / isDraining</code></td><td>提交即返回任务记录、后台执行；同幂等键未失败任务 last-wins 去重。<code>drain()</code> = 拒新单 → 等在飞收尾（超时返回 false，未完成任务留在 store 里）。</td></tr>
             <tr><td>AsyncRunnerOptions / ResumePendingOptions</td><td><code>{ …; runTimeoutMs?; taskSinks? }</code> / <code>{ staleAfterMs? }</code></td><td>runTimeoutMs 到点<strong>真中止</strong>在飞 run；resumePending 靠 <code>staleAfterMs</code> + ownerId 跳过本进程记录。</td></tr>
             <tr><td>TaskSink</td><td><code>{ onFinished(rec: TaskRecord) }</code></td><td>任务完成回调：达终态后逐个 await 投递（抛错被吞），先通知再递减在飞计数。</td></tr>
-            <tr><td>AppCallable</td><td><code>{ name; run(messages, opts?) }</code></td><td>应用最小调用面（run 层不向上依赖 toolkit）。</td></tr>
+            <tr><td>AppCallable</td><td><code>{ name; run(messages, opts?) }</code></td><td>应用最小调用面。</td></tr>
             <tr><td>Scheduler / ScheduleHandle / ScheduleEveryOptions</td><td><code>new Scheduler(runner)：every(intervalMs, input, opts?) / at(when, input, opts?)</code></td><td>周期 / 定点触发，到点转为异步任务提交；返回 <code>ScheduleHandle { id, cancel() }</code>；非法间隔 / 非法日期直接抛错。</td></tr>
             <tr><td>TaskStore</td><td><code>interface：save / get / byIdempotency / list / clear</code></td><td>任务记录存储面（同步或异步实现皆可，返回 <code>MaybePromise</code>）；byIdempotency 为 last-wins 去重依据。</td></tr>
             <tr><td>TaskRecord</td><td><code>{ taskId; status; idempotencyKey?; spec: RunSpec; runId?; ownerId?; createdAt; startedAt?; … }</code></td><td>任务记录；完成后回填 runId（== traceId）。</td></tr>
@@ -200,25 +199,25 @@
 
       <section id="integrations">
         <h2>integrations · MCP 与指标</h2>
-        <p>外部系统适配层，<strong>只依赖 core</strong>，零运行时依赖 —— 可选能力一律 duck-typed（与 <code>RedisLike</code> 同款范式）。</p>
+        <p>外部系统适配层，零运行时依赖 —— 可选能力一律 duck-typed（与 <code>RedisLike</code> 同款范式）。</p>
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>mcpTools</td><td><code>(client: McpClientLike, opts?: McpToolsOptions) → Promise&lt;AgentTool[]&gt;</code></td><td>把 MCP server 的 <code>tools/list</code> 映射成框架工具，可直接进 <code>createApp({ tools })</code>；与本地 @Tool 同池（同过中间件、同进重名查重）。</td></tr>
-            <tr><td>McpClientLike</td><td><code>{ listTools(); callTool(name, args) }</code></td><td>MCP client 的最小结构面：任意实现它的对象都能接，<strong>框架不 import MCP SDK</strong>；stdio / HTTP 传输在独立包或你自己的代码里。callTool 失败请抛错（框架会包成 is_error）。</td></tr>
+            <tr><td>McpClientLike</td><td><code>{ listTools(); callTool(name, args) }</code></td><td>MCP client 的最小结构面：任意实现它的对象都能接，<strong>框架不 import MCP SDK</strong>；stdio / HTTP 传输由连接器自行提供。callTool 失败请抛错（框架会包成 is_error）。</td></tr>
             <tr><td>McpToolInfo</td><td><code>{ name; description?; inputSchema? }</code></td><td>tools/list 条目的结构面子集；inputSchema 已是 JSON Schema → 原样当 input_schema 用。</td></tr>
             <tr><td>McpToolsOptions</td><td><code>{ prefix?; server?; timeoutMs?=60000 }</code></td><td>缺省前缀 <code>mcp_&lt;server&gt;_</code>（没给 server 时 <code>mcp_</code>）；timeoutMs 是单次调用超时（放弃等待，非取消）。</td></tr>
             <tr><td>MCP_DEFAULT_TIMEOUT_MS</td><td><code>60000</code></td><td>桥的缺省单次调用超时。</td></tr>
             <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。</td></tr>
             <tr><td>MetricsSink</td><td><code>TraceSink &amp; { snapshot(); render(); reset() }</code></td><td>snapshot 给数值，render 给 Prometheus 文本（<code>/metrics</code> 直接回它），reset 清空累计。</td></tr>
-            <tr><td>MetricsSinkOptions / MetricsSnapshot</td><td><code>{ export?: 'prometheus' | 'otlp'; windowSize?=1024; prefix?='agentia_' }</code> / <code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）；分位是<strong>窗口内精确值</strong>（非原生 histogram）；<code>export: 'otlp'</code> 尚未实现 → 构造期抛错。</td></tr>
+            <tr><td>MetricsSinkOptions / MetricsSnapshot</td><td><code>{ export?: 'prometheus' | 'otlp'; windowSize?=1024; prefix?='agentia_' }</code> / <code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）；分位是<strong>窗口内精确值</strong>（非原生 histogram）；<code>export: 'otlp'</code> 不受支持，构造期抛错。</td></tr>
           </tbody>
         </table></div>
       </section>
 
       <section id="eval">
         <h2>eval · 回归断言</h2>
-        <p>叶子消费模块（只依赖公共面、零反向依赖）：把测试里的 mock client 提升为一等能力，让「改 prompt / 换模型 / 加工具之后有没有回归」变成断言，而不是靠人眼。断言源就是既有的 <code>Trace</code>。</p>
+        <p>把脚本化的模型往返变成一等能力，让「改 prompt / 换模型 / 加工具之后有没有回归」变成断言，而不是靠人眼。断言源就是既有的 <code>Trace</code>。</p>
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>

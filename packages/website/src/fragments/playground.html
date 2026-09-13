@@ -27,9 +27,6 @@
       </label>
       <label class="pg-byok-field pg-byok-model">
         <span>模型</span>
-        <!-- 下拉而非「文本框 + datalist」：Chrome 会拿框内现有文本过滤 datalist 建议，
-             预填默认模型时同服务商的其他模型会被过滤掉（选 DeepSeek 看不到 deepseek-flash）。
-             下拉一次列全，另留「自定义…」兜底兼容端点 / 新模型名。 -->
         <select id="byok-model"></select>
         <input type="text" id="byok-model-custom" placeholder="自定义模型名" autocomplete="off" spellcheck="false" hidden />
       </label>
