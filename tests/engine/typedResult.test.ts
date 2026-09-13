@@ -192,7 +192,10 @@ describe('typed 结构化结果（hidden submit_result）', () => {
       resultSchema: RESULT_SCHEMA,
     });
     assert.equal(result.stopReason, 'error');
-    assert.ok(result.error?.message.includes('submit_result'), result.error?.message);
+    // @types/node 26 把 assert.ok 的 string message 拆成了独立重载（支持 printf 风格参数），
+    // 于是 `string | undefined` 落进「两个重载都不匹配」的缝里 —— 先归一为 string。
+    const conflictMsg = result.error?.message ?? '';
+    assert.ok(conflictMsg.includes('submit_result'), conflictMsg);
     assert.equal(result.trace.status, 'error');
   });
 
