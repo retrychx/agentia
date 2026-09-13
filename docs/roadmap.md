@@ -177,6 +177,11 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
 - canCall 能力级能力边（当前 tools 引用粒度为 provider）。
+- **维护：CI 抖动待定位** —— v0.2.2 窗口内 main 曾红一次（PR #8 那棵树），同树**重跑即绿** ⇒ 抖动而非回归。
+  具体用例当时**无法定位**：`verify-all.sh` 把步骤输出捕获后只 `tail -30`，恰好冲掉 node:test 的 `✖ <名字>` 标记行，
+  CI 上只剩一个 exit 1。已修诊断可达性（PR #9：失败分支先 grep 标记行再补尾部上下文）。
+  下次抖动应能从日志直接读出用例名；本地连跑 3 次全绿，疑似真时钟敏感用例
+  （`store/sqliteStore` 多进程抢锁 / `engine/toolTiming` 工具超时 / `transport` drain 超时）。
 
 ## 原则（约束所有 R）
 
