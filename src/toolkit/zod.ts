@@ -33,7 +33,9 @@ export function fromZod<T = unknown>(jsonSchema: JsonSchema, zod: unknown): Type
     };
   };
   if (typeof zp?.safeParse !== 'function') {
-    throw new Error('fromZod：第二参需为带 safeParse 的 zod schema（框架不 import zod，靠结构面识别）');
+    throw new Error(
+      'fromZod：第二参需为带 safeParse 的 zod schema（框架不 import zod，靠结构面识别）',
+    );
   }
   // 挂到隐藏字段：发给 API 时 JSON 序列化自动丢弃函数，不污染 input_schema
   return {

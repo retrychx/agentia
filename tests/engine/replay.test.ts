@@ -40,7 +40,16 @@ function buildTrace(): Trace {
   return r.snapshot('ok');
 }
 
-type Block = { type: string; id?: string; tool_use_id?: string; name?: string; text?: string; content?: unknown; is_error?: boolean; input?: unknown };
+type Block = {
+  type: string;
+  id?: string;
+  tool_use_id?: string;
+  name?: string;
+  text?: string;
+  content?: unknown;
+  is_error?: boolean;
+  input?: unknown;
+};
 
 function blocks(m: Anthropic.MessageParam): Block[] {
   return (Array.isArray(m.content) ? m.content : []) as Block[];
@@ -61,7 +70,10 @@ describe('traceToMessages（trace 重放基底）', () => {
     // t1：两个 tool_use 按发起序（input 事件序）
     const a1 = blocks(msgs[1]);
     const uses = a1.filter((b) => b.type === 'tool_use');
-    assert.deepEqual(uses.map((b) => b.name), ['search', 'fetch']);
+    assert.deepEqual(
+      uses.map((b) => b.name),
+      ['search', 'fetch'],
+    );
 
     // 每条 tool_use 紧跟的 user 消息里有同 id 的 tool_result（id 全局唯一）
     const u1 = blocks(msgs[2]);
@@ -82,7 +94,10 @@ describe('traceToMessages（trace 重放基底）', () => {
     assert.deepEqual(uses[0].input, { q: 'x' });
 
     // t3 纯文本收尾回合：只有标注文本，不跟 tool_result
-    assert.deepEqual(blocks(msgs[5]).map((b) => b.type), ['text']);
+    assert.deepEqual(
+      blocks(msgs[5]).map((b) => b.type),
+      ['text'],
+    );
     // 末条是收尾 user：以 assistant 结尾即 prefill，缺省模型上 400
     assert.ok(String(msgs[6].content).includes('以上是全部回合'));
   });
@@ -105,7 +120,11 @@ describe('traceToMessages（trace 重放基底）', () => {
     // fetch 的 url 入参 5000+ 字符 → 截断后 JSON 不完整，包 {_raw}（tool_use.input 必须是 object）
     const fetchInput = uses[1].input as { _raw: string };
     assert.equal(typeof fetchInput, 'object');
-    assert.ok(fetchInput._raw.endsWith('…(+' + (JSON.stringify({ url: 'u'.repeat(5000) }).length - 100) + ')'));
+    assert.ok(
+      fetchInput._raw.endsWith(
+        '…(+' + (JSON.stringify({ url: 'u'.repeat(5000) }).length - 100) + ')',
+      ),
+    );
 
     const results = blocks(msgs[2]).filter((b) => b.type === 'tool_result');
     const fetchOut = results[1].content as string;
@@ -117,18 +136,39 @@ describe('traceToMessages（trace 重放基底）', () => {
     const root = r.begin('run', 'app', null);
     const t = r.begin('llm.turn', 'model-a', root);
     // 同一回合两次 read（同名并行）：只有 id 能把入参出参对上
-    r.event(t, 'tool.input', { tool: 'read', tool_use_id: 'tu_a', input: JSON.stringify({ file: 'a.txt' }) });
-    r.event(t, 'tool.input', { tool: 'read', tool_use_id: 'tu_b', input: JSON.stringify({ file: 'b.txt' }) });
+    r.event(t, 'tool.input', {
+      tool: 'read',
+      tool_use_id: 'tu_a',
+      input: JSON.stringify({ file: 'a.txt' }),
+    });
+    r.event(t, 'tool.input', {
+      tool: 'read',
+      tool_use_id: 'tu_b',
+      input: JSON.stringify({ file: 'b.txt' }),
+    });
     // 输出按完成序：b 先回来
-    r.event(t, 'tool.output', { tool: 'read', tool_use_id: 'tu_b', ok: true, content: 'B 文件内容' });
-    r.event(t, 'tool.output', { tool: 'read', tool_use_id: 'tu_a', ok: true, content: 'A 文件内容' });
+    r.event(t, 'tool.output', {
+      tool: 'read',
+      tool_use_id: 'tu_b',
+      ok: true,
+      content: 'B 文件内容',
+    });
+    r.event(t, 'tool.output', {
+      tool: 'read',
+      tool_use_id: 'tu_a',
+      ok: true,
+      content: 'A 文件内容',
+    });
     r.end(t);
     r.end(root);
 
     const msgs = traceToMessages(r.snapshot('ok'));
     const results = blocks(msgs[2]).filter((b) => b.type === 'tool_result');
     // 输出顺序是 B→A，但 tool_use 顺序是 a→b：结果必须跟着 id 走（否则 a.txt 读到 B 的内容）
-    assert.deepEqual(results.map((b) => b.content), ['A 文件内容', 'B 文件内容']);
+    assert.deepEqual(
+      results.map((b) => b.content),
+      ['A 文件内容', 'B 文件内容'],
+    );
   });
 
   it('老 trace（事件体无 tool_use_id）回落同名配对，仍不漏配', () => {
@@ -142,15 +182,23 @@ describe('traceToMessages（trace 重放基底）', () => {
     r.end(t);
     r.end(root);
 
-    const results = blocks(traceToMessages(r.snapshot('ok'))[2]).filter((b) => b.type === 'tool_result');
-    assert.deepEqual(results.map((b) => b.content), ['先回来的', '后回来的']);
+    const results = blocks(traceToMessages(r.snapshot('ok'))[2]).filter(
+      (b) => b.type === 'tool_result',
+    );
+    assert.deepEqual(
+      results.map((b) => b.content),
+      ['先回来的', '后回来的'],
+    );
     assert.ok(results.every((b) => b.is_error === false));
   });
 
   it('includeToolIO: false —— 只留标注文本；连续 assistant 合并、首尾补 user', () => {
     const msgs = traceToMessages(buildTrace(), { includeToolIO: false });
     // 三个纯文本回合合并为一条 assistant，前置 + 后置合成 user
-    assert.deepEqual(msgs.map((m) => m.role), ['user', 'assistant', 'user']);
+    assert.deepEqual(
+      msgs.map((m) => m.role),
+      ['user', 'assistant', 'user'],
+    );
     assert.deepEqual(
       blocks(msgs[1]).map((b) => b.type),
       ['text', 'text', 'text'],
@@ -180,7 +228,10 @@ describe('traceToMessages（trace 重放基底）', () => {
     const root = r.begin('run', 'app', null);
     r.end(root);
     const msgs = traceToMessages(r.snapshot('ok'));
-    assert.deepEqual(msgs.map((m) => m.role), ['user']);
+    assert.deepEqual(
+      msgs.map((m) => m.role),
+      ['user'],
+    );
     assert.ok(String(msgs[0].content).includes('[replay]'));
   });
 

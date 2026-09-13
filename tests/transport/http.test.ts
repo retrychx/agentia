@@ -139,7 +139,7 @@ describe('createHttpHandler', () => {
       assert.equal(rec.idempotencyKey, 'k1');
 
       // 轮询到终态
-      let polled;
+      let polled: Awaited<ReturnType<typeof readJson>>;
       for (let i = 0; i < 100; i++) {
         const r = await fetch(`${base}/tasks/${rec.taskId}`);
         assert.equal(r.status, 200);
@@ -191,10 +191,7 @@ describe('createHttpHandler', () => {
       assert.match((await readJson(bad)).error, /URL 编码/);
       assert.equal((await fetch(`${base}/nope`)).status, 404);
       assert.equal((await fetch(`${base}/run`)).status, 405);
-      assert.equal(
-        (await fetch(`${base}/tasks/x`, { method: 'DELETE' })).status,
-        405,
-      );
+      assert.equal((await fetch(`${base}/tasks/x`, { method: 'DELETE' })).status, 405);
     } finally {
       await close(server);
     }
@@ -314,7 +311,10 @@ describe('createHttpHandler', () => {
       for (let i = 0; i < 100 && started < 2; i++) await new Promise((r) => setTimeout(r, 5));
       assert.equal(started, 2, '不限并发时两个请求同时跑');
       release();
-      assert.deepEqual((await both).map((r) => r.status), [200, 200]);
+      assert.deepEqual(
+        (await both).map((r) => r.status),
+        [200, 200],
+      );
     } finally {
       await close(server);
     }
@@ -335,10 +335,7 @@ describe('createHttpHandler', () => {
       assert.equal(res.status, 500);
       const body = await readJson(res);
       assert.equal(body.error, '内部错误');
-      assert.ok(
-        !JSON.stringify(body).includes('ECONNREFUSED'),
-        '内部拓扑不得回给未鉴权调用方',
-      );
+      assert.ok(!JSON.stringify(body).includes('ECONNREFUSED'), '内部拓扑不得回给未鉴权调用方');
       assert.equal(logged.length, 1, '细节必须在服务端日志里可见');
       assert.match(String((logged[0][1] as Error).message), /ECONNREFUSED/);
     } finally {
@@ -419,7 +416,8 @@ describe('createHttpHandler', () => {
       await started;
       ac.abort();
       await p;
-      for (let i = 0; i < 100 && !received?.aborted; i++) await new Promise((r) => setTimeout(r, 10));
+      for (let i = 0; i < 100 && !received?.aborted; i++)
+        await new Promise((r) => setTimeout(r, 10));
       assert.equal(received?.aborted, true, '客户端断开应 abort 在飞 run');
     } finally {
       await close(server);

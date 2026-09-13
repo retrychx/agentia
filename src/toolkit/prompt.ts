@@ -34,7 +34,7 @@ const EMPTY_SCHEMA: JsonSchema = {
 
 /** 方法装饰器（实例或 static 均可）：登记 prompt spec。返回值 = 资产文本。 */
 export function Prompt(spec: PromptSpec) {
-  return function (value: Function, context: CapabilityDecoratorContext): void {
+  return (value: Function, context: CapabilityDecoratorContext): void => {
     assertMethodTarget(context, '@Prompt');
     promptSpecs.set(value, spec);
   };

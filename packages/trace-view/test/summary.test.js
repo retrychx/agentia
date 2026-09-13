@@ -9,7 +9,17 @@ function trace() {
     rootSpanId: 's0',
     status: 'ok',
     spans: [
-      { spanId: 's0', parentSpanId: null, kind: 'run', name: 'run', startedAt: 0, endedAt: 500, status: 'ok', attributes: {}, events: [] },
+      {
+        spanId: 's0',
+        parentSpanId: null,
+        kind: 'run',
+        name: 'run',
+        startedAt: 0,
+        endedAt: 500,
+        status: 'ok',
+        attributes: {},
+        events: [],
+      },
       {
         spanId: 's1',
         parentSpanId: 's0',
@@ -18,7 +28,13 @@ function trace() {
         startedAt: 10,
         endedAt: 100,
         status: 'ok',
-        usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.01 },
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.01,
+        },
         attributes: {},
         events: [
           { time: 50, name: 'tool.output', body: { tool: 'search', ok: true, durationMs: 200 } },
@@ -33,7 +49,13 @@ function trace() {
         startedAt: 110,
         endedAt: 400,
         status: 'ok',
-        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.002 },
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.002,
+        },
         attributes: { subagent: 'researcher' },
         events: [],
       },
@@ -62,11 +84,17 @@ describe('trace-view summarizeTrace（G2 能力排行）', () => {
       '290 / 200 / 20 / 10',
     );
     const search = rows[1];
-    assert.deepEqual({ calls: search.calls, errors: search.errors, max: search.maxMs }, { calls: 1, errors: 0, max: 200 });
+    assert.deepEqual(
+      { calls: search.calls, errors: search.errors, max: search.maxMs },
+      { calls: 1, errors: 0, max: 200 },
+    );
     assert.equal(search.tokens, null, '工具没有 token 语义');
     assert.equal(search.costUsd, null);
     const researcher = rows[0];
-    assert.deepEqual({ calls: researcher.calls, tokens: researcher.tokens, costUsd: researcher.costUsd }, { calls: 1, tokens: 15, costUsd: 0.002 });
+    assert.deepEqual(
+      { calls: researcher.calls, tokens: researcher.tokens, costUsd: researcher.costUsd },
+      { calls: 1, tokens: 15, costUsd: 0.002 },
+    );
     assert.equal(rows[3].errors, 1, 'fetch 失败一次');
     assert.equal(rows[2].errors, 1, 'skill span status=error');
   });
@@ -75,7 +103,9 @@ describe('trace-view summarizeTrace（G2 能力排行）', () => {
     assert.deepEqual(summarizeTrace({}), []);
     assert.deepEqual(summarizeTrace(null), []);
     assert.deepEqual(
-      summarizeTrace({ spans: [{ kind: 'llm.turn', events: [{ name: 'tool.output', body: null }] }] }),
+      summarizeTrace({
+        spans: [{ kind: 'llm.turn', events: [{ name: 'tool.output', body: null }] }],
+      }),
       [],
       'body 非法的事件被跳过',
     );
@@ -87,7 +117,20 @@ describe('trace-view summarizeTrace（G2 能力排行）', () => {
     assert.match(html, /subagent:researcher/);
     assert.match(html, /tv-sum-err/);
     assert.match(renderSummary([]), /没有可归因的能力/);
-    assert.match(renderSummary([{ capability: '<img>', calls: 1, errors: 0, totalMs: 1, maxMs: 1, tokens: null, costUsd: null }]), /&lt;img&gt;/);
+    assert.match(
+      renderSummary([
+        {
+          capability: '<img>',
+          calls: 1,
+          errors: 0,
+          totalMs: 1,
+          maxMs: 1,
+          tokens: null,
+          costUsd: null,
+        },
+      ]),
+      /&lt;img&gt;/,
+    );
   });
 
   it('无 tokens/cost 的能力渲染为 -（不显示 undefined）', () => {

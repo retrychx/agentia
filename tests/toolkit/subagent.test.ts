@@ -50,7 +50,12 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
         ...toolUseMsg('submit_result', { answer: '42', confidence: 0.9 }, 'tu1'),
         content: [
           { type: 'text', text: '调研结论：答案是 42' },
-          { type: 'tool_use', id: 'tu1', name: 'submit_result', input: { answer: '42', confidence: 0.9 } },
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'submit_result',
+            input: { answer: '42', confidence: 0.9 },
+          },
         ],
       },
     ]);
@@ -67,7 +72,10 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
 
     // 子 agent 循环拿到了隐藏 submit_result 工具（input_schema = resultSchema）
     const childTools = (seen[0] as { tools: Array<{ name: string; input_schema: unknown }> }).tools;
-    assert.deepEqual(childTools.map((t) => t.name), ['submit_result']);
+    assert.deepEqual(
+      childTools.map((t) => t.name),
+      ['submit_result'],
+    );
     assert.equal(childTools[0].input_schema, RESULT_SCHEMA);
 
     // capability span 正常收尾

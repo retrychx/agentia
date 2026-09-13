@@ -136,7 +136,9 @@ export interface MetricsSink extends TraceSink {
 const DEFAULT_WINDOW = 1024;
 const DEFAULT_MAX_CAPABILITIES = 200;
 /** 缺省时长桶（毫秒）：覆盖"工具几十毫秒 → run 几十秒"的常见区间 */
-export const DEFAULT_BUCKETS: readonly number[] = [25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
+export const DEFAULT_BUCKETS: readonly number[] = [
+  25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000,
+];
 
 /** 超过 maxCapabilities 后的兜底标签 */
 const OTHER_CAPABILITY = '__other__';
@@ -346,7 +348,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
               span.usage.cacheReadTokens +
               span.usage.cacheCreationTokens;
             acc.tokens = (acc.tokens ?? 0) + sum;
-            if (span.usage.costEstimate != null) acc.costUsd = (acc.costUsd ?? 0) + span.usage.costEstimate;
+            if (span.usage.costEstimate != null)
+              acc.costUsd = (acc.costUsd ?? 0) + span.usage.costEstimate;
           }
           capabilities.set(label, acc);
         }
@@ -454,21 +457,53 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   const render = (): string => {
     const out: string[] = [];
     out.push(line(`${p}runs_total`, 'counter', runs, 'run 总数（成功 + 失败）'));
-    out.push(line(`${p}runs_failed_total`, 'counter', failed, '失败的 run 数（trace.status=error）'));
-    out.push(line(`${p}tokens_total`, 'counter', tokens.input, '输入 token 累计', '{kind="input"}'));
-    out.push(line(`${p}tokens_total`, 'counter', tokens.output, '输出 token 累计', '{kind="output"}'));
-    out.push(line(`${p}tokens_total`, 'counter', tokens.cacheRead, '缓存读 token 累计', '{kind="cache_read"}'));
     out.push(
-      line(`${p}tokens_total`, 'counter', tokens.cacheCreation, '缓存写 token 累计', '{kind="cache_creation"}'),
+      line(`${p}runs_failed_total`, 'counter', failed, '失败的 run 数（trace.status=error）'),
+    );
+    out.push(
+      line(`${p}tokens_total`, 'counter', tokens.input, '输入 token 累计', '{kind="input"}'),
+    );
+    out.push(
+      line(`${p}tokens_total`, 'counter', tokens.output, '输出 token 累计', '{kind="output"}'),
+    );
+    out.push(
+      line(
+        `${p}tokens_total`,
+        'counter',
+        tokens.cacheRead,
+        '缓存读 token 累计',
+        '{kind="cache_read"}',
+      ),
+    );
+    out.push(
+      line(
+        `${p}tokens_total`,
+        'counter',
+        tokens.cacheCreation,
+        '缓存写 token 累计',
+        '{kind="cache_creation"}',
+      ),
     );
     out.push(line(`${p}cost_usd_total`, 'counter', costUsd, '累计成本估算（美元）'));
     // 时长：histogram（可跨实例聚合）+ 窗口内精确分位（单实例好读），两种口径并存
     out.push(histogram(`${p}run_duration_ms`, runStat, 'run 时长（毫秒）'));
     out.push(
-      line(`${p}run_duration_ms`, 'gauge', runStat.percentile(0.5), 'run 时长分位（毫秒，滑动窗口内精确值）', '{quantile="0.5"}'),
+      line(
+        `${p}run_duration_ms`,
+        'gauge',
+        runStat.percentile(0.5),
+        'run 时长分位（毫秒，滑动窗口内精确值）',
+        '{quantile="0.5"}',
+      ),
     );
     out.push(
-      line(`${p}run_duration_ms`, 'gauge', runStat.percentile(0.95), 'run 时长分位（毫秒，滑动窗口内精确值）', '{quantile="0.95"}'),
+      line(
+        `${p}run_duration_ms`,
+        'gauge',
+        runStat.percentile(0.95),
+        'run 时长分位（毫秒，滑动窗口内精确值）',
+        '{quantile="0.95"}',
+      ),
     );
 
     // —— 能力维度（E2）——
@@ -479,16 +514,44 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       out.push(line(`${p}capability_errors_total`, 'counter', acc.errors, '能力失败次数', l));
       out.push(histogram(`${p}capability_duration_ms`, acc.stat, '能力调用耗时（毫秒）', l));
       out.push(
-        line(`${p}capability_duration_ms`, 'gauge', acc.stat.percentile(0.5), '能力调用耗时分位（窗口内精确值）', `{capability="${label}",quantile="0.5"}`),
+        line(
+          `${p}capability_duration_ms`,
+          'gauge',
+          acc.stat.percentile(0.5),
+          '能力调用耗时分位（窗口内精确值）',
+          `{capability="${label}",quantile="0.5"}`,
+        ),
       );
       out.push(
-        line(`${p}capability_duration_ms`, 'gauge', acc.stat.percentile(0.95), '能力调用耗时分位（窗口内精确值）', `{capability="${label}",quantile="0.95"}`),
+        line(
+          `${p}capability_duration_ms`,
+          'gauge',
+          acc.stat.percentile(0.95),
+          '能力调用耗时分位（窗口内精确值）',
+          `{capability="${label}",quantile="0.95"}`,
+        ),
       );
       if (acc.tokens !== null) {
-        out.push(line(`${p}capability_tokens_total`, 'counter', acc.tokens, 'skill/subagent 的子孙 token 合计', l));
+        out.push(
+          line(
+            `${p}capability_tokens_total`,
+            'counter',
+            acc.tokens,
+            'skill/subagent 的子孙 token 合计',
+            l,
+          ),
+        );
       }
       if (acc.costUsd !== null) {
-        out.push(line(`${p}capability_cost_usd_total`, 'counter', acc.costUsd, 'skill/subagent 的估算成本（美元）', l));
+        out.push(
+          line(
+            `${p}capability_cost_usd_total`,
+            'counter',
+            acc.costUsd,
+            'skill/subagent 的估算成本（美元）',
+            l,
+          ),
+        );
       }
     }
 
@@ -497,19 +560,47 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       const acc = models.get(model)!;
       const l = `{model="${model}"}`;
       out.push(line(`${p}model_turns_total`, 'counter', acc.turns, '模型往返次数', l));
-      out.push(line(`${p}model_tokens_total`, 'counter', acc.tokens, '模型 token 合计（四类之和）', l));
-      out.push(line(`${p}model_cost_usd_total`, 'counter', acc.costUsd, '模型估算成本（美元，仅已定价部分）', l));
+      out.push(
+        line(`${p}model_tokens_total`, 'counter', acc.tokens, '模型 token 合计（四类之和）', l),
+      );
+      out.push(
+        line(
+          `${p}model_cost_usd_total`,
+          'counter',
+          acc.costUsd,
+          '模型估算成本（美元，仅已定价部分）',
+          l,
+        ),
+      );
       if (acc.unpricedTurns > 0) {
         out.push(
-          line(`${p}model_unpriced_turns_total`, 'counter', acc.unpricedTurns, '算不出成本的 turn 数（模型不在价格表内）', l),
+          line(
+            `${p}model_unpriced_turns_total`,
+            'counter',
+            acc.unpricedTurns,
+            '算不出成本的 turn 数（模型不在价格表内）',
+            l,
+          ),
         );
       }
       out.push(histogram(`${p}model_duration_ms`, acc.stat, '模型往返耗时（毫秒）', l));
       out.push(
-        line(`${p}model_duration_ms`, 'gauge', acc.stat.percentile(0.5), '模型往返耗时分位（窗口内精确值）', `{model="${model}",quantile="0.5"}`),
+        line(
+          `${p}model_duration_ms`,
+          'gauge',
+          acc.stat.percentile(0.5),
+          '模型往返耗时分位（窗口内精确值）',
+          `{model="${model}",quantile="0.5"}`,
+        ),
       );
       out.push(
-        line(`${p}model_duration_ms`, 'gauge', acc.stat.percentile(0.95), '模型往返耗时分位（窗口内精确值）', `{model="${model}",quantile="0.95"}`),
+        line(
+          `${p}model_duration_ms`,
+          'gauge',
+          acc.stat.percentile(0.95),
+          '模型往返耗时分位（窗口内精确值）',
+          `{model="${model}",quantile="0.95"}`,
+        ),
       );
     }
     return out.join('');
@@ -524,13 +615,21 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     const now = nanos(Date.now());
     const start = nanos(startedAtMs);
     const s = snapshot();
-    const sum = (name: string, value: number, help: string, attrs: OtlpAttr[], monotonic = true) => ({
+    const sum = (
+      name: string,
+      value: number,
+      help: string,
+      attrs: OtlpAttr[],
+      monotonic = true,
+    ) => ({
       name,
       description: help,
       sum: {
         aggregationTemporality: 2, // CUMULATIVE
         isMonotonic: monotonic,
-        dataPoints: [{ attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asInt: String(value) }],
+        dataPoints: [
+          { attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asInt: String(value) },
+        ],
       },
     });
     const hist = (name: string, stat: DurationStat, help: string, attrs: OtlpAttr[]) => ({
@@ -557,8 +656,12 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       sum(`${p}runs_failed_total`, s.failed, '失败的 run 数', []),
       sum(`${p}tokens_total`, tokens.input, '输入 token 累计', [strAttr('kind', 'input')]),
       sum(`${p}tokens_total`, tokens.output, '输出 token 累计', [strAttr('kind', 'output')]),
-      sum(`${p}tokens_total`, tokens.cacheRead, '缓存读 token 累计', [strAttr('kind', 'cache_read')]),
-      sum(`${p}tokens_total`, tokens.cacheCreation, '缓存写 token 累计', [strAttr('kind', 'cache_creation')]),
+      sum(`${p}tokens_total`, tokens.cacheRead, '缓存读 token 累计', [
+        strAttr('kind', 'cache_read'),
+      ]),
+      sum(`${p}tokens_total`, tokens.cacheCreation, '缓存写 token 累计', [
+        strAttr('kind', 'cache_creation'),
+      ]),
       sum(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []),
       hist(`${p}run_duration_ms`, runStat, 'run 时长（毫秒）', []),
     ];
@@ -568,8 +671,10 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       metrics.push(sum(`${p}capability_calls_total`, acc.calls, '能力调用次数', attrs));
       metrics.push(sum(`${p}capability_errors_total`, acc.errors, '能力失败次数', attrs));
       metrics.push(hist(`${p}capability_duration_ms`, acc.stat, '能力调用耗时（毫秒）', attrs));
-      if (acc.tokens !== null) metrics.push(sum(`${p}capability_tokens_total`, acc.tokens, '子孙 token 合计', attrs));
-      if (acc.costUsd !== null) metrics.push(sum(`${p}capability_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs));
+      if (acc.tokens !== null)
+        metrics.push(sum(`${p}capability_tokens_total`, acc.tokens, '子孙 token 合计', attrs));
+      if (acc.costUsd !== null)
+        metrics.push(sum(`${p}capability_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs));
     }
     for (const model of [...models.keys()].sort()) {
       const acc = models.get(model)!;
@@ -578,7 +683,9 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       metrics.push(sum(`${p}model_tokens_total`, acc.tokens, '模型 token 合计', attrs));
       metrics.push(sum(`${p}model_cost_usd_total`, acc.costUsd, '模型估算成本（美元）', attrs));
       if (acc.unpricedTurns > 0) {
-        metrics.push(sum(`${p}model_unpriced_turns_total`, acc.unpricedTurns, '未定价 turn 数', attrs));
+        metrics.push(
+          sum(`${p}model_unpriced_turns_total`, acc.unpricedTurns, '未定价 turn 数', attrs),
+        );
       }
       metrics.push(hist(`${p}model_duration_ms`, acc.stat, '模型往返耗时（毫秒）', attrs));
     }

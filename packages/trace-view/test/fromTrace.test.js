@@ -26,28 +26,65 @@ function docReviewTrace() {
     totalUsage: { inputTokens: 15, outputTokens: 8, cacheReadTokens: 0, cacheCreationTokens: 0 },
     spans: [
       {
-        spanId: 's0', traceId: 't1', parentSpanId: null, kind: 'run', name: 'run · demo',
-        startedAt: 0, endedAt: 1000, status: 'ok', attributes: {}, events: [],
+        spanId: 's0',
+        traceId: 't1',
+        parentSpanId: null,
+        kind: 'run',
+        name: 'run · demo',
+        startedAt: 0,
+        endedAt: 1000,
+        status: 'ok',
+        attributes: {},
+        events: [],
       },
       {
-        spanId: 's1', traceId: 't1', parentSpanId: 's0', kind: 'llm.turn', name: 'claude-opus-5',
-        startedAt: 10, endedAt: 140, status: 'ok',
+        spanId: 's1',
+        traceId: 't1',
+        parentSpanId: 's0',
+        kind: 'llm.turn',
+        name: 'claude-opus-5',
+        startedAt: 10,
+        endedAt: 140,
+        status: 'ok',
         usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
         attributes: {},
         events: [
-          { time: 150, name: 'tool.input', body: { tool: 'doc_reviewer', tool_use_id: 'tu1', input: { task: '审查' } } },
-          { time: 500, name: 'tool.output', body: { tool: 'doc_reviewer', tool_use_id: 'tu1', ok: true, content: '审查完成' } },
+          {
+            time: 150,
+            name: 'tool.input',
+            body: { tool: 'doc_reviewer', tool_use_id: 'tu1', input: { task: '审查' } },
+          },
+          {
+            time: 500,
+            name: 'tool.output',
+            body: { tool: 'doc_reviewer', tool_use_id: 'tu1', ok: true, content: '审查完成' },
+          },
         ],
       },
       {
-        spanId: 's2', traceId: 't1', parentSpanId: 's1', kind: 'capability', name: 'doc_reviewer',
-        startedAt: 160, endedAt: 490, status: 'ok', attributes: { subagent: 'doc_reviewer' }, events: [],
+        spanId: 's2',
+        traceId: 't1',
+        parentSpanId: 's1',
+        kind: 'capability',
+        name: 'doc_reviewer',
+        startedAt: 160,
+        endedAt: 490,
+        status: 'ok',
+        attributes: { subagent: 'doc_reviewer' },
+        events: [],
       },
       {
-        spanId: 's3', traceId: 't1', parentSpanId: 's2', kind: 'llm.turn', name: 'claude-opus-5',
-        startedAt: 180, endedAt: 300, status: 'ok',
+        spanId: 's3',
+        traceId: 't1',
+        parentSpanId: 's2',
+        kind: 'llm.turn',
+        name: 'claude-opus-5',
+        startedAt: 180,
+        endedAt: 300,
+        status: 'ok',
         usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 },
-        attributes: {}, events: [],
+        attributes: {},
+        events: [],
       },
     ],
   };
@@ -95,10 +132,31 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
 
     const plain = {
       spans: [
-        { spanId: 'r', traceId: 'x', parentSpanId: null, kind: 'run', name: 'app', startedAt: 0, endedAt: 10, status: 'ok', attributes: {}, events: [] },
         {
-          spanId: 't', traceId: 'x', parentSpanId: 'r', kind: 'llm.turn', name: 'm', startedAt: 1, endedAt: 5, status: 'ok', attributes: {},
-          events: [{ time: 2, name: 'tool.input', body: { tool: 'get_weather', input: { city: '上海' } } }],
+          spanId: 'r',
+          traceId: 'x',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'app',
+          startedAt: 0,
+          endedAt: 10,
+          status: 'ok',
+          attributes: {},
+          events: [],
+        },
+        {
+          spanId: 't',
+          traceId: 'x',
+          parentSpanId: 'r',
+          kind: 'llm.turn',
+          name: 'm',
+          startedAt: 1,
+          endedAt: 5,
+          status: 'ok',
+          attributes: {},
+          events: [
+            { time: 2, name: 'tool.input', body: { tool: 'get_weather', input: { city: '上海' } } },
+          ],
         },
       ],
     };
@@ -112,16 +170,32 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
   it('usage 计数：只累加 llm.turn，capability span 的聚合 usage 不双算', () => {
     // createTraceView 需要 DOM：最小 stub 即可（只用到 createElement / innerHTML / appendChild）
     const makeNode = () => ({
-      className: '', textContent: '', title: '', dataset: {}, children: [],
-      set innerHTML(_v) { this.children = []; },
-      get innerHTML() { return ''; },
-      appendChild(c) { this.children.push(c); return c; },
+      className: '',
+      textContent: '',
+      title: '',
+      dataset: {},
+      children: [],
+      set innerHTML(_v) {
+        this.children = [];
+      },
+      get innerHTML() {
+        return '';
+      },
+      appendChild(c) {
+        this.children.push(c);
+        return c;
+      },
     });
     globalThis.document = { createElement: () => makeNode() };
 
     const t = docReviewTrace();
     // capability span 挂一个聚合 usage：计入就双算
-    t.spans[2].usage = { inputTokens: 999, outputTokens: 999, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    t.spans[2].usage = {
+      inputTokens: 999,
+      outputTokens: 999,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    };
 
     const view = createTraceView(makeNode());
     playTrace(view, t);
@@ -134,10 +208,21 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
 
   it('渲染成 DOM：事件行在所属 turn 下、能力行带 tr-ico 标识符', () => {
     const makeNode = () => ({
-      className: '', textContent: '', title: '', dataset: {}, children: [],
-      set innerHTML(_v) { this.children = []; },
-      get innerHTML() { return ''; },
-      appendChild(c) { this.children.push(c); return c; },
+      className: '',
+      textContent: '',
+      title: '',
+      dataset: {},
+      children: [],
+      set innerHTML(_v) {
+        this.children = [];
+      },
+      get innerHTML() {
+        return '';
+      },
+      appendChild(c) {
+        this.children.push(c);
+        return c;
+      },
     });
     globalThis.document = { createElement: () => makeNode() };
 
@@ -148,7 +233,10 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
     const cls = rows.map((r) => r.className);
     assert.equal(rows.length, 6, 'run 根 + turn + 2 事件 + capability + 内层 turn');
     assert.ok(cls[0].includes('tr-row'), 'run 根行');
-    assert.ok(cls.some((c) => c.includes('tr-ev')), '有事件行');
+    assert.ok(
+      cls.some((c) => c.includes('tr-ev')),
+      '有事件行',
+    );
     const unitRow = rows.find((r) => r.dataset.kind === 'capability');
     assert.equal(unitRow.dataset.capability, 'subagent');
     // 能力行的标识符节点存在且字形为 ⊕
@@ -160,10 +248,28 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
   it('非 tool.* 事件不带工具名：usage.unpriced / llm.retry 不再被标成 tool:?', () => {
     const t = {
       spans: [
-        { spanId: 'r', traceId: 'x', parentSpanId: null, kind: 'run', name: 'app', startedAt: 0, endedAt: 10, status: 'ok', attributes: {}, events: [] },
         {
-          spanId: 't', traceId: 'x', parentSpanId: 'r', kind: 'llm.turn', name: 'deepseek-chat',
-          startedAt: 1, endedAt: 5, status: 'ok', attributes: {},
+          spanId: 'r',
+          traceId: 'x',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'app',
+          startedAt: 0,
+          endedAt: 10,
+          status: 'ok',
+          attributes: {},
+          events: [],
+        },
+        {
+          spanId: 't',
+          traceId: 'x',
+          parentSpanId: 'r',
+          kind: 'llm.turn',
+          name: 'deepseek-chat',
+          startedAt: 1,
+          endedAt: 5,
+          status: 'ok',
+          attributes: {},
           events: [
             { time: 2, name: 'usage.unpriced', body: { model: 'deepseek-chat' } },
             { time: 3, name: 'llm.retry', body: { attempt: 2, delayMs: 500, error: 'overloaded' } },
@@ -192,11 +298,22 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
     const rows = summarizeTrace({
       spans: [
         {
-          spanId: 't', traceId: 'x', parentSpanId: 'r', kind: 'llm.turn', name: 'deepseek-chat',
-          startedAt: 1, endedAt: 5, status: 'ok', attributes: {},
+          spanId: 't',
+          traceId: 'x',
+          parentSpanId: 'r',
+          kind: 'llm.turn',
+          name: 'deepseek-chat',
+          startedAt: 1,
+          endedAt: 5,
+          status: 'ok',
+          attributes: {},
           events: [
             { time: 2, name: 'usage.unpriced', body: { model: 'deepseek-chat' } },
-            { time: 3, name: 'tool.output', body: { tool: 'get_weather', ok: true, durationMs: 120, content: '晴' } },
+            {
+              time: 3,
+              name: 'tool.output',
+              body: { tool: 'get_weather', ok: true, durationMs: 120, content: '晴' },
+            },
           ],
         },
       ],
@@ -210,10 +327,21 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
 
   it('DOM：非 tool.* 事件行不渲染 tr-name 节点，tool.* 事件行照旧渲染', () => {
     const makeNode = () => ({
-      className: '', textContent: '', title: '', dataset: {}, children: [],
-      set innerHTML(_v) { this.children = []; },
-      get innerHTML() { return ''; },
-      appendChild(c) { this.children.push(c); return c; },
+      className: '',
+      textContent: '',
+      title: '',
+      dataset: {},
+      children: [],
+      set innerHTML(_v) {
+        this.children = [];
+      },
+      get innerHTML() {
+        return '';
+      },
+      appendChild(c) {
+        this.children.push(c);
+        return c;
+      },
     });
     globalThis.document = { createElement: () => makeNode() };
 
@@ -221,10 +349,28 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
     const view = createTraceView(root);
     playTrace(view, {
       spans: [
-        { spanId: 'r', traceId: 'x', parentSpanId: null, kind: 'run', name: 'app', startedAt: 0, endedAt: 10, status: 'ok', attributes: {}, events: [] },
         {
-          spanId: 't', traceId: 'x', parentSpanId: 'r', kind: 'llm.turn', name: 'm',
-          startedAt: 1, endedAt: 5, status: 'ok', attributes: {},
+          spanId: 'r',
+          traceId: 'x',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'app',
+          startedAt: 0,
+          endedAt: 10,
+          status: 'ok',
+          attributes: {},
+          events: [],
+        },
+        {
+          spanId: 't',
+          traceId: 'x',
+          parentSpanId: 'r',
+          kind: 'llm.turn',
+          name: 'm',
+          startedAt: 1,
+          endedAt: 5,
+          status: 'ok',
+          attributes: {},
           events: [
             { time: 2, name: 'usage.unpriced', body: { model: 'deepseek-chat' } },
             { time: 3, name: 'tool.input', body: { tool: 'get_weather', input: { city: '上海' } } },
@@ -239,7 +385,15 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
     const usageRow = evRows.find((r) => r.dataset.ev === 'usage.unpriced');
     const toolRow = evRows.find((r) => r.dataset.ev === 'tool.input');
     assert.ok(!usageRow.children.some((c) => c.className === 'tr-name'), 'usage 行没有 tr-name 格');
-    assert.ok(usageRow.children.some((c) => c.className === 'tr-io'), 'usage 行仍带 payload 摘要');
-    assert.ok(toolRow.children.some((c) => c.className === 'tr-name' && c.textContent === 'tool:get_weather'), 'tool 行照旧');
+    assert.ok(
+      usageRow.children.some((c) => c.className === 'tr-io'),
+      'usage 行仍带 payload 摘要',
+    );
+    assert.ok(
+      toolRow.children.some(
+        (c) => c.className === 'tr-name' && c.textContent === 'tool:get_weather',
+      ),
+      'tool 行照旧',
+    );
   });
 });

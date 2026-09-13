@@ -8,39 +8,39 @@
  * 只声明 400/500/700（600 已并入 700）；只留 woff2 —— 目标浏览器全部支持，
  * 少发一半字体文件。 */
 @font-face {
-  font-family: 'Space Grotesk';
+  font-family: "Space Grotesk";
   font-style: normal;
   font-weight: 400;
   font-display: optional;
-  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2') format('woff2');
+  src: url("@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: 'Space Grotesk';
+  font-family: "Space Grotesk";
   font-style: normal;
   font-weight: 500;
   font-display: optional;
-  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2') format('woff2');
+  src: url("@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: 'Space Grotesk';
+  font-family: "Space Grotesk";
   font-style: normal;
   font-weight: 700;
   font-display: optional;
-  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2') format('woff2');
+  src: url("@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: 'JetBrains Mono';
+  font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
   font-display: optional;
-  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+  src: url("@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: 'JetBrains Mono';
+  font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 500;
   font-display: optional;
-  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+  src: url("@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2") format("woff2");
 }
 
 /* Agentia — design tokens：近黑 + 钛银金属色，发丝线，方角工程感 */
@@ -58,7 +58,7 @@
   /* 极光青（降饱和）：青色段色差远小于纯蓝，长时间看不会"字缘发虚"。
      188° 73% 54%，相对亮度 ≈0.48、对比 10:1，亮而不过曝。 */
   --ice: #34cbe0;
-  --ice-dim: rgba(52, 203, 224, 0.10);
+  --ice-dim: rgba(52, 203, 224, 0.1);
   --ice-border: rgba(52, 203, 224, 0.32);
   --accent-dim: rgba(217, 226, 238, 0.09);
   /* 统一内容容器：header 与所有内容区共用同一宽度、同一档侧边距。
@@ -67,14 +67,25 @@
   --content-max: 1200px;
   --gutter: 24px;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --sans: "Space Grotesk", -apple-system, "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", sans-serif;
+  --sans:
+    "Space Grotesk", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-html.lenis, html.lenis body { height: auto; }
-.lenis.lenis-smooth { scroll-behavior: auto !important; }
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html {
+  scroll-behavior: smooth;
+}
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
 
 body {
   background: var(--bg);
@@ -93,7 +104,9 @@ code {
   border-radius: 3px;
 }
 
-::selection { background: rgba(52, 203, 224, 0.24); }
+::selection {
+  background: rgba(52, 203, 224, 0.24);
+}
 
 /* 细颗粒噪点纹理：近黑底上的"纸质/金属"质感 */
 .grain {
@@ -121,18 +134,30 @@ code {
   width: 1px;
   background: rgba(255, 255, 255, 0.035);
 }
-.grid-lines span:nth-child(1) { left: 0; }
-.grid-lines span:nth-child(2) { left: 33.33%; }
-.grid-lines span:nth-child(3) { left: 66.66%; }
-.grid-lines span:nth-child(4) { right: 0; }
+.grid-lines span:nth-child(1) {
+  left: 0;
+}
+.grid-lines span:nth-child(2) {
+  left: 33.33%;
+}
+.grid-lines span:nth-child(3) {
+  left: 66.66%;
+}
+.grid-lines span:nth-child(4) {
+  right: 0;
+}
 
 /* nav */
 .nav {
   position: fixed;
-  top: 0; left: 0; right: 0;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 20;
   border-bottom: 1px solid transparent;
-  transition: background 0.3s, border-color 0.3s;
+  transition:
+    background 0.3s,
+    border-color 0.3s;
 }
 .nav.scrolled {
   background: rgba(10, 10, 11, 0.82);
@@ -158,14 +183,20 @@ code {
   color: var(--text);
   text-decoration: none;
 }
-.nav-links { display: flex; align-items: center; gap: 26px; }
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+}
 .nav-links a {
   color: var(--muted);
   text-decoration: none;
   font-size: 13.5px;
   transition: color 0.2s;
 }
-.nav-links a:hover { color: var(--text); }
+.nav-links a:hover {
+  color: var(--text);
+}
 .nav-cta {
   font-family: var(--mono);
   font-size: 12.5px !important;
@@ -173,9 +204,14 @@ code {
   border: 1px solid var(--border-strong);
   padding: 6px 14px;
   border-radius: 4px;
-  transition: border-color 0.2s, background 0.2s !important;
+  transition:
+    border-color 0.2s,
+    background 0.2s !important;
 }
-.nav-cta:hover { border-color: var(--ice); background: var(--ice-dim); }
+.nav-cta:hover {
+  border-color: var(--ice);
+  background: var(--ice-dim);
+}
 /* 折叠开关：桌面隐藏，≤520px 才出现（见文件末尾的窄屏块） */
 .nav-toggle {
   display: none;
@@ -195,11 +231,19 @@ code {
   height: 1.5px;
   background: var(--text);
   border-radius: 1px;
-  transition: transform 0.2s, opacity 0.2s;
+  transition:
+    transform 0.2s,
+    opacity 0.2s;
 }
-.nav-toggle[aria-expanded="true"] span:nth-child(1) { transform: translateY(3.25px) rotate(45deg); }
-.nav-toggle[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
-.nav-toggle[aria-expanded="true"] span:nth-child(3) { transform: translateY(-3.25px) rotate(-45deg); }
+.nav-toggle[aria-expanded="true"] span:nth-child(1) {
+  transform: translateY(3.25px) rotate(45deg);
+}
+.nav-toggle[aria-expanded="true"] span:nth-child(2) {
+  opacity: 0;
+}
+.nav-toggle[aria-expanded="true"] span:nth-child(3) {
+  transform: translateY(-3.25px) rotate(-45deg);
+}
 
 /* hero */
 .hero {
@@ -218,7 +262,11 @@ code {
   width: 100%;
   height: 100%;
 }
-.hero-content { position: relative; z-index: 2; max-width: 760px; }
+.hero-content {
+  position: relative;
+  z-index: 2;
+  max-width: 760px;
+}
 .hero-kicker {
   font-family: var(--mono);
   color: var(--steel);
@@ -232,7 +280,9 @@ code {
   font-weight: 700;
   letter-spacing: -0.025em;
 }
-.hero h1 .line { display: inline-block; }
+.hero h1 .line {
+  display: inline-block;
+}
 /* 钛银金属光泽：标题关键词上缓慢流动的银灰渐变 */
 .hero h1 .accent {
   background: linear-gradient(
@@ -250,8 +300,13 @@ code {
   animation: metal-sheen 7s ease-in-out infinite;
 }
 @keyframes metal-sheen {
-  0%, 100% { background-position: 0% 0; }
-  50% { background-position: 100% 0; }
+  0%,
+  100% {
+    background-position: 0% 0;
+  }
+  50% {
+    background-position: 100% 0;
+  }
 }
 .hero-sub {
   max-width: 600px;
@@ -272,12 +327,28 @@ code {
   font-size: 14.5px;
   font-weight: 700;
   text-decoration: none;
-  transition: transform 0.18s, box-shadow 0.25s, border-color 0.2s, background 0.2s;
+  transition:
+    transform 0.18s,
+    box-shadow 0.25s,
+    border-color 0.2s,
+    background 0.2s;
 }
-.btn-primary { background: var(--accent); color: #0a0a0b; }
-.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 32px rgba(217, 226, 238, 0.22); }
-.btn-ghost { border: 1px solid var(--border-strong); color: var(--text); }
-.btn-ghost:hover { border-color: var(--accent); background: var(--accent-dim); }
+.btn-primary {
+  background: var(--accent);
+  color: #0a0a0b;
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 32px rgba(217, 226, 238, 0.22);
+}
+.btn-ghost {
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+}
+.btn-ghost:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
 .hero-install {
   margin: 44px auto 0;
   display: inline-flex;
@@ -289,8 +360,16 @@ code {
   padding: 13px 18px;
   backdrop-filter: blur(8px);
 }
-.hero-install .prompt { font-family: var(--mono); color: var(--faint); }
-.hero-install code { background: none; padding: 0; color: var(--text); font-size: 13.5px; }
+.hero-install .prompt {
+  font-family: var(--mono);
+  color: var(--faint);
+}
+.hero-install code {
+  background: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 13.5px;
+}
 .copy {
   background: none;
   border: 1px solid var(--border);
@@ -300,9 +379,14 @@ code {
   font-size: 12px;
   font-family: var(--mono);
   cursor: pointer;
-  transition: color 0.2s, border-color 0.2s;
+  transition:
+    color 0.2s,
+    border-color 0.2s;
 }
-.copy:hover { color: var(--ice); border-color: var(--ice); }
+.copy:hover {
+  color: var(--ice);
+  border-color: var(--ice);
+}
 
 .hero-stats {
   position: relative;
@@ -317,9 +401,15 @@ code {
   color: var(--faint);
   letter-spacing: 0.06em;
 }
-.hero-stats b { color: var(--text); font-weight: 500; margin-right: 4px; }
+.hero-stats b {
+  color: var(--text);
+  font-weight: 500;
+  margin-right: 4px;
+}
 .hero-stats i {
-  width: 3px; height: 3px; border-radius: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
   background: var(--ice);
   opacity: 0.7;
 }
@@ -347,8 +437,15 @@ code {
   animation: scroll-dot 1.8s ease-in-out infinite;
 }
 @keyframes scroll-dot {
-  0%, 100% { transform: translateY(0); opacity: 1; }
-  60% { transform: translateY(12px); opacity: 0.15; }
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  60% {
+    transform: translateY(12px);
+    opacity: 0.15;
+  }
 }
 
 /* sections */
@@ -392,20 +489,38 @@ code {
   letter-spacing: -0.01em;
   margin-bottom: 12px;
 }
-.section-sub { color: var(--muted); margin-bottom: 44px; max-width: 560px; }
+.section-sub {
+  color: var(--muted);
+  margin-bottom: 44px;
+  max-width: 560px;
+}
 
-.grid { display: grid; gap: 14px; }
-.grid-4 { grid-template-columns: repeat(4, 1fr); }
-.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid {
+  display: grid;
+  gap: 14px;
+}
+.grid-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+.grid-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
 
-.card, .feature {
+.card,
+.feature {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 26px 24px;
-  transition: border-color 0.25s, transform 0.2s;
+  transition:
+    border-color 0.25s,
+    transform 0.2s;
 }
-.card:hover, .feature:hover { border-color: var(--ice-border); transform: translateY(-3px); }
+.card:hover,
+.feature:hover {
+  border-color: var(--ice-border);
+  transform: translateY(-3px);
+}
 .card-tag {
   display: inline-block;
   font-family: var(--mono);
@@ -416,8 +531,15 @@ code {
   padding: 3px 10px;
   margin-bottom: 16px;
 }
-.card h3 { font-size: 16.5px; margin-bottom: 8px; }
-.card p, .feature p { color: var(--muted); font-size: 14px; }
+.card h3 {
+  font-size: 16.5px;
+  margin-bottom: 8px;
+}
+.card p,
+.feature p {
+  color: var(--muted);
+  font-size: 14px;
+}
 .feature h3 {
   font-size: 15.5px;
   margin-bottom: 10px;
@@ -425,10 +547,17 @@ code {
   font-weight: 500;
   color: var(--text);
 }
-.feature h3::before { content: "▸ "; color: var(--ice); }
+.feature h3::before {
+  content: "▸ ";
+  color: var(--ice);
+}
 
 /* steps */
-.steps { display: grid; gap: 14px; margin: 40px 0 28px; }
+.steps {
+  display: grid;
+  gap: 14px;
+  margin: 40px 0 28px;
+}
 .step {
   display: flex;
   gap: 20px;
@@ -439,7 +568,9 @@ code {
   padding: 24px;
   transition: border-color 0.25s;
 }
-.step:hover { border-color: var(--ice-border); }
+.step:hover {
+  border-color: var(--ice-border);
+}
 .step-no {
   flex-shrink: 0;
   width: 32px;
@@ -453,19 +584,34 @@ code {
   align-items: center;
   justify-content: center;
 }
-.step > div:last-child { flex: 1; min-width: 0; }
-.step h3 { font-size: 15.5px; margin-bottom: 12px; font-family: var(--mono); font-weight: 500; }
-.cmd { color: #8be9fd; font-weight: 500; }   /* 命令行 · 青 */
+.step > div:last-child {
+  flex: 1;
+  min-width: 0;
+}
+.step h3 {
+  font-size: 15.5px;
+  margin-bottom: 12px;
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.cmd {
+  color: #8be9fd;
+  font-weight: 500;
+} /* 命令行 · 青 */
 pre {
-  background: #282a36;   /* Dracula 底色（代码块整体换「吸血鬼」主题） */
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: #282a36; /* Dracula 底色（代码块整体换「吸血鬼」主题） */
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 4px;
   padding: 14px 18px;
   overflow-x: auto;
   font-size: 13px;
   line-height: 1.7;
 }
-pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
+pre code {
+  background: none;
+  padding: 0;
+  color: #f8f8f2;
+} /* Dracula 前景 */
 
 .code-block {
   border: 1px solid var(--border);
@@ -473,14 +619,16 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   overflow: hidden;
 }
 .code-title {
-  background: #21222c;   /* Dracula 更暗一档，与代码块底色区分 */
+  background: #21222c; /* Dracula 更暗一档，与代码块底色区分 */
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   padding: 10px 16px;
   display: flex;
   align-items: center;
 }
 .code-title i {
-  width: 10px; height: 10px; border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
   background: var(--border-strong);
   margin-right: 7px;
 }
@@ -491,21 +639,37 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   color: var(--faint);
   margin-left: 8px;
 }
-.code-block pre { border: none; border-radius: 0; }
+.code-block pre {
+  border: none;
+  border-radius: 0;
+}
 /* Dracula（吸血鬼）主题语法色：粉 / 黄 / 绿 / 紫 / 青 / 蓝灰 */
-.cm { color: #6272a4; font-style: italic; }   /* 注释 */
-.kw { color: #ff79c6; }                        /* 关键字 */
-.str { color: #f1fa8c; }                       /* 字符串 */
-.fn { color: #50fa7b; }                        /* 函数 / 方法 */
-.dec { color: #bd93f9; }                       /* 装饰器 */
-.op { color: #ff79c6; }
+.cm {
+  color: #6272a4;
+  font-style: italic;
+} /* 注释 */
+.kw {
+  color: #ff79c6;
+} /* 关键字 */
+.str {
+  color: #f1fa8c;
+} /* 字符串 */
+.fn {
+  color: #50fa7b;
+} /* 函数 / 方法 */
+.dec {
+  color: #bd93f9;
+} /* 装饰器 */
+.op {
+  color: #ff79c6;
+}
 
 /* footer */
 .footer {
   position: relative;
   z-index: 2;
   border-top: 1px solid var(--border);
-  padding: 44px 0 52px;   /* 横向内边距交给子元素，见下方 .footer > * */
+  padding: 44px 0 52px; /* 横向内边距交给子元素，见下方 .footer > * */
   text-align: center;
   color: var(--faint);
   font-size: 13.5px;
@@ -526,27 +690,64 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   font-family: var(--mono);
   font-size: 12.5px;
 }
-.footer-links a { color: var(--muted); text-decoration: none; transition: color 0.2s; }
-.footer-links a:hover { color: var(--ice); }
+.footer-links a {
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+.footer-links a:hover {
+  color: var(--ice);
+}
 
 /* 动画初始态（GSAP 接管；无 JS 时保持可见） */
-[data-intro], [data-reveal], [data-card] { opacity: 1; }
-.gsap-on [data-intro], .gsap-on [data-reveal], .gsap-on [data-card] { opacity: 0; }
+[data-intro],
+[data-reveal],
+[data-card] {
+  opacity: 1;
+}
+.gsap-on [data-intro],
+.gsap-on [data-reveal],
+.gsap-on [data-card] {
+  opacity: 0;
+}
 
 @media (max-width: 900px) {
-  .grid-4 { grid-template-columns: repeat(2, 1fr); }
-  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .grid-3 {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 @media (max-width: 560px) {
-  .hero-stats { flex-wrap: wrap; gap: 12px; }
-  .grid-4, .grid-3 { grid-template-columns: 1fr; }
-  .nav-links { gap: 14px; }
-  .hero-install { flex-direction: column; gap: 8px; }
-  .grid-lines span:nth-child(2), .grid-lines span:nth-child(3) { display: none; }
+  .hero-stats {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .grid-4,
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+  .nav-links {
+    gap: 14px;
+  }
+  .hero-install {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .grid-lines span:nth-child(2),
+  .grid-lines span:nth-child(3) {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 /* ================= Playground ================= */
@@ -571,18 +772,32 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   margin-bottom: 18px;
 }
 .pg-badge i {
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   background: var(--ice);
   animation: pg-blink 1.6s ease-in-out infinite;
 }
-@keyframes pg-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes pg-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
 .pg-head h1 {
   font-size: clamp(30px, 4.5vw, 46px);
   font-weight: 700;
   letter-spacing: -0.02em;
   margin-bottom: 10px;
 }
-.pg-head p { color: var(--muted); max-width: 640px; font-size: 15px; }
+.pg-head p {
+  color: var(--muted);
+  max-width: 640px;
+  font-size: 15px;
+}
 
 .pg-layout {
   position: relative;
@@ -616,12 +831,26 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   cursor: pointer;
   color: var(--text);
   font-family: var(--sans);
-  transition: border-color 0.2s, transform 0.15s;
+  transition:
+    border-color 0.2s,
+    transform 0.15s;
 }
-.pg-scenario:hover { border-color: var(--ice-border); }
-.pg-scenario.active { border-color: var(--ice); background: rgba(52, 203, 224, 0.05); }
-.pg-scenario h3 { font-size: 14.5px; margin-bottom: 4px; }
-.pg-scenario p { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.pg-scenario:hover {
+  border-color: var(--ice-border);
+}
+.pg-scenario.active {
+  border-color: var(--ice);
+  background: rgba(52, 203, 224, 0.05);
+}
+.pg-scenario h3 {
+  font-size: 14.5px;
+  margin-bottom: 4px;
+}
+.pg-scenario p {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
 .pg-scenario .pg-sc-kind {
   font-family: var(--mono);
   font-size: 11px;
@@ -630,9 +859,16 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   display: block;
   margin-bottom: 8px;
 }
-.pg-layout.locked .pg-scenario { pointer-events: none; opacity: 0.55; }
+.pg-layout.locked .pg-scenario {
+  pointer-events: none;
+  opacity: 0.55;
+}
 
-.pg-actions { display: flex; gap: 10px; margin-top: 14px; }
+.pg-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
 .pg-btn {
   flex: 1;
   padding: 11px 0;
@@ -641,17 +877,32 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   font-weight: 700;
   font-family: var(--sans);
   cursor: pointer;
-  transition: border-color 0.2s, background 0.2s, opacity 0.2s;
+  transition:
+    border-color 0.2s,
+    background 0.2s,
+    opacity 0.2s;
 }
-.pg-btn-run { background: var(--accent); color: #0a0a0b; border: 1px solid var(--accent); }
-.pg-btn-run:hover:not(:disabled) { box-shadow: 0 6px 22px rgba(217, 226, 238, 0.18); }
+.pg-btn-run {
+  background: var(--accent);
+  color: #0a0a0b;
+  border: 1px solid var(--accent);
+}
+.pg-btn-run:hover:not(:disabled) {
+  box-shadow: 0 6px 22px rgba(217, 226, 238, 0.18);
+}
 .pg-btn-replay {
   background: none;
   border: 1px solid var(--border-strong);
   color: var(--text);
 }
-.pg-btn-replay:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-dim); }
-.pg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pg-btn-replay:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.pg-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 /* 中间：能力菜单 + 终端面板 */
 .pg-menu {
@@ -668,16 +919,25 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   background: var(--card);
   border-radius: 3px;
   padding: 5px 11px;
-  transition: color 0.25s, border-color 0.25s, background 0.25s, box-shadow 0.25s;
+  transition:
+    color 0.25s,
+    border-color 0.25s,
+    background 0.25s,
+    box-shadow 0.25s;
 }
-.pg-chip::before { content: "▸ "; color: var(--faint); }
+.pg-chip::before {
+  content: "▸ ";
+  color: var(--faint);
+}
 .pg-chip.on {
   color: var(--ice);
   border-color: var(--ice);
   background: var(--ice-dim);
   box-shadow: 0 0 14px rgba(52, 203, 224, 0.22);
 }
-.pg-chip.on::before { color: var(--ice); }
+.pg-chip.on::before {
+  color: var(--ice);
+}
 
 .pg-term {
   background: #0c0c0e;
@@ -693,7 +953,9 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   padding: 10px 16px;
 }
 .pg-term-bar i {
-  width: 10px; height: 10px; border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
   background: var(--border-strong);
   margin-right: 7px;
 }
@@ -713,24 +975,43 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   font-size: 12.8px;
   line-height: 1.75;
 }
-.pg-term-empty { color: var(--faint); }
-.pg-term-empty::before { content: "$ "; color: var(--ice); }
+.pg-term-empty {
+  color: var(--faint);
+}
+.pg-term-empty::before {
+  content: "$ ";
+  color: var(--ice);
+}
 
-.tp-block { margin-bottom: 14px; }
+.tp-block {
+  margin-bottom: 14px;
+}
 .tp-head {
   font-size: 11.5px;
   letter-spacing: 0.1em;
   color: var(--steel);
   margin-bottom: 6px;
 }
-.tp-think { color: var(--muted); font-style: italic; }
-.tp-think::before { content: "◌ "; color: var(--ice); font-style: normal; }
+.tp-think {
+  color: var(--muted);
+  font-style: italic;
+}
+.tp-think::before {
+  content: "◌ ";
+  color: var(--ice);
+  font-style: normal;
+}
 .tp-llm {
   border-left: 2px solid var(--ice-border);
   padding-left: 14px;
 }
-.tp-llm .tp-stream { color: #d4d4d8; white-space: pre-wrap; }
-.tp-nested { margin-left: 16px; }
+.tp-llm .tp-stream {
+  color: #d4d4d8;
+  white-space: pre-wrap;
+}
+.tp-nested {
+  margin-left: 16px;
+}
 .tp-note {
   color: var(--faint);
   font-size: 11.5px;
@@ -740,19 +1021,27 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   padding: 6px 0;
   margin-bottom: 14px;
 }
-.tp-tool, .tp-result {
+.tp-tool,
+.tp-result {
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
 }
-.tp-tool .tp-head, .tp-result .tp-head {
+.tp-tool .tp-head,
+.tp-result .tp-head {
   background: var(--card);
   border-bottom: 1px solid var(--border);
   padding: 6px 12px;
   margin-bottom: 0;
 }
-.tp-tool .tp-head::before { content: "⚙ "; color: var(--ice); }
-.tp-result .tp-head::before { content: "✓ "; color: #9ece6a; }
+.tp-tool .tp-head::before {
+  content: "⚙ ";
+  color: var(--ice);
+}
+.tp-result .tp-head::before {
+  content: "✓ ";
+  color: #9ece6a;
+}
 .tp-tool pre {
   border: none;
   border-radius: 0;
@@ -761,37 +1050,79 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   color: var(--ice);
   background: none;
 }
-.tp-result .tp-body { padding: 10px 14px; color: var(--muted); }
+.tp-result .tp-body {
+  padding: 10px 14px;
+  color: var(--muted);
+}
 .tp-final {
   border: 1px solid var(--ice-border);
   background: rgba(52, 203, 224, 0.05);
   border-radius: 4px;
   padding: 12px 14px;
 }
-.tp-final .tp-head { color: var(--ice); }
-.tp-final .tp-stream { color: #e4e4e7; white-space: pre-wrap; }
+.tp-final .tp-head {
+  color: var(--ice);
+}
+.tp-final .tp-stream {
+  color: #e4e4e7;
+  white-space: pre-wrap;
+}
 
 /* Markdown 渲染（助手输出）：容器交回正常流，块级元素接管换行 */
-.tp-stream.md { white-space: normal; overflow-wrap: anywhere; }
-.tp-stream.md > :first-child { margin-top: 0; }
-.tp-stream.md > :last-child { margin-bottom: 0; }
-.tp-stream.md p { margin: 0 0 8px; }
-.tp-stream.md h1, .tp-stream.md h2, .tp-stream.md h3,
-.tp-stream.md h4, .tp-stream.md h5, .tp-stream.md h6 {
+.tp-stream.md {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.tp-stream.md > :first-child {
+  margin-top: 0;
+}
+.tp-stream.md > :last-child {
+  margin-bottom: 0;
+}
+.tp-stream.md p {
+  margin: 0 0 8px;
+}
+.tp-stream.md h1,
+.tp-stream.md h2,
+.tp-stream.md h3,
+.tp-stream.md h4,
+.tp-stream.md h5,
+.tp-stream.md h6 {
   margin: 12px 0 6px;
   font-family: var(--sans);
   font-weight: 700;
   line-height: 1.35;
   color: var(--text);
 }
-.tp-stream.md h1 { font-size: 17px; }
-.tp-stream.md h2 { font-size: 16px; }
-.tp-stream.md h3 { font-size: 15px; }
-.tp-stream.md h4, .tp-stream.md h5, .tp-stream.md h6 { font-size: 14px; }
-.tp-stream.md ul, .tp-stream.md ol { margin: 0 0 8px; padding-left: 22px; }
-.tp-stream.md li { margin: 2px 0; }
-.tp-stream.md li::marker { color: var(--ice); }
-.tp-stream.md strong { color: var(--text); font-weight: 700; }
+.tp-stream.md h1 {
+  font-size: 17px;
+}
+.tp-stream.md h2 {
+  font-size: 16px;
+}
+.tp-stream.md h3 {
+  font-size: 15px;
+}
+.tp-stream.md h4,
+.tp-stream.md h5,
+.tp-stream.md h6 {
+  font-size: 14px;
+}
+.tp-stream.md ul,
+.tp-stream.md ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+.tp-stream.md li {
+  margin: 2px 0;
+}
+.tp-stream.md li::marker {
+  color: var(--ice);
+}
+.tp-stream.md strong {
+  color: var(--text);
+  font-weight: 700;
+}
 .tp-stream.md code {
   font-family: var(--mono);
   font-size: 0.92em;
@@ -810,15 +1141,27 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   border: 1px solid var(--border-strong);
   border-radius: 4px;
 }
-.tp-stream.md pre.md-pre code { background: none; border: 0; padding: 0; }
+.tp-stream.md pre.md-pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+}
 .tp-stream.md blockquote {
   margin: 8px 0;
   padding: 2px 0 2px 12px;
   border-left: 2px solid var(--ice-border);
   color: var(--muted);
 }
-.tp-stream.md a { color: var(--ice); text-decoration: underline; text-underline-offset: 2px; }
-.tp-stream.md hr { border: 0; border-top: 1px solid var(--border-strong); margin: 10px 0; }
+.tp-stream.md a {
+  color: var(--ice);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.tp-stream.md hr {
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+  margin: 10px 0;
+}
 .tp-caret::after {
   content: "▊";
   color: var(--ice);
@@ -854,8 +1197,13 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   padding: 3px 0;
   color: var(--muted);
 }
-.pg-usage .u-row b { color: var(--text); font-weight: 500; }
-.pg-usage .u-cost { color: var(--ice); }
+.pg-usage .u-row b {
+  color: var(--text);
+  font-weight: 500;
+}
+.pg-usage .u-cost {
+  color: var(--ice);
+}
 .pg-usage .u-note {
   margin-top: 8px;
   padding-top: 8px;
@@ -866,8 +1214,12 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
 }
 
 @media (max-width: 1080px) {
-  .pg-layout { grid-template-columns: minmax(0, 1fr); }
-  .pg-term-body { height: 440px; }
+  .pg-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pg-term-body {
+    height: 440px;
+  }
 }
 
 /* Playground：模式切换 + BYOK */
@@ -887,16 +1239,27 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   font-size: 12.5px;
   padding: 8px 18px;
   cursor: pointer;
-  transition: color 0.2s, background 0.2s;
+  transition:
+    color 0.2s,
+    background 0.2s;
 }
-.pg-mode-btn + .pg-mode-btn { border-left: 1px solid var(--border-strong); }
-.pg-mode-btn:hover { color: var(--text); }
+.pg-mode-btn + .pg-mode-btn {
+  border-left: 1px solid var(--border-strong);
+}
+.pg-mode-btn:hover {
+  color: var(--text);
+}
 .pg-mode-btn.active {
   color: var(--ice);
   background: var(--ice-dim);
 }
-.pg-head .pg-badge { margin-bottom: 18px; }
-.pg-head .pg-mode + .pg-badge { display: inline-flex; margin-left: 14px; }
+.pg-head .pg-badge {
+  margin-bottom: 18px;
+}
+.pg-head .pg-mode + .pg-badge {
+  display: inline-flex;
+  margin-left: 14px;
+}
 
 .pg-byok {
   position: relative;
@@ -915,14 +1278,20 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   line-height: 1.7;
   margin-bottom: 12px;
 }
-.pg-byok-note strong { color: var(--text); font-weight: 700; }
+.pg-byok-note strong {
+  color: var(--text);
+  font-weight: 700;
+}
 .pg-byok-row {
   display: flex;
   gap: 10px;
   align-items: flex-end;
   flex-wrap: wrap;
 }
-.pg-byok-field { flex: 1; min-width: 240px; }
+.pg-byok-field {
+  flex: 1;
+  min-width: 240px;
+}
 .pg-byok-field span {
   display: block;
   font-family: var(--mono);
@@ -942,20 +1311,46 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   font-size: 13px;
   padding: 10px 14px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
 .pg-byok-field input:focus,
-.pg-byok-field select:focus { border-color: var(--ice); box-shadow: 0 0 0 3px var(--ice-dim); }
-.pg-byok-field select { color-scheme: dark; cursor: pointer; }
-.pg-byok-provider { flex: 0 1 170px; min-width: 150px; }
-.pg-byok-model { flex: 0 1 320px; min-width: 220px; }
+.pg-byok-field select:focus {
+  border-color: var(--ice);
+  box-shadow: 0 0 0 3px var(--ice-dim);
+}
+.pg-byok-field select {
+  color-scheme: dark;
+  cursor: pointer;
+}
+.pg-byok-provider {
+  flex: 0 1 170px;
+  min-width: 150px;
+}
+.pg-byok-model {
+  flex: 0 1 320px;
+  min-width: 220px;
+}
 /* 「自定义…」露出时与下拉堆叠，留 6px 呼吸位 */
-.pg-byok-model input[type="text"] { margin-top: 6px; }
-.pg-byok-clear { flex: 0 0 auto; padding: 10px 22px; }
-.pg-byok-pulse .pg-byok-note { animation: pg-byok-pulse 0.8s ease-in-out 2; }
+.pg-byok-model input[type="text"] {
+  margin-top: 6px;
+}
+.pg-byok-clear {
+  flex: 0 0 auto;
+  padding: 10px 22px;
+}
+.pg-byok-pulse .pg-byok-note {
+  animation: pg-byok-pulse 0.8s ease-in-out 2;
+}
 @keyframes pg-byok-pulse {
-  0%, 100% { box-shadow: 0 0 0 rgba(52, 203, 224, 0); }
-  50% { box-shadow: 0 0 22px rgba(52, 203, 224, 0.35); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(52, 203, 224, 0);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(52, 203, 224, 0.35);
+  }
 }
 
 .tp-error {
@@ -964,8 +1359,13 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   border-radius: 4px;
   padding: 12px 14px;
 }
-.tp-error .tp-head { color: #f7768e; }
-.tp-error .tp-body { color: var(--muted); white-space: pre-wrap; }
+.tp-error .tp-head {
+  color: #f7768e;
+}
+.tp-error .tp-body {
+  color: var(--muted);
+  white-space: pre-wrap;
+}
 .tp-retry {
   margin-top: 10px;
   background: none;
@@ -976,9 +1376,14 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   font-family: var(--mono);
   font-size: 12px;
   cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
 }
-.tp-retry:hover { border-color: var(--ice); background: var(--ice-dim); }
+.tp-retry:hover {
+  border-color: var(--ice);
+  background: var(--ice-dim);
+}
 
 /* ================= Docs ================= */
 .docs-layout {
@@ -1005,10 +1410,17 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   color: var(--muted);
   text-decoration: none;
   font-size: 13px;
-  transition: color 0.2s, border-color 0.2s;
+  transition:
+    color 0.2s,
+    border-color 0.2s;
 }
-.docs-nav a:hover { color: var(--text); }
-.docs-nav a.active { color: var(--ice); border-left-color: var(--ice); }
+.docs-nav a:hover {
+  color: var(--text);
+}
+.docs-nav a.active {
+  color: var(--ice);
+  border-left-color: var(--ice);
+}
 .docs-nav .dn-title {
   font-family: var(--mono);
   font-size: 11px;
@@ -1016,7 +1428,10 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   color: var(--steel);
   padding: 0 0 10px 16px;
 }
-.docs-content section { margin-bottom: 72px; scroll-margin-top: 90px; }
+.docs-content section {
+  margin-bottom: 72px;
+  scroll-margin-top: 90px;
+}
 .docs-content h2 {
   font-size: 24px;
   font-weight: 700;
@@ -1025,12 +1440,32 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
 }
-.docs-content h3 { font-size: 16px; margin: 28px 0 10px; font-family: var(--mono); font-weight: 500; }
-.docs-content h3::before { content: "▸ "; color: var(--ice); }
-.docs-content p { color: var(--muted); font-size: 14.5px; margin-bottom: 14px; }
-.docs-content ul { color: var(--muted); font-size: 14.5px; margin: 0 0 14px 20px; }
-.docs-content li { margin-bottom: 6px; }
-.docs-content .code-block { margin: 16px 0 20px; }
+.docs-content h3 {
+  font-size: 16px;
+  margin: 28px 0 10px;
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.docs-content h3::before {
+  content: "▸ ";
+  color: var(--ice);
+}
+.docs-content p {
+  color: var(--muted);
+  font-size: 14.5px;
+  margin-bottom: 14px;
+}
+.docs-content ul {
+  color: var(--muted);
+  font-size: 14.5px;
+  margin: 0 0 14px 20px;
+}
+.docs-content li {
+  margin-bottom: 6px;
+}
+.docs-content .code-block {
+  margin: 16px 0 20px;
+}
 /* 表格容器全局横向滚动：首列 nowrap 使表 min-content 在 861–1050px 区间
    （侧栏仍在、内容列被压窄）超出内容列，而内容列是 minmax(0,1fr) 不会撑开，
    表格便直接顶破页面。此前该规则只写在 ≤560px 断点里，导致中段宽度漏网。 */
@@ -1041,14 +1476,17 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
      若留在 .doc-table 上，每张表会多出约 36px 纵向空隙。 */
   margin: 16px 0 20px;
 }
-.table-wrap > .doc-table { margin: 0; }
+.table-wrap > .doc-table {
+  margin: 0;
+}
 .doc-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13.5px;
   margin: 16px 0 20px;
 }
-.doc-table th, .doc-table td {
+.doc-table th,
+.doc-table td {
   text-align: left;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
@@ -1061,8 +1499,15 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   color: var(--steel);
   font-weight: 500;
 }
-.doc-table td { color: var(--muted); }
-.doc-table td:first-child { font-family: var(--mono); font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.doc-table td {
+  color: var(--muted);
+}
+.doc-table td:first-child {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
 .doc-planned {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -1078,8 +1523,13 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   /* minmax(0,1fr) 而非 1fr：1fr 的下限是 auto，网格会为了「内容的最小宽度」撑开——
      文档表首列 nowrap 后最小宽度 ~700px，整条轨道连同 .docs-nav 一起被撑到 700+，
      于是 360px 屏上出现 391px 的页面级横滚。min-width:0 同理，缺了它子项也不会收缩。 */
-  .docs-layout { grid-template-columns: minmax(0, 1fr); }
-  .docs-nav, .docs-content { min-width: 0; }
+  .docs-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .docs-nav,
+  .docs-content {
+    min-width: 0;
+  }
   .docs-nav {
     position: static;
     display: flex;
@@ -1089,8 +1539,14 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
     border-bottom: 1px solid var(--border);
     padding-bottom: 14px;
   }
-  .docs-nav a { padding: 4px 0; border-left: none; }
-  .docs-nav .dn-title { width: 100%; padding-left: 0; }
+  .docs-nav a {
+    padding: 4px 0;
+    border-left: none;
+  }
+  .docs-nav .dn-title {
+    width: 100%;
+    padding-left: 0;
+  }
 }
 
 /* ================= 动效（滚动进度 / 终端光标 / 微反馈） =================
@@ -1125,20 +1581,45 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   animation: caret-blink 1.15s steps(1, end) infinite;
 }
 @keyframes caret-blink {
-  0%, 55% { opacity: 1; }
-  56%, 100% { opacity: 0; }
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
 }
 
 /* 卡片悬停：在既有位移之上补一层冰蓝辉光 */
-.card:hover, .feature:hover { box-shadow: 0 14px 44px rgba(52, 203, 224, 0.07); }
+.card:hover,
+.feature:hover {
+  box-shadow: 0 14px 44px rgba(52, 203, 224, 0.07);
+}
 
 /* 复制按钮：按下缩放 +「已复制」态 */
-.copy { transition: color 0.2s, border-color 0.2s, background 0.2s, transform 0.12s; }
-.copy:active { transform: scale(0.95); }
-.copy.copied { color: var(--ice); border-color: var(--ice); background: var(--ice-dim); }
+.copy {
+  transition:
+    color 0.2s,
+    border-color 0.2s,
+    background 0.2s,
+    transform 0.12s;
+}
+.copy:active {
+  transform: scale(0.95);
+}
+.copy.copied {
+  color: var(--ice);
+  border-color: var(--ice);
+  background: var(--ice-dim);
+}
 
 /* 文档 / API 侧栏 active 指示条平滑过渡（.docs-nav a.active 已设 border-left-color） */
-.docs-nav a { transition: color 0.22s, border-color 0.22s; }
+.docs-nav a {
+  transition:
+    color 0.22s,
+    border-color 0.22s;
+}
 
 /* ================= API 参考页 =================
    同一套 token，把「一堵表格墙」整理成能扫读的版面：页头 → 层次索引卡 →
@@ -1146,7 +1627,9 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
    表格的斑马纹与悬停对 .doc-table 全局生效（docs 页也受益）；
    「中列即代码签名」这条是 API 页专有（docs 页的中列是散文），故挂在
    body.page-api 下 —— 页面标记由 Base.astro 的 page prop 给出。 */
-.api-hero { margin: 0 0 30px; }
+.api-hero {
+  margin: 0 0 30px;
+}
 /* 注意选择器都带 .docs-content 前缀：`.docs-content p { font-size: 14.5px }` 的
    优先级是 (0,1,1)，压得住单类的 `.api-kicker`（0,1,0）—— 不加前缀时 kicker
    会按 14.5px 渲染（字距露馅：0.24em 算出 3.48px 而非 2.64px）。 */
@@ -1164,9 +1647,21 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   line-height: 1.15;
   margin-bottom: 14px;
 }
-.docs-content .api-lede { color: var(--muted); font-size: 15px; max-width: 640px; margin-bottom: 20px; }
-.docs-content .api-lede strong { color: var(--text); font-weight: 700; }
-.api-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.docs-content .api-lede {
+  color: var(--muted);
+  font-size: 15px;
+  max-width: 640px;
+  margin-bottom: 20px;
+}
+.docs-content .api-lede strong {
+  color: var(--text);
+  font-weight: 700;
+}
+.api-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .api-chip {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -1177,7 +1672,11 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   padding: 5px 11px;
   white-space: nowrap;
 }
-.api-chip b { color: var(--ice); font-weight: 700; margin-right: 4px; }
+.api-chip b {
+  color: var(--ice);
+  font-weight: 700;
+  margin-right: 4px;
+}
 
 /* 9 张索引卡 → 桌面 3×3（auto-fill 会在 900px 里塞 4 列，末行只剩 1 张，难看） */
 .layer-grid {
@@ -1195,7 +1694,10 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.012);
   text-decoration: none;
-  transition: border-color 0.18s, background 0.18s, transform 0.18s;
+  transition:
+    border-color 0.18s,
+    background 0.18s,
+    transform 0.18s;
 }
 .layer-card:hover {
   border-color: var(--ice-border);
@@ -1209,16 +1711,35 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   color: var(--steel);
   transition: color 0.18s;
 }
-.layer-card:hover .lc-k { color: var(--ice); }
-.layer-card .lc-n { font-size: 13px; line-height: 1.4; color: var(--text); }
+.layer-card:hover .lc-k {
+  color: var(--ice);
+}
+.layer-card .lc-n {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+}
 
 /* 表格打磨：更松的呼吸、斑马纹、悬停高亮（长表扫读靠它） */
-.doc-table th, .doc-table td { padding: 11px 16px; }
-.doc-table td { line-height: 1.65; }
-.doc-table tbody tr { transition: background 0.15s; }
-.doc-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.016); }
-.doc-table tbody tr:hover { background: var(--ice-dim); }
-.doc-table tbody tr:hover td:first-child { color: var(--ice); }
+.doc-table th,
+.doc-table td {
+  padding: 11px 16px;
+}
+.doc-table td {
+  line-height: 1.65;
+}
+.doc-table tbody tr {
+  transition: background 0.15s;
+}
+.doc-table tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.016);
+}
+.doc-table tbody tr:hover {
+  background: var(--ice-dim);
+}
+.doc-table tbody tr:hover td:first-child {
+  color: var(--ice);
+}
 
 /* API 页的中列是「签名 / 类型」，用代码片呈现。
    ⚠️ 这里**绝对不能用 `overflow-wrap: anywhere`**：`anywhere`（不同于 `break-word`）
@@ -1243,10 +1764,21 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
 /* 列宽下限：首列的名字可以很长（`Blackboard / BlackboardKey / BlackboardValue / …`），
    全局的 nowrap 把它撑到 490px —— 窄容器里它不肯让位，被牺牲的必然是中列。
    放开换行（有空间时仍是单行），三列各给下限，空间不够时宁可横向滚动也不逐字竖排。 */
-.page-api .doc-table td:first-child { white-space: normal; }
-.page-api .doc-table th:nth-child(1), .page-api .doc-table td:nth-child(1) { min-width: 132px; }
-.page-api .doc-table th:nth-child(2), .page-api .doc-table td:nth-child(2) { min-width: 248px; }
-.page-api .doc-table th:nth-child(3), .page-api .doc-table td:nth-child(3) { min-width: 156px; }
+.page-api .doc-table td:first-child {
+  white-space: normal;
+}
+.page-api .doc-table th:nth-child(1),
+.page-api .doc-table td:nth-child(1) {
+  min-width: 132px;
+}
+.page-api .doc-table th:nth-child(2),
+.page-api .doc-table td:nth-child(2) {
+  min-width: 248px;
+}
+.page-api .doc-table th:nth-child(3),
+.page-api .doc-table td:nth-child(3) {
+  min-width: 156px;
+}
 
 .api-cta {
   margin-top: 4px;
@@ -1255,8 +1787,16 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   border-radius: 4px;
   background: var(--card);
 }
-.docs-content .api-cta p { color: var(--muted); font-size: 14px; }
-.api-cta-links { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-top: 8px; }
+.docs-content .api-cta p {
+  color: var(--muted);
+  font-size: 14px;
+}
+.api-cta-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin-top: 8px;
+}
 .api-cta-links a {
   font-family: var(--mono);
   font-size: 12.5px;
@@ -1265,14 +1805,23 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   border-bottom: 1px solid transparent;
   transition: border-color 0.18s;
 }
-.api-cta-links a:hover { border-bottom-color: var(--ice); }
+.api-cta-links a:hover {
+  border-bottom-color: var(--ice);
+}
 
 @media (max-width: 560px) {
-  .layer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .api-chips { gap: 6px; }
+  .layer-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .api-chips {
+    gap: 6px;
+  }
 }
 @media (max-width: 420px) {
-  .layer-grid { grid-template-columns: minmax(0, 1fr); }
+  .layer-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ================= 窄屏收口（手机端） =================
@@ -1281,7 +1830,9 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
    放在文件末尾：同优先级下覆盖上面更宽的断点。 */
 @media (max-width: 520px) {
   /* 导航：5 个链接 + 品牌在 390px 下必然溢出 → 收进折叠菜单（main.js 无关，nav.js 驱动） */
-  .nav-toggle { display: inline-flex; }
+  .nav-toggle {
+    display: inline-flex;
+  }
   .nav-links {
     position: absolute;
     top: 100%;
@@ -1296,13 +1847,17 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
     backdrop-filter: blur(14px);
     border-bottom: 1px solid var(--border);
   }
-  .nav-links.open { display: flex; }
+  .nav-links.open {
+    display: flex;
+  }
   .nav-links a {
     padding: 13px 0;
     font-size: 15px;
     border-bottom: 1px solid var(--border);
   }
-  .nav-links a:last-child { border-bottom: none; }
+  .nav-links a:last-child {
+    border-bottom: none;
+  }
   .nav-links .nav-cta {
     margin: 10px 0 6px;
     padding: 12px 14px;
@@ -1316,68 +1871,150 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
     backdrop-filter: blur(14px);
     border-bottom-color: var(--border);
   }
-  .hero { padding-top: 88px; }
+  .hero {
+    padding-top: 88px;
+  }
 }
 
 @media (max-width: 560px) {
   /* 侧边距收一档：走 token，header 与所有内容区一起收。
      此前 header 固定 24px、其余写死 20px，手机端两边差 4px 对不齐。 */
-  :root { --gutter: 20px; }
+  :root {
+    --gutter: 20px;
+  }
   /* 页面留白收一档：360px 下 20px 边距 + 110px 顶距太奢侈 */
-  .hero { padding: 96px var(--gutter) 64px; }
-  .section { padding: 72px var(--gutter); }
-  .pg-head { padding: 112px var(--gutter) 28px; }
-  .pg-layout { padding: 0 var(--gutter) 64px; }
-  .pg-byok { padding: 0 var(--gutter) 22px; }
-  .docs-layout { padding: 108px var(--gutter) 64px; }
-  .footer { padding: 36px 0 44px; }
-  .footer-links { flex-wrap: wrap; gap: 8px 20px; }
-  .footer-links a { padding: 10px 0; }
+  .hero {
+    padding: 96px var(--gutter) 64px;
+  }
+  .section {
+    padding: 72px var(--gutter);
+  }
+  .pg-head {
+    padding: 112px var(--gutter) 28px;
+  }
+  .pg-layout {
+    padding: 0 var(--gutter) 64px;
+  }
+  .pg-byok {
+    padding: 0 var(--gutter) 22px;
+  }
+  .docs-layout {
+    padding: 108px var(--gutter) 64px;
+  }
+  .footer {
+    padding: 36px 0 44px;
+  }
+  .footer-links {
+    flex-wrap: wrap;
+    gap: 8px 20px;
+  }
+  .footer-links a {
+    padding: 10px 0;
+  }
 
   /* .steps 的隐式 auto 轨道下限是内容的 min-content：pre 里最长的命令行
      （agentia g subagent doc-reviewer）不换行，把整条轨道撑到 431px，
      360px 屏上溢出 91px。轨道改 minmax(0,1fr)，子项补 min-width:0 才收得住；
      收进来之后长命令由 pre 自己的 overflow-x 滚。 */
-  .steps { grid-template-columns: minmax(0, 1fr); }
-  .step { min-width: 0; }
+  .steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .step {
+    min-width: 0;
+  }
 
   /* 表格：窄屏进一步锁最小宽度，别把 3 列挤成逐字竖排
      （容器 overflow-x 已提升为全局规则，见 .table-wrap 定义处） */
-  .table-wrap .doc-table { min-width: 480px; }
+  .table-wrap .doc-table {
+    min-width: 480px;
+  }
 
   /* BYOK 字段解除 min-width：否则 320px 下模型字段与清除按钮各占一行 */
-  .pg-byok-field { flex: 1 1 100%; min-width: 0; }
-  .pg-byok-provider { flex: 1 1 100%; min-width: 0; }
-  .pg-byok-model { flex: 1 1 100%; min-width: 0; }
-  .pg-byok-clear { width: 100%; }
+  .pg-byok-field {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .pg-byok-provider {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .pg-byok-model {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .pg-byok-clear {
+    width: 100%;
+  }
 
   /* 终端高度跟视口走，而不是钉死 440px（小屏横放时 440 会顶出屏幕） */
-  .pg-term-body { height: min(60svh, 440px); }
+  .pg-term-body {
+    height: min(60svh, 440px);
+  }
   /* trace 树随嵌套缩进增长，窄屏让它自己滚而不是硬溢出 */
-  .pg-trace { overflow-x: auto; }
-  .pg-scenario h3 { font-size: 15px; }
+  .pg-trace {
+    overflow-x: auto;
+  }
+  .pg-scenario h3 {
+    font-size: 15px;
+  }
 
   /* 触控目标 ≥44px */
-  .copy, .tp-retry, .pg-mode-btn { min-height: 44px; }
-  .tp-retry { padding: 10px 20px; }
+  .copy,
+  .tp-retry,
+  .pg-mode-btn {
+    min-height: 44px;
+  }
+  .tp-retry {
+    padding: 10px 20px;
+  }
 
   /* 10.5–11.5px 的标签在手机上要眯眼：统一抬到 12px */
-  .tp-head, .tp-note, .pg-usage .u-note, .doc-planned,
-  .pg-scenario .pg-sc-kind, .pg-byok-field span, .tr-meta, .pg-col-label,
-  .docs-nav .dn-title { font-size: 12px; }
+  .tp-head,
+  .tp-note,
+  .pg-usage .u-note,
+  .doc-planned,
+  .pg-scenario .pg-sc-kind,
+  .pg-byok-field span,
+  .tr-meta,
+  .pg-col-label,
+  .docs-nav .dn-title {
+    font-size: 12px;
+  }
 }
 
 @media (max-width: 420px) {
-  .hero h1 { font-size: clamp(30px, 9.5vw, 42px); }
-  .section h2 { font-size: clamp(24px, 7vw, 30px); }
-  .pg-head h1 { font-size: clamp(26px, 8vw, 34px); }
-  .docs-content h2 { font-size: 21px; }
-  .hero-kicker { letter-spacing: 0.22em; } /* 0.32em 在 360px 下把 kicker 挤换行 */
-  .hero-sub { font-size: 15.5px; }
-  .hero-install { width: 100%; }
-  .step { padding: 18px; gap: 14px; }
-  .card, .feature { padding: 20px 18px; }
-  .pg-chip { padding: 7px 12px; } /* 触控目标：字号 12px + 上下 7px ≈ 44px 高 */
+  .hero h1 {
+    font-size: clamp(30px, 9.5vw, 42px);
+  }
+  .section h2 {
+    font-size: clamp(24px, 7vw, 30px);
+  }
+  .pg-head h1 {
+    font-size: clamp(26px, 8vw, 34px);
+  }
+  .docs-content h2 {
+    font-size: 21px;
+  }
+  .hero-kicker {
+    letter-spacing: 0.22em;
+  } /* 0.32em 在 360px 下把 kicker 挤换行 */
+  .hero-sub {
+    font-size: 15.5px;
+  }
+  .hero-install {
+    width: 100%;
+  }
+  .step {
+    padding: 18px;
+    gap: 14px;
+  }
+  .card,
+  .feature {
+    padding: 20px 18px;
+  }
+  .pg-chip {
+    padding: 7px 12px;
+  } /* 触控目标：字号 12px + 上下 7px ≈ 44px 高 */
 }
 
 /* ================= API 页窄屏：三列表 → 卡片 =================
@@ -1391,10 +2028,19 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
    必须放在文件末尾：与上面的断点同优先级，靠源码顺序取胜。 */
 @media (max-width: 768px) {
   /* 卡片模式下不再需要横向滚动兜底 */
-  .page-api .table-wrap { overflow-x: visible; }
-  .page-api .doc-table { min-width: 0; display: block; }
-  .page-api .doc-table thead { display: none; } /* 列头失去意义：每张卡自解释 */
-  .page-api .doc-table tbody { display: block; }
+  .page-api .table-wrap {
+    overflow-x: visible;
+  }
+  .page-api .doc-table {
+    min-width: 0;
+    display: block;
+  }
+  .page-api .doc-table thead {
+    display: none;
+  } /* 列头失去意义：每张卡自解释 */
+  .page-api .doc-table tbody {
+    display: block;
+  }
   .page-api .doc-table tbody tr {
     display: block;
     padding: 13px 15px;
@@ -1403,14 +2049,36 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
     border-radius: 4px;
     background: rgba(255, 255, 255, 0.012);
   }
-  .page-api .doc-table tbody tr:last-child { margin-bottom: 0; }
+  .page-api .doc-table tbody tr:last-child {
+    margin-bottom: 0;
+  }
   /* 悬停高亮在触屏上无意义，但保留桌面窄窗口的体验 */
-  .page-api .doc-table tbody tr:hover { background: var(--ice-dim); border-color: var(--ice-border); }
-  .page-api .doc-table tbody tr:hover td:first-child { color: var(--ice); }
-  .page-api .doc-table td { display: block; padding: 0; border: none; min-width: 0; }
-  .page-api .doc-table td:nth-child(1) { font-size: 13.5px; }
-  .page-api .doc-table td:nth-child(2) { margin-top: 9px; }
+  .page-api .doc-table tbody tr:hover {
+    background: var(--ice-dim);
+    border-color: var(--ice-border);
+  }
+  .page-api .doc-table tbody tr:hover td:first-child {
+    color: var(--ice);
+  }
+  .page-api .doc-table td {
+    display: block;
+    padding: 0;
+    border: none;
+    min-width: 0;
+  }
+  .page-api .doc-table td:nth-child(1) {
+    font-size: 13.5px;
+  }
+  .page-api .doc-table td:nth-child(2) {
+    margin-top: 9px;
+  }
   /* 签名铺满卡片宽度，超长签名按 `break-word` 折行（不参与固有尺寸，见上面的注释） */
-  .page-api .doc-table td:nth-child(2) code { display: block; box-sizing: border-box; }
-  .page-api .doc-table td:nth-child(3) { margin-top: 9px; font-size: 13.5px; }
+  .page-api .doc-table td:nth-child(2) code {
+    display: block;
+    box-sizing: border-box;
+  }
+  .page-api .doc-table td:nth-child(3) {
+    margin-top: 9px;
+    font-size: 13.5px;
+  }
 }

@@ -64,7 +64,8 @@ export function backoffDelay(attempt: number, r: ResolvedRetry): number {
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
-    const abortError = (): Error => Object.assign(new Error('run 已被取消'), { name: 'AbortError' });
+    const abortError = (): Error =>
+      Object.assign(new Error('run 已被取消'), { name: 'AbortError' });
     // 已中止：立即 reject（此处 timer 尚未创建，绝不能去 clear）
     if (signal?.aborted) {
       reject(abortError());

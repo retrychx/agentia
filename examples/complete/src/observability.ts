@@ -31,7 +31,9 @@ export function buildObservability(opts: { dbPath: string; sampleRate: number })
   const db = new DatabaseSync(opts.dbPath);
   const traces = sqliteTraceSink({ db });
   const metrics = metricsSink({ prefix: 'agentia_' });
-  const log = jsonLogSink({ labels: { service: 'complete-example', env: process.env.NODE_ENV ?? 'dev' } });
+  const log = jsonLogSink({
+    labels: { service: 'complete-example', env: process.env.NODE_ENV ?? 'dev' },
+  });
 
   const sampled = sampleSink({
     rate: opts.sampleRate,

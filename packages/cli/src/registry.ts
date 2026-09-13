@@ -46,7 +46,11 @@ function importPrefix(type: CapabilityType): string {
 }
 
 /** 把能力登记进 src/registry.ts；已存在同名条目则跳过。标记行缺失时报错。 */
-export function registerCapability(dir: string, name: string, type: CapabilityType): RegisterResult {
+export function registerCapability(
+  dir: string,
+  name: string,
+  type: CapabilityType,
+): RegisterResult {
   const file = ensureRegistry(dir);
   const content = readFileSync(file, 'utf8');
 

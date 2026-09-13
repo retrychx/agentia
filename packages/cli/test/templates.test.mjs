@@ -11,7 +11,12 @@ const SKIP = !T ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' 
 
 describe('templates 目录约定（四分类目录，无伞形词）', { skip: SKIP }, () => {
   it('四个分类目录都在 src/ 下，且与四个能力类型一一对应', () => {
-    assert.deepEqual(T.CAPABILITY_DIR_LIST, ['src/tools', 'src/skills', 'src/prompts', 'src/subagents']);
+    assert.deepEqual(T.CAPABILITY_DIR_LIST, [
+      'src/tools',
+      'src/skills',
+      'src/prompts',
+      'src/subagents',
+    ]);
     assert.deepEqual(Object.keys(T.CAPABILITY_DIRS).sort(), [...T.CAPABILITY_TYPES].sort());
   });
 
@@ -31,7 +36,8 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
 
   it('main.ts 模板的 discover 列全四分类目录（顺序即装配顺序）', () => {
     const main = T.mainTs('demo');
-    for (const dir of T.CAPABILITY_DIR_LIST) assert.ok(main.includes(`'${dir}'`), `main.ts 缺 ${dir}`);
+    for (const dir of T.CAPABILITY_DIR_LIST)
+      assert.ok(main.includes(`'${dir}'`), `main.ts 缺 ${dir}`);
   });
 
   it('main.ts 模板在 run 失败时给出原因并置非零退出码', () => {

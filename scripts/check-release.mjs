@@ -26,14 +26,18 @@ const problems = [];
 
 const cliVersion = readJson('packages/cli/package.json').version;
 if (cliVersion !== version) {
-  problems.push(`packages/cli/package.json 是 ${cliVersion}，根包是 ${version} —— 两包版本必须同步`);
+  problems.push(
+    `packages/cli/package.json 是 ${cliVersion}，根包是 ${version} —— 两包版本必须同步`,
+  );
 }
 
 const av = read('src/index.ts').match(/export const AGENTIA_VERSION = '([^']+)'/);
 if (!av) {
   problems.push('src/index.ts 里找不到 AGENTIA_VERSION');
 } else if (av[1] !== version) {
-  problems.push(`src/index.ts 的 AGENTIA_VERSION 是 '${av[1]}'，根包是 ${version} —— 发布前须同步（否则对外谎报版本）`);
+  problems.push(
+    `src/index.ts 的 AGENTIA_VERSION 是 '${av[1]}'，根包是 ${version} —— 发布前须同步（否则对外谎报版本）`,
+  );
 }
 
 const pin = read('packages/cli/src/templates.ts').match(/'@migor\/agentia': '\^([^']+)'/);
@@ -46,7 +50,9 @@ if (!pin) {
 if (problems.length) {
   console.error(`发版自检未通过（根包版本 ${version}）：`);
   for (const p of problems) console.error(`  ✗ ${p}`);
-  console.error('\n提示：未发布窗口内 AGENTIA_VERSION 落后是正常的 —— 这一项只在**发布时**要求一致。');
+  console.error(
+    '\n提示：未发布窗口内 AGENTIA_VERSION 落后是正常的 —— 这一项只在**发布时**要求一致。',
+  );
   process.exit(1);
 }
 

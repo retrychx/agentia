@@ -32,19 +32,26 @@ describe('createBudgetGuard（C1）', () => {
     const g = createBudgetGuard({ maxTotalTokens: 10 });
     assert.equal(g.check(traceWith({ inputTokens: 5, outputTokens: 5 })), null, '恰好等于不超');
     assert.equal(
-      g.check(traceWith({ inputTokens: 5, outputTokens: 3, cacheReadTokens: 1, cacheCreationTokens: 1 })),
+      g.check(
+        traceWith({ inputTokens: 5, outputTokens: 3, cacheReadTokens: 1, cacheCreationTokens: 1 }),
+      ),
       null,
       '缓存 token 也计入',
     );
     assert.equal(
-      g.check(traceWith({ inputTokens: 5, outputTokens: 3, cacheReadTokens: 1, cacheCreationTokens: 2 })),
+      g.check(
+        traceWith({ inputTokens: 5, outputTokens: 3, cacheReadTokens: 1, cacheCreationTokens: 2 }),
+      ),
       'tokens',
     );
   });
 
   it('tokens 先于 cost 判定（两个都超时报 tokens）', () => {
     const g = createBudgetGuard({ maxTotalTokens: 10, maxCostUsd: 0.000001 });
-    assert.equal(g.check(traceWith({ inputTokens: 100, outputTokens: 0, costEstimate: 1 })), 'tokens');
+    assert.equal(
+      g.check(traceWith({ inputTokens: 100, outputTokens: 0, costEstimate: 1 })),
+      'tokens',
+    );
   });
 
   it('只配 cost：按 costEstimate 判；未知模型（无 costEstimate）→ 不触发', () => {

@@ -78,7 +78,10 @@ function membersOf(typeName: string): Set<string> {
       `export\\s+(?:interface|class)\\s+${typeName}(?:<[^>]*>)?\\s+extends\\s+([^{]+)\\{`,
     ).exec(text);
     if (!m) continue;
-    for (const b of m[1].split(',').map((s) => s.trim().split('<')[0].trim()).filter(Boolean)) {
+    for (const b of m[1]
+      .split(',')
+      .map((s) => s.trim().split('<')[0].trim())
+      .filter(Boolean)) {
       if (bodyOf(b)) for (const x of membersOf(b)) out.add(x);
     }
     break;
@@ -92,12 +95,18 @@ function exportedNames(): Set<string> {
   const out = new Set<string>();
   const addList = (list: string): void => {
     for (const part of list.split(',')) {
-      const name = part.trim().split(/\s+as\s+/).pop()!.trim();
+      const name = part
+        .trim()
+        .split(/\s+as\s+/)
+        .pop()!
+        .trim();
       if (name && /^[A-Za-z_$][\w$]*$/.test(name)) out.add(name);
     }
   };
   for (const m of text.matchAll(/export\s+(?:type\s+)?\{([^}]+)\}\s*(?:from|;)/g)) addList(m[1]);
-  for (const m of text.matchAll(/export\s+(?:const|function|class|type|interface)\s+([A-Za-z_$][\w$]*)/g)) {
+  for (const m of text.matchAll(
+    /export\s+(?:const|function|class|type|interface)\s+([A-Za-z_$][\w$]*)/g,
+  )) {
     out.add(m[1]);
   }
   return out;
@@ -137,7 +146,12 @@ function parseTables(md: string): Table[] {
     }
     const names = decode(row[1])
       .split(' / ')
-      .map((s) => s.replace(/<[^>]*>/g, '').replace(/（[^）]*）/g, '').trim())
+      .map((s) =>
+        s
+          .replace(/<[^>]*>/g, '')
+          .replace(/（[^）]*）/g, '')
+          .trim(),
+      )
       .filter((s) => /^[A-Za-z_$][\w$]*$/.test(s));
     if (names.length === 0) continue;
     if (!current || current.heading !== heading) {
@@ -206,9 +220,9 @@ describe('官网 api.html 与源码一致', () => {
   });
 
   it('页头统计与层次索引卡不自说自话（数字对源码、锚点对节）', () => {
-    const chips = [...html.matchAll(/<span class="api-chip">\s*<b>(\d+)<\/b>\s*([^<]+)<\/span>/g)].map(
-      (m) => ({ n: Number(m[1]), label: m[2].trim() }),
-    );
+    const chips = [
+      ...html.matchAll(/<span class="api-chip">\s*<b>(\d+)<\/b>\s*([^<]+)<\/span>/g),
+    ].map((m) => ({ n: Number(m[1]), label: m[2].trim() }));
     const sections = [...html.matchAll(/<section id="([^"]+)"/g)].map((m) => m[1]);
 
     const exportsChip = chips.find((c) => c.label.includes('导出'));

@@ -4,8 +4,6 @@
  * window.AgentiaPlayground 共用面，模拟模式代码路径不受影响。
  */
 (() => {
-  'use strict';
-
   const pg = window.AgentiaPlayground;
   if (!pg) return; // playground.js 未加载时不启用
 
@@ -18,8 +16,8 @@
   const providerSel = $('#byok-provider');
   const keyInput = $('#byok-key');
   const keyLabel = $('#byok-key-label');
-  const modelInput = $('#byok-model');          // <select>：本服务商预设模型 + 「自定义…」
-  const modelCustom = $('#byok-model-custom');  // 仅「自定义…」时露出的文本框
+  const modelInput = $('#byok-model'); // <select>：本服务商预设模型 + 「自定义…」
+  const modelCustom = $('#byok-model-custom'); // 仅「自定义…」时露出的文本框
   const noteLead = $('#byok-note-lead');
   const btnClear = $('#byok-clear');
   const uNote = $('#u-note');
@@ -39,7 +37,8 @@
       models: ['claude-haiku-4-5-20251001'],
       keyPlaceholder: 'sk-ant-...',
       price: { input: 0.8, output: 4 }, // $/M tokens（haiku 4.5）
-      priceNote: 'token 为 API 返回真实值；成本按 claude-haiku-4.5 估算（input $0.8 / output $4 每百万 token），改模型后单价可能不准。',
+      priceNote:
+        'token 为 API 返回真实值；成本按 claude-haiku-4.5 估算（input $0.8 / output $4 每百万 token），改模型后单价可能不准。',
       headers: (key) => ({
         'x-api-key': key,
         'anthropic-version': '2023-06-01',
@@ -84,7 +83,12 @@
   function copyReal(p) {
     return {
       badge: '真实模型：浏览器直连 ' + p.host + '，产生真实 token 消耗',
-      sub: '同一个任务，换真实模型跑一遍：浏览器内迷你 agent 循环直连 ' + p.label + '（' + p.host + '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，trace 与 token 用量均为真实值。',
+      sub:
+        '同一个任务，换真实模型跑一遍：浏览器内迷你 agent 循环直连 ' +
+        p.label +
+        '（' +
+        p.host +
+        '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，trace 与 token 用量均为真实值。',
       note: p.priceNote,
     };
   }
@@ -150,7 +154,13 @@
     try {
       if (name === 'get_weather') {
         const city = String((input && input.city) || '');
-        text = WEATHER[city] || '未收录城市「' + city + '」（演示数据仅覆盖：' + Object.keys(WEATHER).join(' / ') + '）。';
+        text =
+          WEATHER[city] ||
+          '未收录城市「' +
+            city +
+            '」（演示数据仅覆盖：' +
+            Object.keys(WEATHER).join(' / ') +
+            '）。';
       } else if (name === 'calculator') {
         const expr = String((input && input.expression) || '');
         if (!expr || !/^[0-9+\-*/().\s]+$/.test(expr)) {
@@ -163,7 +173,9 @@
         text = expr + ' = ' + value;
       } else if (name === 'read_asset') {
         const key = String((input && input.name) || '');
-        text = ASSETS[key] || '资产「' + key + '」不存在（可选：' + Object.keys(ASSETS).join(' / ') + '）。';
+        text =
+          ASSETS[key] ||
+          '资产「' + key + '」不存在（可选：' + Object.keys(ASSETS).join(' / ') + '）。';
       } else {
         throw new Error('未知工具：' + name);
       }
@@ -213,7 +225,9 @@
       try {
         const body = await resp.json();
         msg = (body && body.error && body.error.message) || '';
-      } catch (_) { /* 忽略非 JSON 错误体 */ }
+      } catch (_) {
+        /* 忽略非 JSON 错误体 */
+      }
       throw { kind: 'http', status: resp.status, message: msg };
     }
     return resp.json();
@@ -233,13 +247,22 @@
   function describeError(err) {
     const p = prov();
     if (err && err.kind === 'http') {
-      if (err.status === 401) return '鉴权失败（401）：API key 无效或已撤销，请检查上面的 key 后重试。';
-      if (err.status === 402) return '余额不足（402）：该 key 的账户额度已用尽，请充值或换一个 key。';
+      if (err.status === 401)
+        return '鉴权失败（401）：API key 无效或已撤销，请检查上面的 key 后重试。';
+      if (err.status === 402)
+        return '余额不足（402）：该 key 的账户额度已用尽，请充值或换一个 key。';
       if (err.status === 429) return '触发限流（429）：请求太密或额度不足，请稍后重试。';
-      return 'API 返回错误（HTTP ' + err.status + '）' + (err.message ? '：' + err.message + '。' : '。');
+      return (
+        'API 返回错误（HTTP ' + err.status + '）' + (err.message ? '：' + err.message + '。' : '。')
+      );
     }
-    return '网络 / CORS 错误：浏览器未能连通 ' + p.host + '。本页为纯静态托管，直连 ' + p.label +
-      '（不经过任何服务器）；若请求被拦截，请检查网络连通性、代理，或确认该端点放行浏览器跨域。';
+    return (
+      '网络 / CORS 错误：浏览器未能连通 ' +
+      p.host +
+      '。本页为纯静态托管，直连 ' +
+      p.label +
+      '（不经过任何服务器）；若请求被拦截，请检查网络连通性、代理，或确认该端点放行浏览器跨域。'
+    );
   }
 
   /* ========== 真实模式主循环 ========== */
@@ -249,7 +272,13 @@
     const key = keyInput.value.trim();
     if (!key) {
       pg.resetPanels();
-      pg.panelNote('请先在页面顶部填入 ' + p.label + ' API Key —— key 只存浏览器 localStorage，直连 ' + p.host + '，不经过任何服务器。');
+      pg.panelNote(
+        '请先在页面顶部填入 ' +
+          p.label +
+          ' API Key —— key 只存浏览器 localStorage，直连 ' +
+          p.host +
+          '，不经过任何服务器。',
+      );
       keyInput.focus();
       byokEl.classList.add('pg-byok-pulse');
       setTimeout(() => byokEl.classList.remove('pg-byok-pulse'), 1600);
@@ -264,7 +293,9 @@
     pg.resetPanels();
     pg.traceReset(sc);
     pg.renderUsage({ input: 0, output: 0 });
-    pg.panelNote('— 真实模型调用：' + model + ' · 工具为浏览器内 JS 实现 · 最多 ' + MAX_ITERATIONS + ' 轮 —');
+    pg.panelNote(
+      '— 真实模型调用：' + model + ' · 工具为浏览器内 JS 实现 · 最多 ' + MAX_ITERATIONS + ' 轮 —',
+    );
 
     const usageAcc = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
     const startedAt = performance.now();
@@ -337,14 +368,33 @@
       const msg = describeError(err);
       runError = { type: 'api_error', message: msg };
       if (openSpanId) {
-        pg.traceEnd({ id: openSpanId, ms: Math.round(performance.now() - startedAt), status: 'error', error: runError }, usageAcc);
+        pg.traceEnd(
+          {
+            id: openSpanId,
+            ms: Math.round(performance.now() - startedAt),
+            status: 'error',
+            error: runError,
+          },
+          usageAcc,
+        );
         openSpanId = null;
       }
       panelError(msg);
     } finally {
       if (!stale()) {
-        pg.traceFinish(Math.round(performance.now() - startedAt), usageAcc, runError ? 'error' : 'ok', runError);
-        pg.addBlock(pg.el('div', 'tp-note', '— run 结束：usage 为 ' + p.label + ' API 返回的真实 token 计数 —'));
+        pg.traceFinish(
+          Math.round(performance.now() - startedAt),
+          usageAcc,
+          runError ? 'error' : 'ok',
+          runError,
+        );
+        pg.addBlock(
+          pg.el(
+            'div',
+            'tp-note',
+            '— run 结束：usage 为 ' + p.label + ' API 返回的真实 token 计数 —',
+          ),
+        );
         pg.setRunning(false);
       }
     }
@@ -371,7 +421,8 @@
     custom.textContent = '自定义…';
     modelInput.appendChild(custom);
     syncModelVisibility();
-    noteLead.textContent = '你的 key 只存浏览器 localStorage，直接发往 ' + p.host + '，不经过任何服务器。';
+    noteLead.textContent =
+      '你的 key 只存浏览器 localStorage，直接发往 ' + p.host + '，不经过任何服务器。';
   }
 
   /** 「自定义…」时露出文本框并给出占位提示 */
@@ -407,9 +458,9 @@
     if (pg.state.running || pg.state.mode === mode) return;
     pg.state.gen++; // 作废任何残留循环
     pg.state.mode = mode;
-    modeBar.querySelectorAll('.pg-mode-btn').forEach((b) =>
-      b.classList.toggle('active', b.dataset.mode === mode),
-    );
+    modeBar.querySelectorAll('.pg-mode-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.mode === mode);
+    });
     const copy = mode === 'real' ? copyReal(prov()) : COPY_SIM;
     badgeText.textContent = copy.badge;
     headSub.textContent = copy.sub;
@@ -427,9 +478,9 @@
     pg.resetPanels();
   }
 
-  modeBar.querySelectorAll('.pg-mode-btn').forEach((b) =>
-    b.addEventListener('click', () => setMode(b.dataset.mode)),
-  );
+  modeBar.querySelectorAll('.pg-mode-btn').forEach((b) => {
+    b.addEventListener('click', () => setMode(b.dataset.mode));
+  });
 
   /* 场景切换后：真实模式换成真实工具菜单（playground.js 会先画回模拟菜单） */
   pg.state.onScenarioChange = () => {
@@ -440,7 +491,9 @@
   function loadProvider(id) {
     providerId = PROVIDERS[id] ? id : 'anthropic';
     const p = prov();
-    try { localStorage.setItem(LS_PROVIDER, providerId); } catch (_) {}
+    try {
+      localStorage.setItem(LS_PROVIDER, providerId);
+    } catch (_) {}
     let savedModel = '';
     try {
       keyInput.value = localStorage.getItem(lsKeyOf(providerId)) || '';
@@ -461,7 +514,10 @@
   }
 
   providerSel.addEventListener('change', () => {
-    if (pg.state.running) { providerSel.value = providerId; return; } // 跑动中不允许换服务商
+    if (pg.state.running) {
+      providerSel.value = providerId;
+      return;
+    } // 跑动中不允许换服务商
     // 先把当前输入存到旧服务商名下，再切到新服务商
     try {
       localStorage.setItem(lsKeyOf(providerId), keyInput.value.trim());
@@ -473,15 +529,21 @@
   });
 
   keyInput.addEventListener('input', () => {
-    try { localStorage.setItem(lsKeyOf(providerId), keyInput.value.trim()); } catch (_) {}
+    try {
+      localStorage.setItem(lsKeyOf(providerId), keyInput.value.trim());
+    } catch (_) {}
   });
   modelInput.addEventListener('change', () => {
     syncModelVisibility();
-    try { localStorage.setItem(lsModelOf(providerId), currentModel()); } catch (_) {}
+    try {
+      localStorage.setItem(lsModelOf(providerId), currentModel());
+    } catch (_) {}
     if (modelInput.value === CUSTOM_MODEL) modelCustom.focus();
   });
   modelCustom.addEventListener('input', () => {
-    try { localStorage.setItem(lsModelOf(providerId), currentModel()); } catch (_) {}
+    try {
+      localStorage.setItem(lsModelOf(providerId), currentModel());
+    } catch (_) {}
   });
   btnClear.addEventListener('click', () => {
     keyInput.value = '';

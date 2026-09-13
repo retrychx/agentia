@@ -29,7 +29,11 @@ function check(label: string, ok: boolean, detail?: string): void {
 // ───────────────────────────── stdio 连接器 ─────────────────────────────
 // 真连接器属于独立可选包 @migor/mcp（框架零依赖）；这段是「最小可用的那一份」，
 // 保留在仓库里作为端到端证明 —— 也顺便说明连接器到底要做什么。
-function stdioMcpClient(cmd: string[]): { client: McpClientLike; close(): void; proc: ChildProcess } {
+function stdioMcpClient(cmd: string[]): {
+  client: McpClientLike;
+  close(): void;
+  proc: ChildProcess;
+} {
   const proc = spawn(cmd[0], cmd.slice(1), { stdio: ['pipe', 'pipe', 'inherit'] });
   let buf = '';
   let nextId = 1;
@@ -109,7 +113,9 @@ function stdioMcpClient(cmd: string[]): { client: McpClientLike; close(): void; 
         };
         // 约定：协议层 isError 由连接器转成抛错（否则模型看不到失败）
         if (r?.isError) {
-          throw new Error(`MCP 工具 ${name} 返回 isError: ${JSON.stringify(r.content).slice(0, 200)}`);
+          throw new Error(
+            `MCP 工具 ${name} 返回 isError: ${JSON.stringify(r.content).slice(0, 200)}`,
+          );
         }
         return r;
       },
@@ -130,16 +136,23 @@ async function pickServer(): Promise<{ cmd: string[]; label: string }> {
       return { cmd: uvx, label: `${uvx.join(' ')}（第三方 server，${tools.length} 个工具）` };
     }
   } catch (e) {
-    console.log(`  ! uvx mcp-server-time 不可用（${e instanceof Error ? e.message : String(e)}），回落夹具 server`);
+    console.log(
+      `  ! uvx mcp-server-time 不可用（${e instanceof Error ? e.message : String(e)}），回落夹具 server`,
+    );
   }
-  return { cmd: ['python3', 'scripts/mcp-fixture-server.py'], label: '本地夹具 MCP server（离线兜底）' };
+  return {
+    cmd: ['python3', 'scripts/mcp-fixture-server.py'],
+    label: '本地夹具 MCP server（离线兜底）',
+  };
 }
 
 // ───────────────────── 从 tool_result 里抠出 MCP 的真实回答 ─────────────────────
 /** 主循环把 MCP 返回对象 stringify 进 tool_result.content（见 engine/loop.ts 的 limit/stringifySafe 链路） */
 function mcpTextFrom(messages: Array<{ role: string; content: unknown }>): string | undefined {
   const carrier = messages.find(
-    (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>)[0]?.type === 'tool_result',
+    (m) =>
+      Array.isArray(m.content) &&
+      (m.content as Array<{ type?: string }>)[0]?.type === 'tool_result',
   );
   if (!carrier) return undefined;
   const block = (carrier.content as Array<{ content: string; is_error: boolean }>)[0];
@@ -151,7 +164,10 @@ function mcpTextFrom(messages: Array<{ role: string; content: unknown }>): strin
 
 /** 归一化的期望值（与 integrations/mcp.ts 的规则一致：非 [A-Za-z0-9_] → '_'） */
 function expectExposed(raw: string): string {
-  return `mcp_time_${raw.trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}`;
+  return `mcp_time_${raw
+    .trim()
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')}`;
 }
 
 /** doctor 只做静态体检（不 import 用户代码）—— 造一个登记了 MCP 能力的项目，看它认不认 */
@@ -187,7 +203,7 @@ function doctorDemo(): void {
     [
       "import { McpTimeCapability } from './tools/mcp-time/index.js';",
       '',
-      'export const providers = [{ provide: \'mcp-time\', useClass: McpTimeCapability }];',
+      "export const providers = [{ provide: 'mcp-time', useClass: McpTimeCapability }];",
       '',
     ].join('\n'),
   );
@@ -222,7 +238,10 @@ async function main(): Promise<void> {
     tools[0].name === expectExposed(target.name),
     `${JSON.stringify(target.name)} → ${tools[0].name}`,
   );
-  check('inputSchema 原样透传', JSON.stringify(tools[0].inputSchema) === JSON.stringify(target.inputSchema));
+  check(
+    'inputSchema 原样透传',
+    JSON.stringify(tools[0].inputSchema) === JSON.stringify(target.inputSchema),
+  );
 
   const app = createApp({
     name: 'mcp-e2e',
@@ -246,8 +265,15 @@ async function main(): Promise<void> {
       id: 'm1',
       model: 'e2e',
       stop_reason: 'tool_use',
-      usage: { input_tokens: 20, output_tokens: 8, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-      content: [{ type: 'tool_use', id: 'tu1', name: tools[0].name, input: { timezone: 'Asia/Shanghai' } }],
+      usage: {
+        input_tokens: 20,
+        output_tokens: 8,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      content: [
+        { type: 'tool_use', id: 'tu1', name: tools[0].name, input: { timezone: 'Asia/Shanghai' } },
+      ],
     },
     (params) => {
       const msgs = (params as { messages: Array<{ role: string; content: unknown }> }).messages;
@@ -258,7 +284,12 @@ async function main(): Promise<void> {
         id: 'm2',
         model: 'e2e',
         stop_reason: 'end_turn',
-        usage: { input_tokens: 30, output_tokens: 12, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        usage: {
+          input_tokens: 30,
+          output_tokens: 12,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
         content: [{ type: 'text', text: `${parsed.timezone} 现在是 ${parsed.datetime}` }],
       };
     },
@@ -306,7 +337,9 @@ async function main(): Promise<void> {
   doctorDemo();
 
   mcp.close();
-  console.log(`\n${failures === 0 ? '✅ D1/D2/D3/D4 真端到端证明全绿' : `❌ ${failures} 项失败`}\n`);
+  console.log(
+    `\n${failures === 0 ? '✅ D1/D2/D3/D4 真端到端证明全绿' : `❌ ${failures} 项失败`}\n`,
+  );
   if (failures > 0) process.exitCode = 1;
 }
 

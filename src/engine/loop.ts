@@ -1,5 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool, JsonSchema, ModelClient, ModelPricing, RecorderBackend, SchemaType, ToolRunContext } from '../core/tool.js';
+import type {
+  AgentTool,
+  JsonSchema,
+  ModelClient,
+  ModelPricing,
+  RecorderBackend,
+  SchemaType,
+  ToolRunContext,
+} from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
@@ -126,7 +134,9 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   let system = args.system;
   if (args.resultSchema) {
     if (args.tools.some((t) => t.name === SUBMIT_RESULT)) {
-      throw new Error(`装配冲突：工具菜单已含 "${SUBMIT_RESULT}"，与 resultSchema 的隐藏提交工具同名`);
+      throw new Error(
+        `装配冲突：工具菜单已含 "${SUBMIT_RESULT}"，与 resultSchema 的隐藏提交工具同名`,
+      );
     }
     apiTools = [
       ...apiTools,
@@ -228,7 +238,10 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
         }
         // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
         const canRetry =
-          retryCfg !== null && attempt < retryCfg.maxAttempts && retryCfg.isRetryable(e) && !emitted;
+          retryCfg !== null &&
+          attempt < retryCfg.maxAttempts &&
+          retryCfg.isRetryable(e) &&
+          !emitted;
         if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/capability 与收尾
         const delayMs = backoffDelay(attempt, retryCfg);
         recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
@@ -316,12 +329,15 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       break;
     }
 
-    const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+    const toolUses = message.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
+    );
     if (toolUses.length === 0) {
       // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
       // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开，
       // 后者保留已产出的文本并挂一条可诊断的 error（run 仍按失败收尾）。
-      stopReason = message.stop_reason === 'tool_use' ? 'tool_use_no_blocks' : 'unknown_stop_reason';
+      stopReason =
+        message.stop_reason === 'tool_use' ? 'tool_use_no_blocks' : 'unknown_stop_reason';
       finalText = textOf(message);
       if (stopReason === 'unknown_stop_reason') {
         error = {
@@ -491,7 +507,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
   // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
   // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。
-  for (const [k, v] of Object.entries(runConfigSnapshot(options))) recorder.setAttribute(rootId, k, v);
+  for (const [k, v] of Object.entries(runConfigSnapshot(options)))
+    recorder.setAttribute(rootId, k, v);
 
   const progress = { iterations: 0 };
   let result: AgentLoopResult<SchemaType<S>>;
@@ -521,7 +538,12 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     });
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
-    result = { stopReason: 'error', finalText: '', error: classifyError(e), iterations: progress.iterations };
+    result = {
+      stopReason: 'error',
+      finalText: '',
+      error: classifyError(e),
+      iterations: progress.iterations,
+    };
   }
 
   const runStatus = isSuccessStopReason(result.stopReason) ? 'ok' : 'error';
@@ -606,7 +628,9 @@ function toApiTool(t: AgentTool): Anthropic.Tool {
  * 只放标量（OTLP/日志/看板都能直接吃）；缺省值也记，这样"没配"与"配了缺省值"可区分于
  * "该项不存在"。函数型选项只记"配没配"，不记函数体。
  */
-function runConfigSnapshot(options: RunAgentOptions<JsonSchema>): Record<string, string | number | boolean> {
+function runConfigSnapshot(
+  options: RunAgentOptions<JsonSchema>,
+): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {
     'config.model': resolveDefaultModel(options.model),
     'config.maxTokens': options.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -615,7 +639,8 @@ function runConfigSnapshot(options: RunAgentOptions<JsonSchema>): Record<string,
   if (options.maxTotalTokens != null) out['config.maxTotalTokens'] = options.maxTotalTokens;
   if (options.maxCostUsd != null) out['config.maxCostUsd'] = options.maxCostUsd;
   if (options.toolTimeoutMs != null) out['config.toolTimeoutMs'] = options.toolTimeoutMs;
-  if (options.maxToolConcurrency != null) out['config.maxToolConcurrency'] = options.maxToolConcurrency;
+  if (options.maxToolConcurrency != null)
+    out['config.maxToolConcurrency'] = options.maxToolConcurrency;
   // 重试：记生效的 maxAttempts（0 = 关闭）—— 比记 "custom/default" 更有信息量
   const retryCfg = resolveRetry(options.retry);
   out['config.retry.maxAttempts'] = retryCfg ? retryCfg.maxAttempts : 0;

@@ -73,7 +73,8 @@ export class FileTaskStore implements TaskStore {
       complete = false;
     }
     try {
-      if (complete) appendFileSync(this.file, '\n'); // 记录是完整的，只差换行
+      if (complete)
+        appendFileSync(this.file, '\n'); // 记录是完整的，只差换行
       else truncateSync(this.file, Buffer.byteLength(raw.slice(0, cut), 'utf8'));
     } catch {
       // 修不了就照旧读：能解析的行照常入内存，损坏行由下面的 parse 守卫跳过

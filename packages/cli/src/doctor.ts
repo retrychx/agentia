@@ -13,7 +13,10 @@ interface RegistryEntry {
 }
 
 /** 解析 src/registry.ts：imports（标识符 → 来源）+ entries（provide token → useClass 标识符） */
-function parseRegistry(content: string): { imports: Map<string, string>; entries: RegistryEntry[] } {
+function parseRegistry(content: string): {
+  imports: Map<string, string>;
+  entries: RegistryEntry[];
+} {
   const imports = new Map<string, string>();
   for (const m of content.matchAll(/^import\s+(\w+)\s+from\s+'([^']+)'/gm)) {
     imports.set(m[1], m[2]);
@@ -65,7 +68,9 @@ export function doctor(): number {
   for (const [type, relDir] of Object.entries(CAPABILITY_DIRS) as [string, string][]) {
     const dir = join(cwd, relDir);
     if (!existsSync(dir)) {
-      warnings.push(`${relDir}/ 不存在（该类型暂时没有能力；discover 里若仍列着这个路径会启动即报错）`);
+      warnings.push(
+        `${relDir}/ 不存在（该类型暂时没有能力；discover 里若仍列着这个路径会启动即报错）`,
+      );
       continue;
     }
     const folders = readdirSync(dir, { withFileTypes: true })
@@ -85,7 +90,9 @@ export function doctor(): number {
         broken = true;
       }
       if (!registeredTokens.has(name)) {
-        warnings.push(`${relDir}/${name}/ 存在但未登记（运行 agentia g ${type} ${name} 或手工登记）`);
+        warnings.push(
+          `${relDir}/${name}/ 存在但未登记（运行 agentia g ${type} ${name} 或手工登记）`,
+        );
       } else if (!broken) {
         oks.push(`${relDir}/${name}：已登记且入口齐全`);
       }

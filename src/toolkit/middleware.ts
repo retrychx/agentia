@@ -28,7 +28,10 @@ export type CapabilityNext = (input?: unknown) => unknown;
 export type CapabilityMiddleware = (call: CapabilityCall, next: CapabilityNext) => unknown;
 
 /** 用中间件链包裹工具菜单（链为空时原样返回，零开销）。 */
-export function applyMiddleware(tools: AgentTool[], middleware: CapabilityMiddleware[]): AgentTool[] {
+export function applyMiddleware(
+  tools: AgentTool[],
+  middleware: CapabilityMiddleware[],
+): AgentTool[] {
   if (middleware.length === 0) return tools;
   return tools.map((tool) => ({
     ...tool,
@@ -43,7 +46,9 @@ export function applyMiddleware(tools: AgentTool[], middleware: CapabilityMiddle
           // 连调两次会让能力体跑两遍（有副作用的能力尤其危险）——直接报错。
           (...a: unknown[]) => {
             if (passed) {
-              throw new Error(`中间件链上 next() 被重复调用（能力 ${tool.name}）：一次调用只能放行一次`);
+              throw new Error(
+                `中间件链上 next() 被重复调用（能力 ${tool.name}）：一次调用只能放行一次`,
+              );
             }
             passed = true;
             return step(i + 1, a.length > 0 ? a[0] : inp);

@@ -42,8 +42,8 @@ const LEGACY_TERMS: readonly string[] = [
   'droppedUnits',
   // 指标名与标签
   'agentia_unit_',
-  'labelMode: \'unit\'',
-  'labelMode:\'unit\'',
+  "labelMode: 'unit'",
+  "labelMode:'unit'",
   "labelMode?='unit'",
   // 结构面写法
   'readonly unit:',
@@ -132,7 +132,13 @@ describe('伞形术语改名：面向使用者的表面不得残留旧术语', (
   it('扫描面非空（守卫自身不能空跑）', () => {
     assert.ok(files.length >= 20, `扫描文件过少（${files.length}），守卫可能空跑`);
     // 三类曾漏掉的发布面必须真的在扫描面里，否则守卫形同虚设
-    for (const needle of ['packages/cli/README.md', 'package.json', 'Nav.astro', 'index.astro', 'packages/cli/src/cli.ts']) {
+    for (const needle of [
+      'packages/cli/README.md',
+      'package.json',
+      'Nav.astro',
+      'index.astro',
+      'packages/cli/src/cli.ts',
+    ]) {
       assert.ok(
         files.some((f) => f.endsWith(needle)),
         `扫描面应包含 ${needle}（曾漏掉的发布面）`,
@@ -161,14 +167,22 @@ describe('伞形术语改名：面向使用者的表面不得残留旧术语', (
         }
         for (const term of LEGACY_TERMS) {
           if (line.includes(term)) {
-            hits.push(`${relative(repoRoot, file)}:${i + 1} 出现「${term}」 → ${line.trim().slice(0, 90)}`);
+            hits.push(
+              `${relative(repoRoot, file)}:${i + 1} 出现「${term}」 → ${line.trim().slice(0, 90)}`,
+            );
           }
         }
         if (LEGACY_ZH.test(line)) {
-          hits.push(`${relative(repoRoot, file)}:${i + 1} 出现中文旧词「单元」 → ${line.trim().slice(0, 90)}`);
+          hits.push(
+            `${relative(repoRoot, file)}:${i + 1} 出现中文旧词「单元」 → ${line.trim().slice(0, 90)}`,
+          );
         }
       });
-      assert.equal(allowed, false, `${relative(repoRoot, file)} 的豁免块没有闭合（缺 ${ALLOW_END}）`);
+      assert.equal(
+        allowed,
+        false,
+        `${relative(repoRoot, file)} 的豁免块没有闭合（缺 ${ALLOW_END}）`,
+      );
     }
     assert.deepEqual(hits, [], `旧术语残留：\n  ${hits.join('\n  ')}`);
     assert.ok(
@@ -179,7 +193,14 @@ describe('伞形术语改名：面向使用者的表面不得残留旧术语', (
 
   it('新术语确实出现在该出现的地方（防止「扫了一堆空文件」的假绿）', () => {
     const guide = readFileSync(join(repoRoot, 'docs/usage-guide.md'), 'utf8');
-    for (const needle of ['src/tools', 'src/skills', 'src/prompts', 'src/subagents', 'src/registry.ts', 'CapabilityMiddleware']) {
+    for (const needle of [
+      'src/tools',
+      'src/skills',
+      'src/prompts',
+      'src/subagents',
+      'src/registry.ts',
+      'CapabilityMiddleware',
+    ]) {
       assert.ok(guide.includes(needle), `usage-guide 应写明 ${needle}`);
     }
     const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8');

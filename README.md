@@ -299,6 +299,7 @@ await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.tr
 npm install
 npm run build        # 编译框架（dist/）
 npm run typecheck    # 类型检查
+npm run lint         # lint + 格式检查（Biome）
 npm test             # 单元测试（node:test）
 npm run e2e          # 端到端：CLI 脚手架 → 目录发现/注册表装配 → mock run
 ```

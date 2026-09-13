@@ -84,11 +84,11 @@ if (resumed) console.log(`[boot] 续跑 ${resumed} 个未完成任务`);
 const scheduler = new Scheduler(runner);
 const job =
   CHECK_INTERVAL_MS > 0
-    ? scheduler.every(
-        CHECK_INTERVAL_MS,
-        '巡检：用 echo 回显 ok，确认服务链路正常。',
-        { idempotencyPrefix: 'healthcheck', source: 'schedule:healthcheck', maxInFlight: 1 },
-      )
+    ? scheduler.every(CHECK_INTERVAL_MS, '巡检：用 echo 回显 ok，确认服务链路正常。', {
+        idempotencyPrefix: 'healthcheck',
+        source: 'schedule:healthcheck',
+        maxInFlight: 1,
+      })
     : undefined;
 if (job) console.log(`[boot] 定时任务已启用，每 ${CHECK_INTERVAL_MS}ms 一次（id=${job.id}）`);
 

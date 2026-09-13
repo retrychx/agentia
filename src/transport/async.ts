@@ -198,9 +198,7 @@ export class AsyncRunner {
     this.draining = true;
     const timeoutMs = opts.timeoutMs ?? 0;
     if (this.active === 0) return true;
-    const drained = new Promise<boolean>((resolve) =>
-      this.drainWaiters.push(() => resolve(true)),
-    );
+    const drained = new Promise<boolean>((resolve) => this.drainWaiters.push(() => resolve(true)));
     if (timeoutMs <= 0) return drained;
     let timer: NodeJS.Timeout | undefined;
     try {

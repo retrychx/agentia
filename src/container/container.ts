@@ -32,19 +32,14 @@ export interface FactoryProvider<T = unknown> {
   deps?: Token[];
 }
 
-export type Provider<T = unknown> =
-  | ValueProvider<T>
-  | ClassProvider<T>
-  | FactoryProvider<T>;
+export type Provider<T = unknown> = ValueProvider<T> | ClassProvider<T> | FactoryProvider<T>;
 
 export function isProvider(p: unknown): p is Provider {
   return (
     typeof p === 'object' &&
     p !== null &&
     typeof (p as { provide?: unknown }).provide === 'string' &&
-    ('useValue' in (p as object) ||
-      'useClass' in (p as object) ||
-      'useFactory' in (p as object))
+    ('useValue' in (p as object) || 'useClass' in (p as object) || 'useFactory' in (p as object))
   );
 }
 

@@ -186,7 +186,8 @@ describe('MemoryStore 跨 run 记忆', () => {
     const data = new Map<string, unknown>([['k', 'async-v']]);
     const saved: Record<string, unknown>[] = [];
     const store: MemoryStore = {
-      load: async (keys) => Object.fromEntries(keys.filter((k) => data.has(k)).map((k) => [k, data.get(k)])),
+      load: async (keys) =>
+        Object.fromEntries(keys.filter((k) => data.has(k)).map((k) => [k, data.get(k)])),
       save: async (entries) => {
         saved.push(entries);
         Object.assign(data, entries);
@@ -203,7 +204,10 @@ describe('MemoryStore 跨 run 记忆', () => {
 
     assert.ok(JSON.stringify(seen[1]).includes('async-v'));
     // save 收到的是**无原型对象**（见 flushMemory）——展开成普通对象再比对
-    assert.deepEqual(saved.map((e) => ({ ...e })), [{ k: 'async-v' }]);
+    assert.deepEqual(
+      saved.map((e) => ({ ...e })),
+      [{ k: 'async-v' }],
+    );
   });
 
   it('水合 load 失败：不杀死 run（辅助动作失败 → 当无记忆继续），回写仍发生', async () => {
@@ -235,11 +239,19 @@ describe('MemoryStore 跨 run 记忆', () => {
     const store = new InMemoryMemoryStore();
     // 字面量 { __proto__: x } 会设原型而非自有键 —— 显式造一个自有 __proto__ 键
     const entries: Record<string, unknown> = {};
-    Object.defineProperty(entries, '__proto__', { value: 'kept', enumerable: true, writable: true, configurable: true });
+    Object.defineProperty(entries, '__proto__', {
+      value: 'kept',
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
     store.save(entries);
 
     const loaded = store.load(['__proto__']);
-    assert.ok(Object.hasOwn(loaded, '__proto__'), 'load 结果必须含自有 __proto__ 键（不能静默丢失）');
+    assert.ok(
+      Object.hasOwn(loaded, '__proto__'),
+      'load 结果必须含自有 __proto__ 键（不能静默丢失）',
+    );
     assert.equal((loaded as Record<string, unknown>)['__proto__'], 'kept');
     assert.equal(Object.getPrototypeOf(loaded), null, '无原型，绝不污染 Object.prototype');
   });

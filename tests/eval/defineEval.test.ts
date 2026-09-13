@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { Tool, createApp, defineEval, executeRun, scriptedClient, SystemPrompt } from '../../src/index.js';
+import {
+  Tool,
+  createApp,
+  defineEval,
+  executeRun,
+  scriptedClient,
+  SystemPrompt,
+} from '../../src/index.js';
 import type { AgentRunResult, JsonSchema } from '../../src/index.js';
 import { endTurnMsg, toolUseMsg } from '../helpers.js';
 
@@ -10,7 +17,13 @@ describe('scriptedClient（D2）', () => {
   it('按脚本依次返回响应；每个文本块真的经 on("text") 吐出去（SSE/onText 链路在 eval 里也走一遍）', async () => {
     const deltas: string[] = [];
     const client = scriptedClient([
-      { ...endTurnMsg(''), content: [{ type: 'text', text: '第一块' }, { type: 'text', text: '第二块' }] },
+      {
+        ...endTurnMsg(''),
+        content: [
+          { type: 'text', text: '第一块' },
+          { type: 'text', text: '第二块' },
+        ],
+      },
     ]);
     const { result } = await executeRun({
       messages: [{ role: 'user', content: 'go' }],
@@ -73,14 +86,23 @@ describe('defineEval（D2）', () => {
       return '命中 3 条';
     }
   }
-  const makeApp = () => createApp({ name: 'eval-app', system: new SystemPrompt().add('role', 'r'), providers: [{ provide: 'u', useClass: Units }] });
+  const makeApp = () =>
+    createApp({
+      name: 'eval-app',
+      system: new SystemPrompt().add('role', 'r'),
+      providers: [{ provide: 'u', useClass: Units }],
+    });
 
   it('用例全过 → ok=true，报告里带每个 case 的 stopReason', async () => {
     const ev = defineEval<unknown>({
       name: 'search-flow',
       app: makeApp,
       cases: [
-        { name: '会调 search', input: '查一下', client: scriptedClient([toolUseMsg('search', {}), endTurnMsg('好了')]) },
+        {
+          name: '会调 search',
+          input: '查一下',
+          client: scriptedClient([toolUseMsg('search', {}), endTurnMsg('好了')]),
+        },
       ],
       expect: (r, { trace }) => {
         assert.equal(r.stopReason, 'end_turn');
@@ -145,7 +167,12 @@ describe('defineEval（D2）', () => {
   });
 
   it('用例为空 → ok=true（没有用例就没有回归）', async () => {
-    const report = await defineEval<unknown>({ name: 'empty', app: makeApp, cases: [], expect: () => {} }).run();
+    const report = await defineEval<unknown>({
+      name: 'empty',
+      app: makeApp,
+      cases: [],
+      expect: () => {},
+    }).run();
     assert.deepEqual([report.total, report.ok], [0, true]);
   });
 
@@ -166,7 +193,12 @@ describe('defineEval（D2）', () => {
       id: 'm1',
       model: 'claude-opus-5',
       stop_reason: 'tool_use' as const,
-      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
       content: [{ type: 'tool_use', id: 'tu1', name: 'submit_result', input: { ok: true } }],
     };
     const ev = defineEval<{ ok: boolean }>({

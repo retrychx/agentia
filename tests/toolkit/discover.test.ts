@@ -36,8 +36,14 @@ describe('discoverProviders（目录发现）', () => {
       mkdirSync(join(b, 'alpha'), { recursive: true });
       writeFileSync(join(b, 'alpha', 'index.ts'), 'export default class A {}\n');
 
-      assert.deepEqual((await discoverProviders([a, b])).map((p) => p.provide), ['zulu', 'alpha']);
-      assert.deepEqual((await discoverProviders([b, a])).map((p) => p.provide), ['alpha', 'zulu']);
+      assert.deepEqual(
+        (await discoverProviders([a, b])).map((p) => p.provide),
+        ['zulu', 'alpha'],
+      );
+      assert.deepEqual(
+        (await discoverProviders([b, a])).map((p) => p.provide),
+        ['alpha', 'zulu'],
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -66,7 +72,11 @@ describe('discoverProviders（目录发现）', () => {
         writeFileSync(join(root, d, 'weather', 'index.ts'), 'export default class W {}\n');
       }
       const providers = await discoverProviders([join(root, 'tools'), join(root, 'skills')]);
-      assert.equal(providers.length, 2, '两个目录各产出一个 provider（覆盖发生在装配期，不是发现期）');
+      assert.equal(
+        providers.length,
+        2,
+        '两个目录各产出一个 provider（覆盖发生在装配期，不是发现期）',
+      );
       assert.ok(
         warns.some((w) => /重名能力 weather/.test(w)),
         `应留重名告警，实际: ${JSON.stringify(warns)}`,
@@ -78,7 +88,10 @@ describe('discoverProviders（目录发现）', () => {
   });
 
   it('非法 default export → 报出形态要求', async () => {
-    await assert.rejects(discoverProviders(`${fixtures}/capabilities-broken`), /default export 形态非法/);
+    await assert.rejects(
+      discoverProviders(`${fixtures}/capabilities-broken`),
+      /default export 形态非法/,
+    );
   });
 
   it('入口加载失败 → 报出能力名与入口路径，并保留 cause', async () => {
@@ -103,7 +116,11 @@ describe('discoverProviders（目录发现）', () => {
       symlinkSync(capabilityDir, join(root, 'linked'), 'dir');
 
       const providers = await discoverProviders(root);
-      assert.deepEqual(providers.map((p) => p.provide), ['linked'], '软链目录不该被静默漏掉');
+      assert.deepEqual(
+        providers.map((p) => p.provide),
+        ['linked'],
+        '软链目录不该被静默漏掉',
+      );
     } finally {
       rmSync(real, { recursive: true, force: true });
       rmSync(root, { recursive: true, force: true });
@@ -124,7 +141,10 @@ describe('discoverProviders（目录发现）', () => {
       writeFileSync(join(root, 'real', 'index.ts'), 'export default class R {}\n');
 
       const providers = await discoverProviders(root);
-      assert.deepEqual(providers.map((p) => p.provide), ['real']);
+      assert.deepEqual(
+        providers.map((p) => p.provide),
+        ['real'],
+      );
       assert.equal(warns.length, 1);
       assert.match(warns[0], /\[agentia:discover\].*assets/);
     } finally {
@@ -138,7 +158,10 @@ describe('discoverProviders（目录发现）', () => {
       discover: `${fixtures}/capabilities`,
       system: new SystemPrompt().add('role', 'r', true),
     });
-    assert.deepEqual(app.tools.map((t) => t.name), ['alpha_tool']);
+    assert.deepEqual(
+      app.tools.map((t) => t.name),
+      ['alpha_tool'],
+    );
     assert.equal(await app.tools[0].run({}), 'alpha');
   });
 

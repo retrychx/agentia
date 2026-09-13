@@ -72,7 +72,9 @@ export class InMemoryTaskStore implements TaskStore {
   constructor(opts: { maxRecords?: number } = {}) {
     const max = opts.maxRecords ?? Number.POSITIVE_INFINITY;
     if (max !== Number.POSITIVE_INFINITY && !(max > 0)) {
-      throw new Error(`InMemoryTaskStore 的 maxRecords 必须为正数或 Infinity，收到 ${opts.maxRecords}`);
+      throw new Error(
+        `InMemoryTaskStore 的 maxRecords 必须为正数或 Infinity，收到 ${opts.maxRecords}`,
+      );
     }
     this.maxRecords = max;
   }

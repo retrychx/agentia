@@ -106,7 +106,9 @@ export async function reportCommand(args: string[]): Promise<number> {
   const pad = (s: string, n: number): string => (s.length >= n ? s : s + ' '.repeat(n - s.length));
   const fmtMs = (ms: number): string => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`);
   console.log(`trace 文件  ${file}`);
-  console.log(`runs       ${traces.length}（失败 ${traces.length - okRuns}）${badLines > 0 ? `  ·  跳过无法解析 ${badLines} 行` : ''}`);
+  console.log(
+    `runs       ${traces.length}（失败 ${traces.length - okRuns}）${badLines > 0 ? `  ·  跳过无法解析 ${badLines} 行` : ''}`,
+  );
   // 失败 run 要说清原因：只报「失败 N」而不给理由，对调优没用。而且首次运行最常见的失败
   // （没配 API key）恰恰不产出任何 capability 行 —— 会走到下面「没有可归因的能力」提前返回。
   const failed = traces.filter((t) => t.status === 'error');
@@ -118,7 +120,9 @@ export async function reportCommand(args: string[]): Promise<number> {
   if (failed.length > 3) console.log(`  …另有 ${failed.length - 3} 条失败 run`);
   console.log('');
   if (rows.length === 0) {
-    console.log('（没有可归因的能力：这些 trace 里既没有 capability span，也没有 tool.output 事件）');
+    console.log(
+      '（没有可归因的能力：这些 trace 里既没有 capability span，也没有 tool.output 事件）',
+    );
     return 0;
   }
   console.log(

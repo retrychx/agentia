@@ -50,15 +50,20 @@ describe('SystemPrompt（缓存布局）', () => {
     assert.equal(new SystemPrompt().build(), '');
 
     // 空稳定段 + 有内容 volatile：只出 volatile 块
-    const mixed = new SystemPrompt().add('role', '', true).add('clock', 'now', false).build({ cache: true });
+    const mixed = new SystemPrompt()
+      .add('role', '', true)
+      .add('clock', 'now', false)
+      .build({ cache: true });
     assert.ok(Array.isArray(mixed) && mixed.length === 1);
     assert.equal((mixed[0] as { text: string }).text, 'now');
   });
 });
 
 describe('提示词版本化（D4）', () => {
-  const rootOf = (trace: { rootSpanId: string; spans: Array<{ spanId: string; attributes: Record<string, unknown> }> }) =>
-    trace.spans.find((s) => s.spanId === trace.rootSpanId)!;
+  const rootOf = (trace: {
+    rootSpanId: string;
+    spans: Array<{ spanId: string; attributes: Record<string, unknown> }>;
+  }) => trace.spans.find((s) => s.spanId === trace.rootSpanId)!;
 
   it('SystemPrompt({ version }) 暴露只读 version；不传则 undefined，add 不改它', () => {
     assert.equal(new SystemPrompt().version, undefined);
@@ -77,7 +82,10 @@ describe('提示词版本化（D4）', () => {
   });
 
   it('单次 system 覆盖时，版本跟当次那个 SystemPrompt 走（不是应用级那个）', async () => {
-    const app = createApp({ name: 'ver-app', system: new SystemPrompt({ version: 'v1' }).add('role', 'r') });
+    const app = createApp({
+      name: 'ver-app',
+      system: new SystemPrompt({ version: 'v1' }).add('role', 'r'),
+    });
     const { client } = mockClient([endTurnMsg('ok')]);
     const { result } = await app.run([{ role: 'user', content: 'hi' }], {
       client,

@@ -121,7 +121,9 @@ describe('F2 未定价模型显式（护栏失效看得见）', () => {
     });
 
     // 两个 llm.turn（工具往返 + 收尾）都是未定价 → 事件两条、回调一次
-    const unpriced = result.trace.spans.flatMap((s) => s.events).filter((e) => e.name === 'usage.unpriced');
+    const unpriced = result.trace.spans
+      .flatMap((s) => s.events)
+      .filter((e) => e.name === 'usage.unpriced');
     assert.equal(unpriced.length, 2, '每个未定价 turn 都留痕');
     assert.deepEqual(unpriced[0]!.body, { model: 'mystery-model' });
     assert.equal(calls.length, 1, '同一作用域内每模型只回调一次');
@@ -131,7 +133,11 @@ describe('F2 未定价模型显式（护栏失效看得见）', () => {
     // 不改变结局：定价缺失是宿主配置问题
     assert.equal(result.stopReason, 'end_turn');
     assert.equal(result.trace.status, 'ok');
-    assert.equal(result.trace.totalUsage.costEstimate, undefined, '未定价不计成本（而不是记 0 混进总和）');
+    assert.equal(
+      result.trace.totalUsage.costEstimate,
+      undefined,
+      '未定价不计成本（而不是记 0 混进总和）',
+    );
   });
 
   it('配了 priceOverrides 之后不再有 usage.unpriced（护栏真正生效）', async () => {
@@ -144,7 +150,9 @@ describe('F2 未定价模型显式（护栏失效看得见）', () => {
       priceOverrides: { 'mystery-model': { in: 3, out: 15 } },
       onUnpricedModel: (i) => calls.push(i),
     });
-    const unpriced = result.trace.spans.flatMap((s) => s.events).filter((e) => e.name === 'usage.unpriced');
+    const unpriced = result.trace.spans
+      .flatMap((s) => s.events)
+      .filter((e) => e.name === 'usage.unpriced');
     assert.equal(unpriced.length, 0);
     assert.equal(calls.length, 0);
     assert.equal(result.trace.totalUsage.costEstimate, (10 / 1e6) * 3 + (5 / 1e6) * 15);
@@ -230,7 +238,10 @@ describe('G3 生效配置快照（run 根 config.* attributes）', () => {
       onUnpricedModel: () => {},
     });
     const keys = Object.keys(rootSpan(result.trace).attributes);
-    assert.deepEqual(keys.filter((k) => k.startsWith('config.') && /function|=>/.test(k)), []);
+    assert.deepEqual(
+      keys.filter((k) => k.startsWith('config.') && /function|=>/.test(k)),
+      [],
+    );
   });
 });
 

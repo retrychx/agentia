@@ -29,4 +29,6 @@ if (!existsSync(guide)) {
 }
 cpSync(guide, join(cliRoot, 'dist', 'AGENTS.md'));
 
-console.log('[cli] inspector 资源就位：dist/inspector/ + dist/inspector-page.html；AI 说明：dist/AGENTS.md');
+console.log(
+  '[cli] inspector 资源就位：dist/inspector/ + dist/inspector-page.html；AI 说明：dist/AGENTS.md',
+);

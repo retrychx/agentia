@@ -15,10 +15,10 @@ function fakeFetch(script: Array<{ status?: number; body: unknown }>) {
     if (!step) throw new Error(`fakeFetch 脚本耗尽（第 ${i} 次调用）`);
     requests.push({ url: String(url), init, json: JSON.parse(String(init?.body)) });
     const status = step.status ?? 200;
-    return new Response(
-      typeof step.body === 'string' ? step.body : JSON.stringify(step.body),
-      { status, headers: { 'content-type': 'application/json' } },
-    );
+    return new Response(typeof step.body === 'string' ? step.body : JSON.stringify(step.body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
   }) as unknown as typeof fetch;
   return { fetchImpl, requests };
 }
@@ -189,8 +189,12 @@ describe('createOpenAIClient', () => {
       },
     ]);
     const client = createOpenAIClient({ fetchImpl });
-    const m1 = await client.messages.stream({ model: 'm', max_tokens: 1, messages: [] }).finalMessage();
-    const m2 = await client.messages.stream({ model: 'm', max_tokens: 1, messages: [] }).finalMessage();
+    const m1 = await client.messages
+      .stream({ model: 'm', max_tokens: 1, messages: [] })
+      .finalMessage();
+    const m2 = await client.messages
+      .stream({ model: 'm', max_tokens: 1, messages: [] })
+      .finalMessage();
     assert.equal(m1.stop_reason, 'max_tokens');
     assert.equal(m2.stop_reason, 'refusal');
     assert.deepEqual(m2.content, []);
@@ -206,7 +210,11 @@ describe('createOpenAIClient', () => {
               message: {
                 content: null,
                 tool_calls: [
-                  { id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } },
+                  {
+                    id: 'c1',
+                    type: 'function',
+                    function: { name: 'search', arguments: '{"q":"x"}' },
+                  },
                 ],
               },
             },
@@ -245,9 +253,7 @@ describe('createOpenAIClient', () => {
     const msg = await client.messages
       .stream({ model: 'm', max_tokens: 1, messages: [] })
       .finalMessage();
-    assert.deepEqual(msg.content, [
-      { type: 'tool_use', id: 'c1', name: 't', input: 'not-json{' },
-    ]);
+    assert.deepEqual(msg.content, [{ type: 'tool_use', id: 'c1', name: 't', input: 'not-json{' }]);
   });
 
   it('200 但 choices 为空/缺失：抛错按上游故障处理，不得静默映射成「成功」', async () => {
@@ -319,7 +325,9 @@ describe('createOpenAIClient', () => {
           ],
         }),
       },
-      { body: chatResponse({ choices: [{ finish_reason: 'stop', message: { content: 'done' } }] }) },
+      {
+        body: chatResponse({ choices: [{ finish_reason: 'stop', message: { content: 'done' } }] }),
+      },
     ]);
     const client = createOpenAIClient({ fetchImpl });
     const { run, result } = await executeRun({

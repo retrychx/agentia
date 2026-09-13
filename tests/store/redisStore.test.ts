@@ -57,7 +57,12 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     // 含嵌套 result/trace 的整行记录 JSON 往返
     const a = rec({
       idempotencyKey: 'k',
-      result: { stopReason: 'end_turn', finalText: 'done', iterations: 1, trace: { spans: [] } } as never,
+      result: {
+        stopReason: 'end_turn',
+        finalText: 'done',
+        iterations: 1,
+        trace: { spans: [] },
+      } as never,
     });
     const b = rec();
     await store.save(a);
@@ -144,7 +149,10 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     await store.save(good);
     fake.map.set('agentia:task:broken', '{not json');
     assert.equal(await store.get('broken'), undefined);
-    assert.deepEqual((await store.list()).map((r) => r.taskId), [good.taskId]);
+    assert.deepEqual(
+      (await store.list()).map((r) => r.taskId),
+      [good.taskId],
+    );
 
     const noEnum: RedisLike = {
       get: async () => null,
@@ -172,19 +180,28 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     const ttlStore = new RedisTaskStore(spy, { ttlSeconds: 60 });
     await ttlStore.save(rec({ idempotencyKey: 'k' })); // 无幂等键的 save 只写记录
     assert.equal(calls.length, 2);
-    assert.deepEqual(calls.map((c) => c.opts), [{ EX: 60 }, { EX: 60 }]);
+    assert.deepEqual(
+      calls.map((c) => c.opts),
+      [{ EX: 60 }, { EX: 60 }],
+    );
     assert.match(calls[0].key, /task:/);
     assert.match(calls[1].key, /idem:k/);
 
     // 缺省不设 EX（老行为：记录永不过期）
     calls.length = 0;
     await new RedisTaskStore(spy).save(rec());
-    assert.deepEqual(calls.map((c) => c.opts), [undefined]);
+    assert.deepEqual(
+      calls.map((c) => c.opts),
+      [undefined],
+    );
 
     // 0 也视为不设（便于用 0 明确关闭）
     calls.length = 0;
     await new RedisTaskStore(spy, { ttlSeconds: 0 }).save(rec());
-    assert.deepEqual(calls.map((c) => c.opts), [undefined]);
+    assert.deepEqual(
+      calls.map((c) => c.opts),
+      [undefined],
+    );
 
     assert.throws(() => new RedisTaskStore(spy, { ttlSeconds: -1 }), /ttlSeconds/);
   });
@@ -262,6 +279,9 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
   });
 
   it('ttlSeconds: NaN → 抛错（原 `ttl < 0` 放过 NaN，会静默关闭 TTL）', () => {
-    assert.throws(() => new RedisTaskStore(new InMemoryRedisFake(), { ttlSeconds: Number.NaN }), /ttlSeconds/);
+    assert.throws(
+      () => new RedisTaskStore(new InMemoryRedisFake(), { ttlSeconds: Number.NaN }),
+      /ttlSeconds/,
+    );
   });
 });

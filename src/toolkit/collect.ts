@@ -66,7 +66,11 @@ export function assertMethodTarget(context: CapabilityDecoratorContext, kind: st
 }
 
 /** 能力名解析：spec.name 缺省取方法名；私有符号方法名必须显式给 name。 */
-export function capabilityName(spec: { name?: string }, key: string | symbol, kind: string): string {
+export function capabilityName(
+  spec: { name?: string },
+  key: string | symbol,
+  kind: string,
+): string {
   if (typeof spec.name === 'string') return spec.name;
   if (typeof key !== 'string') {
     throw new Error(`${kind} 需要显式 name（方法名为私有符号 ${String(key)}）`);

@@ -37,8 +37,7 @@ const api = raw.slice(markerAt).replace(/\/\*[\s\S]*?\*\//g, ''); // 去掉注�
 function mediaBlocks(css: string): { query: string; body: string }[] {
   const out: { query: string; body: string }[] = [];
   const re = /@media([^{]*)\{/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(css)) !== null) {
+  for (let m = re.exec(css); m !== null; m = re.exec(css)) {
     let depth = 0;
     const start = re.lastIndex - 1;
     for (let i = start; i < css.length; i++) {
@@ -70,8 +69,7 @@ describe('官网 API 页表格版式不变量', () => {
   it('三列都有 min-width 下限（容器变窄时宁可横滑，也不逐字竖排）', () => {
     const floors = new Map<number, number>();
     const re = /\.page-api \.doc-table[^{}]*?nth-child\((\d)\)[^{}]*\{([^}]*)\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(api)) !== null) {
+    for (let m = re.exec(api); m !== null; m = re.exec(api)) {
       const col = Number(m[1]);
       const mw = /min-width:\s*(\d+(?:\.\d+)?)px/.exec(m[2]);
       if (mw) floors.set(col, Math.max(floors.get(col) ?? 0, Number(mw[1])));
@@ -90,14 +88,30 @@ describe('官网 API 页表格版式不变量', () => {
       .map((b) => ({ px: Number(/max-width:\s*(\d+)px/.exec(b.query)?.[1] ?? NaN), body: b.body }))
       .filter((b) => /\.page-api \.doc-table thead\s*\{[^}]*display:\s*none/.test(b.body));
 
-    assert.equal(cards.length, 1, '缺少（或多于一处）API 页卡片化断点（判据：`thead { display: none }`）');
+    assert.equal(
+      cards.length,
+      1,
+      '缺少（或多于一处）API 页卡片化断点（判据：`thead { display: none }`）',
+    );
     const card = cards[0];
     assert.ok(
       Number.isFinite(card.px) && card.px >= 480 && card.px <= 1024,
       `卡片化断点 ${card.px}px 不合理：须落在 480–1024（太小救不了平板竖屏，太大吃掉桌面）`,
     );
-    assert.match(card.body, /\.page-api \.doc-table tbody tr\s*\{[^}]*display:\s*block/, '行未变成块（卡片）');
-    assert.match(card.body, /\.page-api \.doc-table\s*\{[^}]*min-width:\s*0/, '卡片模式下未解除表格 min-width');
-    assert.match(card.body, /\.page-api \.doc-table td\s*\{[^}]*display:\s*block/, '能力格未变成块');
+    assert.match(
+      card.body,
+      /\.page-api \.doc-table tbody tr\s*\{[^}]*display:\s*block/,
+      '行未变成块（卡片）',
+    );
+    assert.match(
+      card.body,
+      /\.page-api \.doc-table\s*\{[^}]*min-width:\s*0/,
+      '卡片模式下未解除表格 min-width',
+    );
+    assert.match(
+      card.body,
+      /\.page-api \.doc-table td\s*\{[^}]*display:\s*block/,
+      '能力格未变成块',
+    );
   });
 });

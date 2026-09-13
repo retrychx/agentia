@@ -46,10 +46,10 @@ const toolSpecs = new WeakMap<Function, ToolSpec>();
  * 第二个泛型 `O` 用于显式约束返回值（缺省 `any`，不校验）。
  */
 export function Tool<S extends JsonSchema = JsonSchema, O = any>(spec: ToolSpec<S>) {
-  return function (
+  return (
     value: (input: SchemaInput<S>) => O | Promise<O>,
     context: CapabilityDecoratorContext,
-  ): void {
+  ): void => {
     assertMethodTarget(context, '@Tool');
     // spec 的 schema 在类型上更精确（S），登记表按擦除后的形态存（与 collect 一致）
     toolSpecs.set(value, spec as ToolSpec);

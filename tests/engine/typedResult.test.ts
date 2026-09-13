@@ -32,7 +32,12 @@ describe('typed 结构化结果（hidden submit_result）', () => {
         ...toolUseMsg('submit_result', { answer: '42', confidence: 0.9 }, 'tu2'),
         content: [
           { type: 'text', text: '已得出答案' },
-          { type: 'tool_use', id: 'tu2', name: 'submit_result', input: { answer: '42', confidence: 0.9 } },
+          {
+            type: 'tool_use',
+            id: 'tu2',
+            name: 'submit_result',
+            input: { answer: '42', confidence: 0.9 },
+          },
         ],
       },
     ]);
@@ -50,7 +55,10 @@ describe('typed 结构化结果（hidden submit_result）', () => {
 
     // api tools 追加了隐藏 submit_result（input_schema = resultSchema）
     const tools = (seen[0] as { tools: Array<{ name: string; input_schema: unknown }> }).tools;
-    assert.deepEqual(tools.map((t) => t.name), ['echo', 'submit_result']);
+    assert.deepEqual(
+      tools.map((t) => t.name),
+      ['echo', 'submit_result'],
+    );
     assert.equal(tools[1].input_schema, RESULT_SCHEMA);
     // system 末尾追加了指令（未给 system 时即指令本身）
     const system = (seen[0] as { system: string }).system;
@@ -65,9 +73,15 @@ describe('typed 结构化结果（hidden submit_result）', () => {
       system: [{ type: 'text', text: '稳定前缀', cache_control: { type: 'ephemeral' } }],
       resultSchema: RESULT_SCHEMA,
     });
-    const system = (seen[0] as { system: Array<{ type: string; text: string; cache_control?: unknown }> }).system;
+    const system = (
+      seen[0] as { system: Array<{ type: string; text: string; cache_control?: unknown }> }
+    ).system;
     assert.equal(system.length, 2);
-    assert.deepEqual(system[0], { type: 'text', text: '稳定前缀', cache_control: { type: 'ephemeral' } });
+    assert.deepEqual(system[0], {
+      type: 'text',
+      text: '稳定前缀',
+      cache_control: { type: 'ephemeral' },
+    });
     assert.equal(system[1].type, 'text');
     assert.ok(system[1].text.includes('submit_result'));
     assert.equal(system[1].cache_control, undefined); // 不污染稳定前缀缓存
@@ -91,7 +105,14 @@ describe('typed 结构化结果（hidden submit_result）', () => {
     // （seen 里的 messages 是同一数组引用、随回合增长，按块找 is_error 的 tool_result）
     const msgs = (seen[1] as { messages: Array<{ role: string; content: unknown }> }).messages;
     const tr = msgs
-      .flatMap((m) => (Array.isArray(m.content) ? m.content : []) as Array<{ type?: string; is_error?: boolean; content: string }>)
+      .flatMap(
+        (m) =>
+          (Array.isArray(m.content) ? m.content : []) as Array<{
+            type?: string;
+            is_error?: boolean;
+            content: string;
+          }>,
+      )
       .find((b) => b.type === 'tool_result' && b.is_error)!;
     assert.ok(tr.content.includes('invalid input'), tr.content);
     assert.ok(tr.content.includes('$.answer'), tr.content);
@@ -149,7 +170,10 @@ describe('typed 结构化结果（hidden submit_result）', () => {
     assert.equal(result.typed, undefined);
     // 不追加隐藏工具，也不动 system
     const params = seen[0] as { tools: Array<{ name: string }>; system?: string };
-    assert.deepEqual(params.tools.map((t) => t.name), ['echo']);
+    assert.deepEqual(
+      params.tools.map((t) => t.name),
+      ['echo'],
+    );
     assert.equal(params.system, undefined);
   });
 
@@ -206,7 +230,12 @@ describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', ()
         ...toolUseMsg('submit_result', { answer: '42', confidence: 0.9 }, 'tu1'),
         content: [
           { type: 'text', text: '子 agent 报告' },
-          { type: 'tool_use', id: 'tu1', name: 'submit_result', input: { answer: '42', confidence: 0.9 } },
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'submit_result',
+            input: { answer: '42', confidence: 0.9 },
+          },
         ],
       },
     ]);
@@ -230,7 +259,10 @@ describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', ()
 
     // 隐藏 submit_result 追加到了 api 工具菜单（input_schema = resultSchema）
     const tools = (seen[0] as { tools: Array<{ name: string; input_schema: unknown }> }).tools;
-    assert.deepEqual(tools.map((t) => t.name), ['echo', 'submit_result']);
+    assert.deepEqual(
+      tools.map((t) => t.name),
+      ['echo', 'submit_result'],
+    );
     assert.equal(tools[1].input_schema, RESULT_SCHEMA);
 
     // llm.turn 记进了同一条 trace、挂在给定父 span 下（不开 run 根）
@@ -256,7 +288,10 @@ describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', ()
     assert.equal(loop.typed, undefined);
     assert.equal(loop.finalText, '纯文本报告');
     const params = seen[0] as { tools: Array<{ name: string }>; system?: string };
-    assert.deepEqual(params.tools.map((t) => t.name), ['echo']); // 不追加隐藏工具
+    assert.deepEqual(
+      params.tools.map((t) => t.name),
+      ['echo'],
+    ); // 不追加隐藏工具
     assert.equal(params.system, undefined);
   });
 });

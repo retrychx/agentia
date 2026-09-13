@@ -35,7 +35,9 @@ export function legacyLayout(dir: string): LegacyLayout | null {
 
 /** 迁移提示（多行，直接打印） */
 export function legacyMigrationHint(found: LegacyLayout): string {
-  const what = [found.dir ? 'units/' : null, found.registry ? 'units.ts' : null].filter(Boolean).join(' + ');
+  const what = [found.dir ? 'units/' : null, found.registry ? 'units.ts' : null]
+    .filter(Boolean)
+    .join(' + ');
   return `检测到老布局（${what}）—— 目录约定已改为四分类目录，新能力不会再写进 units/：
 
   1) 把 units/<name>/ 按类型挪进 src/tools/ · src/skills/ · src/prompts/ · src/subagents/

@@ -423,10 +423,11 @@ async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<strin
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buf.indexOf('\n')) >= 0) {
+      let idx = buf.indexOf('\n');
+      while (idx >= 0) {
         yield buf.slice(0, idx).replace(/\r$/, '');
         buf = buf.slice(idx + 1);
+        idx = buf.indexOf('\n');
       }
     }
     if (buf) yield buf.replace(/\r$/, '');
@@ -499,7 +500,10 @@ function textOf(message: Anthropic.Message): string {
  * DeepSeek / vLLM / Ollama 等兼容端点在带工具调用时回的是 `stop`；若映射成 end_turn，
  * engine 会在提取工具块之前就收尾（loop 的 end_turn 即终态），工具调用被静默丢弃。
  */
-function mapStopReason(finish: string | null | undefined, hasToolCalls: boolean): Anthropic.StopReason {
+function mapStopReason(
+  finish: string | null | undefined,
+  hasToolCalls: boolean,
+): Anthropic.StopReason {
   if (hasToolCalls) return 'tool_use';
   switch (finish) {
     case 'tool_calls':

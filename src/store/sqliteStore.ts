@@ -1,5 +1,20 @@
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import type { TaskRecord, TaskStore } from './store.js';
+
+// node:sqlite 是 Node ≥22.5 才有的内置模块。这里**延迟加载**而非顶层静态 import：
+// 顶层 import 会让**整个包**在未提供该模块的运行时「加载即崩」——`src/index.ts` 对
+// SqliteTaskStore 是 eager 再导出，于是连不用 SQLite 的用户也被殃及。延迟到真正构造
+// store 时才要求它，并给出可操作的报错（而不是一句 ERR_UNKNOWN_BUILTIN_MODULE）。
+const requireBuiltin = createRequire(import.meta.url);
+
+function loadDatabaseSync(): typeof import('node:sqlite').DatabaseSync {
+  try {
+    return (requireBuiltin('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
+  } catch {
+    throw new Error('SqliteTaskStore 需要 Node ≥ 22.5（依赖内置 node:sqlite 模块）');
+  }
+}
 
 /**
  * Agentia —— SQLite 宿主 TaskStore（spec §6.6：异步耐久 = 换宿主不换语义，roadmap R3）。
@@ -17,6 +32,7 @@ export class SqliteTaskStore implements TaskStore {
   private readonly db: DatabaseSync;
 
   constructor(path: string) {
+    const DatabaseSync = loadDatabaseSync();
     this.db = new DatabaseSync(path);
     if (path !== ':memory:') {
       // WAL：读写不互斥，多进程共库的基础（内存库不支持，跳过）

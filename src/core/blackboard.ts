@@ -27,6 +27,7 @@
  * 说明：类型定义在 core（纯数据），而读写它的 `RunContext`（含 ALS 传播）
  * 留在 runtime —— 契约下沉、机制留层，避免 runtime 的类型被 store 反向依赖。
  */
+// biome-ignore lint/suspicious/noEmptyInterface: 声明合并锚点，必须保持空 interface（改 type 别名会让合并失效）
 export interface Blackboard {}
 
 /** 黑板键：扩展过 `Blackboard` → 其键联合；未扩展 → `string`（向后兼容） */

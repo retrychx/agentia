@@ -42,11 +42,7 @@ export type SchemaType<S> = S extends TypedSchema<infer T> ? T : unknown;
  * （不校验方法签名），只有 `fromZod<T>()` 明确了 T 后才开始校验
  * 「方法签名 vs schema」的一致性。
  */
-export type SchemaInput<S> = S extends TypedSchema<infer T>
-  ? unknown extends T
-    ? any
-    : T
-  : any;
+export type SchemaInput<S> = S extends TypedSchema<infer T> ? (unknown extends T ? any : T) : any;
 
 /**
  * engine 的 TraceRecorder 面向子能力的最小结构面（core 不依赖 engine）。
