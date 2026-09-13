@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/retrychx/agentia/actions/workflows/ci.yml/badge.svg)](https://github.com/retrychx/agentia/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-声明式 agent 服务开发框架：TS 装饰器 + DI，主 agent 调度 `@Tool` / `@Skill` / `@SubAgent` / `@Prompt` 能力执行任务；**每次 run 产出结构化结果与可观测的调用树**（trace / token / 成本 / 指标）。
+面向应用开发的声明式 agent 服务开发框架：装饰器 + DI 声明四类能力，主 agent 编排执行；每次 run 产出结构化结果与可观测调用树（trace、成本、指标），交付可直接上线的服务。
 
 - [安装与配置](#安装与配置)
 - [快速开始](#快速开始)

@@ -4,10 +4,9 @@
 
 [中文 README](./README.md) · **English**
 
-**A declarative framework for building agent services in TypeScript.** You declare capabilities with
-decorators + DI; the main agent orchestrates them. Every run yields structured output **and** a
-first-class, observable call tree — trace, per-step token/cost accounting, metrics — replayable,
-auditable, shippable.
+**A declarative framework for building production agent services.** You declare four kinds of capability
+with decorators + DI and a main agent orchestrates them; every run yields structured output and an
+observable call tree (trace, cost, metrics).
 
 > This is a **summary**. The authoritative and always-current documentation is Chinese:
 > [`docs/usage-guide.md`](./docs/usage-guide.md) (API reference, type wiring, known limits) and the
