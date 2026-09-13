@@ -1,6 +1,12 @@
 # 可观测 · 可调优 —— 设计文档
 
-> **状态**：**待评审**（8 个设计分叉待拍板，见 §6）。落地后决策记录进 `spec.md §10`，状态进 `roadmap.md`。
+> **状态**：**E / F / G 三期全部落地（2026-09-13）**，8 个设计分叉全部按建议 **A** 拍板（见 §6 决策记录）。决策记录见 `spec.md §10`，状态见 `roadmap.md`。
+> ⚠️ **落地时对设计做了四处修正**（都朝"更诚实/更少重复"，详见 spec §10）：
+> ① **E1** 未新增 `status` 字段 —— 既有 `ok` 已是状态，改成补 `errorKind`（`invalid_input`/`timeout`/`threw`/`unknown_tool`），信息量更大且无冗余；
+> ② **F2** 的 `usage.unpriced` 事件落在**该 turn span**（而非 run 根）—— turn 才能准确指出"哪次往返未定价"；
+> ③ **G2** 的排行**无法**复用 `buildRunReport`（trace-view 零依赖、要在浏览器里跑；CLI 又零运行时依赖），故落成两条口径：`trace-view.summarizeTrace`（展示层，CLI `agentia report` 与 dev 面板同源）与 `buildRunReport`（库层，含未定价/成本语义与跨 run 合并）；
+> ④ **指标 `_count` 语义变更** —— `run_duration_ms_count` 从「窗口内样本数」改为**累积观测数**（Prometheus 直方图语义，可跨实例聚合），窗口只再约束分位 gauge；旧断言已按新语义同步。
+> 另**顺带修一处 doc-vs-code 漂移**：`core/trace.ts` 声明已久的「`unit.usage` = 子孙 `llm.turn` 聚合」此前从未写入 —— 已在 `TraceRecorder.end()` 补上（只累加 `llm.turn`，嵌套不双算）。
 > **日期**：2026-09-13
 > **前置**：本文是**设计**，不是逐步实现计划。分期任务计划落地时另起 `docs/plans/2026-09-13-observability-tunability-*.md`。
 > **缘起**：框架定位是「要长期使用、要能被观测、要能被调优的 agent 框架」。当前观测只到 **run 级**（看不到「哪个单元慢/贵/爱失败」），调优旋钮虽齐但**有两处"看着有、实际不生效"**（成本护栏会静默失效）。这块不做透，框架相对"自己拼 SDK"的优势就不成立。

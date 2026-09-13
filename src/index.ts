@@ -54,6 +54,9 @@ export { createBudgetPolicy } from './engine/policy.js';
 export type { BudgetPolicyOptions } from './engine/policy.js';
 export { createBudgetGuard } from './engine/budget.js';
 export type { BudgetGuard, BudgetGuardOptions, BudgetSnapshot } from './engine/budget.js';
+// engine：用量与成本（F1 价格表可注入 / F2 未定价显式）
+export { DEFAULT_PRICING, buildPricing } from './engine/usage.js';
+export type { ModelPricing } from './core/tool.js';
 export { mapWithConcurrency } from './engine/concurrency.js';
 export { DEFAULT_RETRY } from './engine/retry.js';
 export type { RetryOptions } from './engine/retry.js';
@@ -144,9 +147,23 @@ export type { ReplayOptions } from './engine/replay.js';
 // integrations：MCP 桥（D1）—— duck-typed，框架零依赖；连接器在独立包 @migor/mcp
 export { mcpTools, MCP_DEFAULT_TIMEOUT_MS } from './integrations/mcp.js';
 export type { McpClientLike, McpToolInfo, McpToolsOptions } from './integrations/mcp.js';
-// integrations：指标（D3）—— 满足 TraceSink 即可接入，能力零新出口
-export { metricsSink } from './integrations/metrics.js';
-export type { MetricsSink, MetricsSinkOptions, MetricsSnapshot } from './integrations/metrics.js';
+// integrations：指标（D3 → E2/E3/E4/E5）—— 满足 TraceSink 即可接入，能力零新出口
+export { metricsSink, DEFAULT_BUCKETS } from './integrations/metrics.js';
+export type {
+  MetricsSink,
+  MetricsSinkOptions,
+  MetricsSnapshot,
+  ModelMetrics,
+  UnitMetrics,
+} from './integrations/metrics.js';
+// integrations：调优报告（G1）—— 纯函数，从 trace 派生「哪个单元慢/贵/爱失败」
+export { buildRunReport, mergeRunReports, renderRunReport } from './integrations/report.js';
+export type {
+  DurationReport,
+  ModelReport,
+  RunReport,
+  UnitReport,
+} from './integrations/report.js';
 
 // eval：把 mockClient 提升为一等能力（D2）—— 叶子消费模块，只依赖公共面
 export { scriptedClient } from './eval/scripted.js';

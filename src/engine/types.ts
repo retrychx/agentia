@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool, JsonSchema, ModelClient } from '../core/tool.js';
+import type { AgentTool, JsonSchema, ModelClient, ModelPricing } from '../core/tool.js';
 import type { SpanError, Trace } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
 
@@ -115,9 +115,30 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   maxTotalTokens?: number;
   /**
    * 成本硬管控（C1）：累计成本（美元）上限。**依赖模型在价格表内**
-   * （engine/usage.ts）—— 不在表里时成本恒为 0，此护栏不触发；要无条件兜底用 maxTotalTokens。
+   * （`engine/usage.ts` 的 DEFAULT_PRICING，或本 run 的 `priceOverrides`）——
+   * 不在表里时成本恒为 0，此护栏不触发；要无条件兜底用 maxTotalTokens。
+   * 未定价模型会在 run 根记 `usage.unpriced` 事件（见 `onUnpricedModel`），
+   * 所以"护栏到底有没有生效"是**看得见**的。
    */
   maxCostUsd?: number;
+  /**
+   * 价格表覆盖/追加（$/1M tokens）：覆盖内置同名项，或给非 Anthropic 模型定价
+   * （如 `{ 'deepseek-chat': { in: 0.27, out: 1.10 } }`）。见 `buildPricing`。
+   *
+   * 会**透传给嵌套单元**（@SubAgent / @Skill 的子循环），所以子 agent 用同一个模型
+   * 也能算成本 —— 不会出现「主 agent 有成本、子 agent 恒 0」的割裂。
+   * 非法单价在 run 开始时抛错（不静默算出 NaN）。
+   */
+  priceOverrides?: Record<string, ModelPricing>;
+  /**
+   * 遇到不在价格表内的模型时的回调（**每个循环作用域内每模型一次**，去重后调用；
+   * 主 agent 与每个子 agent 各算一个作用域）。框架同时在该 turn span 上记
+   * `usage.unpriced` 事件 —— 成本护栏的失效不再静默。
+   *
+   * 回调抛错被吞掉（观测是辅助动作，不影响 run）。**不会**改变 run 结局：
+   * 定价缺失是宿主配置问题，不该把一次成功的 run 打成失败。
+   */
+  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
   /**
    * 单个工具执行的超时（毫秒）；缺省 0 = 不限。超时**不杀 run**：
    * 该条 tool_result 记 `is_error` 回给模型（与「工具抛错不中断 run」同语义，模型可自行换路）。

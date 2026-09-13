@@ -55,7 +55,7 @@ const MAX_RUNS = 50;
 /** 静态资源目录（构建期由 scripts/copy-assets.mjs 就位） */
 const ASSETS = join(dirname(fileURLToPath(import.meta.url)), 'inspector');
 const PAGE = join(dirname(fileURLToPath(import.meta.url)), 'inspector-page.html');
-const STATIC = new Set(['index.js', 'view.js', 'fromTrace.js', 'trace-view.css']);
+const STATIC = new Set(['index.js', 'view.js', 'fromTrace.js', 'summary.js', 'trace-view.css']);
 
 function summarize(t: TraceLike): RunSummary {
   const spans = t.spans || [];

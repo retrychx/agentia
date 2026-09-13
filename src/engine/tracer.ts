@@ -19,6 +19,8 @@ export class TraceRecorder {
   readonly traceId: TraceId = randomUUID();
   private readonly spans: Span[] = [];
   private readonly index = new Map<SpanId, Span>();
+  /** parentSpanId → 直接子 span（增量维护，供 unit 结束时就地聚合子孙 usage，O(子孙) 而非每次重建） */
+  private readonly children = new Map<SpanId | null, Span[]>();
   private rootSpanId: SpanId | null = null;
 
   begin(kind: SpanKind, name: string, parentSpanId: SpanId | null): SpanId {
@@ -40,6 +42,9 @@ export class TraceRecorder {
     };
     this.spans.push(span);
     this.index.set(id, span);
+    const siblings = this.children.get(parentSpanId);
+    if (siblings) siblings.push(span);
+    else this.children.set(parentSpanId, [span]);
     return id;
   }
 
@@ -51,6 +56,11 @@ export class TraceRecorder {
    * 结束 span。容错策略：未知 span id 抛错（程序员错误要响亮）；
    * 对已结束的 span 幂等忽略（重复 end 视为无害）。event/setAttribute 对未知
    * span 静默忽略 —— 观测不应中断业务，与 end 的严格性刻意区分。
+   *
+   * `unit` span 收尾时若调用方**未**显式给 usage，就地聚合其**子孙 llm.turn** 的
+   * usage 写回该 span —— 兑现 `core/trace.ts` 里「unit.usage = 其子孙聚合，仅供展示」
+   * 的已声明语义（此前该字段从不写入，指标/报告拿不到「某个子 agent 花了多少」）。
+   * 只累加 llm.turn，故层层嵌套也不会重复计数。
    */
   end(id: SpanId, patch: { status?: SpanStatus; error?: SpanError; usage?: Usage } = {}): void {
     const span = this.index.get(id);
@@ -60,6 +70,44 @@ export class TraceRecorder {
     if (patch.status) span.status = patch.status;
     if (patch.error) span.error = patch.error;
     if (patch.usage) span.usage = patch.usage;
+    else if (span.kind === 'unit') {
+      const aggregated = this.aggregateDescendantUsage(id);
+      if (aggregated) span.usage = aggregated;
+    }
+  }
+
+  /** 子孙里所有 `llm.turn` 的 usage 之和（不含自身）；无任何计量时返回 undefined */
+  private aggregateDescendantUsage(id: SpanId): Usage | undefined {
+    const total: Usage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    };
+    let cost = 0;
+    let priced = false;
+    let any = false;
+    const stack = [...(this.children.get(id) ?? [])];
+    while (stack.length > 0) {
+      const s = stack.pop()!;
+      if (s.kind === 'llm.turn' && s.usage) {
+        any = true;
+        total.inputTokens += s.usage.inputTokens;
+        total.outputTokens += s.usage.outputTokens;
+        total.cacheReadTokens += s.usage.cacheReadTokens;
+        total.cacheCreationTokens += s.usage.cacheCreationTokens;
+        if (s.usage.costEstimate != null) {
+          priced = true;
+          cost += s.usage.costEstimate;
+        }
+      }
+      const kids = this.children.get(s.spanId);
+      if (kids) stack.push(...kids);
+    }
+    if (!any) return undefined;
+    // 与 usage.ts 的取整口径一致（1e-6 美元），避免浮点尾差进 trace/OTLP
+    if (priced) total.costEstimate = Math.round(cost * 1e6) / 1e6;
+    return total;
   }
 
   event(id: SpanId, name: string, body: unknown): void {

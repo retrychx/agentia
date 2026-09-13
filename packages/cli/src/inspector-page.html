@@ -66,6 +66,8 @@
       <section>
         <div id="ttl"></div>
         <div id="trace"><div class="tr-empty">// 选一个 run 查看调用树</div></div>
+        <!-- 单元排行（G2）：哪个单元慢 / 贵 / 爱失败 —— 调优从这里下手 -->
+        <div id="summary"></div>
         <div class="usage" id="usage" hidden>
           <span>in <b id="u-in">0</b></span>
           <span>out <b id="u-out">0</b></span>
@@ -74,10 +76,11 @@
     </main>
 
     <script type="module">
-      import { createTraceView, playTrace } from './index.js';
+      import { createTraceView, playTrace, summarizeTrace, renderSummary } from './index.js';
 
       const runsEl = document.getElementById('runs');
       const traceEl = document.getElementById('trace');
+      const summaryEl = document.getElementById('summary');
       const ttlEl = document.getElementById('ttl');
       const liveEl = document.getElementById('live');
       const usageEl = document.getElementById('usage');
@@ -128,6 +131,7 @@
         ttlEl.textContent = trace.traceId;
         usageEl.hidden = false;
         playTrace(view, trace);
+        summaryEl.innerHTML = renderSummary(summarizeTrace(trace));
         renderList();
       }
 

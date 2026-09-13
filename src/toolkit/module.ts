@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool, JsonSchema, SchemaType } from '../core/tool.js';
+import type { AgentTool, JsonSchema, ModelPricing, SchemaType } from '../core/tool.js';
 import type { SystemParam } from '../engine/types.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 import { executeRun } from '../runtime/run.js';
@@ -75,6 +75,13 @@ export interface AppOptions {
   maxTotalTokens?: number;
   /** 缺省成本硬管控：累计成本（美元）上限（可被单次 run 覆盖） */
   maxCostUsd?: number;
+  /**
+   * 价格表覆盖/追加（$/1M tokens，可被单次 run 覆盖）；见 `RunAgentOptions.priceOverrides`。
+   * 给非 Anthropic 端点（DeepSeek / 自建）定价，否则 `maxCostUsd` 会静默不生效。
+   */
+  priceOverrides?: Record<string, ModelPricing>;
+  /** 未定价模型回调（可被单次 run 覆盖）；见 `RunAgentOptions.onUnpricedModel` */
+  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
   /** 缺省单个工具执行超时（毫秒，可被单次 run 覆盖）；0/不设 = 不限 */
   toolTimeoutMs?: number;
   /** 缺省同回合并行工具上限（可被单次 run 覆盖）；不设 = 不限 */
@@ -114,6 +121,11 @@ export interface RunAppOptions<S extends JsonSchema = JsonSchema> extends RunInv
    * transport 的 `RunInvocationOptions` 里 —— 异步宿主不会替你传它）。
    */
   session?: { store: SessionStore; id: string };
+  /**
+   * 未定价模型回调（单次覆盖应用级）；见 `RunAgentOptions.onUnpricedModel`。
+   * 是函数，因此**不在** transport 的 `RunInvocationOptions` 里（异步宿主不替你传）。
+   */
+  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
 }
 
 export interface AgentRunOutput<T = unknown> {
@@ -143,6 +155,8 @@ export class AgentApp {
     retry?: RetryOptions | false;
     maxTotalTokens?: number;
     maxCostUsd?: number;
+    priceOverrides?: Record<string, ModelPricing>;
+    onUnpricedModel?: (info: { model: string; spanId: string }) => void;
     toolTimeoutMs?: number;
     maxToolConcurrency?: number;
   };
@@ -175,6 +189,8 @@ export class AgentApp {
       retry: opts.retry,
       maxTotalTokens: opts.maxTotalTokens,
       maxCostUsd: opts.maxCostUsd,
+      priceOverrides: opts.priceOverrides,
+      onUnpricedModel: opts.onUnpricedModel,
       toolTimeoutMs: opts.toolTimeoutMs,
       maxToolConcurrency: opts.maxToolConcurrency,
     };
@@ -328,6 +344,8 @@ export class AgentApp {
       retry: opts.retry ?? this.base.retry,
       maxTotalTokens: opts.maxTotalTokens ?? this.base.maxTotalTokens,
       maxCostUsd: opts.maxCostUsd ?? this.base.maxCostUsd,
+      priceOverrides: opts.priceOverrides ?? this.base.priceOverrides,
+      onUnpricedModel: opts.onUnpricedModel ?? this.base.onUnpricedModel,
       toolTimeoutMs: opts.toolTimeoutMs ?? this.base.toolTimeoutMs,
       maxToolConcurrency: opts.maxToolConcurrency ?? this.base.maxToolConcurrency,
       resultSchema: opts.resultSchema,

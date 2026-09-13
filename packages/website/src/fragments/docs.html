@@ -356,6 +356,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
           <li><code>maxTotalTokens</code> / <code>maxCostUsd</code>：每回合记账后判断，超限以 <code>stopReason='budget_exceeded'</code> 收尾（算失败）并在 run 根记一条 <code>budget.exceeded</code> 事件。口径是<strong>整条 run</strong>（含子 agent）。</li>
           <li>两处刻意的语义：<strong>模型自然收尾的那一回合超限不改判失败</strong>（那次任务其实做完了）；超限时<strong>连带不执行本回合的工具</strong>（不继续产生副作用）。</li>
           <li><code>toolTimeoutMs</code>：超时<strong>不杀 run</strong>，该条 tool_result 记 <code>is_error</code> 让模型换路；<code>maxToolConcurrency</code> 给同回合的并行工具设上限。⚠️ 超时是「放弃等待」而非取消，<code>AgentTool.run</code> 收不到 signal。</li>
+          <li><code>priceOverrides</code>：给价格表<strong>打补丁</strong> —— 覆盖内置型号单价，或给非 Anthropic 端点（DeepSeek / 自建）定价。它是 <code>maxCostUsd</code> 真正生效的前提：模型不在表里时成本恒 0、护栏不触发，而框架会通过 <code>usage.unpriced</code> 事件、<code>model_unpriced_turns_total</code> 指标与 <code>onUnpricedModel</code> 回调把这件事<strong>显式说出来</strong>，不静默。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>guards.ts</em></div>
         <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
@@ -372,7 +373,8 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
         <ul>
           <li><strong>MCP</strong>：<code>mcpTools(client, { server })</code> 把 server 的 <code>tools/list</code> 映射成菜单项。<strong>duck-typed、框架零依赖</strong>（不 import MCP SDK，也不含 stdio / HTTP 传输 —— 连接器自行提供）。名字里对 LLM 不友好的字符会归一化成 <code>_</code>，<strong>原名</strong>记进 <code>mcp.tool</code> attribute 供审计 / 回放。</li>
           <li><strong>evals</strong>：<code>scriptedClient([...])</code> 脚本化模型往返 + <code>defineEval({ app, cases, expect })</code> 对 trace 写断言 —— 改 prompt / 换模型 / 加工具之后有没有回归，靠断言而不是人眼。失败 case 带完整 trace。</li>
-          <li><strong>指标</strong>：<code>metricsSink()</code> 天然满足 <code>TraceSink</code>，<code>render()</code> 出 Prometheus 文本（零依赖手写），<code>/metrics</code> 直接回它。</li>
+          <li><strong>指标</strong>：<code>metricsSink()</code> 天然满足 <code>TraceSink</code>，<strong>三个维度都从 trace 派生、不用埋点</strong> —— run 级，以及<strong>单元级</strong>（每个 tool / skill / subagent 的调用数、失败数、耗时、token、成本：工具读 turn 上的 <code>tool.output</code> 事件，skill / subagent 读 unit span）与<strong>模型级</strong>（按模型归因，另出「算不出成本的 turn 数」）。时长同时给可跨实例聚合的 histogram 与窗口内精确分位两种口径；<code>render()</code> 出 Prometheus 文本，<code>createHttpHandler({ metrics })</code> 直接内建 <code>GET /metrics</code>；也可以 <code>export:'otlp'</code> 推给 OTel 采集端（零依赖手写 JSON）。</li>
+          <li><strong>调优报告</strong>：<code>buildRunReport(trace)</code> 把一条 trace 变成「<strong>哪个单元慢 / 贵 / 爱失败</strong>」的排行（<code>mergeRunReports</code> 跨 run 汇总），CLI 一行 <code>agentia report traces.jsonl</code> 出表；<code>agentia dev</code> 面板里也有一份同样的排行。面对一堆旋钮时，这是「该拧哪个」的依据。</li>
           <li><strong>提示词版本</strong>：<code>new SystemPrompt({ version })</code> 把版本号写进 run 根 <code>system.version</code>，trace 里能查「这个结果是哪个版本的提示词产出的」。<strong>多租户配额</strong>：<code>middleware</code>（拦）+ <code>TraceSink</code>（记账）+ BudgetGuard（单次上限）组合即可。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>ecosystem.ts</em></div>
@@ -444,6 +446,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>生成单元（tool / skill / subagent / prompt）到 units/&lt;name&gt;/，并自动登记 units.ts；长文本资产（system.md / asset.md）一并生成。</td></tr>
             <tr><td>agentia dev</td><td>tsx watch 启动 src/main.ts：改单元文件自动重启。</td></tr>
             <tr><td>agentia doctor</td><td>装配体检：未登记/悬空单元、命名规范、重复条目。</td></tr>
+            <tr><td>agentia report &lt;trace.jsonl&gt;</td><td>从 trace 落盘文件生成调优报告：单元耗时 / 成本 / 错误率排行（跨行按单元合并）。每行一个 JSON —— 裸 Trace，或含 <code>result.trace</code> 的 TaskRecord。</td></tr>
             <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方单元包（defineModule 能力包）并登记到注册表。</td></tr>
           </tbody>
         </table></div>

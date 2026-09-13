@@ -154,7 +154,9 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `middleware` | 单元调用中间件（洋葱链，链序 = 注册顺序） |
 | `sinks` | trace 出口，run 收尾投递 |
 | `maxTotalTokens` | 缺省成本硬管控：整条 run 累计 token 上限（可被单次 run 覆盖） |
-| `maxCostUsd` | 缺省成本硬管控：累计成本（美元）上限（依赖模型在价格表内） |
+| `maxCostUsd` | 缺省成本硬管控：累计成本（美元）上限（**依赖模型在价格表内**，见 `priceOverrides`；未定价模型会留 `usage.unpriced` 事件，所以「护栏有没有真的生效」看得见） |
+| `priceOverrides` | 价格表覆盖/追加（`$/1M tokens`）：覆盖内置同名项，或给非 Anthropic 模型定价（如 `{ 'deepseek-chat': { in: 0.27, out: 1.10 } }`）。**透传给子 agent/skill 的子循环** —— 不会「主 agent 有成本、子 agent 恒 0」。非法单价在 run 开始即抛错 |
+| `onUnpricedModel` | 遇到价格表外的模型时回调（`{ model, spanId }`，每个循环作用域内每模型一次）；抛错被吞，**不改变 run 结局**（定价缺失是宿主配置问题）。用它接告警 |
 | `toolTimeoutMs` | 缺省单工具超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run |
 | `maxToolConcurrency` | 缺省同回合并行工具上限；不设 = 不限（全并行） |
 
@@ -175,7 +177,9 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `tools` | 单次覆盖工具菜单 |
 | `resultSchema` | 结构化结果 schema；配 `fromZod<T>` 可让 `result.typed` 自动是 `T` |
 | `maxTotalTokens` | 成本硬管控：整条 run 累计 token 上限；超限以 `stopReason='budget_exceeded'` 收尾（**算失败**） |
-| `maxCostUsd` | 成本硬管控：累计成本（美元）上限；模型不在价格表内时不触发（要兜底用 `maxTotalTokens`） |
+| `maxCostUsd` | 成本硬管控：累计成本（美元）上限；模型不在价格表内时**不触发**（用 `priceOverrides` 定价，或用 `maxTotalTokens` 兜底） |
+| `priceOverrides` | 单次覆盖价格表（`$/1M tokens`）；语义同 `createApp` 的 `priceOverrides` |
+| `onUnpricedModel` | 单次覆盖未定价回调（**是函数，因此不在 transport 的 `RunInvocationOptions` 里** —— 异步宿主不会替你传） |
 | `toolTimeoutMs` | 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，run 继续 |
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
@@ -299,6 +303,7 @@ result.typed;   // { answer: string } | undefined
 | `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重，直接返回既有记录 |
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
 | `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
+| `GET /metrics` | — | 200 Prometheus 文本（`text/plain; version=0.0.4`）；**需在 `createHttpHandler` 里传 `metrics`**，**不鉴权**（与 `/healthz` 同档），停机中也回 |
 
 方法不符 → 405（带 `Allow` 头）；路径不符 → 404；body 非法 JSON → 400；body 超 `maxBodyBytes` → 413；
 `POST /run` 超 `maxConcurrentRuns` → 503 + `Retry-After`；停机中 `POST /run`、`POST /tasks` → 503。
@@ -318,7 +323,8 @@ const handler = createHttpHandler(callable, { runner });
 
 | 选项 | 说明 |
 |---|---|
-| `authenticate` | 入口鉴权钩子：**除 `/healthz` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
+| `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
+| `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404 |
 | `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB |
 | `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限） |
 | `exposeErrors` | 是否把内部异常原文回给调用方；缺省 `false`（细节只进服务端日志） |
@@ -379,7 +385,8 @@ process.on('SIGTERM', async () => {
 | `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
 | `TraceRecorder` | 内存 recorder（一次 run 一个） |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖 |
-| `metricsSink` | 指标累加器（Prometheus 文本），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
+| `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
+| `buildRunReport` | 从一条 trace 生成**调优报告**（单元/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
 > 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
@@ -524,30 +531,90 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 
 | API | 说明 |
 |---|---|
-| `metricsSink` | 进程内累加 + Prometheus 文本；**天然满足 `TraceSink`** → `createApp({ sinks: [metricsSink()] })` 即接入，零新出口 |
+| `metricsSink` | 进程内累加 + Prometheus 文本 / OTLP metrics；**天然满足 `TraceSink`** → `createApp({ sinks: [metricsSink()] })` 即接入，零新出口 |
+| `DEFAULT_BUCKETS` | 时长直方图的缺省桶边界（毫秒），可用 `buckets` 覆盖 |
 
-接完 `GET /metrics` 直接回 `render()` 即可（纯文本，零依赖手写，不值得为此引客户端库）。
+三个维度，全部从既有 trace 派生，**不需要在业务代码里埋点**：
+
+- **run 级** —— 总数 / 失败数 /四类 token / 成本 / 时长；
+- **单元级** —— 每个 `tool` / `skill` / `subagent` 的**调用次数、失败次数、耗时、token、成本**。
+  工具的数据来自 turn 上的 `tool.output` 事件（框架已补 `durationMs` / `ok`）；`skill`/`subagent`
+  来自 `unit` span。**`@Prompt` 不建 span、无独立耗时，因此不产出单元指标**（如实缺省，不硬凑）。
+- **模型级** —— 按模型（`llm.turn` 的 span name）归因 turn 数 / token / 成本 / 耗时，并单独给出
+  `model_unpriced_turns_total`（算不出成本的 turn 数 —— **成本护栏失效的显式信号**）。
+
+接完 `GET /metrics` 直接回 `render()` 即可 —— 交给 `createHttpHandler({ metrics })` 就是一行的事
+（见 §6 HTTP 端点速查）。
+
+时长同时给两种口径，**并存不冲突**：
+
+- **histogram**（`*_bucket` / `*_sum` / `*_count`，累积语义）—— 抓取端可**跨实例任意聚合**；
+- **窗口内精确分位**（`*{quantile="..."}` gauge）—— 单实例排障时更好读。
 
 ### `MetricsSinkOptions`（`metricsSink` 的选项）
 
 | 字段 | 说明 |
 |---|---|
-| `export` | 输出形态；缺省 `'prometheus'`。`'otlp'` **尚未实现** → 构造期抛错（比返回一份看不出问题的空指标好） |
-| `windowSize` | 延迟分位保留的样本数（环形窗口，缺省 1024）；非正数抛错 |
+| `export` | 输出形态；缺省 `'prometheus'`。`'otlp'` 走 OTLP/JSON 导出（**必须同时给 `endpoint`**，不给就构造期抛错） |
+| `endpoint` | OTLP 采集端基地址（如 `http://localhost:4318`）；尾部斜杠会被去掉 |
+| `intervalMs` | OTLP 导出间隔（毫秒，缺省 60000）；`0` = 每次 run 收尾立即导出。定时器已 `unref()`，不阻止进程退出 |
+| `resourceAttributes` / `serviceName` | OTLP resource 属性（`service.name` 缺省 `agentia`） |
+| `onExportError` | 导出失败回调（缺省吞掉 —— 观测失败不得击穿业务） |
+| `windowSize` | 时长分位保留的样本数（环形窗口，缺省 1024，**run / 单元 / 模型各自独立**）；非正数抛错 |
 | `prefix` | 指标名前缀，缺省 `agentia_` |
+| `labelMode` | 单元标签粒度：`'unit'`（缺省，`tool:search` 这种）/ `'kind'`（只按类型，基数极小）/ `'none'`（不产出单元指标） |
+| `maxUnits` | 单元标签基数上限（缺省 200）：超出后新单元归入 `unit="__other__"`（防标签爆炸）；非正数抛错 |
+| `buckets` | 直方图桶边界（毫秒，严格升序）；缺省 `DEFAULT_BUCKETS` |
 
 ### `MetricsSink`（`metricsSink()` 的返回值）
 
 | 成员 | 说明 |
 |---|---|
 | `export` | `TraceSink` 的实现（run 收尾投递）—— 也是接进 `sinks` 的形状 |
-| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd }` |
+| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, units, models, droppedUnits }` |
 | `render` | Prometheus 文本（`/metrics` 直接回它） |
-| `reset` | 清空累计（测试 / 多租户轮换用） |
+| `flush` | 主动导出一次（`export:'otlp'` 时有意义；prometheus 模式为空操作） |
+| `stop` | 停掉定时导出（进程收尾 / 测试用） |
+| `reset` | 清空累计（含单元与模型维度） |
 
 - `tokens` 口径 = **四类之和**（input + output + cacheRead + cacheCreation），与 `BudgetGuard` 一致；分项在 `render()` 里以 label 给出，不会丢。
-- 分位是**窗口内精确值**（最近 rank 法），不是 Prometheus 原生 histogram / summary —— 长跑宿主不会被无界数组拖住内存，代价是分位只反映最近 `windowSize` 条 run。
-- `costUsd` 依赖模型在价格表内（不在表里时该 run 计 0，不会污染总数）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
+- 分位是**窗口内精确值**（最近 rank 法），只反映最近 `windowSize` 条样本；**直方图计数是累积的**（全历史），两者语义不同、各有各的用处。
+- **内存上限** ≈ `(1 + 单元数 + 模型数) × windowSize` —— 单元数由 `maxUnits` 封顶，长跑宿主不会被拖住。
+- `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
+
+### 调优报告（**哪个单元慢 / 贵 / 爱失败**）
+
+指标回答「整体怎么样」，报告回答「**该拧哪个旋钮**」：
+
+| API | 说明 |
+|---|---|
+| `buildRunReport(trace)` | 一条 trace → `RunReport`：单元排行（按总耗时降序）、模型归因、未定价模型清单 |
+| `mergeRunReports(reports)` | 跨 run 汇总（**分位只在多条 run 上才有统计意义**） |
+| `renderRunReport(report)` | 人类可读的纯文本表（CLI / 日志用） |
+
+```ts
+import { buildRunReport, mergeRunReports, renderRunReport } from '@migor/agentia';
+
+const report = buildRunReport(trace);
+console.log(renderRunReport(report));
+// unit                              calls  err   total     max       tokens    cost
+// subagent:researcher               1      0     400ms     400ms     60        0.004000
+// tool:search                       2      1     325ms     300ms     -         -
+```
+
+CLI 侧有薄壳：`agentia report <trace.jsonl>` —— 每行一个 JSON（裸 Trace，或含 `result.trace` /
+`trace` 的 TaskRecord，如 `FileTaskStore` 的导出），跨行按单元合并后打印排行。
+
+> ⚠️ **单条 run 内样本常 < 5，分位没有意义** —— 所以报告以 `total` / `max` 为主；
+> 要看分位请用 `mergeRunReports` 汇总多条，或用 `metricsSink` 的直方图。
+> CLI 报告的聚合口径与 `agentia dev` 面板的单元排行同源（同一份 `@migor/trace-view` 实现）。
+
+### 生效配置快照（「这条 run 用了哪套旋钮」）
+
+每个 run 的**根 span** 都带一组 `config.*` attributes（`config.maxTokens` / `config.maxCostUsd` /
+`config.retry.maxAttempts` / `config.contextPolicy.budgetTokens` / `config.priceOverrides` …），
+缺省值也记 —— 这样「没配」「配了缺省值」「配了别的值」三者可区分。换参数前后对比、复现线上行为都有据可查。
+函数型选项（`summarize` / `confirm` 之类）只记「配没配」，不记函数体。
 
 ### 提示词版本化
 
@@ -674,7 +741,7 @@ const callable = {
 | 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
 | 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |
-| `maxCostUsd` 依赖价格表 | 模型不在 `engine/usage.ts` 的价格表内时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens` |
+| `maxCostUsd` 依赖价格表 | 模型不在价格表内（且未用 `priceOverrides` 覆盖）时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens`。**但失效不再静默**：turn 上会记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、可回调 `onUnpricedModel` |
 | 工具超时**不取消**工具 | `AgentTool.run` 没有 signal 参数，超时只是「不等了」；副作用可能已发生。想真停请让工具自己读 `ToolRunContext.signal` |
 | 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
@@ -683,8 +750,13 @@ const callable = {
 | MCP 超时同样是「不等了」 | 桥自带的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它与 engine 的 `toolTimeoutMs` **双重计时**，谁短谁生效 |
 | MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool` attribute 里查得到） |
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的单元的 `tools` 引用 —— 引用是 provider 粒度 |
-| 指标分位是窗口内精确值 | 不是 Prometheus 原生 histogram / summary；只反映最近 `windowSize`（缺省 1024）条 run |
-| 指标不做 OTLP metrics | `metricsSink({ export: 'otlp' })` 构造期抛错（后置）；要 OTLP 用 `createOtlpExporter` 走 traces |
+| 指标分位是窗口内精确值 | `*{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
+| 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |
+| OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run） |
+| `GET /metrics` 不鉴权 | 与 `/healthz` 同档（拉取端在集群内网）。要保护请放反代之后，或不传 `metrics` 选项自行在外层挂路由 |
+| 工具没有 token/成本指标 | 工具是**你的代码**、本身不消耗 token，所以只产出调用数/失败数/耗时；token 与成本只对 `skill`/`subagent`（有 `unit` span）与模型维度产出 |
+| `@Prompt` 没有单元指标 | 资产类单元不建 span、无独立耗时，故不出现在单元排行里（这是刻意的：硬凑一个假耗时会误导调优） |
+| 单元标签有基数上限 | `labelMode:'unit'`（缺省）+ `maxUnits`（缺省 200），超出的单元归入 `unit="__other__"`；`snapshot().droppedUnits` 给出被归并的单元个数。要完整明细请用 `buildRunReport`（不设上限） |
 | 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工介入只到「闸门」 | `middleware` 能 `await` 审批决策再放行；**跨进程挂起/续跑框架不做** —— `RunStatus` 无「待批准」态、循环位置不落库，`traceToMessages` 重放有损，不能拿它假装续跑（要跨重启审批请上工作流引擎）|

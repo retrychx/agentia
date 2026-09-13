@@ -7,6 +7,7 @@ import { RegistryError } from './registry.js';
 import { devServer } from './dev.js';
 import { doctor } from './doctor.js';
 import { addPackage } from './add.js';
+import { reportCommand } from './report.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
 
@@ -16,6 +17,7 @@ const USAGE = `agentia —— Agentia 框架命令行工具
                                            type: ${UNIT_TYPES.join(' | ')}
   agentia dev                              启动开发模式（tsx watch 热重载 + 本地 inspector 面板）
   agentia doctor                           装配体检（未登记/悬空单板/命名规范/重复条目）
+  agentia report <trace.jsonl>             从 trace 落盘文件生成调优报告（单元耗时/成本/错误率排行）
   agentia add <pkg>                        安装第三方单元包并登记到 units.ts
   agentia --help                           显示本帮助
 
@@ -87,6 +89,16 @@ function main(argv: string[]): number {
   if (command === 'doctor') {
     if (rest.length > 0) return fail(`未知参数：${rest[0]}`);
     return doctor();
+  }
+
+  if (command === 'report') {
+    // 异步命令（要 dynamic import 构建期拷进来的聚合实现）：自己设 exitCode，
+    // 返回值仅表示「已受理」—— 挂着的 Promise 会让 Node 等到它 settle 再退出。
+    void reportCommand(rest).catch((e: unknown) => {
+      console.error(`错误：${(e as Error).message}`);
+      process.exitCode = 1;
+    });
+    return 0;
   }
 
   if (command === 'add') {

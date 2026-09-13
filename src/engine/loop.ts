@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AgentTool, JsonSchema, ModelClient, RecorderBackend, SchemaType, ToolRunContext } from '../core/tool.js';
+import type { AgentTool, JsonSchema, ModelClient, ModelPricing, RecorderBackend, SchemaType, ToolRunContext } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
@@ -17,7 +17,7 @@ import type {
   SystemParam,
 } from './types.js';
 import { isSuccessStopReason } from './types.js';
-import { costEstimate, usageFromAnthropic } from './usage.js';
+import { buildPricing, costEstimate, usageFromAnthropic } from './usage.js';
 
 /**
  * 缺省模型解析：显式传入 > AGENTIA_MODEL env > 'claude-opus-5'。
@@ -79,6 +79,10 @@ interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   toolTimeoutMs?: number;
   /** 同回合并行工具上限；缺省 Infinity（= 全部并行） */
   maxToolConcurrency?: number;
+  /** 价格表覆盖（F1）：覆盖内置单价或给其他 provider 的模型定价 */
+  priceOverrides?: Record<string, ModelPricing>;
+  /** 未定价模型回调（F2）：本循环作用域内每模型一次 */
+  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
 }
 
 export interface AgentLoopResult<T = unknown> {
@@ -145,6 +149,10 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
 
   const signal = args.signal;
   const retryCfg = resolveRetry(args.retry);
+  // 价格表（F1）：每次循环解析一次 —— 非法单价在 buildPricing 里立刻抛错（不静默算 NaN）
+  const pricing = buildPricing(args.priceOverrides);
+  // 未定价模型去重（F2）：本循环作用域内每模型只回调一次
+  const unpricedSeen = new Set<string>();
 
   // 成本硬管控（C1）：从数值选项就地装配（把「超限」记进 run 根 span 的事件）。
   // 只在记账完成后判断 —— 见下面 overBudget 的用法（何时「停」、何时只记事件）。
@@ -242,7 +250,22 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     progress.iterations++;
 
     const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
-    if (usage) usage.costEstimate = costEstimate(model, usage);
+    if (usage) {
+      const cost = costEstimate(model, usage, pricing);
+      usage.costEstimate = cost;
+      // 未定价（F2）：模型不在价格表内 → 显式记事件 + 回调，别让 maxCostUsd 静默失效
+      if (cost === undefined) {
+        recorder.event(turnId, 'usage.unpriced', { model });
+        if (!unpricedSeen.has(model)) {
+          unpricedSeen.add(model);
+          try {
+            args.onUnpricedModel?.({ model, spanId: turnId });
+          } catch {
+            /* 观测是辅助动作：回调抛错不得影响 run */
+          }
+        }
+      }
+    }
     recorder.end(turnId, { usage });
     recorder.setAttribute(turnId, 'input_tokens', usage?.inputTokens ?? 0);
     recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
@@ -335,6 +358,9 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
       async (use) => {
         const tool = args.tools.find((t) => t.name === use.name);
+        // 工具级时序（E1）：起点在事件之前 —— durationMs 覆盖「入参校验 + 执行 + 超时等待」
+        // 的完整处理时长，是「哪一步慢」的可信基线。并行工具各记各的（tool_use_id 配对）。
+        const toolStartedAt = Date.now();
         // tool_use_id 一并记账：同名工具并行时，重放只有靠 id 才能把入参出参正确配对
         recorder.event(turnId, 'tool.input', {
           tool: use.name,
@@ -342,9 +368,18 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           input: limit(use.input, 2000),
         });
 
-        const ctx: ToolRunContext = { client, recorder, parentSpanId: turnId, ...(signal ? { signal } : {}) };
+        const ctx: ToolRunContext = {
+          client,
+          recorder,
+          parentSpanId: turnId,
+          ...(signal ? { signal } : {}),
+          // 价格覆盖透传给嵌套单元（F1）：否则子 agent 用同一模型会退化成"未定价"
+          ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
+        };
         let ok = true;
         let content: unknown = '';
+        // 失败归类（E1）：只记「为什么没成」，不记栈 —— 观测看得清「哪个工具老超时」
+        let errorKind: 'invalid_input' | 'timeout' | 'threw' | 'unknown_tool' | undefined;
         if (args.resultSchema && use.name === SUBMIT_RESULT) {
           // 隐藏提交工具：校验通过即携结果收尾（循环在下方 break）；
           // 校验失败回 is_error（含路径，模型可自我修正），同回合其他工具照常执行。
@@ -354,6 +389,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
             const invalid = validateJsonSchema(args.resultSchema, use.input);
             if (invalid) {
               ok = false;
+              errorKind = 'invalid_input';
               content = `invalid input: ${invalid}`;
             } else {
               content = 'submitted';
@@ -363,11 +399,13 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
             }
           } catch (e) {
             ok = false;
+            errorKind = 'threw';
             const err = classifyError(e);
             content = `error(${err.type}): ${err.message}`;
           }
         } else if (!tool) {
           ok = false;
+          errorKind = 'unknown_tool';
           content = `unknown tool: ${use.name}`;
         } else {
           // 模型给的 input 先过 schema 校验：不合法直接回 is_error（含路径，
@@ -378,6 +416,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
             const invalid = validateJsonSchema(tool.inputSchema, use.input);
             if (invalid) {
               ok = false;
+              errorKind = 'invalid_input';
               content = `invalid input: ${invalid}`;
             } else {
               // 工具级超时（C2）：超时 = **放弃等待**（AgentTool.run 没有 signal 参数，
@@ -389,6 +428,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
               );
               if (out === TIMED_OUT) {
                 ok = false;
+                errorKind = 'timeout';
                 content = `error(timeout): 工具执行超过 ${args.toolTimeoutMs}ms`;
               } else {
                 content = out;
@@ -396,6 +436,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
             }
           } catch (e) {
             ok = false;
+            errorKind = 'threw';
             const err = classifyError(e);
             content = `error(${err.type}): ${err.message}`;
           }
@@ -404,6 +445,9 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           tool: use.name,
           tool_use_id: use.id,
           ok,
+          // 耗时（毫秒）：成功/失败/超时/入参被拒四条路径都记（E1）
+          durationMs: Math.max(0, Date.now() - toolStartedAt),
+          ...(errorKind ? { errorKind } : {}),
           content: ok ? limit(content, 2000) : limit(content, 1000),
         });
 
@@ -444,6 +488,10 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
   // 提示词版本化（D4）：版本号落 run 根，便于按版本筛 trace
   if (options.systemVersion) recorder.setAttribute(rootId, 'system.version', options.systemVersion);
+  // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
+  // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
+  // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。
+  for (const [k, v] of Object.entries(runConfigSnapshot(options))) recorder.setAttribute(rootId, k, v);
 
   const progress = { iterations: 0 };
   let result: AgentLoopResult<SchemaType<S>>;
@@ -468,6 +516,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       maxCostUsd: options.maxCostUsd,
       toolTimeoutMs: options.toolTimeoutMs,
       maxToolConcurrency: options.maxToolConcurrency,
+      priceOverrides: options.priceOverrides,
+      onUnpricedModel: options.onUnpricedModel,
     });
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
@@ -515,6 +565,10 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   toolTimeoutMs?: number;
   /** 同回合并行工具上限；同 RunAgentOptions.maxToolConcurrency */
   maxToolConcurrency?: number;
+  /** 价格表覆盖（F1）：由发起它的单元从 ToolRunContext.priceOverrides 透传 */
+  priceOverrides?: Record<string, ModelPricing>;
+  /** 未定价模型回调（F2）：由发起它的单元透传 */
+  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
 }): Promise<AgentLoopResult<SchemaType<S>>> {
   return agentLoop<S>({
     client: opts.client ?? new Anthropic(),
@@ -533,6 +587,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     resultSchema: opts.resultSchema,
     toolTimeoutMs: opts.toolTimeoutMs,
     maxToolConcurrency: opts.maxToolConcurrency,
+    priceOverrides: opts.priceOverrides,
+    onUnpricedModel: opts.onUnpricedModel,
   });
 }
 
@@ -543,6 +599,38 @@ function toApiTool(t: AgentTool): Anthropic.Tool {
     input_schema: t.inputSchema as unknown as Anthropic.Tool.InputSchema,
     ...(t.strict ? { strict: true } : {}),
   };
+}
+
+/**
+ * 生效配置快照（G3）：把本 run 实际生效的旋钮整理成 run 根的 `config.*` attributes。
+ * 只放标量（OTLP/日志/看板都能直接吃）；缺省值也记，这样"没配"与"配了缺省值"可区分于
+ * "该项不存在"。函数型选项只记"配没配"，不记函数体。
+ */
+function runConfigSnapshot(options: RunAgentOptions<JsonSchema>): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {
+    'config.model': resolveDefaultModel(options.model),
+    'config.maxTokens': options.maxTokens ?? DEFAULT_MAX_TOKENS,
+    'config.maxIterations': options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+  };
+  if (options.maxTotalTokens != null) out['config.maxTotalTokens'] = options.maxTotalTokens;
+  if (options.maxCostUsd != null) out['config.maxCostUsd'] = options.maxCostUsd;
+  if (options.toolTimeoutMs != null) out['config.toolTimeoutMs'] = options.toolTimeoutMs;
+  if (options.maxToolConcurrency != null) out['config.maxToolConcurrency'] = options.maxToolConcurrency;
+  // 重试：记生效的 maxAttempts（0 = 关闭）—— 比记 "custom/default" 更有信息量
+  const retryCfg = resolveRetry(options.retry);
+  out['config.retry.maxAttempts'] = retryCfg ? retryCfg.maxAttempts : 0;
+  const policy: ContextPolicy | undefined = options.contextPolicy;
+  if (policy) {
+    out['config.contextPolicy'] = true;
+    if (policy.budgetTokens != null) out['config.contextPolicy.budgetTokens'] = policy.budgetTokens;
+  } else {
+    out['config.contextPolicy'] = false;
+  }
+  // 价格覆盖：只记覆盖了哪几个模型（不记单价 —— 单价在价格表里，重复记会漂移）
+  const overridden = options.priceOverrides ? Object.keys(options.priceOverrides) : [];
+  if (overridden.length > 0) out['config.priceOverrides'] = overridden.sort().join(',');
+  if (options.resultSchema) out['config.resultSchema'] = true;
+  return out;
 }
 
 function textOf(message: Anthropic.Message): string {

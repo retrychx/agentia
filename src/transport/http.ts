@@ -98,6 +98,16 @@ export interface HttpHandlerOptions {
    * 而鉴权要拦的是 **run 入口**，且必须早于 body 读取。
    */
   authenticate?: (req: IncomingMessage) => unknown | Promise<unknown>;
+  /**
+   * 指标出口（G4）：提供后 `GET /metrics` 输出其 Prometheus 文本（`text/plain; version=0.0.4`）。
+   * 通常直接传 `metricsSink()`（它有 `render()`）。
+   *
+   * 与 `/healthz` 同档处理：**不鉴权**、停机中仍可拉（拉取端在集群内网）。要保护它，
+   * 请放到反代之后，或不要传这个选项、自己在 handler 外层挂路由。
+   *
+   * 框架只给缝：它不知道指标从哪来 —— 传 sink、传读快照的闭包都行。
+   */
+  metrics?: { render(): string } | (() => string);
 }
 
 /** GET /healthz 的响应形态 */
@@ -167,6 +177,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function methodNotAllowed(res: ServerResponse, method: string, allowed: string): void {
   res.setHeader('allow', allowed);
   sendJson(res, 405, { error: `方法 ${method} 不被允许，请用 ${allowed}` });
+}
+
+/** Prometheus 文本响应（G4）：抓取端按 text/plain; version=0.0.4 解析 */
+function sendPrometheus(res: ServerResponse, body: string): void {
+  res.writeHead(200, {
+    'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
+  });
+  res.end(body);
 }
 
 /** 把 app.run 的产物收成 HTTP 响应体（JSON 与 SSE 的 run.end 共用同一形状） */
@@ -291,6 +311,7 @@ export function createHttpHandler(
   const exposeErrors = opts.exposeErrors ?? false;
   const sseMaxBufferedBytes = opts.sseMaxBufferedBytes;
   const authenticate = opts.authenticate;
+  const metricsProvider = opts.metrics;
   const startedAt = Date.now();
   let inFlightRuns = 0;
   let draining = false;
@@ -345,6 +366,19 @@ export function createHttpHandler(
           uptimeMs: Date.now() - startedAt,
           draining,
         } satisfies HealthResponse);
+        return;
+      }
+
+      // 指标：与 /healthz 同档（不鉴权、停机中仍可拉 —— 抓取端在集群内网）
+      if (pathname === '/metrics' && metricsProvider) {
+        if (method !== 'GET') {
+          methodNotAllowed(res, method, 'GET');
+          return;
+        }
+        sendPrometheus(
+          res,
+          typeof metricsProvider === 'function' ? metricsProvider() : metricsProvider.render(),
+        );
         return;
       }
 

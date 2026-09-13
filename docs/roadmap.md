@@ -130,6 +130,24 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   真端到端证明 = `npm run e2e:mcp`：真接第三方 MCP server（`uvx mcp-server-time`）走完「映射 → 菜单 → run」，
   无网机器自动回落 `scripts/mcp-fixture-server.py`。
 
+## 可观测 · 可调优（E / F / G 三期）✅ 全部落地（2026-09-13）
+
+设计见 `docs/plans/2026-09-13-observability-tunability.md`（8 个设计分叉全部按建议 A 拍板，落地时的四处修正见 spec §10）。
+起因：观测当时只到 **run 级**，答不出「哪个单元慢/贵/爱失败」；调优旋钮虽齐，却有**两处「看着有、实际不生效」**。
+
+- **E 观测下沉** ✅ E1 工具级时序（`tool.output` 事件补 `durationMs` / `errorKind`，普通工具仍不建 span）/
+  E2 单元级指标（per-unit 调用数、失败数、耗时、token、成本；`labelMode` + `maxUnits` 防标签爆炸）/
+  E3 模型级指标（按模型归因；`model_unpriced_turns_total` 显式暴露"成本算不出来"）/
+  E4 Prometheus 原生 histogram（可跨实例聚合）+ 窗口精确分位并存 / E5 OTLP metrics 导出（零依赖手写 JSON，`flush()` / `intervalMs`）。
+- **F 成本可调优** ✅ F1 价格表可注入（`priceOverrides` + `buildPricing`，**透传进子循环**）/
+  F2 未定价模型显式（`usage.unpriced` 事件 + `onUnpricedModel` 回调 + 指标，**不改变 run 结局**）/ F3 成本归因。
+- **G 调优闭环** ✅ G1 `buildRunReport` / `mergeRunReports` / `renderRunReport` + CLI `agentia report <trace.jsonl>` /
+  G2 `@migor/trace-view` 单元排行（`summarizeTrace` / `renderSummary`）接进 `agentia dev` 面板 /
+  G3 run 根 `config.*` 生效配置快照 / G4 `createHttpHandler({ metrics })` 内建 `GET /metrics`。
+- **顺带修的 doc-vs-code 漂移**：`core/trace.ts` 声明已久的「`unit.usage` = 子孙 `llm.turn` 聚合」此前**从未写入** ——
+  已在 `TraceRecorder.end()` 补上，单元级 token/成本才有数据来源。
+- 测试：框架 414 → 462，CLI 6 → 13，trace-view 6 → 10。
+
 ## R7 候选（下一轮）
 
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；

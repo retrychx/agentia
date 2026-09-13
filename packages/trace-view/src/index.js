@@ -3,3 +3,4 @@
 
 export { createTraceView, unitTypeOf, UNIT_ICO, fmtArg, fmtNum, fmtMs } from './view.js';
 export { playTrace } from './fromTrace.js';
+export { summarizeTrace, renderSummary } from './summary.js';

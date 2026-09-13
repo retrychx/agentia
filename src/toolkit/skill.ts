@@ -158,6 +158,8 @@ export function skillToTool(
             recorder,
             parentSpanId: unitId,
             signal: ctx.signal,
+            // 价格覆盖透传（F1）：子循环用同一模型也要能算成本
+            priceOverrides: ctx.priceOverrides,
           });
           if (!isSuccessStopReason(loop.stopReason)) {
             const report = `skill "${name}".llm ${loop.stopReason}: ${

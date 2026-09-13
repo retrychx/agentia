@@ -21,7 +21,7 @@
           可选能力（zod / Redis / MCP）一律 duck-typed。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>160</b> 个导出</span>
+          <span class="api-chip"><b>173</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 运行时依赖</span>
           <span class="api-chip"><b>4</b> 类单元</span>
@@ -89,6 +89,8 @@
             <tr><td>SystemParam / SystemTextBlock</td><td><code>string | SystemTextBlock[]</code></td><td>system 参数：纯文本，或带 <code>cache_control</code> breakpoint 的可缓存块数组。</td></tr>
             <tr><td>createBudgetGuard / BudgetGuard</td><td><code>(opts?: BudgetGuardOptions) → { check(trace) → 'tokens' | 'cost' | null }</code></td><td>成本硬管控底座（每回合记账后判）；也可以只拿它自己记账。</td></tr>
             <tr><td>BudgetGuardOptions / BudgetSnapshot</td><td><code>{ maxTotalTokens?; maxCostUsd?; onExceed? }</code> / <code>{ kind; limit; actual; totalTokens; costUsd }</code></td><td>超限快照同时记进 run 根的 <code>budget.exceeded</code> 事件并回调 onExceed。</td></tr>
+            <tr><td>DEFAULT_PRICING / buildPricing</td><td><code>Record&lt;string, ModelPricing&gt;</code> / <code>(overrides?) → Record&lt;string, ModelPricing&gt;</code></td><td>内置价格表（6 个 Claude 型号）与合并函数：<code>priceOverrides</code> 覆盖同名项或给非 Anthropic 模型定价（如 <code>{ 'deepseek-chat': { in: 0.27, out: 1.10 } }</code>）。非法单价<strong>构造期抛错</strong> —— 不让它悄悄算出 NaN 成本、把 <code>maxCostUsd</code> 变成永不触发的摆设。</td></tr>
+            <tr><td>ModelPricing</td><td><code>{ in: number; out: number }</code></td><td>模型单价（美元 / 1M tokens）。</td></tr>
             <tr><td>mapWithConcurrency</td><td><code>(items, limit, fn) → Promise&lt;R[]&gt;</code></td><td>有界并发 map，<strong>结果顺序与输入一致</strong>；limit 非正 / 非有限 = 不限。同回合并行工具的底座。</td></tr>
           </tbody>
         </table></div>
@@ -112,7 +114,9 @@
             <tr><td>signal</td><td><code>AbortSignal</code></td><td>中断信号：中止则取消在飞请求，run 以 <code>stopReason='aborted'</code> 收尾（不抛异常）。</td></tr>
             <tr><td>retry</td><td><code>RetryOptions | false</code></td><td>模型请求重试策略；<strong>缺省开启</strong>（maxAttempts=3）。只重试「本次尝试未产出任何文本」的失败。</td></tr>
             <tr><td>maxTotalTokens</td><td><code>number</code></td><td>整条 run（含子 agent）累计 token 上限；超限以 <code>budget_exceeded</code> 收尾（算失败）。不是硬实时（一回合记账完才判）。</td></tr>
-            <tr><td>maxCostUsd</td><td><code>number</code></td><td>累计成本上限（美元）；<strong>依赖模型在价格表内</strong>，不在表里时成本恒 0、这条护栏不触发。</td></tr>
+            <tr><td>maxCostUsd</td><td><code>number</code></td><td>累计成本上限（美元）；<strong>依赖模型在价格表内</strong>（内置表或 <code>priceOverrides</code>），不在表里时成本恒 0、这条护栏不触发 —— 但<strong>失效不再静默</strong>：turn 上会记 <code>usage.unpriced</code> 事件、指标出 <code>model_unpriced_turns_total</code>、可回调 <code>onUnpricedModel</code>。</td></tr>
+            <tr><td>priceOverrides</td><td><code>Record&lt;string, ModelPricing&gt;</code></td><td>价格表覆盖/追加（$/1M tokens）：覆盖内置同名项，或给非 Anthropic 模型定价。<strong>透传给子 agent / skill 的子循环</strong>，不会出现「主 agent 有成本、子 agent 恒 0」。非法单价在 run 开始即抛错。</td></tr>
+            <tr><td>onUnpricedModel</td><td><code>(info: { model; spanId }) =&gt; void</code></td><td>遇到价格表外的模型时回调（每个循环作用域内每模型一次）；抛错被吞，<strong>不改变 run 结局</strong>（定价缺失是宿主配置问题）。用它接告警。</td></tr>
             <tr><td>toolTimeoutMs</td><td><code>number</code></td><td>单工具执行超时（毫秒），缺省 0 = 不限。超时<strong>不杀 run</strong>：该条 tool_result 记 is_error。⚠️ 是「放弃等待」不是取消。</td></tr>
             <tr><td>maxToolConcurrency</td><td><code>number</code></td><td>同一回合内并行工具上限；缺省 Infinity（全并行）。</td></tr>
             <tr><td>systemVersion</td><td><code>string</code></td><td>写进 run 根 attribute <code>system.version</code>；走 <code>app.run</code> 时由 <code>SystemPrompt({ version })</code> 自动带上。</td></tr>
@@ -183,7 +187,7 @@
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>createHttpHandler</td><td><code>(app: AppCallable, opts?: HttpHandlerOptions) → HttpHandler</code></td><td>node:http 接入：<code>POST /run</code>（同步 / SSE）、<code>POST /tasks</code>（异步）、<code>GET /tasks/:id</code>（轮询）、<code>GET /healthz</code>。返回值可直接传给 <code>http.createServer</code>，另挂 <code>drain()</code> 与 <code>runner</code>。SSE 侧带背压保护：下游积压超过 <code>sseMaxBufferedBytes</code> 即收口该流并中止对应 run。</td></tr>
-            <tr><td>HttpHandlerOptions</td><td><code>{ runner?; authenticate?; maxConcurrentRuns?=32; maxBodyBytes?=1MiB; exposeErrors?=false; sseMaxBufferedBytes?=8MiB }</code></td><td>authenticate 拦在入口、读 body 之前（除 /healthz 外的所有路径）；超并发回 503 + Retry-After；exposeErrors 关时 500 只回通用文案；sseMaxBufferedBytes 是 SSE 下游积压上限，超限即收口并中止对应 run（防「连得上但不读」的客户端吃光内存）。</td></tr>
+            <tr><td>HttpHandlerOptions</td><td><code>{ runner?; authenticate?; metrics?; maxConcurrentRuns?=32; maxBodyBytes?=1MiB; exposeErrors?=false; sseMaxBufferedBytes?=8MiB }</code></td><td>authenticate 拦在入口、读 body 之前（除 /healthz 与 /metrics 外的所有路径）；metrics 传 <code>metricsSink()</code>（或任意 <code>{ render() }</code> / 返回字符串的闭包）即内建 <code>GET /metrics</code>（<strong>不鉴权</strong>，与 /healthz 同档）；超并发回 503 + Retry-After；exposeErrors 关时 500 只回通用文案；sseMaxBufferedBytes 是 SSE 下游积压上限，超限即收口并中止对应 run（防「连得上但不读」的客户端吃光内存）。</td></tr>
             <tr><td>HttpHandler</td><td><code>((req, res) =&gt; Promise&lt;void&gt;) &amp; { drain(opts?) → Promise&lt;boolean&gt;; runner }</code></td><td>停机：<code>drain()</code> 拒新单 → 等在飞收尾 → 超时强制收口 SSE 流；未完成任务留在 store 里。</td></tr>
             <tr><td>HttpException</td><td><code>new HttpException(status, body)</code></td><td>鉴权钩子里抛它即按其 status / body 回（想回 403 就抛 403）；抛其它错误回 401 且原文只进服务端日志。</td></tr>
             <tr><td>HealthResponse</td><td><code>{ ok; inFlight; uptimeMs; draining }</code></td><td><code>GET /healthz</code> 的返回：不鉴权、停机中也回 200；ok 恒 true（能回响应即进程活着），就绪与否看 draining。</td></tr>
@@ -208,9 +212,16 @@
             <tr><td>McpToolInfo</td><td><code>{ name; description?; inputSchema? }</code></td><td>tools/list 条目的结构面子集；inputSchema 已是 JSON Schema → 原样当 input_schema 用。</td></tr>
             <tr><td>McpToolsOptions</td><td><code>{ prefix?; server?; timeoutMs?=60000 }</code></td><td>缺省前缀 <code>mcp_&lt;server&gt;_</code>（没给 server 时 <code>mcp_</code>）；timeoutMs 是单次调用超时（放弃等待，非取消）。</td></tr>
             <tr><td>MCP_DEFAULT_TIMEOUT_MS</td><td><code>60000</code></td><td>桥的缺省单次调用超时。</td></tr>
-            <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。</td></tr>
-            <tr><td>MetricsSink</td><td><code>TraceSink &amp; { snapshot(); render(); reset() }</code></td><td>snapshot 给数值，render 给 Prometheus 文本（<code>/metrics</code> 直接回它），reset 清空累计。</td></tr>
-            <tr><td>MetricsSinkOptions / MetricsSnapshot</td><td><code>{ export?: 'prometheus' | 'otlp'; windowSize?=1024; prefix?='agentia_' }</code> / <code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）；分位是<strong>窗口内精确值</strong>（非原生 histogram）；<code>export: 'otlp'</code> 不受支持，构造期抛错。</td></tr>
+            <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。三个维度都从既有 trace 派生（<strong>不用埋点</strong>）：run 级、<strong>单元级</strong>（每个 tool/skill/subagent 的调用数、失败数、耗时、token、成本 —— 工具读 turn 上的 <code>tool.output</code> 事件，skill/subagent 读 unit span）、模型级（按模型归因，另出 <code>model_unpriced_turns_total</code>）。</td></tr>
+            <tr><td>MetricsSink</td><td><code>TraceSink &amp; { snapshot(); render(); flush(); stop(); reset() }</code></td><td>snapshot 给数值（含 <code>units</code> / <code>models</code> / <code>droppedUnits</code>），render 给 Prometheus 文本（<code>/metrics</code> 直接回它），flush 主动导出一次（OTLP 模式），stop 停掉定时导出，reset 清空累计。</td></tr>
+            <tr><td>MetricsSinkOptions</td><td><code>{ export?='prometheus' | 'otlp'; endpoint?; intervalMs?=60000; resourceAttributes?; serviceName?; onExportError?; windowSize?=1024; prefix?='agentia_'; labelMode?='unit' | 'kind' | 'none'; maxUnits?=200; buckets? }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）。时长给两种口径<strong>并存</strong>：histogram（<code>*_bucket/_sum/_count</code>，累积语义、可跨实例聚合）+ 窗口内精确分位（gauge、单实例好读）。<code>export:'otlp'</code> 零依赖手写 OTLP/JSON，<strong>必须同时给 endpoint</strong>（不给就构造期抛错）。<code>labelMode</code>/<code>maxUnits</code> 防单元标签爆炸（超限归入 <code>unit="__other__"</code>）。</td></tr>
+            <tr><td>MetricsSnapshot / UnitMetrics / ModelMetrics</td><td><code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd; units; models; droppedUnits }</code></td><td><code>units</code> 按单元 label 给 calls/errors/分位/tokens/costUsd（工具没有 token 语义，为 null）；<code>models</code> 按模型给 turns/tokens/costUsd/<strong>unpricedTurns</strong>/分位。</td></tr>
+            <tr><td>DEFAULT_BUCKETS</td><td><code>readonly number[]</code></td><td>时长直方图的缺省桶边界（毫秒）：25 / 50 / 100 / 250 / 500 / 1k / 2.5k / 5k / 10k / 30k。可用 <code>buckets</code> 覆盖（须严格升序）。</td></tr>
+            <tr><td>buildRunReport</td><td><code>(trace: Trace) → RunReport</code></td><td><strong>调优报告</strong>（纯函数）：单元按总耗时降序排行（calls / errors / total / max / tokens / cost）、模型归因、未定价模型清单 —— 回答「该拧哪个旋钮」。单条 run 样本少，故以 total / max 为主，不给分位。</td></tr>
+            <tr><td>mergeRunReports</td><td><code>(reports: RunReport[]) → RunReport</code></td><td>跨 run 汇总（分位只在多条 run 上才有统计意义）：calls/errors/耗时累加，单元按新的总耗时重排，未定价模型取并集。</td></tr>
+            <tr><td>renderRunReport</td><td><code>(report: RunReport) → string</code></td><td>人类可读的纯文本表（CLI / 日志用）；未定价模型在 cost 列显式标出。<code>agentia report &lt;trace.jsonl&gt;</code> 就是它的薄壳。</td></tr>
+            <tr><td>RunReport / UnitReport</td><td><code>{ traceId; status; durationMs; totalUsage; models; units; unpricedModels; runs }</code></td><td>报告结构；<code>UnitReport</code> 含 <code>durations</code>（原始样本，merge 靠它重算跨 run 分位）。</td></tr>
+            <tr><td>ModelReport / DurationReport</td><td><code>{ model; turns; tokens; tokensTotal; costUsd; unpricedTurns; durationMs }</code> / <code>{ total; max; p50; p95 }</code></td><td>模型归因与时长汇总（单 run 的 p50/p95 仅供参考）。</td></tr>
           </tbody>
         </table></div>
       </section>
@@ -256,7 +267,7 @@
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>createApp</td><td><code>(opts: AppOptions) → AgentApp</code>；带 discover 时 <code>→ Promise&lt;AgentApp&gt;</code></td><td>装配应用；目录发现走动态 import，故返回 Promise。</td></tr>
-            <tr><td>AppOptions</td><td><code>{ name?; providers?; modules?; discover?; system; model?; maxTokens?; maxIterations?; contextPolicy?; retry?; maxTotalTokens?; maxCostUsd?; toolTimeoutMs?; maxToolConcurrency?; toolSources?; tools?; middleware?; sinks? }</code></td><td>system 必填：SystemPrompt 实例（自动打缓存）或拼好的 SystemParam。tools 是<strong>裸工具</strong>直进主菜单（MCP 桥等动态工具走这里，同过中间件与查重）；sinks 是 trace 出口。</td></tr>
+            <tr><td>AppOptions</td><td><code>{ name?; providers?; modules?; discover?; system; model?; maxTokens?; maxIterations?; contextPolicy?; retry?; maxTotalTokens?; maxCostUsd?; priceOverrides?; onUnpricedModel?; toolTimeoutMs?; maxToolConcurrency?; toolSources?; tools?; middleware?; sinks? }</code></td><td>system 必填：SystemPrompt 实例（自动打缓存）或拼好的 SystemParam。tools 是<strong>裸工具</strong>直进主菜单（MCP 桥等动态工具走这里，同过中间件与查重）；sinks 是 trace 出口。<code>priceOverrides</code> / <code>onUnpricedModel</code> 是缺省成本配置（可被单次 run 覆盖）。</td></tr>
             <tr><td>AgentApp</td><td><code>class：run(messages, opts?: RunAppOptions) → Promise&lt;AgentRunOutput&gt;；tools；container</code></td><td>装配产物；run 每执行一次从 SystemPrompt 重建 system，保证 volatile 新鲜。</td></tr>
             <tr><td>RunAppOptions</td><td><code>RunInvocationOptions &amp; { system?; resultSchema?; session? }</code></td><td>单次调用参数：可覆盖 system、给结构化结果 schema、传会话存储（session 不可序列化，故只在程序内直调时可用）。</td></tr>
             <tr><td>AgentRunOutput</td><td><code>{ run: Run; result: AgentRunResult }</code></td><td>app.run 的返回。</td></tr>

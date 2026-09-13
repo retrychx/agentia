@@ -43,3 +43,25 @@
 .tr-ev.error .tr-io { color: #f7768e; }
 
 @keyframes tr-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* —— 单元排行（G2）：哪个单元慢 / 贵 / 爱失败 —— */
+.tv-sum {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--tv-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  margin-top: 10px;
+}
+.tv-sum th {
+  text-align: left;
+  color: #71717a;
+  font-weight: 500;
+  border-bottom: 1px solid #27272a;
+  padding: 4px 8px 4px 0;
+  white-space: nowrap;
+}
+.tv-sum td { padding: 3px 8px 3px 0; color: #a1a1aa; white-space: nowrap; }
+.tv-sum td.tv-sum-unit { color: #e4e4e7; }
+.tv-sum tbody tr:hover td { background: #17171a; }
+.tv-sum-err { color: #f7768e; }
+.tv-sum-empty { color: #71717a; margin-top: 10px; font-size: 11.5px; }

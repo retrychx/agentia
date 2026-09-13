@@ -450,6 +450,37 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   生成的代码**（`@Skill`/`@Tool` 均用户代码，模型输出只成文本 / `tool_result`），无沙箱可言；代码执行隔离属
   **工具实现内部**（Docker / 子进程 / 微 VM），框架不参与。配方写入 `usage-guide` §6，边界写入 §7 已知边界表。
 
+- 2026-09-13：**可观测 · 可调优（E/F/G 三期落地，8 个设计分叉按建议 A 拍板）**。缘起是框架定位 —— 「要长期使用、
+  要能被观测、要能被调优」，而当时观测只到 **run 级**（`metricsSink` 的 label 只有 `{kind}` 与 `{quantile}`，答不出
+  「哪个单元慢/贵/爱失败」），调优旋钮虽齐却有**两处「看着有、实际不生效」**。设计文档见
+  `docs/plans/2026-09-13-observability-tunability.md`。
+  **E 期（观测下沉）** —— E1 在既有 `tool.output` 事件上补 `durationMs` + `errorKind`（普通工具**不建 span**，守住
+  `26707ef` 控 trace 体积的决策）；E2/E3 把指标下沉到**单元级**（`tool` 读事件、`skill`/`subagent` 读 `unit` span，
+  含 token 与成本）与**模型级**（`llm.turn` 的 span name 即模型 id，另出 `model_unpriced_turns_total`）；
+  E4 补 Prometheus 原生 **histogram**（可跨实例聚合），窗口精确分位作为 gauge 并存；E5 让 `export:'otlp'`
+  从「构造期抛错」变成**零依赖手写 OTLP/JSON**（与 `createOtlpExporter` 同款做法）。
+  **F 期（成本可调优）** —— F1 内置价格表开放为 `priceOverrides`（覆盖/追加，非法单价构造期抛错），
+  **且透传进子 agent/skill 的子循环**（`ToolRunContext.priceOverrides`），不再出现「主 agent 有成本、子 agent 恒 0」；
+  F2 未定价模型**不再静默**：turn 上记 `usage.unpriced` 事件 + `onUnpricedModel` 回调（每作用域每模型一次、抛错被吞）
+  + 指标计数 —— 定价缺失是宿主配置问题，**不改变 run 结局**（否决「让 run 失败」）；F3 成本归因到模型与单元。
+  **G 期（调优闭环）** —— G1 `buildRunReport` / `mergeRunReports` / `renderRunReport` 纯函数报告 +
+  CLI `agentia report <trace.jsonl>` 薄壳；G2 单元排行视图落在 `@migor/trace-view`（`summarizeTrace` /
+  `renderSummary`），`agentia dev` 面板直接消费；G3 每个 run 的根 span 写 `config.*` **生效配置快照**
+  （缺省值也记，函数型选项只记「配没配」）；G4 `createHttpHandler({ metrics })` 内建 `GET /metrics`
+  （**不鉴权**，与 `/healthz` 同档）。
+  **落地时对设计的四处修正**（都朝"更诚实/更少重复"）：① E1 未新增 `status` 字段 —— 既有 `ok` 已是状态，
+  改成补 `errorKind`（`invalid_input` / `timeout` / `threw` / `unknown_tool`），信息量更大且无冗余；
+  ② F2 的 `usage.unpriced` 事件落在**该 turn span** 而非 run 根（turn 才能准确指出"哪次往返未定价"）；
+  ③ G2 的排行**无法**复用 `buildRunReport`（trace-view 零依赖、要能在浏览器里跑；CLI 又零运行时依赖），
+  故落成两条口径：`trace-view.summarizeTrace`（展示层，CLI 报告与 dev 面板同源）与
+  `buildRunReport`（库层，含未定价/成本语义与跨 run 合并），分工写进 usage-guide；
+  ④ **指标 `_count` 语义变更**：`run_duration_ms_count` 从「窗口内样本数」改为**累积观测数**（Prometheus
+  直方图语义，可聚合），窗口只再约束分位 gauge —— 旧断言按新语义同步。
+  另**顺带修一处 doc-vs-code 漂移**：`core/trace.ts` 从第一天就声明「`unit.usage` = 其子孙 `llm.turn` 的聚合，
+  仅供展示、不计入 `totalUsage`」，但实现里**从未写入过**该字段；本轮在 `TraceRecorder.end()` 补上就地聚合
+  （只累加 `llm.turn`，层层嵌套不双算），E2/F3 的单元 token 与成本才有数据来源。测试 414 → 462（+48），
+  CLI 6 → 13，trace-view 6 → 10。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。

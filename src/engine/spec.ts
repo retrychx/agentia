@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { ModelClient } from '../core/tool.js';
+import type { ModelClient, ModelPricing } from '../core/tool.js';
 import type { AgentTool } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
 import type { ContextPolicy } from './types.js';
@@ -39,6 +39,8 @@ export interface RunInvocationOptions {
   maxTotalTokens?: number;
   /** 成本硬管控：累计成本（美元）上限；依赖模型在价格表内，见 createBudgetGuard */
   maxCostUsd?: number;
+  /** 价格表覆盖/追加（$/1M tokens）；见 RunAgentOptions.priceOverrides */
+  priceOverrides?: Record<string, ModelPricing>;
   /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */
   toolTimeoutMs?: number;
   /** 同回合并行工具上限；缺省不限 */

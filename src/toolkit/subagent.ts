@@ -140,6 +140,8 @@ export function subagentToTool(
           parentSpanId: unitId,
           signal: ctx.signal,
           resultSchema: spec.resultSchema,
+          // 价格覆盖透传（F1）：子 agent 用同一模型也要能算成本
+          priceOverrides: ctx.priceOverrides,
         });
         recorder.setAttribute(unitId, 'stop_reason', loop.stopReason);
 

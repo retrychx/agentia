@@ -84,6 +84,16 @@ export interface ModelClient {
 }
 
 /**
+ * 模型单价（美元 / 1M tokens）。内置表见 `engine/usage.ts`；宿主可用
+ * `priceOverrides` 覆盖或追加（非 Anthropic 端点也能算成成本）。
+ * 定义在 core 是为了让 `ToolRunContext` 能带上它 —— core 不能依赖 engine。
+ */
+export interface ModelPricing {
+  in: number;
+  out: number;
+}
+
+/**
  * engine 在调用每个工具时注入的执行上下文（spec §9.2：当前 span 句柄随调用传播，
  * 不用全局单例，保证并行工具调用父子关系准确）。
  * - recorder：整条 run 共享的 recorder（新子单元/子 agent 的 span 写它下面）；
@@ -99,6 +109,12 @@ export interface ToolRunContext {
    * 强制中断工具 —— 工具副作用无法回滚，强行中止只会留下不一致的中间态。
    */
   signal?: AbortSignal;
+  /**
+   * 宿主的价格覆盖表（见 `engine/usage.ts` 的 `buildPricing`）。嵌套单元
+   * （@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去，否则自定义定价的
+   * 模型在子循环里会退化成"未定价"（成本恒 0，`maxCostUsd` 静默失效）。
+   */
+  priceOverrides?: Record<string, ModelPricing>;
 }
 
 export interface AgentTool<I = unknown, O = unknown> {
