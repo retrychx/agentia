@@ -20,6 +20,14 @@ describe('长上下文策略', () => {
     assert.ok(mixed >= 28 && mixed <= 32, `混合 ${mixed}`);
   });
 
+  it('非 BMP 汉字仍按 CJK 计（正则快路径与逐码点口径逐字一致）', () => {
+    // 𠀀 = U+20000（扩展 B），占 2 个 UTF-16 单元。若快路径漏掉增补平面，这里会变成 150。
+    assert.equal(defaultEstimateTokens('𠀀'.repeat(300)), 275);
+    // emoji 是「非 CJK 的代理对」：不记 CJK，但两个 UTF-16 单元都算进 other
+    assert.equal(defaultEstimateTokens('😀'), 1);
+    assert.equal(defaultEstimateTokens('a'.repeat(40)), 10);
+  });
+
   it('estimateMessages 累计 role 与内容', () => {
     const n = estimateMessages([{ role: 'user', content: 'a'.repeat(40) }]);
     assert.ok(n > 10 && n < 20, `得到 ${n}`);
@@ -205,6 +213,19 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
     const second = calls - first;
     // 全量重算会是整段历史（8 条）→ 调用数远超新增 4 条
     assert.ok(second <= 8, `追加 4 条只该估这 4 条（≤8 次调用），实际 ${second} 次 —— 退化成全量重算了`);
+  });
+
+  it('同数组、长度不减、但内容被原地换掉 → 必须重算（只有长度判据会漏）', () => {
+    const count = createTokenCounter();
+    const msgs: Anthropic.MessageParam[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'c' },
+    ];
+    count(msgs);
+    // 原地换掉最后一个元素对象：数组引用没变、长度也没变
+    msgs[2] = { role: 'user', content: 'z'.repeat(5000) };
+    assert.equal(count(msgs), estimateMessages(msgs), '必须按新内容重算，不能复用旧和');
   });
 
   it('换成另一个数组（新 run / 策略返回新数组）时不复用旧缓存', () => {

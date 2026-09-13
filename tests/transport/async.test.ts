@@ -111,6 +111,26 @@ describe('AsyncRunner', () => {
     void never;
   });
 
+  it('awaitTask 靠事件唤醒：兜底轮询间隔拉大到 10s 也能在任务完成时立刻返回', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const runner = new AsyncRunner(fakeApp(() => gate));
+    const t = runner.submit('a');
+    await new Promise((r) => setTimeout(r, 30)); // 先确保任务已在跑、尚未终态
+
+    const t0 = Date.now();
+    const waiting = runner.awaitTask(t.taskId, { timeoutMs: 5_000, intervalMs: 10_000 });
+    setTimeout(release, 20); // 20ms 后放行
+    const rec = await waiting;
+
+    assert.equal(rec.status, 'succeeded');
+    const waited = Date.now() - t0;
+    // 旧实现按 intervalMs 轮询 → 这里会一直等到 5s 超时抛错；事件唤醒则 ~20ms 返回
+    assert.ok(waited < 1_000, `应被终态事件唤醒，实际等了 ${waited}ms`);
+  });
+
   it('resumePending：认领他进程的残留记录，跳过本进程的自己（一定还活着）', async () => {
     const store = new InMemoryTaskStore();
     let release!: () => void;

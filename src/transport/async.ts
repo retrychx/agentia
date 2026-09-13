@@ -88,6 +88,8 @@ export class AsyncRunner {
   private active = 0;
   private draining = false;
   private readonly drainWaiters: Array<() => void> = [];
+  /** 任务终态唤醒表：taskId → 等待者。仅覆盖**本进程**写终态（他进程写靠兜底轮询） */
+  readonly #taskWaiters = new Map<string, Array<() => void>>();
   private readonly taskSinks: TaskSink[];
 
   constructor(
@@ -214,6 +216,37 @@ export class AsyncRunner {
     }
   }
 
+  /** 任务终态唤醒：在 #execute 的统一出口调用，覆盖成功 / 失败 / 采纳既有结果各路径 */
+  #notifyTaskDone(taskId: string): void {
+    const waiters = this.#taskWaiters.get(taskId);
+    if (!waiters || waiters.length === 0) return;
+    this.#taskWaiters.delete(taskId);
+    for (const w of waiters) w();
+  }
+
+  /** 等「本进程把该任务写到终态」或被 timeoutMs 兜底唤醒（二者先到先返回） */
+  #waitTaskDone(taskId: string, timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const waiters = this.#taskWaiters.get(taskId);
+        if (waiters) {
+          const i = waiters.indexOf(finish);
+          if (i >= 0) waiters.splice(i, 1);
+          if (waiters.length === 0) this.#taskWaiters.delete(taskId);
+        }
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      const waiters = this.#taskWaiters.get(taskId);
+      if (waiters) waiters.push(finish);
+      else this.#taskWaiters.set(taskId, [finish]);
+    });
+  }
+
   /** 排空通知：只在确无在飞任务时唤醒等待者（drain 的唯一出口） */
   #notifyDrained(): void {
     if (this.active !== 0 || this.drainWaiters.length === 0) return;
@@ -227,16 +260,19 @@ export class AsyncRunner {
     opts: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<TaskRecord> {
     const timeoutMs = opts.timeoutMs ?? 30_000;
-    const intervalMs = opts.intervalMs ?? 5;
-    const start = Date.now();
+    // intervalMs 现在只是**兜底轮询**间隔，不是主路径：本进程把任务写到终态会主动唤醒
+    // （见 #notifyTaskDone）。默认从 5ms 放宽到 250ms —— 旧实现每 5ms 读一次 store，
+    // 等 30s 就是约 6000 次读（SQLite/Redis 下是 6000 次往返）。用异步 store 且终态由
+    // **他进程**写入时唤不醒，才靠这个间隔兜底。
+    const intervalMs = opts.intervalMs ?? 250;
+    const deadline = Date.now() + timeoutMs;
     for (;;) {
       const rec = await this.store.get(taskId);
       if (!rec) throw new Error(`task 不存在: ${taskId}`);
       if (rec.status === 'succeeded' || rec.status === 'failed') return rec;
-      if (Date.now() - start > timeoutMs) {
-        throw new Error(`task ${taskId} 等待超时（${rec.status}）`);
-      }
-      await new Promise((r) => setTimeout(r, intervalMs));
+      const left = deadline - Date.now();
+      if (left <= 0) throw new Error(`task ${taskId} 等待超时（${rec.status}）`);
+      await this.#waitTaskDone(taskId, Math.min(intervalMs, left));
     }
   }
 
@@ -294,6 +330,8 @@ export class AsyncRunner {
         await this.#notifySinks(rec);
       } finally {
         this.active--;
+        // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）
+        this.#notifyTaskDone(rec.taskId);
         this.#notifyDrained();
       }
     }

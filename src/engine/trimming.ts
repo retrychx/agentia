@@ -18,23 +18,29 @@ import type Anthropic from '@anthropic-ai/sdk';
  * 其余（ASCII/拉丁）按 ~4 字符/token。纯字符/4 对中文系统性高估，
  * 会让预算护栏过早触发压缩。
  */
+/** BMP 内的 CJK 范围（用正则扫描数，不做逐码点 JS 循环） */
+const CJK_BMP_RE = /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/g;
+/** 增补平面 CJK（扩展 B–G）—— 极少出现，单独按码点计数 */
+const CJK_SUPP_RE = /[\u{20000}-\u{2a6df}\u{2a700}-\u{2ebef}\u{30000}-\u{3134f}]/gu;
+const CJK_SUPP_TEST = /[\u{20000}-\u{2a6df}\u{2a700}-\u{2ebef}\u{30000}-\u{3134f}]/u;
+
 export function defaultEstimateTokens(text: string): number {
-  let cjk = 0;
-  for (const ch of text) {
-    const cp = ch.codePointAt(0)!;
-    if (
-      (cp >= 0x3400 && cp <= 0x9fff) || // CJK 统一表意文字（扩展A + 基本区）
-      (cp >= 0xf900 && cp <= 0xfaff) || // 兼容表意文字
-      (cp >= 0x20000 && cp <= 0x2a6df) || // 扩展B
-      (cp >= 0x2a700 && cp <= 0x2ebef) || // 扩展C–F
-      (cp >= 0x30000 && cp <= 0x3134f) || // 扩展G
-      (cp >= 0x3000 && cp <= 0x30ff) || // 日文假名 + CJK 标点
-      (cp >= 0xff00 && cp <= 0xffef) // 全角字符
-    ) {
-      cjk++;
+  // 快路径：把 BMP 内的 CJK 一次性抹掉，用长度差得到 BMP-CJK 字符数。
+  // 不用 `for..of` + `codePointAt` 逐码点判区间 —— 那是 JS 层循环，V8 的正则扫描快得多：
+  // 300KB 文本上实测 0.44ms → 0.18ms（JSON 工具结果），纯 ASCII 上 2.29ms → ~0ms。
+  // 这是框架里单点最大的 CPU 消耗（profile 占约 46%），所以值得走正则。
+  const rest = text.replace(CJK_BMP_RE, '').length;
+  let cjk = text.length - rest;
+  let other = rest; // 未被抹掉的 UTF-16 单元数（含代理对的两个单元）
+  // 增补平面：每个字符占 2 个 UTF-16 单元。旧口径把它算成 cjk+1、other 保留多出的 1 个单元，
+  // 这里逐字保持（cjk+1、other-1），否则估算值与护栏触发点都会变。
+  // 先 test() 再 matchAll：绝大多数文本不含增补平面，省掉一次带分配的全扫。
+  if (CJK_SUPP_TEST.test(text)) {
+    for (const _m of text.matchAll(CJK_SUPP_RE)) {
+      cjk += 1;
+      other -= 1;
     }
   }
-  const other = text.length - cjk; // 非 BMP 字符按 UTF-16 长度计，属可接受偏差
   return Math.max(1, Math.ceil(cjk / 1.5 + other / 4));
 }
 
@@ -112,8 +118,13 @@ export function createTokenCounter(
   let ref: Anthropic.MessageParam[] | null = null;
   let counted = 0;
   let tokens = 0;
+  /** 已计入区间**最后一个元素的对象标识** —— 用于发现「同数组、长度不减、内容却被换掉」 */
+  let boundary: Anthropic.MessageParam | undefined;
   return function count(messages: Anthropic.MessageParam[]): number {
-    if (messages !== ref || messages.length < counted) {
+    const edge = counted > 0 ? messages[counted - 1] : undefined;
+    // 三重失效判据：换了数组 / 长度变短（被裁剪） / 边界元素已不是同一个对象
+    // （第三种覆盖自定义 contextPolicy 原地覆写同长度内容的情形 —— 只有长度判据会漏）
+    if (messages !== ref || messages.length < counted || edge !== boundary) {
       ref = messages;
       counted = 0;
       tokens = 0;
@@ -123,6 +134,7 @@ export function createTokenCounter(
       tokens += contentTokens(messages[i].content, estimate);
     }
     counted = messages.length;
+    boundary = counted > 0 ? messages[counted - 1] : undefined;
     return tokens;
   };
 }
