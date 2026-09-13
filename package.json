@@ -29,7 +29,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "build:cli": "npm run build -w @migor/trace-view && tsc -p packages/cli/tsconfig.json && node packages/cli/scripts/copy-assets.mjs",
     "build:website": "npm run build -w @migor/trace-view && npm run build -w @migor/website",
     "deploy:website": "npm run build:website && npx --yes wrangler@4.131.0 pages deploy packages/website/dist --project-name=agentia-web",

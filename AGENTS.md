@@ -31,6 +31,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
+├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── packages/
 │   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/add），零运行时依赖
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector）
@@ -58,13 +59,16 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
   - 另有 `npm run e2e:mcp`（真接第三方 MCP server，需要网络 / uv；离线自动回落
     `scripts/mcp-fixture-server.py`）。它**不并入**上面 8 步，但动了 `integrations/mcp.ts` 就要跑。
-  - 文档改完记得重建派生产物：`npm run build:cli`（→ `dist/AGENTS.md`）与 `npm run build:website`
+  - 文档改完记得重建派生产物：`npm run build`（→ 框架包 `dist/AGENTS.md`）、
+    `npm run build:cli`（→ CLI `dist/AGENTS.md`）与 `npm run build:website`
     （→ `llms.txt` / `llms-full.txt`），否则线上与实际说明漂移。
 - **设计决策**：改语义的决定要同步 `docs/spec.md` §10 决策记录；方向性工作更新 `docs/roadmap.md`。
 - **使用者向文档单源**：`docs/usage-guide.md` 是**唯一**的框架使用说明（API 速查 + 类型链路 + 已知边界 + 反例）。
-  它被三处消费：① `packages/cli` 构建时拷成 `dist/AGENTS.md`，`agentia create` 写进新项目的 `AGENTS.md`；
-  ② 官网 `/llms-full.txt`（整篇）与 `/llms.txt`（索引，导出清单也从同一份里抠）；③ 人类速查。
+  它被四处消费：① 框架包构建时拷成 `dist/AGENTS.md`（`scripts/copy-assets.mjs`，随 `@migor/agentia` 发布）；
+  ② `packages/cli` 构建时拷成 `dist/AGENTS.md`，`agentia create` 写进新项目的 `AGENTS.md`；
+  ③ 官网 `/llms-full.txt`（整篇）与 `/llms.txt`（索引，导出清单也从同一份里抠）；④ 人类速查。
   **不要另写第二份**：`tests/docs/usage-guide.test.ts` 会拿它里面的表格逐项对源码校验，改名/删字段立刻失败。
+  三份副本都是**构建产物**（落在各自 `dist/`，已 gitignore），只拷不手写，因此不存在漂移。
 - **发布**：两包版本同步（@migor/agentia 与 @migor/cli），CLI 模板里的框架依赖版本跟着走。
 - **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
   构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。
