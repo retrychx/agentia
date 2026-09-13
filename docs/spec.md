@@ -385,6 +385,53 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   支持 `OPENAI_BASE_URL`（本机用 DeepSeek 真跑验证：OpenAI 协议与 Anthropic 兼容协议两条路都跑通）。
   **不改框架实现**（`src/` 仍零改动 —— 这是组合缝，不是缺功能）。
 
+- 2026-09-13：**架构自审 → 消除未声明的分层依赖 + 补分层守卫**。用脚本解析 `src/` 全量 import 图，与 AGENTS.md 的
+  「分层单向」硬约定对照，发现两处不符：① `store → runtime`（`TaskRecord` 的 `spec`/`status` 需要，属未声明的**兄弟层**依赖）；
+  ② 约定里写的 `transport ← toolkit` 实际不存在（toolkit 不引 transport，transport 只被 `index.ts` 转发）。
+  修法为**「纯数据下沉 core、共用入参契约下沉 engine」**：`core/run.ts`（`RunStatus`/`RunMeta`）、`core/blackboard.ts`
+  （`Blackboard` 类型族）、`engine/spec.ts`（`RunSpec`/`RunInput`/`RunInvocationOptions`/`normalizeMessages`），
+  删除 `runtime/types.ts` 与 `runtime/spec.ts`。改完 store 与 transport 都不再引用 runtime，依赖图无环。
+  **导出名零增删**（仅换来源文件），故官网导出表、`api-page.test.ts` 的反向覆盖与导出计数均不受影响。
+  新增 `tests/architecture/layering.test.ts` 把该约定变成可执行断言（允许边集合 + 无环 + src 不引 src 之外；已验证注入违规会精确失败）。
+  **注**：`RunSpec` 不能直接下沉 core —— 它依赖 `engine/types`（`ContextPolicy`）与 `engine/retry`（`RetryOptions`），
+  硬塞进 core 会变成 core 反向依赖 engine（比原问题更糟），故落 engine；`AGENTS.md` 的链条描述同步改为实测形状。
+
+- 2026-09-13：**性能深度审计 → 三处修复（语义变更在此锁定）**。方法上先纠正自己：读代码猜热点两次都猜错
+  （先猜 `recorder.snapshot()` 的 O(n²)、再猜 `contentToText` 里的 `JSON.stringify`），改在**构建产物**上跑 CPU profile
+  （tsx 下采样会被转译噪声淹没，采不到真因）才看见事实。
+  ① **预算策略的 token 估算超线性**：`beforeTurn` 每回合重估整段历史 → O(回合 × 上下文)；profile 显示占框架 CPU 约 88%，
+  160 回合 run 的估算净开销 399ms（10→160 回合增长 ×103）。新增 `engine/trimming.ts` 的 `createTokenCounter`
+  （缓存已计前缀、只估新增消息；三重失效判据：换数组 / 长度变短 / **边界元素对象标识变化** —— 第三条覆盖
+  「同数组同长度但原地覆写」，只有长度判据会漏），`createBudgetPolicy` 改用它；并把估算器自身的逐码点 `codePointAt`
+  循环换成正则扫描（BMP 用 `replace` 数长度差、增补平面用 `.test()` 守卫后再 `matchAll`；**口径逐字不变**，
+  6 个样例含非 BMP 汉字与 emoji 结果一致）。合计：同负载吞吐 3411 → 26946 runs/8s（7.9×），估算占比 88% → 45.3%
+  且不再有单一热点。**停止点**：剩余最大单项 `stringifySafe`（约 30%）不再优化 —— 框架 CPU 本就亚毫秒级/run，
+  相对模型往返是秒级，继续投入对用户零影响。
+  ② **SSE 无背压控制**：`res.write()` 的返回值被忽略，下游「连得上但不读」时无界缓冲（代码级定证：下游连续 20000 次
+  回报未消费，写入器仍写满 1.28MB）。`sseWriter` 改盯 `res.writableLength`，超过 `SseWriterOptions.maxBufferedBytes`
+  （缺省 8 MiB）即收口并回调 `onBackpressure`；`HttpHandlerOptions.sseMaxBufferedBytes` 透出，`createHttpHandler`
+  据此 `abort` 对应 run（不再为已不消费的客户端白花 token）。做的是**有界缓冲 + 超限收口**而非静默丢帧 ——
+  丢帧会让客户端拿到看起来正常、实则残缺的输出；也不做「等 drain 阻塞」，因为 `onText` 是同步回调 `(delta: string) => void`，
+  真阻塞要改公开签名。**保留**：断连处理（`res.once('close')` → abort）、15s 心跳、`drain()` 强制收口 SSE。
+  ③ `agentLoop` 的 `messages.splice(0, n, ...next)` 受 V8 实参个数上限约束（实测 12 万项 ok、30 万项抛 `RangeError`），
+  抽 `engine/loop.ts` 的 `replaceMessages()` 用循环逐项写，彻底无上限。
+  另：`AsyncRunner.awaitTask` 由「每 5ms 轮询 store（等 30s ≈ 6000 次读）」改为**终态事件唤醒**（`#taskWaiters` 在
+  `#execute` 的统一出口唤醒）；`intervalMs` 降级为缺省 250ms 的**兜底轮询**，只服务「终态由他进程写入的异步 store」。
+  四条均带守卫测试并逐个做**变异自证**（回退修复即失败）。**`AGENTIA_VERSION` 保持 0.2.1 不变** ——
+  该常量反映**已发布**版本，0.2.2 发布时再同步（官网 API 页的描述也已写明这条规则）。
+
+- 2026-09-13：**官网正式化 + 动效补齐**。官网是对外产品页，清理四类「开发过程」内容：开发指标（hero 的「380+ 例单测」
+  → 产品属性）、版本对比语言（「旧行为逐字不变」）、内部结构描述（「分层单向」「只依赖 core」「`src/index.ts` 是唯一出口」
+  「叶子消费模块（零反向依赖）」）、实现状态与设计决策注记（「尚未实现」「不做子系统」「不加新机制」「只给缝、不给策略」）。
+  **保留真实 API 语义**（如「超时是放弃等待而非取消，`AgentTool.run` 收不到 signal」），只做措辞正式化；
+  并删掉 `playground.html` 里一段会随产物下发到浏览器的开发注释。动效新增：顶部滚动进度条（`Base.astro` 元素 + `nav-collapse.js` 零依赖驱动）、
+  hero 终端光标、统计行错开弹入、复制按钮反馈、卡片辉光与侧栏指示条过渡 —— 全部由既有的
+  `@media (prefers-reduced-motion: reduce)` 全局规则统一关闭。**CSS 动效块刻意放在 `global.css` 的「API 参考页」标记之前**
+  （该标记之后整段被 `tests/docs/website-css.test.ts` 当作 API 页 CSS 校验）。
+  **顺带修一个真 bug**：hero 统计行**线上一直不可见** —— `site.js` 的入场 timeline 先把所有 `[data-intro]` 置 `opacity:0`，
+  再逐个点亮 5 个选择器，而 `.hero-stats` 也带 `data-intro` 却没被点亮，于是永久停在 `opacity:0 / y:26`
+  （真浏览器实测确认；此前访客看不到那行统计数字）。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。

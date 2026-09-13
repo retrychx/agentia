@@ -64,7 +64,7 @@
             <tr><td>combineSignals</td><td><code>(...signals: (AbortSignal | undefined)[]) → AbortSignal</code></td><td>合成多个中断源（调用方 / 超时 / 断连），任一触发即中止（Node 18 无 <code>AbortSignal.any</code>）。</td></tr>
             <tr><td>Blackboard / BlackboardKey / BlackboardValue / BlackboardSeed</td><td><code>interface Blackboard {}</code> 等</td><td>黑板类型链路：声明合并 <code>Blackboard</code> 后，<code>RunContext.get/set</code> 与 <code>run({ blackboard })</code> 种子获得键补全 + 拼写检查 + 值类型；不声明时键为 <code>string</code>、值为 <code>unknown</code>。</td></tr>
             <tr><td>TypedSchema&lt;T&gt; / SchemaType&lt;S&gt; / SchemaInput&lt;S&gt;</td><td><code>SchemaType&lt;TypedSchema&lt;T&gt;&gt; = T</code></td><td>schema 即单一事实来源：<code>fromZod&lt;T&gt;()</code> 返回 <code>TypedSchema&lt;T&gt;</code>，据此自动推导 <code>result.typed</code> 与 <code>@Tool</code> 方法入参类型（不匹配即编译期报错）。</td></tr>
-            <tr><td>AGENTIA_VERSION</td><td><code>string</code></td><td>框架版本号常量。</td></tr>
+            <tr><td>AGENTIA_VERSION</td><td><code>string</code></td><td>框架版本号常量，<strong>反映已发布版本</strong> —— 未发布窗口内会落后于 <code>package.json</code>（包版本先行，发布时同步）。</td></tr>
           </tbody>
         </table></div>
       </section>
