@@ -96,9 +96,21 @@ The model picks from one shared "menu" by `description`; the decorator decides *
 - **Structured output** — `resultSchema`; `result.typed` is validated, or use `fromZod<T>()` for full type inference
 - **Middleware** — an onion chain around every capability call (auth, rate limiting, caching, audit)
 - **Cancellation / retries / streaming / tool concurrency** — `signal`, retry policy, `onText`, `maxToolConcurrency`
-- **Observability & cost** — a full trace per run (`traceId === runId`), `TraceSink` fan-out,
-  `createOtlpExporter`, `metricsSink`, priced cost roll-ups (`priceOverrides`, `usage.unpriced`),
-  `buildRunReport` / `agentia report`, and trace replay via `traceToMessages`
+
+## Observability & cost
+
+One run == one trace (`traceId === runId`), **built in from turn 0** — not a bolt-on third-party tracing SDK:
+
+- **Per-step accounting** — every span carries model, input/output/cache tokens, cost estimate, status and error type
+- **One seam out** — `TraceSink { export(trace) }`, delivered on **both** the success and failure paths; a throwing
+  sink never breaks the run. Persistence / sampling / redaction are composed outside the seam
+  (`examples/observability/`, [`docs/observability.md`](./docs/observability.md))
+- **Cost you can cap** — `priceOverrides` patches the price table; unpriced models emit an explicit
+  `usage.unpriced` event (never a silent zero); `maxCostUsd` / `maxTotalTokens` stop the run
+- **Replay** — `traceToMessages(trace)` linearises a finished trace back into model messages
+- **Export** — `createOtlpExporter({ endpoint })`; `metricsSink()` (Prometheus text or OTLP metrics), zero dependency
+- **Locally visible** — `agentia dev` opens an inspector panel sharing one renderer with the website Playground;
+  `agentia report <trace.jsonl>` ranks which capability is slow / expensive / error-prone
 
 ## Integrations
 

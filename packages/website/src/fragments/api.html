@@ -18,7 +18,9 @@
         <h1>公共 API 参考</h1>
         <p class="api-lede">
           全部导出都来自包根 <code>@migor/agentia</code>，<strong>零运行时依赖</strong> ——
-          可选能力（zod / Redis / MCP）一律 duck-typed。
+          可选能力（zod / Redis / MCP）一律 duck-typed。可观测面（<code>Trace</code> / <code>TraceSink</code> /
+          <code>metricsSink</code> / <code>createOtlpExporter</code>）与四类能力<strong>同级导出</strong>，
+          它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
           <span class="api-chip"><b>175</b> 个导出</span>
