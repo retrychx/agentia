@@ -433,6 +433,23 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   再逐个点亮 5 个选择器，而 `.hero-stats` 也带 `data-intro` 却没被点亮，于是永久停在 `opacity:0 / y:26`
   （真浏览器实测确认；此前访客看不到那行统计数字）。
 
+- 2026-09-11：**文档漂移审计 + 三处能力边界结论（HITL / 护栏 / 沙箱）**。
+  **① 漂移修正** —— roadmap 的 ✅ 段声明了源码里根本不存在的东西，全部改为与源码一致：
+  `ModelProvider` 抽象与「`AGENTIA_MODEL` 扩展为 `provider:model`」→ 实际是 `ModelClient`（core 结构面，
+  Anthropic SDK 天然满足）且**从无 provider 路由**，换 provider 靠注入 client；`@AgentModule` 装饰器 →
+  实际是 `defineModule({ providers, middleware })` 返回值（普通函数，无类装饰器、无 `main` 标记）；
+  `app.use((call, next) => …)` → 实际是 `createApp({ middleware: [...] })`。改动落在 roadmap R1/R4/R5、
+  spec §4/§10、官网 `docs.html`、`packages/cli/README.md`，并加全仓残留扫描。
+  **② 能力边界结论**（三者同为「给缝不给子系统」）：**HITL** —— 闸门层**无需新机制**：`middleware` 返回值
+  被引擎 `await`（`Promise.resolve(tool.run(...))`），故审批中间件可 `await` 决策再 `next()`；拒绝 = 不调
+  `next()`（短路，副作用不发生），拒绝并让模型改道 = 抛错（记 `is_error`，不杀 run）；`toolTimeoutMs` 缺省 0
+  不掐断等待。**真缺口是「跨进程挂起/续跑」**：`RunStatus` 无「待批准」态、循环位置（消息数组）不落库，
+  且 `traceToMessages` 重放**有损**（assistant 原文未记录）—— 无法以重放假冒续跑，故**不做**，列为 R7 候选评估。
+  **护栏** —— **不做子系统**（同「配额不是框架子系统」）：入参缝（包 `app.run` / `authenticate`）、工具前缝
+  （`middleware`）、出参缝（包返回值 / `sinks`）已足，策略差异过大硬编码必错。**沙箱** —— **框架不执行模型
+  生成的代码**（`@Skill`/`@Tool` 均用户代码，模型输出只成文本 / `tool_result`），无沙箱可言；代码执行隔离属
+  **工具实现内部**（Docker / 子进程 / 微 VM），框架不参与。配方写入 `usage-guide` §6，边界写入 §7 已知边界表。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。

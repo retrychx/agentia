@@ -590,6 +590,67 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 - 拦下来的那次 run **仍然要记账**（模型的钱已经花了）—— 记账在 sink 里、拦截在 middleware 里，两者独立。
 - 被拦下的单元**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
 
+### 人工介入：审批闸门（缺口只在「跨进程挂起」，闸门现成）
+
+框架不做审批子系统，但**闸门**这一层已经具备 —— `middleware` 可以 `await` 决策再放行，
+引擎会等工具结果（`Promise.resolve(tool.run(...))`）：
+
+```ts
+const DANGEROUS = new Set(['send_email', 'deploy', 'delete_records']);
+
+const requireApproval: UnitMiddleware = async (call, next) => {
+  if (!DANGEROUS.has(call.unit.name)) return next();
+  const ok = await askHuman(call.unit.name, call.input); // 在这里 await —— run 就地停着等人
+  if (!ok) throw new Error(`调用 ${call.unit.name} 未获批准`); // → tool_result 记 is_error，run 不中断
+  return next();
+};
+
+createApp({ system, providers: [...], middleware: [requireApproval] });
+```
+
+三种结局都有对应写法：
+
+- **放行**：`next()`；**拒绝**（副作用不发生）：不调 `next()` —— 短路；**拒绝并让模型改道**：抛错 → 该条
+  `tool_result` 记 `is_error`，模型换路，run 不中断。
+- 决策依据随你：`call.unit.name` / `call.input`，或在中间件里 `RunContext.current()?.get('…')` 读黑板
+  （ALS 传播，见上一节）。
+- 等待不会被默认掐断（`toolTimeoutMs` 缺省 0 = 不限）；真设了它，注意别把人的思考时间算进去。
+
+**框架不做的**：把 run 停成「待批准」态、进程重启后从断点续跑。`RunStatus` 没有这个状态、循环位置不落库，
+且 `traceToMessages` 重放**有损**（assistant 原文未记录）—— 拿它假装续跑只会拿到降级的上下文。
+要跨重启审批，就自己上工作流引擎（见 §7）。
+
+### 内容护栏（三处缝，不是子系统）
+
+和「多租户配额」同一个形状：策略千差万别（正则 / 分类模型 / 外部审核 API），框架硬编码必错，**只给缝**。
+
+| 关卡 | 缝 |
+|---|---|
+| 入参（run 之前）| 包一层 `app.run`；HTTP 侧用 `createHttpHandler({ authenticate })`，拦在**读 body 之前** |
+| 工具调用前 | `middleware`（见上；能短路，也能用 `next(newInput)` 改写入参）|
+| 出参 / 结果 | 包返回值，或挂 `sinks: [...]`（`TraceSink`）在收尾处审 |
+
+```ts
+const callable = {
+  name: app.name,
+  async run(msgs, opts) {
+    const out = await app.run(redactInput(msgs), opts);      // 入参护栏
+    if (flagged(out.finalText)) throw new Error('输出被护栏拦下'); // 出参护栏
+    return out;
+  },
+};
+```
+
+### 代码执行隔离（沙箱是工具的事，不是框架的）
+
+**框架从不执行模型生成的代码** —— `@Skill` 跑的是你写的方法体、`@Tool` 是你写的函数，
+模型输出只会变成文本 / `tool_result`。所以「要不要沙箱」等价于「你那个*代码执行工具*要不要隔离」：
+在**工具实现内部**做（Docker / 子进程 / 微 VM 随你），框架不参与也不该参与 ——
+`AgentTool.run(input) → output` 这个契约把隔离整个挡在实现里。
+
+唯一沾边的一条：工具起了子进程，**取消时要自己 kill**。框架的 `toolTimeoutMs` 是「不等了」不是取消
+（`AgentTool.run` 收不到 `signal`）；要能真停，让工具自己读 `ToolRunContext.signal`。
+
 ---
 
 ## 7. 已知边界（如实标注，不要指望框架替你兜）
@@ -626,6 +687,9 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 | 指标不做 OTLP metrics | `metricsSink({ export: 'otlp' })` 构造期抛错（后置）；要 OTLP 用 `createOtlpExporter` 走 traces |
 | 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
+| 人工介入只到「闸门」 | `middleware` 能 `await` 审批决策再放行；**跨进程挂起/续跑框架不做** —— `RunStatus` 无「待批准」态、循环位置不落库，`traceToMessages` 重放有损，不能拿它假装续跑（要跨重启审批请上工作流引擎）|
+| 内容护栏不给实现 | 同「配额」：只给缝（入参包 `app.run` / 工具前 `middleware` / 出参包返回值或 `sinks`），策略（正则 / 分类器 / 外部 API）是你的 |
+| 框架不执行模型生成的代码 | 无沙箱可言：`@Skill` 跑你写的方法、`@Tool` 是你写的函数，模型输出只成文本 / `tool_result`；代码执行工具的隔离是**工具实现内部**的事；工具起的子进程取消时要自己 kill |
 
 ---
 

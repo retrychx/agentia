@@ -7,7 +7,7 @@
 
 **中间件是下一个大块的框架能力**，spec §9.2 已留伏笔（"对齐拦截器：每次单元调用包一层"）。
 
-- **单元调用拦截器链**：`app.use((call, next) => ...)`，在每次单元（tool/skill/subagent/prompt）
+- **单元调用拦截器链**：`createApp({ middleware: [(call, next) => …] })`，在每次单元（tool/skill/subagent/prompt）
   调用前后执行。框架自带的 trace 记账从 engine 硬编码改写成第一个内置拦截器——
   既落地 spec §9.2 的设想，也用自己验证这套抽象（dogfooding）。
 - 用户场景：鉴权（按 blackboard 拒绝调用）、限流（按单元计数）、结果缓存
@@ -133,6 +133,8 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 ## R7 候选（下一轮）
 
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
+- **HITL 跨进程挂起 / 续跑**（`awaiting_approval` 状态机 + 循环位置落库）—— 闸门配方已覆盖同步审批，
+  此条仅当「审批跨重启」是硬需求时立项（见 spec §10 与 usage-guide §6）；
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
 - canCall 单元级能力边（当前 tools 引用粒度为 provider）。
