@@ -1,7 +1,7 @@
 /**
  * agentia dev 的本地 inspector 服务（node:http，零依赖）。
  *
- * 面板展示每次 run 的调用树：左边 run 列表、右边该 run 的单元执行
+ * 面板展示每次 run 的调用树：左边 run 列表、右边该 run 的能力执行
  * （tool / skill / prompt / subagent 的入参、出参、耗时、token、cache、错误）。
  *
  * trace 由框架侧的 TraceSink 经 `POST /ingest` 投递 —— 注入方式见 dev.ts

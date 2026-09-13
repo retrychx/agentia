@@ -1,9 +1,9 @@
 /**
- * Agentia —— 单元收集器共用内核。
+ * Agentia —— 能力收集器共用内核。
  *
- * 四类单元（tool/skill/subagent/prompt）的装饰器都只把「方法函数 → spec」登记进
+ * 四类能力（tool/skill/subagent/prompt）的装饰器都只把「方法函数 → spec」登记进
  * 各自的 WeakMap；收集器在容器实例解析后沿原型链扫描出被装饰的方法。
- * 本模块是这一扫描的唯一实现，四个 collect* 只做各自单元形态的组装。
+ * 本模块是这一扫描的唯一实现，四个 collect* 只做各自能力形态的组装。
  */
 
 /** 一次扫描命中：方法 key、登记的 spec。 */
@@ -27,7 +27,7 @@ export function scanDecoratedMethods<S>(
   let proto: object | null = Object.getPrototypeOf(instance);
   while (proto && proto !== Object.prototype) {
     // Reflect.ownKeys 含 symbol key：symbol 命名的装饰方法也会被找到，
-    // 无显式 name 时由 unitName 抛出提示（而非静默忽略）
+    // 无显式 name 时由 capabilityName 抛出提示（而非静默忽略）
     for (const key of Reflect.ownKeys(proto)) {
       if (seen.has(key)) continue;
       const desc = Object.getOwnPropertyDescriptor(proto, key);
@@ -43,7 +43,7 @@ export function scanDecoratedMethods<S>(
 }
 
 /** 装饰器收到的标准 context 子集（本框架只用到这三个字段） */
-export interface UnitDecoratorContext {
+export interface CapabilityDecoratorContext {
   kind: string;
   name: string | symbol;
   /** 标准装饰器 context 的私有方法标记（`#method` 的 kind 同样是 'method'） */
@@ -51,12 +51,12 @@ export interface UnitDecoratorContext {
 }
 
 /**
- * 四类单元装饰器共用的目标守卫：只接类方法，且**拒绝私有方法**。
+ * 四类能力装饰器共用的目标守卫：只接类方法，且**拒绝私有方法**。
  *
- * 收集走 `Reflect.ownKeys`，私有名（#method）在其中不可见 —— 不拦的话单元会
+ * 收集走 `Reflect.ownKeys`，私有名（#method）在其中不可见 —— 不拦的话能力会
  * 静默从菜单里消失，作者只能靠「模型说没有这个工具」反推。
  */
-export function assertMethodTarget(context: UnitDecoratorContext, kind: string): void {
+export function assertMethodTarget(context: CapabilityDecoratorContext, kind: string): void {
   if (context.kind !== 'method') {
     throw new Error(`${kind} 只能修饰类方法，收到 kind=${String(context.kind)}`);
   }
@@ -65,8 +65,8 @@ export function assertMethodTarget(context: UnitDecoratorContext, kind: string):
   }
 }
 
-/** 单元名解析：spec.name 缺省取方法名；私有符号方法名必须显式给 name。 */
-export function unitName(spec: { name?: string }, key: string | symbol, kind: string): string {
+/** 能力名解析：spec.name 缺省取方法名；私有符号方法名必须显式给 name。 */
+export function capabilityName(spec: { name?: string }, key: string | symbol, kind: string): string {
   if (typeof spec.name === 'string') return spec.name;
   if (typeof key !== 'string') {
     throw new Error(`${kind} 需要显式 name（方法名为私有符号 ${String(key)}）`);

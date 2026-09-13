@@ -9,8 +9,8 @@
 | 件 | 说明 |
 |---|---|
 | `src/main.ts` | 宿主：装配 → `SqliteTaskStore` → `AsyncRunner` → `createHttpHandler` → 信号处理 |
-| `src/units/echo/index.ts` | 一个示例 `@Tool` 单元 |
-| `src/units.ts` | 显式注册表（形状与 `agentia g` 维护的一致） |
+| `src/tools/echo/index.ts` | 一个示例 `@Tool` 能力 |
+| `src/registry.ts` | 显式注册表（形状与 `agentia g` 维护的一致） |
 | `Dockerfile` | 多阶段构建（构建期编译 TS，运行期只带产物 + 运行期依赖，非 root） |
 | `docker-compose.yml` | 端口 / 环境变量 / 数据卷 / healthcheck / 优雅停机宽限 |
 | `.env.example` | 环境变量清单 |
@@ -37,7 +37,7 @@ docker compose up --build
 > `npm run build` 就能用上最新代码。框架发布后改成 `^0.2.2`（与 `agentia create`
 > 脚手架模板一致），Dockerfile 也能退回常规单包写法。
 >
-> 想要**更完整**的示例（四类单元 + 三种触发 + 鉴权 + 全观测栈）见 [`../complete/`](../complete/)。
+> 想要**更完整**的示例（四类能力 + 三种触发 + 鉴权 + 全观测栈）见 [`../complete/`](../complete/)。
 
 ## 端点
 

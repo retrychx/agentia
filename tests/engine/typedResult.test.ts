@@ -212,7 +212,7 @@ describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', ()
     ]);
     const recorder = new TraceRecorder();
     const rootId = recorder.begin('run', 'test.run', null);
-    const unitId = recorder.begin('unit', 'researcher', rootId); // 子 agent 的 unit span
+    const capabilityId = recorder.begin('capability', 'researcher', rootId); // 子 agent 的 capability span
 
     const loop = await runAgentScoped({
       client,
@@ -220,7 +220,7 @@ describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', ()
       tools: [echoTool()],
       resultSchema: RESULT_SCHEMA,
       recorder,
-      parentSpanId: unitId,
+      parentSpanId: capabilityId,
     });
 
     assert.equal(loop.stopReason, 'end_turn');
@@ -236,20 +236,20 @@ describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', ()
     // llm.turn 记进了同一条 trace、挂在给定父 span 下（不开 run 根）
     const turns = recorder.snapshot('ok').spans.filter((s) => s.kind === 'llm.turn');
     assert.equal(turns.length, 1);
-    assert.equal(turns[0].parentSpanId, unitId);
+    assert.equal(turns[0].parentSpanId, capabilityId);
   });
 
   it('scoped 入口未给 resultSchema：typed 为 undefined，行为不变', async () => {
     const { seen, client } = mockClient([endTurnMsg('纯文本报告')]);
     const recorder = new TraceRecorder();
-    const unitId = recorder.begin('unit', 'researcher', null);
+    const capabilityId = recorder.begin('capability', 'researcher', null);
 
     const loop = await runAgentScoped({
       client,
       messages: [{ role: 'user', content: 'task' }],
       tools: [echoTool()],
       recorder,
-      parentSpanId: unitId,
+      parentSpanId: capabilityId,
     });
 
     assert.equal(loop.stopReason, 'end_turn');

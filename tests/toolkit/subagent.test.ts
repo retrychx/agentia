@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { TraceRecorder, subagentToTool } from '../../src/index.js';
-import type { JsonSchema, SubAgentUnit, ToolRunContext } from '../../src/index.js';
+import type { JsonSchema, SubAgentCapability, ToolRunContext } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const TASK_SCHEMA: JsonSchema = {
@@ -20,8 +20,8 @@ const RESULT_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
-function researcherUnit(over: Partial<SubAgentUnit['spec']> = {}): SubAgentUnit {
-  const spec: SubAgentUnit['spec'] = {
+function researcherCapability(over: Partial<SubAgentCapability['spec']> = {}): SubAgentCapability {
+  const spec: SubAgentCapability['spec'] = {
     description: '调研子 agent',
     schema: TASK_SCHEMA,
     system: '你是调研员，完成后提交结构化结论。',
@@ -55,7 +55,7 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
       },
     ]);
     const { ctx, recorder } = makeCtx(client);
-    const tool = subagentToTool(researcherUnit({ resultSchema: RESULT_SCHEMA }), () => []);
+    const tool = subagentToTool(researcherCapability({ resultSchema: RESULT_SCHEMA }), () => []);
 
     const out = await tool.run({ task: '调研答案' }, ctx);
 
@@ -70,17 +70,17 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
     assert.deepEqual(childTools.map((t) => t.name), ['submit_result']);
     assert.equal(childTools[0].input_schema, RESULT_SCHEMA);
 
-    // unit span 正常收尾
-    const unit = recorder.snapshot('ok').spans.find((s) => s.kind === 'unit')!;
-    assert.equal(unit.name, 'researcher');
-    assert.equal(unit.status, 'ok');
-    assert.equal(unit.attributes.stop_reason, 'end_turn');
+    // capability span 正常收尾
+    const capability = recorder.snapshot('ok').spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.name, 'researcher');
+    assert.equal(capability.status, 'ok');
+    assert.equal(capability.attributes.stop_reason, 'end_turn');
   });
 
   it('resultSchema 已给但子 agent 未提交（纯文本 end_turn）：退化为纯文本报告', async () => {
     const { client } = mockClient([endTurnMsg('只有文字结论')]);
     const { ctx } = makeCtx(client);
-    const tool = subagentToTool(researcherUnit({ resultSchema: RESULT_SCHEMA }), () => []);
+    const tool = subagentToTool(researcherCapability({ resultSchema: RESULT_SCHEMA }), () => []);
 
     const out = await tool.run({ task: 't' }, ctx);
     assert.equal(out, '只有文字结论'); // 保持报告可读性：无 typed 时与不设 resultSchema 同形
@@ -89,7 +89,7 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
   it('未设 resultSchema：交回最终文本（行为与现状一致），子循环无隐藏工具', async () => {
     const { seen, client } = mockClient([endTurnMsg('普通报告')]);
     const { ctx } = makeCtx(client);
-    const tool = subagentToTool(researcherUnit(), () => []);
+    const tool = subagentToTool(researcherCapability(), () => []);
 
     const out = await tool.run({ task: 't' }, ctx);
     assert.equal(out, '普通报告');
@@ -101,7 +101,7 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
     const { client } = mockClient([toolUseMsg('echo', { text: 'x' })]);
     const { ctx } = makeCtx(client);
     const tool = subagentToTool(
-      researcherUnit({ resultSchema: RESULT_SCHEMA, maxIterations: 1 }),
+      researcherCapability({ resultSchema: RESULT_SCHEMA, maxIterations: 1 }),
       () => [],
     );
     // 子 agent 死循环工具调用、超出 maxIterations → 抛错（engine 包成 is_error 回主 agent）

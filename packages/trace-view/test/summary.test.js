@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { summarizeTrace, renderSummary } from '../src/summary.js';
 
-/** 造一条含 unit span 与 tool.output 事件的 trace（形状与框架一致） */
+/** 造一条含 capability span 与 tool.output 事件的 trace（形状与框架一致） */
 function trace() {
   return {
     traceId: 't1',
@@ -28,7 +28,7 @@ function trace() {
       {
         spanId: 's2',
         parentSpanId: 's0',
-        kind: 'unit',
+        kind: 'capability',
         name: 'researcher',
         startedAt: 110,
         endedAt: 400,
@@ -37,11 +37,11 @@ function trace() {
         attributes: { subagent: 'researcher' },
         events: [],
       },
-      // skill：另一类 unit
+      // skill：另一类 capability
       {
         spanId: 's3',
         parentSpanId: 's0',
-        kind: 'unit',
+        kind: 'capability',
         name: 'summarize',
         startedAt: 410,
         endedAt: 430,
@@ -53,11 +53,11 @@ function trace() {
   };
 }
 
-describe('trace-view summarizeTrace（G2 单元排行）', () => {
-  it('工具来自 tool.output 事件；unit span 带 tokens/cost；按总耗时降序', () => {
+describe('trace-view summarizeTrace（G2 能力排行）', () => {
+  it('工具来自 tool.output 事件；capability span 带 tokens/cost；按总耗时降序', () => {
     const rows = summarizeTrace(trace());
     assert.deepEqual(
-      rows.map((r) => r.unit),
+      rows.map((r) => r.capability),
       ['subagent:researcher', 'tool:search', 'skill:summarize', 'tool:fetch'],
       '290 / 200 / 20 / 10',
     );
@@ -81,16 +81,16 @@ describe('trace-view summarizeTrace（G2 单元排行）', () => {
     );
   });
 
-  it('renderSummary 出表格；空排行给人话说明；单元名做 HTML 转义', () => {
+  it('renderSummary 出表格；空排行给人话说明；能力名做 HTML 转义', () => {
     const html = renderSummary(summarizeTrace(trace()));
     assert.match(html, /<table class="tv-sum">/);
     assert.match(html, /subagent:researcher/);
     assert.match(html, /tv-sum-err/);
-    assert.match(renderSummary([]), /没有可归因的单元/);
-    assert.match(renderSummary([{ unit: '<img>', calls: 1, errors: 0, totalMs: 1, maxMs: 1, tokens: null, costUsd: null }]), /&lt;img&gt;/);
+    assert.match(renderSummary([]), /没有可归因的能力/);
+    assert.match(renderSummary([{ capability: '<img>', calls: 1, errors: 0, totalMs: 1, maxMs: 1, tokens: null, costUsd: null }]), /&lt;img&gt;/);
   });
 
-  it('无 tokens/cost 的单元渲染为 -（不显示 undefined）', () => {
+  it('无 tokens/cost 的能力渲染为 -（不显示 undefined）', () => {
     const html = renderSummary(summarizeTrace(trace()));
     assert.equal(/undefined/.test(html), false);
   });

@@ -18,19 +18,19 @@
 
 - **run** = 一次任务实例。入参 = 任务 spec；出参 = 结构化结果。
 - **run scope 上下文**：在单次运行内累积（blackboard），结束即释放。跨运行记忆是次级问题。
-- **主 agent = 路由器**：不确定阶段顺序，而是自主决定调用哪些单元、什么顺序。
-- 单元（tool/skill/subagent/prompt）= 服务的**组成阶段**。
+- **主 agent = 路由器**：不确定阶段顺序，而是自主决定调用哪些能力、什么顺序。
+- 能力（tool/skill/subagent/prompt）= 服务的**组成阶段**。
 
-## 3. 单元契约（四个装饰目标）
+## 3. 能力契约（四个装饰目标）
 
-| 单元 | 运行时本质 | 结果回到主 agent 的形态 |
+| 能力 | 运行时本质 | 结果回到主 agent 的形态 |
 |---|---|---|
 | `@Tool(zod)` | 函数调用 | `tool_result`（值或 `is_error`） |
 | `@Skill` | 指令 + 脚本，受限子运行 | 产物/结论 |
 | `@Prompt` | 纯文本资产（模板/宏/playbook） | 被选中时注入上下文 |
 | `@SubAgent` | 独立 agent 循环 + 裁剪上下文 | 跑完的最终报告（隔离，中间产物不污染主上下文） |
 
-统一抽象：这些单元对主 agent 都是“可调用项”，差异只在运行时执行方式。注册 = 把每个单元的 `name + description + 怎么用` 编译进主 agent 的菜单，由 LLM 决定调度谁。
+统一抽象：这些能力对主 agent 都是“可调用项”，差异只在运行时执行方式。注册 = 把每个能力的 `name + description + 怎么用` 编译进主 agent 的菜单，由 LLM 决定调度谁。
 
 ## 4. 装饰器表面（草案）
 
@@ -90,8 +90,10 @@ const providers = [
 | Turn 3 | ✅ 子 agent 作为 tool（裁剪上下文 + 隔离报告） | `@SubAgent` |
 | Turn 4 | ✅ compaction / context editing / task budget（预算护栏） | 长上下文策略 |
 | Turn 5 | ✅ 触发传输（同步 RPC / 异步任务 / 定时）+ run 存储/幂等 | transport 层 |
-| Turn 6 | ✅ @Skill / @Prompt 单元 + 文件宿主耐久续跑 + AGENTIA_MODEL env 缺省 | toolkit / run store |
+| Turn 6 | ✅ @Skill / @Prompt 能力 + 文件宿主耐久续跑 + AGENTIA_MODEL env 缺省 | toolkit / run store |
 | Turn 7 | ✅ 目录约定（units/<name>/）+ 发现机制（扫描/注册表双形态）+ CLI（create/g） | toolkit / @agentia/cli |
+
+> Turn 7 的目录约定（`units/<name>/`）已于 2026-09-13 改为四分类目录（`src/tools` 等），见 §10 对应决策记录。
 
 Trace 自 Turn 0 起内建（每个 LLM 往返都记账），Turn 1 后是完整形态。
 
@@ -104,19 +106,19 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 - 一次 run == 一条 trace；v1 里 `traceId == runId`，1:1。
 - 树形层级：
   - `run`（根 span）= 整次运行
-  - `unit` span = 对 **skill / subagent** 单元的调用（这两类才在内部开子循环、产生子 span）
+  - `capability` span = 对 **skill / subagent** 能力的调用（这两类才在内部开子循环、产生子 span）
   - `llm.turn` span = 每次模型往返，挂 usage（model / input / output / cache_read）
   - 普通工具与 `@Prompt` 资产**不建 span**，只记在发起它们的 `llm.turn` 上的
     `tool.input` / `tool.output` 事件（`engine/loop.ts`）
-  - 子 agent = 一个 unit span，其内部单元递归成它的子孙
+  - 子 agent = 一个 capability span，其内部能力递归成它的子孙
 - span 属性：model、input/output/cache tokens、成本估计、状态、错误类型。
 - 事件（logs）：工具入参/出参**默认截断 + 脱敏**，完整内容 opt-in。
 - 状态：`ok` / `error` + 错误分类（可重试 vs 不可重试）。
 
 ### 9.2 上下文传播
 
-- 当前 span 句柄放进 **RunContext（DI run scope）**，每个单元调用从上下文拿 child span —— 不用全局单例，因为 agent 并行 tool 调用时父子关系必须准。
-- 对齐 NestJS 拦截器：每次“单元调用”包一层 TraceInterceptor，统一开 span / 记 usage / 写 status。
+- 当前 span 句柄放进 **RunContext（DI run scope）**，每个能力调用从上下文拿 child span —— 不用全局单例，因为 agent 并行 tool 调用时父子关系必须准。
+- 对齐 NestJS 拦截器：每次“能力调用”包一层 TraceInterceptor，统一开 span / 记 usage / 写 status。
 - 异步化后：trace 上下文要跨队列传播 —— v1 同步先把 header 语义定好，实现后置。
 
 ### 9.3 产出与导出
@@ -143,12 +145,12 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 - 2026-09-10：**trace（调用树）为一等公民**，与 run 1:1，自 Turn 0 内建。
 - 2026-09-10：**trace v1 范围 = 单次 run 链路追踪 + 每步 usage**（每步 token/成本/成败/耗时）。跨 run 账单报表、预算硬管控 → 后置，不在 trace 内做。
 - 2026-09-10：Turn 2 —— **run 作用域上下文用 AsyncLocalStorage 传播**（executeRun 内建 ctx，执行体 `RunContext.current()` 直取），工具/子 agent 执行不把 ctx 作参数层层下传；`@Tool` 只登记「方法→spec」，AgentTool 由 `collectTools(instance)` 对容器解析后的实例生成（此时才绑定 this），零反射、与 tsgo/esbuild 双兼容。
-- 2026-09-10：Turn 3 —— **主循环抽成 `agentLoop`（不自开 run 根，llm.turn 挂给定 parentSpanId）**；`runAgent` = 开 run 根后调它，`runAgentScoped` = 嵌套单元入口。**子 agent 复用同一循环**：开 `unit` span（挂发起它的 llm.turn 下）→ 独立 messages（只含任务 JSON，裁剪主对话）→ 内部 llm.turn 递归成 unit 子孙 → 仅最终文本以 tool_result 交回（隔离报告）。工具执行注入 `ToolRunContext{client, recorder, parentSpanId}`，recorder 用 `core/tool.ts` 的 `RecorderBackend` 结构面（core 不依赖 engine）。usage 天然跨两级聚合（同 recorder 求和）。
+- 2026-09-10：Turn 3 —— **主循环抽成 `agentLoop`（不自开 run 根，llm.turn 挂给定 parentSpanId）**；`runAgent` = 开 run 根后调它，`runAgentScoped` = 嵌套能力入口。**子 agent 复用同一循环**：开 `capability` span（挂发起它的 llm.turn 下）→ 独立 messages（只含任务 JSON，裁剪主对话）→ 内部 llm.turn 递归成 unit 子孙 → 仅最终文本以 tool_result 交回（隔离报告）。工具执行注入 `ToolRunContext{client, recorder, parentSpanId}`，recorder 用 `core/tool.ts` 的 `RecorderBackend` 结构面（core 不依赖 engine）。usage 天然跨两级聚合（同 recorder 求和）。
 - 2026-09-10：Turn 4 —— **长上下文三策略分清不混**：`trimToolPairs` = **context editing**（整体丢旧 tool_use→tool_result 对，不掉内容、不额外调模型）；`compactMessages` = **compaction**（旧前缀做**服务端摘要**，摘要器由上层注入 —— 框架不替你造 token，真机可接 LLM / `/count_tokens`）；客户端剪裁 = Turn 3 子 agent 的独立上下文。预算决策用 `estimateTokens` 启发式（缺省 **CJK 感知**：CJK ≈1.5 字/token、其余 ≈4 字符/token，明确标注是估算非精确记账）。`createBudgetPolicy` 带滞回（`compactEvery` 防每回合反复压缩）；发生改写时在 run 根上记 `context.budget` 事件。触发点 = `agentLoop` 每回合发送前 `contextPolicy.beforeTurn(messages)`。
 - 2026-09-10：Turn 5 —— **三类触发（同步 RPC / 异步任务 / 定时）共用同一份入参契约 `RunInput`**（string / messages / {prompt|text|messages}，`normalizeMessages` 归一），与 agent 装配解耦 —— **换宿主（HTTP/队列/DB）不换语义**。**at-least-once 幂等**：`AsyncRunner.submit` 以 `idempotencyKey` 去重，同键未失败（queued/running/succeeded）直接返回既有记录不重复跑；**失败的同键可重提新任务**。`executeRun` 增加 `rethrow:false`：异步宿主用它接住硬失败、以 `failed` 记录落库而非冒泡。异步耐久 = `TaskStore` 结构接口（v1 `InMemoryTaskStore`），队列/DB 宿主只需实现它。定时层 `Scheduler.every/.at` 依赖 AsyncRunner，周期任务幂等键按 interval 窗口分片。
-- 2026-09-10：Turn 6 —— **`@Skill` = 代码控制的流程（脚本式 + `SkillContext.llm()`）**：方法体是确定性脚本，「要不要调模型 / 调几次 / 拿结果怎么算」写死在代码里；模型调用只在显式 `ctx.llm()` 时发生 —— 受限子运行复用 `runAgentScoped`（不自开 run 根），在 skill 自己的 `unit` span（attribute `skill`）下开 llm.turn 记账，中间结果不外泄，**方法返回值即产物/结论，以 tool_result 交回主 agent**。与 `@SubAgent`（模型自主循环 + 裁剪上下文）是可感知区别。**`@Prompt` = 纯文本资产**：编译成菜单里一个无副作用拉取型 AgentTool（模型判定需要时调用、文本以 tool_result 注入上下文 —— 我们现成的唯一「被选中」机制）。**标准装饰器下字段拿不到值/类引用 → `@Prompt` 只支持方法形态**（实例方法沿原型链、每次调用现算 volatile；static 方法表达常量资产），§4 草图的 `static brand = '…'` 字段形态不可行、已改方法。菜单四类单元（tool/skill/subagent/prompt）**共用命名空间**：装配期统一查重、重名即抛（§7 静态校验最小落地）。**异步耐久落地 = `FileTaskStore`（JSONL 一行一快照，last-wins 还原）**：`AsyncRunner`/Scheduler/触发层**零改动**，宿主重启 `new FileTaskStore(path)` 读回记录 + `AsyncRunner.resumePending()` 续跑 queued/running。缺省模型改 `resolveDefaultModel()`：**`AGENTIA_MODEL` env 覆盖**，无则回落 `claude-opus-5`。**确认不拆 npm 包**（core/runtime/transport 拆分后置发布阶段）。
-- 2026-09-10：Turn 7 —— **目录约定 + 发现机制 + CLI 落地**。`units/<name>/` 一单元一文件夹：`index.ts` 入口 default export（类 → token=文件夹名的 useClass / Provider / Provider[]），长文本资产放文件夹内 `.md`，`asset(import.meta.url, rel)` 现读不缓存（保 @Prompt volatile 语义）。**发现机制双形态**：运行时扫描 `discoverProviders(dir)` / `createApp({ discover })`（动态 import 决定其为 Promise 返回）与 CLI 维护的 `units.ts` 显式注册表（标记行 codemod，幂等）——可混用，AgentApp 构造期同 token 去重（后注册覆盖先注册，与 Container 语义一致），装配期静态校验（查重/引用/toolSources）对两条路一视同仁。**CLI 独立成包** `@agentia/cli`（npm workspaces，零运行时依赖、纯 Node 内置）：`create` 脚手架项目、`g tool|skill|prompt|subagent <name>` 生成单元文件夹并登记注册表；kebab-case 命名校验，方法名 snake、类名 Pascal。注意双实例危害：消费方必须从同一模块实例 import 框架（装饰器 WeakMap 注册表不跨实例），smoke:turn7 因此统一走 dist。
-- 2026-09-11：**R1–R5 一轮落地（v0.1.0）**。**R1 中间件**：`UnitMiddleware` 洋葱链（链序=注册序，`next(newInput)` 可改写、不调 next 即短路），**装配期包裹整个菜单**（`applyMiddleware`），对 engine 零侵入——trace 仍留 engine 层（改写为拦截器的 dogfooding 设想经评审放弃：unit span 生命周期与模型调用纠缠在 loop 内，强行外置反而割裂）；孤儿单元告警定义为「toolSources 收窄时被排除 provider 上的单元」。**R2**：typed 结果走 hidden `submit_result` 工具（engine 内部追加，菜单同名即装配冲突；校验失败回 is_error 让模型自我修正，system 指令追加在 volatile 尾部不污染缓存前缀）；zod 接入 duck-typed（`fromZod` 挂 `__zodValidate`，框架永不 import zod，序列化时自动丢弃函数字段）。**R3**：HTTP 宿主只产 handler 不 listen（/run 同步、/tasks 异步+轮询，失败也 200 带 error 与 rethrow:false 对齐）；`SqliteTaskStore` 用 Node 内置 `node:sqlite`（WAL 天然多进程安全，解 FileTaskStore 单写者限制）；OTLP 用 OTLP/JSON + 全局 fetch，零依赖。**R4**：`ModelClient` 结构面定义在 core（Anthropic SDK 天然满足），`createOpenAIClient` 手写请求/响应双向翻译（非流式模拟、cache token 恒 0、refusal 近似——三处近似边界写入头部注释）；`MemoryStore` 只有 load/save 两个钩子，水合在 contextInit 之后（用户种子优先），成功/失败路径都回写（失败路径 save 异常吞掉防掩盖原始错误）。**R5**：`defineModule` = providers + middleware 打包（模块级在前、应用级可覆盖同 token）；CLI 补 dev（tsx watch 转发信号）/ doctor（纯静态体检，不 import 用户代码）/ add（npm install + 注册表 codemod，解析真实包名含 file: 协议）。**全量验证改为 `npm test`（node:test）+ `npm run e2e`（CLI 端到端）**，老 smoke 脚本删除，唯一盲区 SystemPrompt 缓存布局已补进单测。
+- 2026-09-10：Turn 6 —— **`@Skill` = 代码控制的流程（脚本式 + `SkillContext.llm()`）**：方法体是确定性脚本，「要不要调模型 / 调几次 / 拿结果怎么算」写死在代码里；模型调用只在显式 `ctx.llm()` 时发生 —— 受限子运行复用 `runAgentScoped`（不自开 run 根），在 skill 自己的 `capability` span（attribute `skill`）下开 llm.turn 记账，中间结果不外泄，**方法返回值即产物/结论，以 tool_result 交回主 agent**。与 `@SubAgent`（模型自主循环 + 裁剪上下文）是可感知区别。**`@Prompt` = 纯文本资产**：编译成菜单里一个无副作用拉取型 AgentTool（模型判定需要时调用、文本以 tool_result 注入上下文 —— 我们现成的唯一「被选中」机制）。**标准装饰器下字段拿不到值/类引用 → `@Prompt` 只支持方法形态**（实例方法沿原型链、每次调用现算 volatile；static 方法表达常量资产），§4 草图的 `static brand = '…'` 字段形态不可行、已改方法。菜单四类能力（tool/skill/subagent/prompt）**共用命名空间**：装配期统一查重、重名即抛（§7 静态校验最小落地）。**异步耐久落地 = `FileTaskStore`（JSONL 一行一快照，last-wins 还原）**：`AsyncRunner`/Scheduler/触发层**零改动**，宿主重启 `new FileTaskStore(path)` 读回记录 + `AsyncRunner.resumePending()` 续跑 queued/running。缺省模型改 `resolveDefaultModel()`：**`AGENTIA_MODEL` env 覆盖**，无则回落 `claude-opus-5`。**确认不拆 npm 包**（core/runtime/transport 拆分后置发布阶段）。
+- 2026-09-10：Turn 7 —— **目录约定 + 发现机制 + CLI 落地**。`units/<name>/` 一能力一文件夹：`index.ts` 入口 default export（类 → token=文件夹名的 useClass / Provider / Provider[]），长文本资产放文件夹内 `.md`，`asset(import.meta.url, rel)` 现读不缓存（保 @Prompt volatile 语义）。**发现机制双形态**：运行时扫描 `discoverProviders(dir)` / `createApp({ discover })`（动态 import 决定其为 Promise 返回）与 CLI 维护的 `units.ts` 显式注册表（标记行 codemod，幂等）——可混用，AgentApp 构造期同 token 去重（后注册覆盖先注册，与 Container 语义一致），装配期静态校验（查重/引用/toolSources）对两条路一视同仁。**CLI 独立成包** `@agentia/cli`（npm workspaces，零运行时依赖、纯 Node 内置）：`create` 脚手架项目、`g tool|skill|prompt|subagent <name>` 生成能力文件夹并登记注册表；kebab-case 命名校验，方法名 snake、类名 Pascal。注意双实例危害：消费方必须从同一模块实例 import 框架（装饰器 WeakMap 注册表不跨实例），smoke:turn7 因此统一走 dist。
+- 2026-09-11：**R1–R5 一轮落地（v0.1.0）**。**R1 中间件**：`CapabilityMiddleware` 洋葱链（链序=注册序，`next(newInput)` 可改写、不调 next 即短路），**装配期包裹整个菜单**（`applyMiddleware`），对 engine 零侵入——trace 仍留 engine 层（改写为拦截器的 dogfooding 设想经评审放弃：capability span 生命周期与模型调用纠缠在 loop 内，强行外置反而割裂）；孤儿能力告警定义为「toolSources 收窄时被排除 provider 上的能力」。**R2**：typed 结果走 hidden `submit_result` 工具（engine 内部追加，菜单同名即装配冲突；校验失败回 is_error 让模型自我修正，system 指令追加在 volatile 尾部不污染缓存前缀）；zod 接入 duck-typed（`fromZod` 挂 `__zodValidate`，框架永不 import zod，序列化时自动丢弃函数字段）。**R3**：HTTP 宿主只产 handler 不 listen（/run 同步、/tasks 异步+轮询，失败也 200 带 error 与 rethrow:false 对齐）；`SqliteTaskStore` 用 Node 内置 `node:sqlite`（WAL 天然多进程安全，解 FileTaskStore 单写者限制）；OTLP 用 OTLP/JSON + 全局 fetch，零依赖。**R4**：`ModelClient` 结构面定义在 core（Anthropic SDK 天然满足），`createOpenAIClient` 手写请求/响应双向翻译（非流式模拟、cache token 恒 0、refusal 近似——三处近似边界写入头部注释）；`MemoryStore` 只有 load/save 两个钩子，水合在 contextInit 之后（用户种子优先），成功/失败路径都回写（失败路径 save 异常吞掉防掩盖原始错误）。**R5**：`defineModule` = providers + middleware 打包（模块级在前、应用级可覆盖同 token）；CLI 补 dev（tsx watch 转发信号）/ doctor（纯静态体检，不 import 用户代码）/ add（npm install + 注册表 codemod，解析真实包名含 file: 协议）。**全量验证改为 `npm test`（node:test）+ `npm run e2e`（CLI 端到端）**，老 smoke 脚本删除，唯一盲区 SystemPrompt 缓存布局已补进单测。
 - 2026-09-11：**R6 落地（v0.2.0）**。子 agent typed：`runAgentScoped` 透传 resultSchema，交回形态 `{ report, result }`（report 在前保可读性，未提交时行为逐字不变）。**TaskStore 接口放宽为 MaybePromise**：同步实现签名不变（天然子类型），AsyncRunner 内部全 await 化 + 异步 store 的幂等去重推迟到执行前（同步门面 submit 签名不变）；`RedisTaskStore` duck-typed `RedisLike`（get/set/del + keys|scanIterator，框架永不 import redis 包）。`traceToMessages` = trace 重放基底（§9.4 落地）：llm.turn 按 startedAt 稳定排序线性化（含嵌套），tool 对同名优先配对、缺失补 is_error 占位；assistant 原文 trace 未记录，以标注文本占位。**collect 扫描改 `Reflect.ownKeys`**：symbol 命名装饰方法不再被静默忽略（无显式 name 由 unitName 抛错）——修掉「注释承诺但代码不可达」。**website 移入 packages/website**（monorepo 结构统一），官网新增 BYOK 真实模型 playground（key 仅 localStorage，浏览器直连 Anthropic）与 api.html；新增 AGENTS.md 记录仓库结构与协作约定。
 
 - 2026-09-11：**全量评审修复轮 + src 目录重构 + 官网响应式（v0.2.2）**。评审结论：**主路径有纪律，佐助路径没有**——所有问题集中在同一条缝上（落库失败杀进程、记忆回写失败毁掉成功的 run、子 agent 绕过鉴权、replay 产物在缺省模型上 400），修复原则统一为「辅助操作失败不得击穿主路径」。
@@ -169,14 +171,14 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   （形状复用 `OtlpExporter`，`createOtlpExporter()` 返回值天然满足）；`executeRun` 成功 / 失败两条路径
   均投递，sink 抛错吞掉不影响 run。装配层 `AppOptions.sinks` 与 `registerDefaultTraceSink()`
   （全局默认，构造期快照合并）。框架**不读 env、不含 dev 逻辑**——dev 注入由 CLI 侧 `--import`
-  preload 完成（`registerDefaultTraceSink` 为公开扩展点）。**顺带修正 §9.1 口径**：unit span 只由
-  skill / subagent 创建，普通工具与 `@Prompt` 走 turn 上的事件（此前描述为四类单元一律建 span，
+  preload 完成（`registerDefaultTraceSink` 为公开扩展点）。**顺带修正 §9.1 口径**：capability span 只由
+  skill / subagent 创建，普通工具与 `@Prompt` 走 turn 上的事件（此前描述为四类能力一律建 span，
   与实现不符）。
 
 - 2026-09-11：**第二轮回评修复（并入 v0.2.2 未发布窗口）**。上一轮修的是「辅助操作失败击穿主路径」，本轮把同类缝补完并关闭一处安全缺陷。以下语义变更**在此锁定**：
-  **安全 / 正确性**：① `AgentApp` 装配重构——嵌套单元（子 agent / skill）的 `tools` 引用改从**中间件包装后**的每 provider 菜单解析（`wrappedByToken`），原实现取包装前的原始菜单，导致子 agent 内部每一次工具调用整体绕过中间件（鉴权 / 限流 / 审计 / 结果缓存全失效）——spec 曾记档的既知缺陷就此关闭；主菜单仍只取 `toolSources`，被排除的 provider 仅「不进主菜单」，其单元经显式 `tools` 引用仍可调用（孤儿告警文案同步更正）。② `engine/loop.ts` 的 `submit_result` 校验移入 try——畸形 resultSchema 只废掉该次提交（回 is_error），不再让整次 run 以 error 收场而与 trace 记的该回合 ok 自相矛盾。③ `runtime/run.ts` 的 `hydrateMemory` 包 try——与 `flushMemory` 对称，store 故障不再杀死 run。
+  **安全 / 正确性**：① `AgentApp` 装配重构——嵌套能力（子 agent / skill）的 `tools` 引用改从**中间件包装后**的每 provider 菜单解析（`wrappedByToken`），原实现取包装前的原始菜单，导致子 agent 内部每一次工具调用整体绕过中间件（鉴权 / 限流 / 审计 / 结果缓存全失效）——spec 曾记档的既知缺陷就此关闭；主菜单仍只取 `toolSources`，被排除的 provider 仅「不进主菜单」，其能力经显式 `tools` 引用仍可调用（孤儿告警文案同步更正）。② `engine/loop.ts` 的 `submit_result` 校验移入 try——畸形 resultSchema 只废掉该次提交（回 is_error），不再让整次 run 以 error 收场而与 trace 记的该回合 ok 自相矛盾。③ `runtime/run.ts` 的 `hydrateMemory` 包 try——与 `flushMemory` 对称，store 故障不再杀死 run。
   **宿主稳定性**：④ `AsyncRunner.submit` 订阅异步 store 的 `byIdempotency` Promise（原实现丢弃返回值，reject 即 unhandledRejection → Node ≥15 终止宿主；同一函数内 `save` 本有 `.catch`，属一防一漏）。⑤ `submit` 初始 `save` 的迟到 reject 仅在任务仍 `queued` 时改判，不再把已成功的 run 覆写成 failed（落库终态与真实结果一致）。
-  **契约与资源**：⑥ `Trace.totalUsage` 只累加 `llm.turn` span——unit span 的 usage 语义锁定为「子孙聚合、仅供展示」，不参与求和（否则与子孙重复计数）；`core/trace.ts` 的类型注释同步更正。⑦ `FileTaskStore.compact()` 新增（append-only JSONL 压实为每 task 一行；TaskStore 接口之外的显式能力）。⑧ `InMemoryTaskStore({ maxRecords })` 新增内存闸门：超限从最旧**已终态**记录起淘汰，在飞（queued/running）记录永不淘汰；缺省 Infinity ＝ 不淘汰（旧行为）。⑨ `SqliteTaskStore` 补 `PRAGMA busy_timeout = 5000`——原实现只设 WAL，「多进程安全」的承诺实际不成立（第二个写者立即 `SQLITE_BUSY`，而 `#safeSave` 会把失败静默吞掉 → 记录无声丢失）。
+  **契约与资源**：⑥ `Trace.totalUsage` 只累加 `llm.turn` span——capability span 的 usage 语义锁定为「子孙聚合、仅供展示」，不参与求和（否则与子孙重复计数）；`core/trace.ts` 的类型注释同步更正。⑦ `FileTaskStore.compact()` 新增（append-only JSONL 压实为每 task 一行；TaskStore 接口之外的显式能力）。⑧ `InMemoryTaskStore({ maxRecords })` 新增内存闸门：超限从最旧**已终态**记录起淘汰，在飞（queued/running）记录永不淘汰；缺省 Infinity ＝ 不淘汰（旧行为）。⑨ `SqliteTaskStore` 补 `PRAGMA busy_timeout = 5000`——原实现只设 WAL，「多进程安全」的承诺实际不成立（第二个写者立即 `SQLITE_BUSY`，而 `#safeSave` 会把失败静默吞掉 → 记录无声丢失）。
   **语义修正**：⑩ `createBudgetPolicy` 拆出 `keepToolPairs`（context editing 按「对数」），`keepRecent` 只管 compaction 的「条数」——同一值套两种单位的隐含 bug 消除。⑪ `trimToolPairs` 前置 `toolBlocksPaired` 校验：非严格交替历史（连续两条 assistant 带 tool_use 等）整体放弃裁剪，不再切出孤立 `tool_use` / `tool_result` 让后续请求 400。⑫ `createApp({ discover })` 与显式 `providers` 同 token 时**显式优先**（显式放发现结果之后）——原实现让 `units/` 下同名文件夹悄悄顶掉调用方手写的 provider。⑬ `Container.register` 传递失效缓存：依赖它的下游一并重建，不只失效 token 自身。⑭ `Scheduler.every` 拒绝非正有限数（`every(0)` 不再退化成忙轮询空转）。⑮ `RedisTaskStore` 的 MATCH 模式转义前缀 glob 元字符（前缀含 `[` 等会查错 key）。⑯ OpenAI 兼容适配器对 200 但空 / 缺 `choices` 的响应抛错（原实现静默映射成空文本 + usage 全 0 + `end_turn`，把上游故障记成成功）。
   **测试** 190 → 210 例（上述每条各带一个「移除修复即失败」的回归用例）。
 
@@ -216,7 +218,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **语义 / 契约变更（在此锁定）**：① `TrimOptions.keepRecent` → **`keepToolPairs`**（`trimToolPairs` 的选项按「tool_use→tool_result 对数」命名，与 `createBudgetPolicy.keepToolPairs` 口径统一，彻底消除同名不同义）。② `Scheduler.at()` 校验 `when` 必须是合法 `Date` —— 非法日期原会算出 NaN 延迟并**立即触发**（无提示），现在直接抛错（与 `every()` 的间隔校验对称）。③ HTTP 方法不符的 405 文案由英文改中文（并补 `Allow` 头），与同文件其余错误统一。④ `RedisTaskStore.ttlSeconds` 校验由 `ttl < 0` 改 `!(ttl >= 0)` —— 原写法放过 `NaN`，会静默关闭 TTL。⑤ `InMemoryMemoryStore.load` 改用无原型对象（`Object.create(null)`）—— `{}` 上 `__proto__` 键会走原型 setter 被吞，与该键的 `flushMemory` 回写不对称（静默丢一条跨 run 记忆）；**行为变更**：`load()` 现返回无原型对象（与 `save()` 收到的形状一致），断言需展开后再比。⑥ `SqliteTaskStore.status` 列明确为「反规范化副本，仅供外部/DBA 按状态统计」（本 store 的 SELECT 只读 `json`）。
   **去重 / 死代码**：`core/json.ts` 新增 `truncateWithMark` 供 `engine/loop.limit` 与 `engine/replay` 共用（`asString` 改复用 `stringifySafe`）；`store.ts` 新增模块级 `nextTaskId()` / `isThenable()`（后者原在 `async.ts` 私有、`scheduler.ts` 另写一份鸭子判定）；`withRunContext` 改重载（同步 fn → `T`，async → `Promise<T>`，去掉 `as Promise<T>`）；删除 `DecoratedMethod.fn`（无消费者）、`loop.ts` 恒真的 `stopReason === 'end_turn'`、`trimming.ts` 两个不可达分支、`module.ts` 的 `_tools ?? []`、`async.ts` 的 `this.app = app`；`runAgent`/`runAgentScoped` 的缺省 `64_000`/`40` 提为模块常量；`loop.ts` 补记 `cache_creation_tokens` 属性。
   **文档一致性**：roadmap R7 删去已落地的「InMemoryTaskStore 无界增长」；spec §10 Turn 4 的「缺省字符/4」更正为 CJK 感知启发式；`runtime/memory.ts`、`container/container.ts`、`engine/types.ts` 中指向重构前 `run/*.ts` 的注释改为 `runtime/*.ts`；`usage-guide.md` 的 `g tool fetch_weather`（下划线非法）示例改 kebab-case；`engine/types.ts` 误挂在 `RunAgentOptions` 上的 `ModelClient` JSDoc 归位；`toolkit/asset.ts` 的「每次调用现读」注释澄清（当装饰器 spec 值是加载期读一次）。
-  **CLI / 官网**：`doctor` 入口检查改用与框架 `ENTRY_CANDIDATES` 一致的候选集（原只认 `index.ts`，合法 `.js/.mts` 单元被误报）；`add` 的本地路径补 `file:` 协议支持（原注释承诺、代码不认）；`cli.ts` 未知命令复用 `fail()`、用法串改用 `UNIT_TYPES.join`；`dev` 的 `NODE_OPTIONS --import` 路径加引号（含空格安装路径不再静默失效）；`inspector` 的 `text()` 补 `content-length`、body 超限由 500 改 413；脚手架 README 占位链接填真实仓库地址；`trace-view/fromTrace.js` 复用 `view.js` 的 `unitTypeOf`/`UNIT_ICO`；官网 `/llms.txt` 的「已知边界」改为从单源 guide §7 表当场抠出（不再手抄，消除与单源的漂移）；`discover` 对「路径是普通文件」给出明确错误而非原始 ENOTDIR。
+  **CLI / 官网**：`doctor` 入口检查改用与框架 `ENTRY_CANDIDATES` 一致的候选集（原只认 `index.ts`，合法 `.js/.mts` 能力被误报）；`add` 的本地路径补 `file:` 协议支持（原注释承诺、代码不认）；`cli.ts` 未知命令复用 `fail()`、用法串改用 `CAPABILITY_TYPES.join`；`dev` 的 `NODE_OPTIONS --import` 路径加引号（含空格安装路径不再静默失效）；`inspector` 的 `text()` 补 `content-length`、body 超限由 500 改 413；脚手架 README 占位链接填真实仓库地址；`trace-view/fromTrace.js` 复用 `view.js` 的 `capabilityTypeOf`/`CAP_ICO`；官网 `/llms.txt` 的「已知边界」改为从单源 guide §7 表当场抠出（不再手抄，消除与单源的漂移）；`discover` 对「路径是普通文件」给出明确错误而非原始 ENOTDIR。
   测试 215 → 225 例（框架：loop 四条终止分支、trimming 两条分支、memory `__proto__` 往返、redis `ttlSeconds: NaN`、scheduler `at(Invalid Date)`、discover 非目录）+ CLI 3 → 6 例（`resolvePackageName` 的 `file:` / 版本后缀、doctor 入口候选）。
 
 - 2026-09-11：**Phase A 落地（成本与稳定性）** —— 设计见 `docs/plans/2026-09-11-agent-service-hardening.md`（四期，8 个分叉全按建议 A 拍板），任务计划见同目录 `phase-a-cost-and-stability.md`。
@@ -232,7 +234,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   不为「暂时没有消费点」的东西发明传递通道）；抛 `HttpException` 按其 `status`/`body` 回（想回 403 就抛 403）；
   抛其它错误回 401 `{ error: '未通过鉴权' }`，**原文只进服务端日志**（与 `exposeErrors` 同策略，防内部拓扑外泄）。
   **框架不实现 token/JWT/签名策略、不碰凭据 env** —— 那是宿主或反代的事；不做成 middleware 的理由：
-  middleware 拦的是**单元调用**（run 内部），鉴权要拦的是 **run 入口**。
+  middleware 拦的是**能力调用**（run 内部），鉴权要拦的是 **run 入口**。
   **连接语义（此处锁定）**：鉴权失败时请求 body 未被消费，故 `req.complete` 为假时显式 `connection: close`
   —— 连接不可复用（残留字节会被当成下一个请求，与 413 同理），这也是「不收 body 省资源」的落点。
   **② 优雅停机 + 健康检查**：`AsyncRunner` 新增 `drain({ timeoutMs })` / `inFlight` / `isDraining`；
@@ -306,7 +308,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **接入点偏离设计（此处锁定）**：设计写的是「`createApp({ providers })` 里放个 `useFactory` 即可」——
   **落地时不成立**：菜单只从装饰器注册表收集（`useFactory` 的返回值根本不进菜单），且 `Container.resolve`
   是同步的（`await mcpTools(...)` 塞不进去）。零新机制的做法是给 `AppOptions` 加 **`tools?: AgentTool[]`**：
-  裸工具直进主菜单，且与装饰器单元**完全同等** —— 同过中间件链、同进重名查重（**不是旁路**，两条用例分别钉住）。
+  裸工具直进主菜单，且与装饰器能力**完全同等** —— 同过中间件链、同进重名查重（**不是旁路**，两条用例分别钉住）。
   **语义**：名字 = `prefix + 归一化原名`（非 `[A-Za-z0-9_]` → `_`，连续分隔符收成一个；缺省 `mcp_<server>_`，
   没给 `server` 时 `mcp_`）；归一化后**空名 / 撞名 / 超 64 字符一律装配期抛错**（不静默改名 —— 那会得到一个
   调不回去的名字）；**原名**每次调用写进发起 turn 的 `mcp.tool` attribute（审计 / 回放要还原它才能回调 server）；
@@ -334,15 +336,15 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   （单次 `{ system }` 覆盖时版本跟当次走）。**不放进 `RunInvocationOptions`** —— 版本是提示词的属性，
   不该由 transport 负载指定。`system` 传已拼好的 `SystemParam` 时**不写该 attribute**（不写空串冒充实有版本）。
   **不做**：版本库 / 回滚 / A-B 实验平台。
-  **⑤ 多租户配额（不做子系统，给组合范式）**：`middleware`（拦在单元调用前；超限抛错 → 该条 `is_error`、
-  **被拦下的单元不执行**、run 不崩）+ `TraceSink`（收尾后按租户记账 —— sink 在 run 的 async 上下文里投递，
+  **⑤ 多租户配额（不做子系统，给组合范式）**：`middleware`（拦在能力调用前；超限抛错 → 该条 `is_error`、
+  **被拦下的能力不执行**、run 不崩）+ `TraceSink`（收尾后按租户记账 —— sink 在 run 的 async 上下文里投递，
   **读得到黑板**）+ `BudgetGuard`（单次 run 上限）三者组合；存储（内存 / Redis / DB）与超限策略是使用者的。
   两条独立：**被拦下的 run 仍然要记账**（模型的钱已经花了）。`usage-guide §6` 里那 20 行示例被单测
   **真跑一遍**（文档的写法必须真能工作，是仓库既有约定）。
   **验证**：新增 `npm run e2e:mcp` —— 真接**第三方 server**（`uvx mcp-server-time` v1.30.0，真 stdio JSON-RPC：
   `initialize` → `notifications/initialized` → `tools/list` → `tools/call`）→ 连接器 → `mcpTools` → `createApp`
   菜单 → 真跑一轮：模型经 MCP 工具拿到**真实时区时间**并写进最终答案；`system.version` / `mcp.tool` 落 trace；
-  metrics 从这次 run 派生正确；`agentia doctor` 认到 MCP 单元。无网 / 无 uv 的机器自动回落
+  metrics 从这次 run 派生正确；`agentia doctor` 认到 MCP 能力。无网 / 无 uv 的机器自动回落
   `scripts/mcp-fixture-server.py`（同一协议面；夹具的工具名带 `-`，顺带把归一化那条路径也验了）。
   测试 322 → 363 例（+41：MCP 13 / 指标 9 / evals 10 / 配额 4 / 提示词版本 5），另在 `tests/types/dx.types.ts`
   并入 8 处类型断言（`@ts-expect-error` 钉住「应当报错」的场景：缺 `callTool` 的结构面、`tools` 的元素形状、
@@ -363,7 +365,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   「同库存储 = sink 配方之一，非内建」。
   **新增 `docs/observability.md`**：把出口边界讲清 + 四条**现成 sink 配方**（按 runId 落库检索 /
   日志关联 / 采样 / 脱敏），全部零 engine 改动、零新增依赖、零新出口 —— 正好兑现 §9.3 那句「同库存储」。
-  **新增 `examples/complete/`**：完整示例（四类单元 + 显式注册表 + 三种触发 + 鉴权缝 + 全观测栈 + 优雅停机），
+  **新增 `examples/complete/`**：完整示例（四类能力 + 显式注册表 + 三种触发 + 鉴权缝 + 全观测栈 + 优雅停机），
   并把观测栈接成真实链路（metrics 全量 → 采样 → 脱敏 → [落库, 日志]）。**`examples/observability/` 升为本地小包**
   `@migor/agentia-observability`：示例要用这四个 sink，而 `tsc` 的 `rootDir` 不允许跨目录引源码 —— 做成小包
   与仓库对 `packages/trace-view` 是同一套办法（零重复、无 rootDir 取巧）。
@@ -452,19 +454,19 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 
 - 2026-09-13：**可观测 · 可调优（E/F/G 三期落地，8 个设计分叉按建议 A 拍板）**。缘起是框架定位 —— 「要长期使用、
   要能被观测、要能被调优」，而当时观测只到 **run 级**（`metricsSink` 的 label 只有 `{kind}` 与 `{quantile}`，答不出
-  「哪个单元慢/贵/爱失败」），调优旋钮虽齐却有**两处「看着有、实际不生效」**。设计文档见
+  「哪个能力慢/贵/爱失败」），调优旋钮虽齐却有**两处「看着有、实际不生效」**。设计文档见
   `docs/plans/2026-09-13-observability-tunability.md`。
   **E 期（观测下沉）** —— E1 在既有 `tool.output` 事件上补 `durationMs` + `errorKind`（普通工具**不建 span**，守住
-  `26707ef` 控 trace 体积的决策）；E2/E3 把指标下沉到**单元级**（`tool` 读事件、`skill`/`subagent` 读 `unit` span，
+  `26707ef` 控 trace 体积的决策）；E2/E3 把指标下沉到**能力级**（`tool` 读事件、`skill`/`subagent` 读 `capability` span，
   含 token 与成本）与**模型级**（`llm.turn` 的 span name 即模型 id，另出 `model_unpriced_turns_total`）；
   E4 补 Prometheus 原生 **histogram**（可跨实例聚合），窗口精确分位作为 gauge 并存；E5 让 `export:'otlp'`
   从「构造期抛错」变成**零依赖手写 OTLP/JSON**（与 `createOtlpExporter` 同款做法）。
   **F 期（成本可调优）** —— F1 内置价格表开放为 `priceOverrides`（覆盖/追加，非法单价构造期抛错），
   **且透传进子 agent/skill 的子循环**（`ToolRunContext.priceOverrides`），不再出现「主 agent 有成本、子 agent 恒 0」；
   F2 未定价模型**不再静默**：turn 上记 `usage.unpriced` 事件 + `onUnpricedModel` 回调（每作用域每模型一次、抛错被吞）
-  + 指标计数 —— 定价缺失是宿主配置问题，**不改变 run 结局**（否决「让 run 失败」）；F3 成本归因到模型与单元。
+  + 指标计数 —— 定价缺失是宿主配置问题，**不改变 run 结局**（否决「让 run 失败」）；F3 成本归因到模型与能力。
   **G 期（调优闭环）** —— G1 `buildRunReport` / `mergeRunReports` / `renderRunReport` 纯函数报告 +
-  CLI `agentia report <trace.jsonl>` 薄壳；G2 单元排行视图落在 `@migor/trace-view`（`summarizeTrace` /
+  CLI `agentia report <trace.jsonl>` 薄壳；G2 能力排行视图落在 `@migor/trace-view`（`summarizeTrace` /
   `renderSummary`），`agentia dev` 面板直接消费；G3 每个 run 的根 span 写 `config.*` **生效配置快照**
   （缺省值也记，函数型选项只记「配没配」）；G4 `createHttpHandler({ metrics })` 内建 `GET /metrics`
   （**不鉴权**，与 `/healthz` 同档）。
@@ -476,14 +478,49 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `buildRunReport`（库层，含未定价/成本语义与跨 run 合并），分工写进 usage-guide；
   ④ **指标 `_count` 语义变更**：`run_duration_ms_count` 从「窗口内样本数」改为**累积观测数**（Prometheus
   直方图语义，可聚合），窗口只再约束分位 gauge —— 旧断言按新语义同步。
-  另**顺带修一处 doc-vs-code 漂移**：`core/trace.ts` 从第一天就声明「`unit.usage` = 其子孙 `llm.turn` 的聚合，
+  另**顺带修一处 doc-vs-code 漂移**：`core/trace.ts` 从第一天就声明「`capability.usage` = 其子孙 `llm.turn` 的聚合，
   仅供展示、不计入 `totalUsage`」，但实现里**从未写入过**该字段；本轮在 `TraceRecorder.end()` 补上就地聚合
-  （只累加 `llm.turn`，层层嵌套不双算），E2/F3 的单元 token 与成本才有数据来源。测试 414 → 462（+48），
+  （只累加 `llm.turn`，层层嵌套不双算），E2/F3 的能力 token 与成本才有数据来源。测试 414 → 462（+48），
   CLI 6 → 13，trace-view 6 → 10。
+
+- 2026-09-13：**目录约定去伞形词（四类分置）+ 伞形术语整体替换为 `capability`**。缘起是 `agentia create` 产出的
+  `units/` 被指出「命名不太好」；核实后发现不只是名字 —— **仓库里同时跑着两套目录约定**（CLI / 文档 / 官网 / spec
+  是项目根 `units/` + 根 `units.ts`；2026-09-13 新增的 `examples/complete`、`examples/deploy` 是 `src/units/` +
+  `src/units.ts`），而 `tsconfig.tests.json` 明确 `exclude` 了那两个示例、仓库无 CI，**没有任何一步验证能发现**。
+  另有一处同源 bug：脚手架 tsconfig 是 `include: ['src', 'units.ts']`，**漏了能力目录本身** —— 未登记进注册表的
+  能力（discover 路线允许不登记）静默不参与类型检查（`tsc --listFiles` 实测可证）。三条一并收口：
+
+  ① **目录约定改为四分类目录，放 `src/` 下**：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` ——
+  目录名就是类型（对齐 MCP 的 `tools/resources/prompts`、OpenAI Agents SDK、LangChain 的共同惯例：**不用伞形词**）。
+  显式注册表改为 `src/registry.ts`。副作用是三处既存漂移**一次自愈**：示例的 `rootDir:"src"` 不用动、脚手架
+  `include` 收缩为 `['src']`（漏 include 的 bug 消失）、示例与新约定自动一致。`agentia create` 会建出四个目录
+  （空目录带 `.gitkeep`，让「新能力往哪放」对用户可见）。
+
+  ② **`discover` 放宽为 `string | string[]`**：数组顺序即装配顺序；数组里任一目录不存在**报错**（显式给出的搜索
+  路径不该静默落空）；跨目录重名 token 在发现期**留告警**（四个分类目录共用一套 DI token=文件夹名，装配期
+  「后者覆盖」会静默吃掉一个）。`agentia g` 在**生成期**直接拦住跨目录同名，`agentia doctor` 报**错误**兜底
+  （生成期 + 体检两层），装配期语义不变（不改运行时）。
+
+  ③ **伞形术语整体替换** —— 类型：`UnitType→CapabilityType`、`UnitMiddleware→CapabilityMiddleware`、
+  `UnitCall/UnitNext→CapabilityCall/CapabilityNext`、`SkillUnit/SubAgentUnit→SkillCapability/
+  SubAgentCapability`、`UnitMetrics→CapabilityMetrics`、`UnitReport→CapabilityReport`、
+  `UnitDecoratorContext→CapabilityDecoratorContext`；字段：`maxUnits→maxCapabilities`、
+  `droppedUnits→droppedCapabilities`、`labelMode:'unit'→'capability'`、`MetricsSnapshot.units→capabilities`、
+  `RunReport.units→capabilities`、`CapabilityReport.unit→capability`、`CapabilityCall.unit→capability`；
+  观测面：`agentia_unit_*→agentia_capability_*`、标签 `unit="…"→capability="…"`、**trace span kind
+  `'unit'→'capability'`**（`SpanKind` 成员）、trace-view 排行前缀 `unit:→capability:`、`UNIT_ICO→CAP_ICO`。
+  内部标识符同步统一。中文侧「单元」一并改称「**能力**」—— 与既有的「能力包」（`defineModule` / `AgentModule`）
+  **同族且语义相容**（一个能力包 = 一包能力），不引第二套词汇。
+
+  **兼容性**：**运行时零破坏** —— `discover` 收的是路径，老项目 `discover:'units'` 照跑；只有 `create` / `g` /
+  `doctor` 的**约定**变，且它们撞见根 `units/` + `units.ts`（老布局）时会明确提示迁移，不悄悄新建目录。
+  **刻意破坏的只有观测面命名**（Prometheus 指标名、`unit=` 标签、trace span kind）—— 上面已逐条列出，便于对着
+  改 dashboard。`src/index.ts` 的公共导出**数量不变**（仅改名），官网 api.html 的反向全覆盖计数不受影响。
+  设计文档：`docs/plans/2026-09-13-typed-unit-dirs.md`（6 个分叉，F1=A · F4=B · 其余 A · F6=A+B）。
 
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖），thinking 用 adaptive，流式优先。
-- CLI 后续：`add`（接第三方单元包）、注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板）。
+- CLI 后续：`add`（接第三方能力包）、注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板）。

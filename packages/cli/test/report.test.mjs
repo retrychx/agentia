@@ -36,7 +36,7 @@ const trace = {
     {
       spanId: 's2',
       parentSpanId: 's0',
-      kind: 'unit',
+      kind: 'capability',
       name: 'researcher',
       startedAt: 300,
       endedAt: 400,
@@ -63,7 +63,7 @@ const run = (args) =>
   execFileSync(process.execPath, [CLI, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 describe('agentia report', { skip: SKIP }, () => {
-  it('裸 Trace：打印按总耗时降序的单元排行', () => {
+  it('裸 Trace：打印按总耗时降序的能力排行', () => {
     withFile([JSON.stringify(trace)], (file) => {
       const out = run(['report', file]);
       assert.match(out, /runs {7}1（失败 0）/);
@@ -86,7 +86,7 @@ describe('agentia report', { skip: SKIP }, () => {
     });
   });
 
-  it('多条记录按单元合并（calls/total 累加，max 取大）', () => {
+  it('多条记录按能力合并（calls/total 累加，max 取大）', () => {
     withFile([JSON.stringify(trace), JSON.stringify(trace)], (file) => {
       const out = run(['report', file]);
       assert.match(out, /runs {7}2/);

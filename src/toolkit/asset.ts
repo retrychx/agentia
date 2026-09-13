@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs';
 
 /**
- * Agentia —— 文本资产加载（units/<name>/ 目录约定的配套 helper）。
+ * Agentia —— 文本资产加载（capabilities/<name>/ 目录约定的配套 helper）。
  *
- * 一单元一文件夹时，长文本（prompt 模板、子 agent 的 system）放在单元目录里的
- * .md 文件，单元代码里 `asset(import.meta.url, './system.md')` 直读：
+ * 一能力一文件夹时，长文本（prompt 模板、子 agent 的 system）放在能力目录里的
+ * .md 文件，能力代码里 `asset(import.meta.url, './system.md')` 直读：
  *
  * ```ts
- * // units/reviewer/index.ts
+ * // capabilities/reviewer/index.ts
  * import { SubAgent, asset } from 'agentia';
  * export default class Reviewer {
  *   @SubAgent({ description: '…', schema: {...}, system: asset(import.meta.url, './system.md') })

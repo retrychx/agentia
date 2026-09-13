@@ -8,29 +8,29 @@
  *   1. 全局时间线：每个 span 的 start / end 与它的每个 event 汇到一起，按时间排序。
  *      tie-break：同一毫秒 start(0) → event(1) → end(2)，且 start 按深度浅的在前 ——
  *      保证父 span 先于子 span 打开、tool.input 落在它所属 turn 打开之后。
- *   2. 显示名合成：框架的 unit span 名是【裸名】（类型记在 attributes，如 {subagent:'x'}），
- *      这里补成 `type:name`，与渲染器的四类标识符对齐；事件里的工具名若是某个 unit span
+ *   2. 显示名合成：框架的 capability span 名是【裸名】（类型记在 attributes，如 {subagent:'x'}），
+ *      这里补成 `type:name`，与渲染器的四类标识符对齐；事件里的工具名若是某个 capability span
  *      的裸名，同样补前缀（否则回落 tool:）。
- *   3. usage 只由 llm.turn 累计（unit span 的 usage 是子 span 聚合，计入会双算）。
+ *   3. usage 只由 llm.turn 累计（capability span 的 usage 是子 span 聚合，计入会双算）。
  */
 
-import { fmtArg, unitTypeOf, UNIT_ICO } from './view.js';
+import { fmtArg, capabilityTypeOf, CAP_ICO } from './view.js';
 
-/** 从 span.attributes 认单元类型（框架用 `setAttribute(unitId, 'subagent', name)` 记类型） */
+/** 从 span.attributes 认能力类型（框架用 `setAttribute(capabilityId, 'subagent', name)` 记类型） */
 function spanType(s) {
   const attrs = s.attributes || {};
-  for (const t of Object.keys(UNIT_ICO)) {
+  for (const t of Object.keys(CAP_ICO)) {
     if (attrs[t] != null) return t;
   }
   return '';
 }
 
-/** 显示名：unit span 补 `type:` 前缀（已是 type:name 形态则原样保留） */
+/** 显示名：capability span 补 `type:` 前缀（已是 type:name 形态则原样保留） */
 function displayName(s) {
   const raw = String(s.name || '');
   const t = spanType(s);
   if (!raw) return t || s.kind || '';
-  if (unitTypeOf(raw)) return raw; // 已带前缀
+  if (capabilityTypeOf(raw)) return raw; // 已带前缀
   return t ? `${t}:${raw}` : raw;
 }
 
@@ -44,10 +44,10 @@ function usageOf(s) {
   };
 }
 
-/** 事件工具名补前缀：事件体只有裸工具名，靠兄弟 unit span 反查类型，找不到按 tool 算 */
+/** 事件工具名补前缀：事件体只有裸工具名，靠兄弟 capability span 反查类型，找不到按 tool 算 */
 function eventToolName(bodyTool, typeMap) {
   const raw = String(bodyTool || '?');
-  if (unitTypeOf(raw)) return raw;
+  if (capabilityTypeOf(raw)) return raw;
   return `${typeMap.get(raw) || 'tool'}:${raw}`;
 }
 
@@ -73,11 +73,11 @@ export function playTrace(view, trace) {
   const byId = new Map(spans.map((s) => [s.spanId, s]));
   const root = spans.find((s) => s.kind === 'run') || spans[0];
 
-  // 裸名 → 单元类型（供事件补前缀）
+  // 裸名 → 能力类型（供事件补前缀）
   const typeMap = new Map();
   for (const s of spans) {
     const t = spanType(s);
-    if (s.kind === 'unit' && t) typeMap.set(String(s.name || ''), t);
+    if (s.kind === 'capability' && t) typeMap.set(String(s.name || ''), t);
   }
 
   const depthOf = (s) => {

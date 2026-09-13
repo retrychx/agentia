@@ -10,8 +10,8 @@
 
 | 面 | 用到的 |
 |---|---|
-| **四类单元** | `@Tool`（`echo`）· `@Skill`（`outline-writer`，代码控流程）· `@SubAgent`（`researcher`，独立上下文）· `@Prompt`（`house-style`，文本资产） |
-| **装配** | 显式注册表 `src/units.ts`（形状与 `agentia g` 一致；也可换 `discover`） |
+| **四类能力** | `@Tool`（`echo`）· `@Skill`（`outline-writer`，代码控流程）· `@SubAgent`（`researcher`，独立上下文）· `@Prompt`（`house-style`，文本资产） |
+| **装配** | 显式注册表 `src/registry.ts`（形状与 `agentia g` 一致；也可换 `discover`） |
 | **观测** | 指标 + 采样 + **脱敏** + **落库（按 runId 检索）** + 结构化日志 —— 五件套接线见 `src/observability.ts` |
 | **触发** | `POST /run`（同步 / SSE）· `POST /tasks`（异步 + 幂等键）· `Scheduler.every`（定时） |
 | **宿主** | 鉴权缝（`authenticate`）· 并发闸门 · 成本硬管控（`maxTotalTokens`）· `/healthz` · `/metrics` · 优雅停机 · 重启续跑 |
@@ -23,12 +23,11 @@
 src/
 ├── main.ts               # 宿主：装配 / 三种触发 / 鉴权 / 停机
 ├── observability.ts      # 观测栈组装（引用 @migor/agentia-observability）
-├── units.ts              # 显式注册表
-└── units/
-    ├── echo/             # @Tool
-    ├── outline-writer/   # @Skill
-    ├── researcher/       # @SubAgent（+ system.md）
-    └── house-style/      # @Prompt（+ asset.md）
+├── registry.ts           # 显式注册表
+├── tools/echo/           # @Tool
+├── skills/outline-writer/    # @Skill
+├── subagents/researcher/     # @SubAgent（+ system.md）
+└── prompts/house-style/      # @Prompt（+ asset.md）
 scripts/copy-assets.mjs   # 把 .md 资产拷进 dist（asset() 按文件位置解析）
 ```
 
@@ -77,7 +76,7 @@ Dockerfile 即可退回常规单包写法。
 ## 试试端点
 
 ```bash
-# 同步 run（会走 主 agent → 选单元 → 出结果）
+# 同步 run（会走 主 agent → 选能力 → 出结果）
 curl -s -X POST localhost:3000/run -H 'content-type: application/json' \
   -d '{"prompt":"用 house_style 的规范，为「新手引导」写三条要点"}' | head -c 400
 

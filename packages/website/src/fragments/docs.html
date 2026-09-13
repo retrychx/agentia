@@ -2,7 +2,7 @@
     <aside class="docs-nav" id="docs-nav">
       <p class="dn-title">CONTENTS</p>
       <a href="#start">快速开始</a>
-      <a href="#units">四类单元</a>
+      <a href="#capabilities">四类能力</a>
       <a href="#structure">目录约定与装配</a>
       <a href="#middleware">中间件</a>
       <a href="#triggers">触发方式</a>
@@ -23,13 +23,13 @@
       <!-- 快速开始 -->
       <section id="start">
         <h2>快速开始</h2>
-        <p>Agentia 是声明式 agent 服务框架：装饰器声明四类单元，主 agent 作为路由器自主编排，一次 run 交付结构化结果与完整调用树（runId == traceId）。三分钟跑起来：</p>
+        <p>Agentia 是声明式 agent 服务框架：装饰器声明四类能力，主 agent 作为路由器自主编排，一次 run 交付结构化结果与完整调用树（runId == traceId）。三分钟跑起来：</p>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
           <pre><code><span class="cmd">npm</span> i -g @migor/cli
-<span class="cmd">agentia</span> create my-app        <span class="cm"># 脚手架：目录约定 + units.ts 注册表</span>
+<span class="cmd">agentia</span> create my-app        <span class="cm"># 脚手架：四分类目录 + src/registry.ts 注册表</span>
 <span class="cmd">cd</span> my-app && npm install
-<span class="cmd">agentia</span> g subagent doc-reviewer  <span class="cm"># 生成单元并自动登记</span>
+<span class="cmd">agentia</span> g subagent doc-reviewer  <span class="cm"># 生成能力并自动登记</span>
 <span class="cmd">export</span> ANTHROPIC_API_KEY=sk-ant-...
 <span class="cmd">npm</span> run dev -- <span class="str">"帮我审查 docs/report.md"</span></code></pre>
         </div>
@@ -40,8 +40,8 @@
 
 <span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
   name: <span class="str">'my-app'</span>,
-  discover: <span class="str">'units'</span>, <span class="cm">// 目录约定：units/&lt;name&gt;/ 一单元一文件夹</span>
-  system: <span class="kw">new</span> <span class="fn">SystemPrompt</span>().<span class="fn">add</span>(<span class="str">'role'</span>, <span class="str">'你是 my-app 的主 agent，按任务自主调度菜单里的单元。'</span>, <span class="kw">true</span>),
+  discover: [<span class="str">'src/tools'</span>, <span class="str">'src/skills'</span>, <span class="str">'src/prompts'</span>, <span class="str">'src/subagents'</span>], <span class="cm">// 四分类目录，顺序即装配顺序</span>
+  system: <span class="kw">new</span> <span class="fn">SystemPrompt</span>().<span class="fn">add</span>(<span class="str">'role'</span>, <span class="str">'你是 my-app 的主 agent，按任务自主调度菜单里的能力。'</span>, <span class="kw">true</span>),
 });
 
 <span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>([{ role: <span class="str">'user'</span>, content: process.argv[<span class="dec">2</span>] }]);
@@ -49,15 +49,15 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         </div>
       </section>
 
-      <!-- 四类单元 -->
-      <section id="units">
-        <h2>四类单元</h2>
-        <p>单元是服务的组成部分。四类单元对主 agent 都是菜单里的可调用项，共用命名空间，装配期统一查重。</p>
+      <!-- 四类能力 -->
+      <section id="capabilities">
+        <h2>四类能力</h2>
+        <p>能力是服务的组成部分。四类能力对主 agent 都是菜单里的可调用项，共用命名空间，装配期统一查重。</p>
 
         <h3>@Tool — 函数调用</h3>
         <p>类方法即工具。入参按 JSON Schema 解析，先校验再执行；失败回 <code>is_error</code>，run 不中断。</p>
         <div class="code-block">
-          <div class="code-title"><i></i><i></i><i></i><em>units/weather/index.ts</em></div>
+          <div class="code-title"><i></i><i></i><i></i><em>src/tools/weather/index.ts</em></div>
           <pre><code><span class="kw">import</span> { Tool } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
 <span class="kw">export default class</span> <span class="fn">Weather</span> {
@@ -78,9 +78,9 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         </div>
 
         <h3>@Skill — 代码控制的流程</h3>
-        <p>方法体是确定性脚本：要不要调模型、调几次、结果怎么加工，全由代码决定。模型调用只在显式 <code>ctx.llm()</code> 时发生，在 skill 自己的 unit span 下开 llm.turn 记账。</p>
+        <p>方法体是确定性脚本：要不要调模型、调几次、结果怎么加工，全由代码决定。模型调用只在显式 <code>ctx.llm()</code> 时发生，在 skill 自己的 capability span 下开 llm.turn 记账。</p>
         <div class="code-block">
-          <div class="code-title"><i></i><i></i><i></i><em>units/weekly-report/index.ts</em></div>
+          <div class="code-title"><i></i><i></i><i></i><em>src/skills/weekly-report/index.ts</em></div>
           <pre><code><span class="kw">import</span> { Skill } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 <span class="kw">import type</span> { SkillContext } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
@@ -104,7 +104,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         <h3>@SubAgent — 隔离的子代理</h3>
         <p>独立循环 + 裁剪上下文。方法体不会执行——框架按 system 另起 agent 跑一轮，中间过程不外泄，只有最终报告回流主上下文。</p>
         <div class="code-block">
-          <div class="code-title"><i></i><i></i><i></i><em>units/doc-reviewer/index.ts</em></div>
+          <div class="code-title"><i></i><i></i><i></i><em>src/subagents/doc-reviewer/index.ts</em></div>
           <pre><code><span class="kw">import</span> { SubAgent, asset } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
 <span class="kw">export default class</span> <span class="fn">DocReviewer</span> {
@@ -126,7 +126,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         <h3>@Prompt — 纯文本资产</h3>
         <p>模板与 playbook 资产，编译成菜单里一个无副作用的拉取型工具：模型判定需要时调用，文本以 tool_result 注入上下文。长文本放同目录 .md。</p>
         <div class="code-block">
-          <div class="code-title"><i></i><i></i><i></i><em>units/style-guide/index.ts</em></div>
+          <div class="code-title"><i></i><i></i><i></i><em>src/prompts/style-guide/index.ts</em></div>
           <pre><code><span class="kw">import</span> { Prompt, asset } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
 <span class="kw">export default class</span> <span class="fn">StyleGuide</span> {
@@ -141,54 +141,55 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
       <!-- 目录约定与装配 -->
       <section id="structure">
         <h2>目录约定与装配</h2>
-        <p>一单元一文件夹，长文本放 .md；每个单元是一个 default export 的类，用装饰器声明能力。</p>
+        <p>四分类目录，一能力一文件夹，长文本放 .md；每个能力是一个 default export 的类，用装饰器声明能力。</p>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>project layout</em></div>
           <pre><code>my-app/
-├─ units.ts              <span class="cm"># 显式注册表（agentia g 自动维护，可手改）</span>
-├─ src/main.ts           <span class="cm"># createApp 装配入口</span>
-└─ units/
-   ├─ weather/index.ts   <span class="cm"># @Tool 单元</span>
-   └─ doc-reviewer/
-      ├─ index.ts        <span class="cm"># @SubAgent 单元</span>
-      └─ system.md       <span class="cm"># 长文本资产</span></code></pre>
+├─ src/
+│  ├─ main.ts                    <span class="cm"># createApp 装配入口</span>
+│  ├─ registry.ts                <span class="cm"># 显式注册表（agentia g 自动维护）</span>
+│  ├─ tools/weather/index.ts     <span class="cm"># @Tool</span>
+│  ├─ skills/weekly-report/      <span class="cm"># @Skill</span>
+│  ├─ prompts/style-guide/       <span class="cm"># @Prompt（含 asset.md）</span>
+│  └─ subagents/doc-reviewer/    <span class="cm"># @SubAgent（含 system.md）</span>
+└─ tsconfig.json                 <span class="cm"># include: ['src']，一个 src 全覆盖</span></code></pre>
         </div>
         <h3>两条装配路线</h3>
         <ul>
-          <li><strong>目录扫描</strong>：<code>createApp({ discover: 'units' })</code> 启动期扫描 <code>units/*/index.ts</code>，default export 为类时以文件夹名为 DI token 注册（因动态 import，带 discover 的 createApp 返回 Promise）。</li>
-          <li><strong>显式注册表</strong>：<code>createApp({ providers, system })</code>，providers 来自 <code>units.ts</code>（由 <code>agentia g</code> 自动维护）。</li>
+          <li><strong>目录扫描</strong>：<code>createApp({ discover: ['src/tools', …] })</code> 给一个目录或一组目录（<strong>顺序即装配顺序</strong>），启动期扫各目录下的 <code>&lt;name&gt;/index.ts</code>，default export 为类时以文件夹名为 DI token 注册（因动态 import，带 discover 的 createApp 返回 Promise）。</li>
+          <li><strong>显式注册表</strong>：<code>createApp({ providers, system })</code>，providers 来自 <code>src/registry.ts</code>（由 <code>agentia g</code> 自动维护）。</li>
         </ul>
         <p>两条路线二选一或混用；同 token 后者覆盖前者，不会重复收集菜单。装配期做静态校验：菜单查重、引用存在性、DI 循环依赖——在启动时失败，而不是在线上。</p>
       </section>
 
       <!-- 中间件 -->
       <section id="middleware">
-        <h2>中间件（UnitMiddleware）</h2>
-        <p>挂在每一次单元（tool / skill / subagent / prompt）调用的前后：鉴权、限流、结果缓存、审计日志、超时包装等横切关注点都走这里，不进业务单元。</p>
+        <h2>中间件（CapabilityMiddleware）</h2>
+        <p>挂在每一次能力（tool / skill / subagent / prompt）调用的前后：鉴权、限流、结果缓存、审计日志、超时包装等横切关注点都走这里，不进业务能力。</p>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>签名</em></div>
-          <pre><code><span class="kw">type</span> <span class="fn">UnitMiddleware</span> = (call: UnitCall, next: UnitNext) =&gt; <span class="kw">unknown</span>;
+          <pre><code><span class="kw">type</span> <span class="fn">CapabilityMiddleware</span> = (call: CapabilityCall, next: CapabilityNext) =&gt; <span class="kw">unknown</span>;
 
-<span class="kw">interface</span> <span class="fn">UnitCall</span> {
-  <span class="kw">readonly</span> unit: AgentTool;   <span class="cm">// name / description / inputSchema 可读</span>
+<span class="kw">interface</span> <span class="fn">CapabilityCall</span> {
+  <span class="kw">readonly</span> capability: AgentTool;   <span class="cm">// name / description / inputSchema 可读</span>
   <span class="kw">readonly</span> input: <span class="kw">unknown</span>;   <span class="cm">// schema 校验已过的入参</span>
   <span class="kw">readonly</span> ctx?: ToolRunContext;
 }
 <span class="cm">// 放行到下一层；next(newInput) 可改写入参，缺省沿用当前 input</span>
-<span class="kw">type</span> <span class="fn">UnitNext</span> = (input?: <span class="kw">unknown</span>) =&gt; <span class="kw">unknown</span>;</code></pre>
+<span class="kw">type</span> <span class="fn">CapabilityNext</span> = (input?: <span class="kw">unknown</span>) =&gt; <span class="kw">unknown</span>;</code></pre>
         </div>
         <h3>洋葱模型</h3>
         <ul>
           <li>链序 = 注册顺序：<strong>先注册的最外层</strong>，像洋葱一样层层包裹；</li>
           <li><code>next()</code> 放行，<code>next(newInput)</code> 改写入参；<strong>不调 next 即短路</strong>（结果缓存等）；</li>
-          <li>抛错按单元失败处理：engine 包成 <code>is_error</code> 回给模型，run 不中断；</li>
+          <li>抛错按能力失败处理：engine 包成 <code>is_error</code> 回给模型，run 不中断；</li>
           <li>装配期包裹（AgentApp 构造函数），对 engine 零侵入；链为空时原样返回，零开销。</li>
         </ul>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>src/main.ts — 注册</em></div>
           <pre><code><span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
   name: <span class="str">'my-app'</span>,
-  discover: <span class="str">'units'</span>,
+  discover: [<span class="str">'src/tools'</span>, <span class="str">'src/skills'</span>, <span class="str">'src/prompts'</span>, <span class="str">'src/subagents'</span>],
   middleware: [auth, cached], <span class="cm">// auth 在最外层</span>
   system,
 });</code></pre>
@@ -196,11 +197,11 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         <h3>例：鉴权</h3>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>middleware/auth.ts</em></div>
-          <pre><code><span class="kw">import type</span> { UnitMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+          <pre><code><span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
-<span class="cm">// 敏感单元要求执行上下文里带授权标记，否则按单元失败抛错</span>
-<span class="kw">export const</span> auth: UnitMiddleware = (call, next) =&gt; {
-  <span class="kw">if</span> (call.unit.name.startsWith(<span class="str">'admin:'</span>) &amp;&amp; !call.ctx) {
+<span class="cm">// 敏感能力要求执行上下文里带授权标记，否则按能力失败抛错</span>
+<span class="kw">export const</span> auth: CapabilityMiddleware = (call, next) =&gt; {
+  <span class="kw">if</span> (call.capability.name.startsWith(<span class="str">'admin:'</span>) &amp;&amp; !call.ctx) {
     <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">'forbidden: 缺少执行上下文'</span>);
   }
   <span class="kw">return</span> <span class="fn">next</span>();
@@ -209,13 +210,13 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         <h3>例：结果缓存</h3>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>middleware/cache.ts</em></div>
-          <pre><code><span class="kw">import type</span> { UnitMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+          <pre><code><span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
 <span class="kw">const</span> store = <span class="kw">new</span> <span class="fn">Map</span>&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;();
 
 <span class="cm">// 命中即短路（不调 next），未命中放行后回写</span>
-<span class="kw">export const</span> cached: UnitMiddleware = <span class="kw">async</span> (call, next) =&gt; {
-  <span class="kw">const</span> key = <span class="str">`${call.unit.name}:${JSON.stringify(call.input)}`</span>;
+<span class="kw">export const</span> cached: CapabilityMiddleware = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">const</span> key = <span class="str">`${call.capability.name}:${JSON.stringify(call.input)}`</span>;
   <span class="kw">if</span> (store.<span class="fn">has</span>(key)) <span class="kw">return</span> store.<span class="fn">get</span>(key);
   <span class="kw">const</span> out = <span class="kw">await</span> <span class="fn">next</span>();
   store.<span class="fn">set</span>(key, out);
@@ -373,8 +374,8 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
         <ul>
           <li><strong>MCP</strong>：<code>mcpTools(client, { server })</code> 把 server 的 <code>tools/list</code> 映射成菜单项。<strong>duck-typed、框架零依赖</strong>（不 import MCP SDK，也不含 stdio / HTTP 传输 —— 连接器自行提供）。名字里对 LLM 不友好的字符会归一化成 <code>_</code>，<strong>原名</strong>记进 <code>mcp.tool</code> attribute 供审计 / 回放。</li>
           <li><strong>evals</strong>：<code>scriptedClient([...])</code> 脚本化模型往返 + <code>defineEval({ app, cases, expect })</code> 对 trace 写断言 —— 改 prompt / 换模型 / 加工具之后有没有回归，靠断言而不是人眼。失败 case 带完整 trace。</li>
-          <li><strong>指标</strong>：<code>metricsSink()</code> 天然满足 <code>TraceSink</code>，<strong>三个维度都从 trace 派生、不用埋点</strong> —— run 级，以及<strong>单元级</strong>（每个 tool / skill / subagent 的调用数、失败数、耗时、token、成本：工具读 turn 上的 <code>tool.output</code> 事件，skill / subagent 读 unit span）与<strong>模型级</strong>（按模型归因，另出「算不出成本的 turn 数」）。时长同时给可跨实例聚合的 histogram 与窗口内精确分位两种口径；<code>render()</code> 出 Prometheus 文本，<code>createHttpHandler({ metrics })</code> 直接内建 <code>GET /metrics</code>；也可以 <code>export:'otlp'</code> 推给 OTel 采集端（零依赖手写 JSON）。</li>
-          <li><strong>调优报告</strong>：<code>buildRunReport(trace)</code> 把一条 trace 变成「<strong>哪个单元慢 / 贵 / 爱失败</strong>」的排行（<code>mergeRunReports</code> 跨 run 汇总），CLI 一行 <code>agentia report traces.jsonl</code> 出表；<code>agentia dev</code> 面板里也有一份同样的排行。面对一堆旋钮时，这是「该拧哪个」的依据。</li>
+          <li><strong>指标</strong>：<code>metricsSink()</code> 天然满足 <code>TraceSink</code>，<strong>三个维度都从 trace 派生、不用埋点</strong> —— run 级，以及<strong>能力级</strong>（每个 tool / skill / subagent 的调用数、失败数、耗时、token、成本：工具读 turn 上的 <code>tool.output</code> 事件，skill / subagent 读 capability span）与<strong>模型级</strong>（按模型归因，另出「算不出成本的 turn 数」）。时长同时给可跨实例聚合的 histogram 与窗口内精确分位两种口径；<code>render()</code> 出 Prometheus 文本，<code>createHttpHandler({ metrics })</code> 直接内建 <code>GET /metrics</code>；也可以 <code>export:'otlp'</code> 推给 OTel 采集端（零依赖手写 JSON）。</li>
+          <li><strong>调优报告</strong>：<code>buildRunReport(trace)</code> 把一条 trace 变成「<strong>哪个能力慢 / 贵 / 爱失败</strong>」的排行（<code>mergeRunReports</code> 跨 run 汇总），CLI 一行 <code>agentia report traces.jsonl</code> 出表；<code>agentia dev</code> 面板里也有一份同样的排行。面对一堆旋钮时，这是「该拧哪个」的依据。</li>
           <li><strong>提示词版本</strong>：<code>new SystemPrompt({ version })</code> 把版本号写进 run 根 <code>system.version</code>，trace 里能查「这个结果是哪个版本的提示词产出的」。<strong>多租户配额</strong>：<code>middleware</code>（拦）+ <code>TraceSink</code>（记账）+ BudgetGuard（单次上限）组合即可。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>ecosystem.ts</em></div>
@@ -405,14 +406,14 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
         <p>中间件可以 <code>await</code> 人的决策再放行 —— 引擎会等工具结果。<strong>放行</strong>＝<code>next()</code>；<strong>拒绝</strong>＝不调 <code>next()</code>（短路，副作用不发生）；<strong>拒绝并让模型改道</strong>＝抛错（该条结果记 <code>is_error</code>，run 不中断）。<strong>框架不做</strong>「跨进程挂起 / 续跑」：<code>RunStatus</code> 里没有「待批准」态、循环位置不落库，重放是有损的 —— 要跨重启审批得自备工作流引擎。</p>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>approval.ts</em></div>
         <pre><code><span class="kw">import</span> { createApp } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
-<span class="kw">import type</span> { UnitMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+<span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 
 <span class="kw">const</span> DANGEROUS = <span class="kw">new</span> <span class="fn">Set</span>([<span class="str">'send_email'</span>, <span class="str">'deploy'</span>, <span class="str">'delete_records'</span>]);
 
-<span class="kw">const</span> requireApproval: <span class="fn">UnitMiddleware</span> = <span class="kw">async</span> (call, next) =&gt; {
-  <span class="kw">if</span> (!DANGEROUS.<span class="fn">has</span>(call.unit.name)) <span class="kw">return</span> <span class="fn">next</span>();
-  <span class="kw">const</span> ok = <span class="kw">await</span> <span class="fn">askHuman</span>(call.unit.name, call.input); <span class="cm">// 就地等人（run 停在这里）</span>
-  <span class="kw">if</span> (!ok) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">`未获批准：${call.unit.name}`</span>); <span class="cm">// → is_error，模型换路</span>
+<span class="kw">const</span> requireApproval: <span class="fn">CapabilityMiddleware</span> = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">if</span> (!DANGEROUS.<span class="fn">has</span>(call.capability.name)) <span class="kw">return</span> <span class="fn">next</span>();
+  <span class="kw">const</span> ok = <span class="kw">await</span> <span class="fn">askHuman</span>(call.capability.name, call.input); <span class="cm">// 就地等人（run 停在这里）</span>
+  <span class="kw">if</span> (!ok) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">`未获批准：${call.capability.name}`</span>); <span class="cm">// → is_error，模型换路</span>
   <span class="kw">return</span> <span class="fn">next</span>();                                     <span class="cm">// 放行</span>
 };
 
@@ -442,12 +443,12 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><th>命令</th><th>作用</th></tr>
           </thead>
           <tbody>
-            <tr><td>agentia create &lt;name&gt;</td><td>脚手架新项目：目录约定、units.ts 注册表、src/main.ts 入口、tsconfig。</td></tr>
-            <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>生成单元（tool / skill / subagent / prompt）到 units/&lt;name&gt;/，并自动登记 units.ts；长文本资产（system.md / asset.md）一并生成。</td></tr>
-            <tr><td>agentia dev</td><td>tsx watch 启动 src/main.ts：改单元文件自动重启。</td></tr>
-            <tr><td>agentia doctor</td><td>装配体检：未登记/悬空单元、命名规范、重复条目。</td></tr>
-            <tr><td>agentia report &lt;trace.jsonl&gt;</td><td>从 trace 落盘文件生成调优报告：单元耗时 / 成本 / 错误率排行（跨行按单元合并）。每行一个 JSON —— 裸 Trace，或含 <code>result.trace</code> 的 TaskRecord。</td></tr>
-            <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方单元包（defineModule 能力包）并登记到注册表。</td></tr>
+            <tr><td>agentia create &lt;name&gt;</td><td>脚手架新项目：四分类目录（含 .gitkeep）、src/registry.ts 注册表、src/main.ts 入口、tsconfig。</td></tr>
+            <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>生成能力到对应的分类目录（tool → src/tools/、skill → src/skills/、prompt → src/prompts/、subagent → src/subagents/），并自动登记 src/registry.ts；长文本资产（system.md / asset.md）一并生成。</td></tr>
+            <tr><td>agentia dev</td><td>tsx watch 启动 src/main.ts：改能力文件自动重启。</td></tr>
+            <tr><td>agentia doctor</td><td>装配体检：未登记/悬空能力、命名规范、重复条目。</td></tr>
+            <tr><td>agentia report &lt;trace.jsonl&gt;</td><td>从 trace 落盘文件生成调优报告：能力耗时 / 成本 / 错误率排行（跨行按能力合并）。每行一个 JSON —— 裸 Trace，或含 <code>result.trace</code> 的 TaskRecord。</td></tr>
+            <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方能力包（defineModule 能力包）并登记到注册表。</td></tr>
           </tbody>
         </table></div>
       </section>

@@ -38,11 +38,11 @@ const DEFAULT_MAX_ITERATIONS = 40;
  *
  * 结构：核心是 `agentLoop` —— 不自开 run 根，所有 llm.turn 挂在给定的
  * parentSpanId 下。同一套循环既能当主 agent（run 根为其父，由 runAgent 开），
- * 也能当子 agent（unit span 为其父，见 toolkit/subagent.ts），llm.turn 与 usage
- * 递归进同一条 trace（spec §9：子 agent = 一个 unit span，内部单元递归成它的子孙）。
+ * 也能当子 agent（capability span 为其父，见 toolkit/subagent.ts），llm.turn 与 usage
+ * 递归进同一条 trace（spec §9：子 agent = 一个 capability span，内部能力递归成它的子孙）。
  *
  * 工具执行经 ctx: ToolRunContext 把 {client, recorder, parentSpanId: 当前 turn}
- * 交给 tool.run —— 普通工具忽略；子 agent 用它在正确位置开 unit span。
+ * 交给 tool.run —— 普通工具忽略；子 agent 用它在正确位置开 capability span。
  */
 
 interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
@@ -55,7 +55,7 @@ interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   messages: Anthropic.MessageParam[];
   tools: AgentTool[];
   recorder: RecorderBackend;
-  /** llm.turn 的父 span（run 根 / 子 agent 的 unit span） */
+  /** llm.turn 的父 span（run 根 / 子 agent 的 capability span） */
   parentSpanId: SpanId | null;
   onText?: (delta: string) => void;
   /** 中断信号：中止后不再发起新回合，以 stopReason='aborted' 收尾 */
@@ -229,7 +229,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
         // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
         const canRetry =
           retryCfg !== null && attempt < retryCfg.maxAttempts && retryCfg.isRetryable(e) && !emitted;
-        if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/unit 与收尾
+        if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/capability 与收尾
         const delayMs = backoffDelay(attempt, retryCfg);
         recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
         retryCfg.onRetry({ attempt, delayMs, error: errInfo });
@@ -373,7 +373,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           recorder,
           parentSpanId: turnId,
           ...(signal ? { signal } : {}),
-          // 价格覆盖透传给嵌套单元（F1）：否则子 agent 用同一模型会退化成"未定价"
+          // 价格覆盖透传给嵌套能力（F1）：否则子 agent 用同一模型会退化成"未定价"
           ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
         };
         let ok = true;
@@ -539,7 +539,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
 }
 
 /**
- * 嵌套单元（子 agent）入口：不自开 run 根，llm.turn 挂在给定 parentSpanId 下的同一条 trace。
+ * 嵌套能力（子 agent）入口：不自开 run 根，llm.turn 挂在给定 parentSpanId 下的同一条 trace。
  * resultSchema 语义与 runAgent 一致（隐藏 submit_result → AgentLoopResult.typed），
  * 供子 agent 产出结构化结果（见 toolkit/subagent.ts 的交回逻辑）。
  */
@@ -554,7 +554,7 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   recorder: RecorderBackend;
   parentSpanId: SpanId;
   onText?: (delta: string) => void;
-  /** 中断信号（由发起它的单元从 ToolRunContext.signal 透传，取消能传播到子 agent） */
+  /** 中断信号（由发起它的能力从 ToolRunContext.signal 透传，取消能传播到子 agent） */
   signal?: AbortSignal;
   /** 模型请求重试策略（缺省开启） */
   retry?: RetryOptions | false;
@@ -565,9 +565,9 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   toolTimeoutMs?: number;
   /** 同回合并行工具上限；同 RunAgentOptions.maxToolConcurrency */
   maxToolConcurrency?: number;
-  /** 价格表覆盖（F1）：由发起它的单元从 ToolRunContext.priceOverrides 透传 */
+  /** 价格表覆盖（F1）：由发起它的能力从 ToolRunContext.priceOverrides 透传 */
   priceOverrides?: Record<string, ModelPricing>;
-  /** 未定价模型回调（F2）：由发起它的单元透传 */
+  /** 未定价模型回调（F2）：由发起它的能力透传 */
   onUnpricedModel?: (info: { model: string; spanId: string }) => void;
 }): Promise<AgentLoopResult<SchemaType<S>>> {
   return agentLoop<S>({

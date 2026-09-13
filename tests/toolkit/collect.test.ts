@@ -10,11 +10,11 @@ import {
   collectSkills,
   collectPrompts,
 } from '../../src/index.js';
-import { unitName } from '../../src/toolkit/collect.js';
+import { capabilityName } from '../../src/toolkit/collect.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 
-describe('collect*（装饰器单元收集）', () => {
+describe('collect*（装饰器能力收集）', () => {
   it('@Tool：收集方法、绑定 this、schema/strict 透传', async () => {
     class T {
       prefix = 'p';
@@ -81,7 +81,7 @@ describe('collect*（装饰器单元收集）', () => {
     const inst = new C();
 
     const skills = collectSkills(inst);
-    assert.equal(skills.length, 1, '父类 spec 继承，只出一个单元');
+    assert.equal(skills.length, 1, '父类 spec 继承，只出一个能力');
     assert.equal(
       await skills[0].invoke({}, { llm: async () => ({ text: '', stopReason: 'end_turn' as const }) }),
       'child-skill',
@@ -93,7 +93,7 @@ describe('collect*（装饰器单元收集）', () => {
     assert.equal(await prompts[0].run({}), 'child-asset');
   });
 
-  it('@SubAgent / @Skill / @Prompt 各自收集出单元', async () => {
+  it('@SubAgent / @Skill / @Prompt 各自收集出能力', async () => {
     class M {
       @SubAgent({ description: 'd', schema: OBJ, system: 's' })
       reviewer(_input: unknown): void {}
@@ -211,7 +211,7 @@ describe('collect*（装饰器单元收集）', () => {
     assert.equal(tools.length, 1);
     assert.equal(tools[0].name, 'thing');
 
-    // 普通 getter / 非函数成员本身不会被收集成单元
+    // 普通 getter / 非函数成员本身不会被收集成能力
     class G {
       @Tool({ description: 'd', schema: OBJ })
       ok(): string {
@@ -224,14 +224,14 @@ describe('collect*（装饰器单元收集）', () => {
     assert.deepEqual(collectTools(new G()).map((t) => t.name), ['ok']);
   });
 
-  it('unitName：symbol 方法名且无显式 name → 抛错文案带符号信息', () => {
+  it('capabilityName：symbol 方法名且无显式 name → 抛错文案带符号信息', () => {
     const sym = Symbol('hidden');
     assert.throws(
-      () => unitName({}, sym, '@Tool'),
+      () => capabilityName({}, sym, '@Tool'),
       /@Tool 需要显式 name（方法名为私有符号 Symbol\(hidden\)）/,
     );
-    assert.equal(unitName({ name: 'n' }, sym, '@Tool'), 'n', '显式 name 优先');
-    assert.equal(unitName({}, 'method', '@Tool'), 'method', '字符串 key 缺省取方法名');
+    assert.equal(capabilityName({ name: 'n' }, sym, '@Tool'), 'n', '显式 name 优先');
+    assert.equal(capabilityName({}, 'method', '@Tool'), 'method', '字符串 key 缺省取方法名');
   });
 
   it('symbol 命名的装饰方法：无显式 name 抛错，有显式 name 正常收集', () => {

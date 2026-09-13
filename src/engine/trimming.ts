@@ -31,8 +31,8 @@ export function defaultEstimateTokens(text: string): number {
   // 这是框架里单点最大的 CPU 消耗（profile 占约 46%），所以值得走正则。
   const rest = text.replace(CJK_BMP_RE, '').length;
   let cjk = text.length - rest;
-  let other = rest; // 未被抹掉的 UTF-16 单元数（含代理对的两个单元）
-  // 增补平面：每个字符占 2 个 UTF-16 单元。旧口径把它算成 cjk+1、other 保留多出的 1 个单元，
+  let other = rest; // 未被抹掉的 UTF-16 能力数（含代理对的两个能力）
+  // 增补平面：每个字符占 2 个 UTF-16 能力。旧口径把它算成 cjk+1、other 保留多出的 1 个能力，
   // 这里逐字保持（cjk+1、other-1），否则估算值与护栏触发点都会变。
   // 先 test() 再 matchAll：绝大多数文本不含增补平面，省掉一次带分配的全扫。
   if (CJK_SUPP_TEST.test(text)) {

@@ -5,25 +5,25 @@
  *
  * 视觉语言与语义（逐字取自 packages/website/src/scripts/playground.js，行为不变）：
  *   - 事件行（tool.input / tool.output）没有状态圈、没有耗时，比 span 行更轻；
- *   - 事件与子 span 按发生顺序混排（input 先于它触发的 unit span、output 后于它）——
+ *   - 事件与子 span 按发生顺序混排（input 先于它触发的 capability span、output 后于它）——
  *     这个先后本身就是语义，不能拍平成一类；
- *   - 四类单元标识符（⚙ tool / ◆ skill / ¶ prompt / ⊕ subagent）只靠字形区分、不上类型色。
+ *   - 四类能力标识符（⚙ tool / ◆ skill / ¶ prompt / ⊕ subagent）只靠字形区分、不上类型色。
  *
  * 宿主需提供的 CSS 变量：--ice --faint --text（见 trace-view.css）。
  */
 
-export const UNIT_ICO = { tool: '⚙', skill: '◆', prompt: '¶', subagent: '⊕' };
+export const CAP_ICO = { tool: '⚙', skill: '◆', prompt: '¶', subagent: '⊕' };
 
-/** 单元类型取自名字前缀（tool: / skill: / prompt: / subagent:） */
-export function unitTypeOf(name) {
+/** 能力类型取自名字前缀（tool: / skill: / prompt: / subagent:） */
+export function capabilityTypeOf(name) {
   const t = String(name || '').split(':')[0];
-  return UNIT_ICO[t] ? t : '';
+  return CAP_ICO[t] ? t : '';
 }
 
 export const fmtNum = (n) => n.toLocaleString('en-US');
 export const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
 
-/* span 入参摘要：写进 trace 行，否则同名 unit（如两次 tool:get_weather）无法区分 */
+/* span 入参摘要：写进 trace 行，否则同名 capability（如两次 tool:get_weather）无法区分 */
 export function fmtArg(v) {
   if (v == null) return '';
   let s;
@@ -71,7 +71,7 @@ export function createTraceView(rootEl, opts = {}) {
   function renderTrace() {
     rootEl.innerHTML = '';
     const rows = [];
-    /* 每个节点下【事件】与【子 span】按发生顺序混排：tool.input 先于它触发的 unit span、
+    /* 每个节点下【事件】与【子 span】按发生顺序混排：tool.input 先于它触发的 capability span、
        tool.output 后于它，这个先后本身就是语义，不能拍平成一类。 */
     (function walk(node, prefix, isLast, isRoot) {
       rows.push({ node, prefix, isRoot, last: isLast, ev: null });
@@ -91,7 +91,7 @@ export function createTraceView(rootEl, opts = {}) {
       if (ev) {
         const row = el('div', 'tr-row tr-ev' + (ev.ok === false ? ' error' : ''));
         row.dataset.ev = ev.type;
-        row.dataset.unit = unitTypeOf(ev.tool);
+        row.dataset.capability = capabilityTypeOf(ev.tool);
         row.appendChild(el('span', 'tr-pre', branch));
         row.appendChild(el('span', 'tr-evv', ev.type === 'tool.output' ? '◂' : '▸'));
         row.appendChild(el('span', 'tr-evtype', ev.type));
@@ -106,11 +106,11 @@ export function createTraceView(rootEl, opts = {}) {
       const bad = node.done && node.status === 'error';
       const row = el('div', 'tr-row' + (node.done ? '' : ' running') + (bad ? ' error' : ''));
       row.dataset.kind = node.kind;
-      const ut = node.kind === 'unit' ? unitTypeOf(node.name) : '';
-      if (ut) row.dataset.unit = ut;
+      const ut = node.kind === 'capability' ? capabilityTypeOf(node.name) : '';
+      if (ut) row.dataset.capability = ut;
       row.appendChild(el('span', 'tr-pre', branch));
       row.appendChild(el('span', 'tr-dot', node.done ? (bad ? '✕' : '●') : '◌'));
-      if (ut) row.appendChild(el('span', 'tr-ico', UNIT_ICO[ut]));
+      if (ut) row.appendChild(el('span', 'tr-ico', CAP_ICO[ut]));
       row.appendChild(el('span', 'tr-name', node.name));
       if (node.arg) {
         const arg = el('span', 'tr-arg', node.arg);
@@ -194,8 +194,8 @@ export function createTraceView(rootEl, opts = {}) {
     renderTrace();
   }
 
-  /* span 事件：框架把普通工具 / @Prompt 调用记成【turn 上的事件】，不给它们建 unit span
-     （只有 skill / subagent 会 recorder.begin('unit', …)，见 engine/loop.ts）。
+  /* span 事件：框架把普通工具 / @Prompt 调用记成【turn 上的事件】，不给它们建 capability span
+     （只有 skill / subagent 会 recorder.begin('capability', …)，见 engine/loop.ts）。
      events 与 order 并存：events 是数据、order 负责与子 span 的先后顺序。 */
   function event(id, type, tool, text, ok) {
     const node = spanMap.get(id);
@@ -222,7 +222,7 @@ export function createTraceView(rootEl, opts = {}) {
           cacheCreation: s.usage.cacheCreation || 0,
         }
       : null;
-    // 计数器只累加 llm.turn（unit span 的 usage 是子 span 聚合，重复计入会双算）
+    // 计数器只累加 llm.turn（capability span 的 usage 是子 span 聚合，重复计入会双算）
     if (s.usage && node.kind === 'llm.turn') {
       usageAcc.input += node.usage.input;
       usageAcc.output += node.usage.output;

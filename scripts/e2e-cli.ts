@@ -1,5 +1,5 @@
 // CLI 端到端验证：目录约定 + 发现机制 + CLI 端到端。
-// agentia create 脚手架 → agentia g 生成四类单元 → 注册表 codemod →
+// agentia create 脚手架 → agentia g 生成四类能力 → 注册表 codemod →
 // discoverProviders/createApp({discover}) 装配 → mock 模型跑通一次 run。
 // 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
 import { execFileSync } from 'node:child_process';
@@ -25,9 +25,20 @@ try {
   // —— 1) create：项目骨架 ——
   cli(['create', 'demo-app', '--dir', tmp], tmp);
   const proj = join(tmp, 'demo-app');
-  for (const f of ['package.json', 'tsconfig.json', 'src/main.ts', 'units.ts', 'units/hello/index.ts', 'AGENTS.md']) {
+  for (const f of ['package.json', 'tsconfig.json', 'src/main.ts', 'src/registry.ts', 'src/tools/hello/index.ts', 'AGENTS.md']) {
     assert(existsSync(join(proj, f)), `create 缺文件: ${f}`);
   }
+  // 四个分类目录都建出来（空目录靠 .gitkeep 进版本库）：目录名自解释，用户一看就知道新能力往哪放
+  for (const d of ['src/tools', 'src/skills', 'src/prompts', 'src/subagents']) {
+    assert(existsSync(join(proj, d, '.gitkeep')), `create 应建出 ${d}/（含 .gitkeep）`);
+  }
+  // tsconfig 必须只 include 'src' —— 能力目录/注册表全在 src 下，一个 include 全覆盖。
+  // 曾经是 ['src', 'capabilities.ts'] 却漏掉能力目录本身 → 未登记的能力静默不参与类型检查。
+  const tsconfig = JSON.parse(readFileSync(join(proj, 'tsconfig.json'), 'utf8'));
+  assert(
+    JSON.stringify(tsconfig.include) === JSON.stringify(['src']),
+    `脚手架 tsconfig.include 应为 ['src']，实际 ${JSON.stringify(tsconfig.include)}`,
+  );
 
   // 使用者向 AI 说明：单源 docs/usage-guide.md → 构建拷进 dist/AGENTS.md → create 写进项目。
   // 三段任一断掉，AI 辅助编码就退化成「猜 API」，所以这里按内容验。
@@ -44,20 +55,29 @@ try {
   }
   assert(guide.length > 5000, `项目 AGENTS.md 过短（${guide.length}）`);
 
-  // —— 2) g：四类单元各一个 ——
+  // —— 2) g：四类能力各一个 ——
   cli(['g', 'subagent', 'doc-reviewer'], proj);
   cli(['g', 'skill', 'note-writer'], proj);
   cli(['g', 'prompt', 'style-guide'], proj);
   cli(['g', 'tool', 'echo-back'], proj);
-  assert(existsSync(join(proj, 'units/doc-reviewer/system.md')), 'subagent 应带 system.md');
-  assert(existsSync(join(proj, 'units/style-guide/asset.md')), 'prompt 应带 asset.md');
+  assert(existsSync(join(proj, 'src/subagents/doc-reviewer/system.md')), 'subagent 应带 system.md');
+  assert(existsSync(join(proj, 'src/prompts/style-guide/asset.md')), 'prompt 应带 asset.md');
+
+  // 分类落位：type → 目录（目录名就是类型）
+  assert(existsSync(join(proj, 'src/tools/echo-back/index.ts')), 'tool 应落在 src/tools/');
+  assert(existsSync(join(proj, 'src/skills/note-writer/index.ts')), 'skill 应落在 src/skills/');
+  assert(existsSync(join(proj, 'src/prompts/style-guide/index.ts')), 'prompt 应落在 src/prompts/');
+  assert(existsSync(join(proj, 'src/subagents/doc-reviewer/index.ts')), 'subagent 应落在 src/subagents/');
 
   // —— 3) 注册表 codemod ——
-  const registry = readFileSync(join(proj, 'units.ts'), 'utf8');
+  const registry = readFileSync(join(proj, 'src/registry.ts'), 'utf8');
   for (const tok of ['hello', 'doc-reviewer', 'note-writer', 'style-guide', 'echo-back']) {
-    assert(registry.includes(`'${tok}'`), `units.ts 缺 token: ${tok}`);
+    assert(registry.includes(`'${tok}'`), `src/registry.ts 缺 token: ${tok}`);
   }
-  assert(registry.includes("import DocReviewer from './units/doc-reviewer/index.js';"), '缺 subagent import');
+  // import 前缀按分类目录走（相对 src/registry.ts）
+  for (const rel of ['./tools/hello/index.js', './subagents/doc-reviewer/index.js', './skills/note-writer/index.js', './prompts/style-guide/index.js', './tools/echo-back/index.js']) {
+    assert(registry.includes(`from '${rel}'`), `src/registry.ts 缺 import: ${rel}`);
+  }
 
   // 幂等/错误路径：同名再 g 报错
   let dupFailed = false;
@@ -72,16 +92,16 @@ try {
   mkdirSync(join(proj, 'node_modules', '@migor'), { recursive: true });
   symlinkSync(repoRoot, join(proj, 'node_modules', '@migor', 'agentia'), 'dir');
 
-  // —— 5) 发现机制：discoverProviders ——
-  const unitsDir = join(proj, 'units');
-  const discovered = await discoverProviders(unitsDir);
+  // —— 5) 发现机制：discoverProviders（四分类目录数组，顺序即装配顺序）——
+  const capabilityDirs = ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'].map((d) => join(proj, d));
+  const discovered = await discoverProviders(capabilityDirs);
   const tokens = discovered.map((p) => p.provide).sort();
   assert(
     JSON.stringify(tokens) === JSON.stringify(['doc-reviewer', 'echo-back', 'hello', 'note-writer', 'style-guide']),
     `发现 token=${tokens}`,
   );
 
-  // —— 6) createApp({ discover }) + mock 模型：装配五单元并真跑一个工具 ——
+  // —— 6) createApp({ discover }) + mock 模型：装配五能力并真跑一个工具 ——
   let secondParams: unknown = null;
   let i = 0;
   const script = [
@@ -111,7 +131,7 @@ try {
 
   const app = await createApp({
     name: 'cli-app',
-    discover: unitsDir,
+    discover: capabilityDirs,
     system: new SystemPrompt().add('role', '测试装配', true),
   });
   const menu = app.tools.map((t) => t.name).sort();
@@ -126,8 +146,8 @@ try {
   const s = JSON.stringify(secondParams);
   assert(s.includes('tool_result') && s.includes('echo: smoke'), '发现的工具应真的被执行并回 tool_result');
 
-  // —— 7) 注册表路线：import 生成的 units.ts 显式装配 ——
-  const registryMod = await import(`${proj}/units.ts`);
+  // —— 7) 注册表路线：import 生成的 src/registry.ts 显式装配 ——
+  const registryMod = await import(`${proj}/src/registry.ts`);
   const app2 = createApp({
     name: 'cli-registry',
     providers: registryMod.providers,

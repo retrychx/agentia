@@ -125,7 +125,7 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 价格表覆盖/追加（$/1M tokens）：覆盖内置同名项，或给非 Anthropic 模型定价
    * （如 `{ 'deepseek-chat': { in: 0.27, out: 1.10 } }`）。见 `buildPricing`。
    *
-   * 会**透传给嵌套单元**（@SubAgent / @Skill 的子循环），所以子 agent 用同一个模型
+   * 会**透传给嵌套能力**（@SubAgent / @Skill 的子循环），所以子 agent 用同一个模型
    * 也能算成本 —— 不会出现「主 agent 有成本、子 agent 恒 0」的割裂。
    * 非法单价在 run 开始时抛错（不静默算出 NaN）。
    */

@@ -1,5 +1,5 @@
-import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
-import type { UnitDecoratorContext } from './collect.js';
+import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
+import type { CapabilityDecoratorContext } from './collect.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { SystemParam, SystemTextBlock } from '../engine/types.js';
@@ -9,7 +9,7 @@ import { classifyError } from '../engine/errors.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 
 /**
- * Agentia —— 子 agent 单元（spec §3/§5：独立 agent 循环 + 裁剪上下文 + 隔离报告）。
+ * Agentia —— 子 agent 能力（spec §3/§5：独立 agent 循环 + 裁剪上下文 + 隔离报告）。
  *
  * 语义（spec §5）：
  * - 子 agent = **完整独立循环**：自己的 system（role）、自己的工具、自己的 model；
@@ -18,7 +18,7 @@ import { SystemPrompt } from '../runtime/systemPrompt.js';
  * - **隔离报告**：它的中间往返全部不进主上下文，唯一回流主 agent 的是
  *   stop_reason=end_turn 的最终文本 —— 以 tool_result 交回（非 end_turn 则抛错 → is_error）。
  *
- * trace：子 agent 是主 trace 里的一个 `unit` span（挂在发起它的 llm.turn 下），
+ * trace：子 agent 是主 trace 里的一个 `capability` span（挂在发起它的 llm.turn 下），
  * 其内部 llm.turn 递归成它的子孙 —— 见 engine/loop.ts 的 runAgentScoped。
  */
 export interface SubAgentSpec {
@@ -47,7 +47,7 @@ export interface SubAgentSpec {
   resultSchema?: JsonSchema;
 }
 
-export interface SubAgentUnit {
+export interface SubAgentCapability {
   name: string;
   description: string;
   inputSchema: JsonSchema;
@@ -59,16 +59,16 @@ const subAgentSpecs = new WeakMap<Function, SubAgentSpec>();
 
 /** 方法装饰器：登记子 agent spec。被装饰方法体不执行 —— 运行时拉起独立循环。 */
 export function SubAgent(spec: SubAgentSpec) {
-  return function (value: Function, context: UnitDecoratorContext): void {
+  return function (value: Function, context: CapabilityDecoratorContext): void {
     assertMethodTarget(context, '@SubAgent');
     subAgentSpecs.set(value, spec);
   };
 }
 
-/** 把容器实例上所有 @SubAgent 方法收集成 SubAgentUnit[]（沿原型链）。 */
-export function collectSubAgents(instance: object): SubAgentUnit[] {
+/** 把容器实例上所有 @SubAgent 方法收集成 SubAgentCapability[]（沿原型链）。 */
+export function collectSubAgents(instance: object): SubAgentCapability[] {
   return scanDecoratedMethods(instance, subAgentSpecs).map(({ key, spec }) => ({
-    name: unitName(spec, key, '@SubAgent'),
+    name: capabilityName(spec, key, '@SubAgent'),
     description: spec.description,
     inputSchema: spec.schema,
     spec,
@@ -92,19 +92,19 @@ async function resolveSubSystem(
 }
 
 /**
- * 把 SubAgentUnit 变成主 agent 菜单里的 AgentTool。
+ * 把 SubAgentCapability 变成主 agent 菜单里的 AgentTool。
  * run(input, ctx) 需要 ToolRunContext（engine 调用时必有）；手动直调会抛错提示。
  * tools token 列表 → resolveTools() 由装配层给出（该 token 的 @Tool 菜单）。
  */
 export function subagentToTool(
-  unit: SubAgentUnit,
+  capability: SubAgentCapability,
   resolveTools: () => AgentTool[],
 ): AgentTool {
-  const { name, spec } = unit;
+  const { name, spec } = capability;
   return {
-    name: unit.name,
-    description: unit.description,
-    inputSchema: unit.inputSchema,
+    name: capability.name,
+    description: capability.description,
+    inputSchema: capability.inputSchema,
     run: async (input: unknown, ctx?: ToolRunContext): Promise<unknown> => {
       if (!ctx) {
         throw new Error(
@@ -112,13 +112,13 @@ export function subagentToTool(
         );
       }
       const recorder = ctx.recorder;
-      const unitId = recorder.begin('unit', name, ctx.parentSpanId);
-      recorder.setAttribute(unitId, 'subagent', name);
+      const capabilityId = recorder.begin('capability', name, ctx.parentSpanId);
+      recorder.setAttribute(capabilityId, 'subagent', name);
       let closed = false;
       const close = (patch: { status: 'ok' | 'error'; error?: SpanError }): void => {
         if (closed) return;
         closed = true;
-        recorder.end(unitId, patch);
+        recorder.end(capabilityId, patch);
       };
 
       try {
@@ -137,13 +137,13 @@ export function subagentToTool(
           messages: [{ role: 'user', content: JSON.stringify(task) }],
           tools,
           recorder,
-          parentSpanId: unitId,
+          parentSpanId: capabilityId,
           signal: ctx.signal,
           resultSchema: spec.resultSchema,
           // 价格覆盖透传（F1）：子 agent 用同一模型也要能算成本
           priceOverrides: ctx.priceOverrides,
         });
-        recorder.setAttribute(unitId, 'stop_reason', loop.stopReason);
+        recorder.setAttribute(capabilityId, 'stop_reason', loop.stopReason);
 
         if (isSuccessStopReason(loop.stopReason)) {
           close({ status: 'ok' });
@@ -168,7 +168,7 @@ export function subagentToTool(
         close({ status: 'error', error });
         throw new Error(report);
       } catch (e) {
-        // runAgentScoped 抛出的请求级异常（此前 unit 未关）在此兜底标记
+        // runAgentScoped 抛出的请求级异常（此前 capability 未关）在此兜底标记
         close({ status: 'error', error: classifyError(e) });
         throw e;
       }

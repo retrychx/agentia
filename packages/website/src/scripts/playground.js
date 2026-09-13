@@ -11,11 +11,11 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
    * 事件类型：
    *  { wait }                          停顿 ms
    *  { think }                         主 agent 思考行
-   *  { menu }                          高亮菜单里的单元 chip
-   *  { spanStart:{id,parent,kind,name} }  trace 开 span（kind: run/unit/llm.turn）
-   *     parent 语义与框架一致：unit 挂在【发起它的那个 llm.turn】下；主 agent 的
-   *     llm.turn 挂 run 根；子 agent 内部的单元递归成该 unit 的子孙。
-   *     unit span 只给 skill / subagent —— 框架里只有它们会 recorder.begin('unit',…)；
+   *  { menu }                          高亮菜单里的能力 chip
+   *  { spanStart:{id,parent,kind,name} }  trace 开 span（kind: run/capability/llm.turn）
+   *     parent 语义与框架一致：capability 挂在【发起它的那个 llm.turn】下；主 agent 的
+   *     llm.turn 挂 run 根；子 agent 内部的能力递归成该 capability 的子孙。
+   *     capability span 只给 skill / subagent —— 框架里只有它们会 recorder.begin('capability',…)；
    *     普通工具与 @Prompt 资产是 turn 上的【事件】（见下方 tool / result），不建 span。
    *  { spanEnd:{id,ms,usage} }         trace 收尾（usage 累计到计数器）
    *  { llmOpen:{label,nested} }        终端面板开一个 llm.turn 输出块
@@ -45,7 +45,7 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
         { wait: 300, spanEnd: { id: 's1', ms: 1320, usage: { input: 1450, output: 88 } } },
         { wait: 400, menu: 'subagent:doc_reviewer' },
         { tool: { name: 'subagent:doc_reviewer', input: { task: '审查 docs/weekly-report.md，指出结构与事实性问题', focus: ['结构', '事实', '数据口径'] } } },
-        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'unit', name: 'subagent:doc_reviewer' } },
+        { wait: 500, spanStart: { id: 's2', parent: 's1', kind: 'capability', name: 'subagent:doc_reviewer' } },
         { wait: 600, note: '— SubAgent 内部（独立上下文，过程不外泄） —' },
         { wait: 300, spanStart: { id: 's3', parent: 's2', kind: 'llm.turn', name: 'claude-opus-5' } },
         { llmOpen: { label: 'llm.turn · doc_reviewer', nested: true } },
@@ -89,7 +89,7 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
         { wait: 800, result: { text: 'DAU 均值 118,420（环比 +3.1%）；WAU 402,311；7 日留存 41.2%；营收 ¥2.31M（环比 -1.4%）。' } },
         { wait: 500, menu: 'skill:weekly_report' },
         { tool: { name: 'skill:weekly_report', input: { week: '2026-W36', data: '见上一条指标结果' } } },
-        { wait: 400, spanStart: { id: 's3', parent: 's1', kind: 'unit', name: 'skill:weekly_report' } },
+        { wait: 400, spanStart: { id: 's3', parent: 's1', kind: 'capability', name: 'skill:weekly_report' } },
         { wait: 600, note: '— Skill 内部（ctx.llm() 由代码显式调用） —' },
         { wait: 300, spanStart: { id: 's4', parent: 's3', kind: 'llm.turn', name: 'claude-opus-5' } },
         { llmOpen: { label: 'ctx.llm() · 数据解读', nested: true } },
@@ -410,7 +410,7 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
     const usageAcc = { input: 0, output: 0 };
     const startedAt = performance.now();
     let lastTurnId = null; // 最近一个 llm.turn：工具调用按框架语义记成它的事件
-    const pending = [];    // 未收到 result 的工具调用栈（嵌套单元先内后外收口）
+    const pending = [];    // 未收到 result 的工具调用栈（嵌套能力先内后外收口）
 
     for (const ev of sc.script) {
       if (state.gen !== gen) return; // 已被取消
@@ -438,7 +438,7 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
       }
       if (ev.result) {
         panelResult(ev.result.text, ev.result.nested);
-        /* 出参事件要挂回【发起它的那个 turn】。嵌套单元（subagent/skill）的 result 在
+        /* 出参事件要挂回【发起它的那个 turn】。嵌套能力（subagent/skill）的 result 在
            它内部所有调用都收口之后才到达，所以只能按栈 LIFO 配对 —— 用「最近一次
            工具调用」会把子代理的结论错配到它内部最后调用的那个工具上。 */
         const call = pending.pop();

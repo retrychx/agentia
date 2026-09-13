@@ -45,7 +45,7 @@ describe('F1 buildPricing', () => {
   });
 });
 
-describe('F1 价格覆盖生效于 run（含嵌套单元透传）', () => {
+describe('F1 价格覆盖生效于 run（含嵌套能力透传）', () => {
   it('非 Anthropic 模型配了 priceOverrides → turn 有 costEstimate', async () => {
     const { client } = mockClient([endTurnMsg('done')]);
     const result = await runAgent({
@@ -59,7 +59,7 @@ describe('F1 价格覆盖生效于 run（含嵌套单元透传）', () => {
     assert.equal(result.trace.totalUsage.costEstimate, 0.00002);
   });
 
-  it('ToolRunContext 带上 priceOverrides（嵌套单元据此把定价传进子循环）', async () => {
+  it('ToolRunContext 带上 priceOverrides（嵌套能力据此把定价传进子循环）', async () => {
     let seen: Record<string, { in: number; out: number }> | undefined;
     const tool: AgentTool = {
       name: 'probe',

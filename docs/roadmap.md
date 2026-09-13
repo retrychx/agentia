@@ -5,15 +5,15 @@
 
 ## R1 —— 中间件（拦截器链）✅
 
-**中间件是下一个大块的框架能力**，spec §9.2 已留伏笔（"对齐拦截器：每次单元调用包一层"）。
+**中间件是下一个大块的框架能力**，spec §9.2 已留伏笔（"对齐拦截器：每次能力调用包一层"）。
 
-- **单元调用拦截器链**：`createApp({ middleware: [(call, next) => …] })`，在每次单元（tool/skill/subagent/prompt）
+- **能力调用拦截器链**：`createApp({ middleware: [(call, next) => …] })`，在每次能力（tool/skill/subagent/prompt）
   调用前后执行。框架自带的 trace 记账从 engine 硬编码改写成第一个内置拦截器——
   既落地 spec §9.2 的设想，也用自己验证这套抽象（dogfooding）。
-- 用户场景：鉴权（按 blackboard 拒绝调用）、限流（按单元计数）、结果缓存
+- 用户场景：鉴权（按 blackboard 拒绝调用）、限流（按能力计数）、结果缓存
   （幂等工具直接短路）、调用日志/审计、超时包装。
 - 设计约束：链式 `next()` 语义；顺序 = 注册顺序；拦截器只见 `ToolRunContext` +
-  单元描述，不碰 engine 内部；异步安全（ALS 上下文天然透传）。
+  能力描述，不碰 engine 内部；异步安全（ALS 上下文天然透传）。
 
 ## R2 —— 结构化结果 + 类型打通 ✅
 
@@ -41,9 +41,9 @@
 
 ## R5 —— 生态与体验 ✅
 
-- **CLI**：`agentia dev`（watch + 热重装配）、`agentia add <pkg>`（第三方单元包安装
+- **CLI**：`agentia dev`（watch + 热重装配）、`agentia add <pkg>`（第三方能力包安装
   并登记）、`agentia doctor`（装配体检：未登记 / 悬空单板 / 命名规范 / 重复条目）。
-- **模块系统**：`defineModule` 能力包（单元 + providers + 拦截器打包分发），
+- **模块系统**：`defineModule` 能力包（能力 + providers + 拦截器打包分发），
   spec §4 草图的正式落地；property-injection 便利写法（spec §11 待定项）。
 - **官网**：文档站（指南 + API 参考），从单页宣传站演进。
 
@@ -74,11 +74,11 @@
 第一轮修的缝里还有漏的，且新增一处安全缺陷：**子 agent 内部工具调用整体绕过中间件**（`tools` 引用解析的是中间件包装前的菜单）；
 另有「同一函数内一防一漏」（`AsyncRunner` 订阅了 `save` 的 rejection 却丢弃 `byIdempotency` 的）、
 异步落库迟到 reject 把成功 run 覆写成 failed、`submit_result` 校验未包 try（畸形 schema 掀翻整次 run）、
-水合失败杀死 run（回写却有防护）、`totalUsage` 对 unit 聚合用量双算的口径矛盾、SQLite 只有 WAL 没有 busy_timeout、
+水合失败杀死 run（回写却有防护）、`totalUsage` 对 capability 聚合用量双算的口径矛盾、SQLite 只有 WAL 没有 busy_timeout、
 `every(0)` 空转、Redis prefix 未转义 glob、`keepRecent` 在编辑与压缩间单位混用、`trimToolPairs` 对畸形历史切出孤立块、
 容器重注册不传递失效、`discover` 覆盖显式 provider、OpenAI 空 `choices` 静默记成成功。全部修复，各带回归用例（190 → 210 例）。
 
-- **安全**：嵌套单元 `tools` 引用改从中间件包装后的菜单解析（关闭 spec 记档的既知缺陷）；
+- **安全**：嵌套能力 `tools` 引用改从中间件包装后的菜单解析（关闭 spec 记档的既知缺陷）；
 - **正确性**：`submit_result` 校验入 try、水合失败不杀 run、迟到 reject 不覆写终态、空 `choices` 抛错；
 - **契约**：`Trace.totalUsage` 只累加 `llm.turn`；`createBudgetPolicy.keepToolPairs` 与 `keepRecent` 解耦；
   `discover` 与显式 providers 同 token 时显式优先；`Container.register` 传递失效；`Scheduler.every` 拒绝非正有限数；
@@ -104,7 +104,7 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 
 ## Dev Inspector（本地调试面板）✅ 已落地
 
-`agentia dev` 内置本地 inspector：左栏 run 列表 + 右栏调用树，展示每个单元（tool/skill/prompt/subagent）
+`agentia dev` 内置本地 inspector：左栏 run 列表 + 右栏调用树，展示每个能力（tool/skill/prompt/subagent）
 的入参 / 出参 / 耗时 / token / cache / 错误状态（环形缓冲最近 50 条）。
 
 - **框架**：trace 出口缝 `TraceSink` + `AppOptions.sinks` + `registerDefaultTraceSink()`（构造期快照合并）；
@@ -133,20 +133,36 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 ## 可观测 · 可调优（E / F / G 三期）✅ 全部落地（2026-09-13）
 
 设计见 `docs/plans/2026-09-13-observability-tunability.md`（8 个设计分叉全部按建议 A 拍板，落地时的四处修正见 spec §10）。
-起因：观测当时只到 **run 级**，答不出「哪个单元慢/贵/爱失败」；调优旋钮虽齐，却有**两处「看着有、实际不生效」**。
+起因：观测当时只到 **run 级**，答不出「哪个能力慢/贵/爱失败」；调优旋钮虽齐，却有**两处「看着有、实际不生效」**。
 
 - **E 观测下沉** ✅ E1 工具级时序（`tool.output` 事件补 `durationMs` / `errorKind`，普通工具仍不建 span）/
-  E2 单元级指标（per-unit 调用数、失败数、耗时、token、成本；`labelMode` + `maxUnits` 防标签爆炸）/
+  E2 能力级指标（per-capability 调用数、失败数、耗时、token、成本；`labelMode` + `maxCapabilities` 防标签爆炸）/
   E3 模型级指标（按模型归因；`model_unpriced_turns_total` 显式暴露"成本算不出来"）/
   E4 Prometheus 原生 histogram（可跨实例聚合）+ 窗口精确分位并存 / E5 OTLP metrics 导出（零依赖手写 JSON，`flush()` / `intervalMs`）。
 - **F 成本可调优** ✅ F1 价格表可注入（`priceOverrides` + `buildPricing`，**透传进子循环**）/
   F2 未定价模型显式（`usage.unpriced` 事件 + `onUnpricedModel` 回调 + 指标，**不改变 run 结局**）/ F3 成本归因。
 - **G 调优闭环** ✅ G1 `buildRunReport` / `mergeRunReports` / `renderRunReport` + CLI `agentia report <trace.jsonl>` /
-  G2 `@migor/trace-view` 单元排行（`summarizeTrace` / `renderSummary`）接进 `agentia dev` 面板 /
+  G2 `@migor/trace-view` 能力排行（`summarizeTrace` / `renderSummary`）接进 `agentia dev` 面板 /
   G3 run 根 `config.*` 生效配置快照 / G4 `createHttpHandler({ metrics })` 内建 `GET /metrics`。
-- **顺带修的 doc-vs-code 漂移**：`core/trace.ts` 声明已久的「`unit.usage` = 子孙 `llm.turn` 聚合」此前**从未写入** ——
-  已在 `TraceRecorder.end()` 补上，单元级 token/成本才有数据来源。
+- **顺带修的 doc-vs-code 漂移**：`core/trace.ts` 声明已久的「`capability.usage` = 子孙 `llm.turn` 聚合」此前**从未写入** ——
+  已在 `TraceRecorder.end()` 补上，能力级 token/成本才有数据来源。
 - 测试：框架 414 → 462，CLI 6 → 13，trace-view 6 → 10。
+
+## 目录约定去伞形词（四类分置）✅ 落地（2026-09-13）
+
+设计见 `docs/plans/2026-09-13-typed-unit-dirs.md`（6 个分叉：F1=A · F4=B · 其余 A · F6=A+B）。决策记录见 spec §10。
+起因：`agentia create` 产出的 `units/` 被指出「命名不太好」—— 核实后发现仓库里**同时跑着两套目录约定**且无验证覆盖，
+外加脚手架 tsconfig **漏 include 能力目录**（未登记的能力静默不参与类型检查）。
+
+- **① 四分类目录，放 `src/` 下** ✅ `src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— 目录名就是类型
+  （对齐 MCP / OpenAI Agents SDK / LangChain 的惯例：不用伞形词）；注册表改 `src/registry.ts`。副作用是三处漂移一次自愈：
+  示例的 `rootDir:"src"` 不用动、脚手架 `include` 收缩为 `['src']`、示例与新约定自动一致。`create` 建出四目录（`.gitkeep`）。
+- **② `discover` 放宽为 `string | string[]`** ✅ 数组顺序即装配顺序；任一路径不存在报错；跨目录重名 token 发现期告警 +
+  `g` 生成期拦截 + `doctor` 报错兜底。
+- **③ 伞形术语整体替换为 `capability`** ✅ 类型 / 字段 / 指标名 / `unit=` 标签 / **trace span kind** / trace-view 前缀；
+  中文「单元」改称「能力」（与既有「能力包」同族）。运行时零破坏，刻意破坏的只有观测面命名（已逐条列进 spec §10）。
+- 测试：框架 462 → 465（+3，discover 的数组/跨目录重名用例），CLI 13 → 18（+5，跨目录同名体检 + 目录约定守卫），
+  trace-view 10（仅改名，无新增）。
 
 ## R7 候选（下一轮）
 
@@ -155,7 +171,7 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   此条仅当「审批跨重启」是硬需求时立项（见 spec §10 与 usage-guide §6）；
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
-- canCall 单元级能力边（当前 tools 引用粒度为 provider）。
+- canCall 能力级能力边（当前 tools 引用粒度为 provider）。
 
 ## 原则（约束所有 R）
 

@@ -118,7 +118,7 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
  * 高层入口：建 Run → start → 注入 recorder 跑 engine → finish。
  * run 层持有 recorder，返回后 run.recorder 里的 trace 即本次完整调用树。
  * RunContext 在整个执行期间经 AsyncLocalStorage 可被 `RunContext.current()` 读到，
- * 工具/单元执行体无需把 ctx 作为参数层层下传。
+ * 工具/能力执行体无需把 ctx 作为参数层层下传。
  */
 export async function executeRun<S extends JsonSchema = JsonSchema>(
   options: ExecuteRunOptions<S>,

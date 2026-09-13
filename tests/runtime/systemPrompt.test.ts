@@ -7,7 +7,7 @@ describe('SystemPrompt（缓存布局）', () => {
   const sp = () =>
     new SystemPrompt()
       .add('role', '你是流水线主 agent。', true)
-      .add('units', '可调度 reviewer 等。', true)
+      .add('capabilities', '可调度 reviewer 等。', true)
       .add('clock', '当前时间: {now}', false); // volatile
 
   it('cache=false：拼成单个纯文本（stable + volatile）', () => {

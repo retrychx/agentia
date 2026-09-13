@@ -11,7 +11,7 @@ export type {
   SpanStatus,
   TraceId,
   TraceSink,
-  UnitType,
+  CapabilityType,
   Usage,
 } from './core/trace.js';
 export type {
@@ -80,22 +80,22 @@ export type {
   Token,
 } from './container/container.js';
 
-// toolkit：声明式单元 + 应用装配
+// toolkit：声明式能力 + 应用装配
 export { asset } from './toolkit/asset.js';
 export { discoverProviders } from './toolkit/discover.js';
 export { applyMiddleware } from './toolkit/middleware.js';
-export type { UnitCall, UnitMiddleware, UnitNext } from './toolkit/middleware.js';
+export type { CapabilityCall, CapabilityMiddleware, CapabilityNext } from './toolkit/middleware.js';
 export { Tool, collectTools } from './toolkit/tool.js';
 export type { ToolSpec } from './toolkit/tool.js';
 export { SubAgent, collectSubAgents, subagentToTool } from './toolkit/subagent.js';
-export type { SubAgentSpec, SubAgentUnit } from './toolkit/subagent.js';
+export type { SubAgentSpec, SubAgentCapability } from './toolkit/subagent.js';
 export { Skill, collectSkills, skillToTool } from './toolkit/skill.js';
 export type {
   SkillContext,
   SkillLlmOptions,
   SkillLlmResult,
   SkillSpec,
-  SkillUnit,
+  SkillCapability,
 } from './toolkit/skill.js';
 export { Prompt, collectPrompts } from './toolkit/prompt.js';
 export type { PromptSpec } from './toolkit/prompt.js';
@@ -154,15 +154,15 @@ export type {
   MetricsSinkOptions,
   MetricsSnapshot,
   ModelMetrics,
-  UnitMetrics,
+  CapabilityMetrics,
 } from './integrations/metrics.js';
-// integrations：调优报告（G1）—— 纯函数，从 trace 派生「哪个单元慢/贵/爱失败」
+// integrations：调优报告（G1）—— 纯函数，从 trace 派生「哪个能力慢/贵/爱失败」
 export { buildRunReport, mergeRunReports, renderRunReport } from './integrations/report.js';
 export type {
   DurationReport,
   ModelReport,
   RunReport,
-  UnitReport,
+  CapabilityReport,
 } from './integrations/report.js';
 
 // eval：把 mockClient 提升为一等能力（D2）—— 叶子消费模块，只依赖公共面

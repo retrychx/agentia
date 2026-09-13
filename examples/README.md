@@ -6,7 +6,7 @@
 |---|---|---|
 | [`observability/`](./observability/) | 四个现成 sink：按 runId 落库检索 / 日志关联 / 采样 / 脱敏（本地小包 `@migor/agentia-observability`，零依赖） | 要把 trace 送进生产观测栈时 |
 | [`deploy/`](./deploy/) | **最小**可交付服务：HTTP 宿主 + `SqliteTaskStore` + `/healthz` + 优雅停机 + Docker | 想知道「怎么把它跑上线」时 |
-| [`complete/`](./complete/) | **完整**示例：四类单元 + 三种触发 + 鉴权 + 全观测栈（上面四个 sink 接成一条链）+ Docker | 想知道「一个真实服务长什么样」时 |
+| [`complete/`](./complete/) | **完整**示例：四类能力 + 三种触发 + 鉴权 + 全观测栈（上面四个 sink 接成一条链）+ Docker | 想知道「一个真实服务长什么样」时 |
 
 配套阅读：[`docs/observability.md`](../docs/observability.md)（配方讲解）、
 [`docs/usage-guide.md`](../docs/usage-guide.md)（API 速查）、[`docs/spec.md`](../docs/spec.md)（设计规格）。

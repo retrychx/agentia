@@ -94,7 +94,7 @@ export interface HttpHandlerOptions {
    *   （与 `exposeErrors` 同理：不把内部拓扑回给未鉴权的调用方）。
    *
    * 框架**不实现策略**（token / JWT / 签名都不做）—— 那是宿主或反代的事（框架不读 env、
-   * 不碰凭据）。为什么不做成 middleware：middleware 拦的是**单元调用**（run 内部），
+   * 不碰凭据）。为什么不做成 middleware：middleware 拦的是**能力调用**（run 内部），
    * 而鉴权要拦的是 **run 入口**，且必须早于 body 读取。
    */
   authenticate?: (req: IncomingMessage) => unknown | Promise<unknown>;

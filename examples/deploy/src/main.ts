@@ -21,7 +21,7 @@ import {
   createHttpHandler,
   metricsSink,
 } from '@migor/agentia';
-import { providers } from './units.js';
+import { providers } from './registry.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const DB_PATH = process.env.AGENTIA_DB ?? 'agentia.db';
@@ -38,7 +38,7 @@ const app = await createApp({
   providers,
   system: new SystemPrompt().add(
     'role',
-    '你是部署示例的主 agent，按任务自主调度菜单里的单元。',
+    '你是部署示例的主 agent，按任务自主调度菜单里的能力。',
     true,
   ),
   sinks: [metrics],

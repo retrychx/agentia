@@ -12,7 +12,7 @@ import { stringifySafe, truncateWithMark } from '../core/json.js';
  * 还原规则：
  * - 全部 llm.turn 按 startedAt 时序线性展开（稳定排序，同刻保插入序）——
  *   子 agent 的嵌套回合与主 agent 回合交错进同一序列，每回合以 text 块标注
- *   来源（model / 所属 unit span 名 / spanId）；
+ *   来源（model / 所属 capability span 名 / spanId）；
  * - 每回合 → 一条 assistant 消息：标注文本 + 各 tool.input 事件还原的 tool_use 块
  *   （id 由重放合成 `replay_tu_<n>`，trace 不记原始 id）；
  * - tool.output 事件 → 紧随其后一条 user 消息里的 tool_result 块，与 tool_use
@@ -63,10 +63,10 @@ export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Anthrop
   let seq = 0;
 
   turns.forEach((turn, i) => {
-    const unit = nearestUnitName(turn, byId);
+    const capability = nearestCapabilityName(turn, byId);
     const note =
       `[replay turn ${i + 1}/${turns.length}] model=${turn.name} ` +
-      `unit=${unit ?? '(主 agent run)'} span=${turn.spanId}`;
+      `capability=${capability ?? '(主 agent run)'} span=${turn.spanId}`;
 
     const content: Anthropic.ContentBlockParam[] = [{ type: 'text', text: note }];
     const pairs: Array<{ id: string; output?: ToolEventIO }> = [];
@@ -155,11 +155,11 @@ function toBlocks(content: Anthropic.MessageParam['content']): Anthropic.Content
   return typeof content === 'string' ? [{ type: 'text', text: content }] : [...content];
 }
 
-/** 向上找最近的 unit span 名（子 agent 嵌套回合的来源标注）；直属 run 根则 null */
-function nearestUnitName(span: Span, byId: Map<SpanId, Span>): string | null {
+/** 向上找最近的 capability span 名（子 agent 嵌套回合的来源标注）；直属 run 根则 null */
+function nearestCapabilityName(span: Span, byId: Map<SpanId, Span>): string | null {
   let cur = span.parentSpanId ? byId.get(span.parentSpanId) : undefined;
   while (cur) {
-    if (cur.kind === 'unit') return cur.name;
+    if (cur.kind === 'capability') return cur.name;
     cur = cur.parentSpanId ? byId.get(cur.parentSpanId) : undefined;
   }
   return null;

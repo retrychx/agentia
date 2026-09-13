@@ -45,7 +45,7 @@ export interface McpClientLike {
 
 export interface McpToolsOptions {
   /**
-   * 工具名前缀，避免与本地单元撞名。缺省 `mcp_<server>_`；没给 `server` 时缺省 `mcp_`。
+   * 工具名前缀，避免与本地能力撞名。缺省 `mcp_<server>_`；没给 `server` 时缺省 `mcp_`。
    * 传 `''` 表示不加前缀（此时 MCP 原名直接进菜单，撞名风险自负）。
    */
   prefix?: string;
@@ -104,7 +104,7 @@ async function withDeadline<T>(p: Promise<T>, timeoutMs: number, label: string):
  * 把一个 MCP server 的工具映射成框架的 `AgentTool[]`（可直接进 `tools` / providers）。
  *
  * - **名字**：`prefix + 归一化原名`；归一化后同名的两条直接抛错（否则装配期查重只会报
- *   「菜单单元重名」，看不出根因是 MCP 名撞了）；
+ *   「菜单能力重名」，看不出根因是 MCP 名撞了）；
  * - **原名**：每次调用时写进发起 turn 的 `mcp.tool` attribute（审计 / 回放要还原出
  *   回调 server 用的原名）；
  * - **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的

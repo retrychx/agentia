@@ -1,19 +1,23 @@
-/** units.ts 注册表 codemod：基于 @agentia 标记行插入/跳过条目，幂等 */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+/** src/registry.ts 注册表 codemod：基于 @agentia 标记行插入/跳过条目，幂等 */
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import {
+  CAPABILITY_DIRS,
   IMPORTS_END_MARKER,
   ENTRIES_END_MARKER,
+  REGISTRY_PATH,
   emptyRegistryTemplate,
   kebabToPascal,
+  type CapabilityType,
 } from './templates.js';
 
 export class RegistryError extends Error {}
 
-/** 注册表文件不存在时按空模板创建 */
+/** 注册表文件不存在时按空模板创建（含所需的父目录） */
 export function ensureRegistry(dir: string): string {
-  const file = join(dir, 'units.ts');
+  const file = join(dir, REGISTRY_PATH);
   if (!existsSync(file)) {
+    mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, emptyRegistryTemplate(), 'utf8');
   }
   return file;
@@ -28,7 +32,7 @@ function insertAtMarkers(content: string, importLine: string, entryLine: string)
   const entriesEnd = lines.findIndex((l) => l.trim() === ENTRIES_END_MARKER);
   if (importsEnd === -1 || entriesEnd === -1) {
     throw new RegistryError(
-      `units.ts 缺少 ${IMPORTS_END_MARKER} / ${ENTRIES_END_MARKER} 标记行，无法自动登记；请手工维护该文件`,
+      `${REGISTRY_PATH} 缺少 ${IMPORTS_END_MARKER} / ${ENTRIES_END_MARKER} 标记行，无法自动登记；请手工维护该文件`,
     );
   }
   lines.splice(entriesEnd, 0, entryLine);
@@ -36,15 +40,22 @@ function insertAtMarkers(content: string, importLine: string, entryLine: string)
   return lines.join('\n');
 }
 
-/** 把单元登记进 dir/units.ts；已存在同名条目则跳过。标记行缺失时报错。 */
-export function registerUnit(dir: string, name: string): RegisterResult {
+/** 分类目录 → 相对注册表（src/registry.ts）的 import 前缀，如 src/tools → ./tools */
+function importPrefix(type: CapabilityType): string {
+  return './' + CAPABILITY_DIRS[type].replace(/^src\//, '');
+}
+
+/** 把能力登记进 src/registry.ts；已存在同名条目则跳过。标记行缺失时报错。 */
+export function registerCapability(dir: string, name: string, type: CapabilityType): RegisterResult {
   const file = ensureRegistry(dir);
   const content = readFileSync(file, 'utf8');
 
-  const importLine = `import ${kebabToPascal(name)} from './units/${name}/index.js';`;
+  const prefix = importPrefix(type);
+  const source = `${prefix}/${name}/index.js`;
+  const importLine = `import ${kebabToPascal(name)} from '${source}';`;
   const entryLine = `  { provide: '${name}', useClass: ${kebabToPascal(name)} },`;
 
-  if (content.includes(`'./units/${name}/index.js'`) || content.includes(`provide: '${name}'`)) {
+  if (content.includes(`'${source}'`) || content.includes(`provide: '${name}'`)) {
     return 'already';
   }
 
@@ -52,7 +63,7 @@ export function registerUnit(dir: string, name: string): RegisterResult {
   return 'registered';
 }
 
-/** 把第三方包（agentia add）登记进 dir/units.ts；token/import 来源已存在则跳过。 */
+/** 把第三方包（agentia add）登记进 src/registry.ts；token/import 来源已存在则跳过。 */
 export function registerPackage(dir: string, token: string, importSource: string): RegisterResult {
   const file = ensureRegistry(dir);
   const content = readFileSync(file, 'utf8');

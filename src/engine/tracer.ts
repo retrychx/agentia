@@ -19,7 +19,7 @@ export class TraceRecorder {
   readonly traceId: TraceId = randomUUID();
   private readonly spans: Span[] = [];
   private readonly index = new Map<SpanId, Span>();
-  /** parentSpanId → 直接子 span（增量维护，供 unit 结束时就地聚合子孙 usage，O(子孙) 而非每次重建） */
+  /** parentSpanId → 直接子 span（增量维护，供 capability 结束时就地聚合子孙 usage，O(子孙) 而非每次重建） */
   private readonly children = new Map<SpanId | null, Span[]>();
   private rootSpanId: SpanId | null = null;
 
@@ -57,8 +57,8 @@ export class TraceRecorder {
    * 对已结束的 span 幂等忽略（重复 end 视为无害）。event/setAttribute 对未知
    * span 静默忽略 —— 观测不应中断业务，与 end 的严格性刻意区分。
    *
-   * `unit` span 收尾时若调用方**未**显式给 usage，就地聚合其**子孙 llm.turn** 的
-   * usage 写回该 span —— 兑现 `core/trace.ts` 里「unit.usage = 其子孙聚合，仅供展示」
+   * `capability` span 收尾时若调用方**未**显式给 usage，就地聚合其**子孙 llm.turn** 的
+   * usage 写回该 span —— 兑现 `core/trace.ts` 里「capability.usage = 其子孙聚合，仅供展示」
    * 的已声明语义（此前该字段从不写入，指标/报告拿不到「某个子 agent 花了多少」）。
    * 只累加 llm.turn，故层层嵌套也不会重复计数。
    */
@@ -70,7 +70,7 @@ export class TraceRecorder {
     if (patch.status) span.status = patch.status;
     if (patch.error) span.error = patch.error;
     if (patch.usage) span.usage = patch.usage;
-    else if (span.kind === 'unit') {
+    else if (span.kind === 'capability') {
       const aggregated = this.aggregateDescendantUsage(id);
       if (aggregated) span.usage = aggregated;
     }
@@ -128,7 +128,7 @@ export class TraceRecorder {
       cacheCreationTokens: 0,
     };
     // 只累加「自身计量」的 span（llm.turn 是唯一 token 来源）。
-    // unit span 的 usage 语义是**其子孙的聚合**（见 core/trace.ts Span.usage），
+    // capability span 的 usage 语义是**其子孙的聚合**（见 core/trace.ts Span.usage），
     // 若一并求和，skill/subagent 一旦写入聚合值就会把同一批 token 计两遍。
     for (const s of this.spans) {
       if (!s.usage || s.kind !== 'llm.turn') continue;

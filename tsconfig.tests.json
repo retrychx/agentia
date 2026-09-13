@@ -8,5 +8,5 @@
     "paths": { "@migor/agentia": ["./src/index.ts"] }
   },
   "include": ["src", "tests", "examples/observability/src"],
-  "exclude": ["node_modules", "dist", "tests/fixtures/units-loadfail", "tests/types", "examples/deploy", "examples/complete"]
+  "exclude": ["node_modules", "dist", "tests/fixtures/capabilities-loadfail", "tests/types", "examples/deploy", "examples/complete"]
 }

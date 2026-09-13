@@ -21,9 +21,9 @@ describe('长上下文策略', () => {
   });
 
   it('非 BMP 汉字仍按 CJK 计（正则快路径与逐码点口径逐字一致）', () => {
-    // 𠀀 = U+20000（扩展 B），占 2 个 UTF-16 单元。若快路径漏掉增补平面，这里会变成 150。
+    // 𠀀 = U+20000（扩展 B），占 2 个 UTF-16 能力。若快路径漏掉增补平面，这里会变成 150。
     assert.equal(defaultEstimateTokens('𠀀'.repeat(300)), 275);
-    // emoji 是「非 CJK 的代理对」：不记 CJK，但两个 UTF-16 单元都算进 other
+    // emoji 是「非 CJK 的代理对」：不记 CJK，但两个 UTF-16 能力都算进 other
     assert.equal(defaultEstimateTokens('😀'), 1);
     assert.equal(defaultEstimateTokens('a'.repeat(40)), 10);
   });

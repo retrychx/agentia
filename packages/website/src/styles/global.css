@@ -653,7 +653,7 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
 .pg-btn-replay:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-dim); }
 .pg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* 中间：单元菜单 + 终端面板 */
+/* 中间：能力菜单 + 终端面板 */
 .pg-menu {
   display: flex;
   flex-wrap: wrap;

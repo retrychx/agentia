@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RunContext, SystemPrompt, Tool, createApp } from '../../src/index.js';
-import type { BlackboardKey, TraceSink, UnitMiddleware } from '../../src/index.js';
+import type { BlackboardKey, TraceSink, CapabilityMiddleware } from '../../src/index.js';
 import { endTurnMsg, mockClient, toolUseMsg } from '../helpers.js';
 
 /**
@@ -18,7 +18,7 @@ import { endTurnMsg, mockClient, toolUseMsg } from '../helpers.js';
 const TENANT_LIMIT = 100;
 const OBJ = { type: 'object', properties: {} } as const;
 
-/** 按租户记账的配额：中间件拦在单元调用前，sink 在 run 收尾后累加 */
+/** 按租户记账的配额：中间件拦在能力调用前，sink 在 run 收尾后累加 */
 function tenantApp(limit: number) {
   const spentTokens = new Map<string, number>(); // 真实场景换成 Redis / DB，语义一样
   let toolRuns = 0;
@@ -31,11 +31,11 @@ function tenantApp(limit: number) {
     }
   }
 
-  const quotaMiddleware: UnitMiddleware = async (call, next) => {
+  const quotaMiddleware: CapabilityMiddleware = async (call, next) => {
     const tenant = RunContext.current()?.get('tenant' as BlackboardKey) as string | undefined;
     if (tenant && (spentTokens.get(tenant) ?? 0) >= limit) {
       // 抛错 → 该条 tool_result 记 is_error 回模型（不中断 run），
-      // 且**单元执行体不会跑** —— 用满配额的租户不产生副作用。
+      // 且**能力执行体不会跑** —— 用满配额的租户不产生副作用。
       throw new Error(`租户 ${tenant} 的额度已用满`);
     }
     return next();
@@ -64,7 +64,7 @@ function tenantApp(limit: number) {
 }
 
 describe('多租户配额（D4：middleware + sink + BudgetGuard 组合）', () => {
-  it('额度没满：单元正常执行，run 收尾后按租户记账', async () => {
+  it('额度没满：能力正常执行，run 收尾后按租户记账', async () => {
     const { app, spentTokens, toolRuns } = tenantApp(TENANT_LIMIT);
     const { client } = mockClient([toolUseMsg('work', {}), endTurnMsg('搞定')]);
     const { result } = await app.run([{ role: 'user', content: 'go' }], {
@@ -77,7 +77,7 @@ describe('多租户配额（D4：middleware + sink + BudgetGuard 组合）', () 
     assert.equal(spentTokens.get('acme'), 30, '两个回合各 10+5');
   });
 
-  it('额度用满：拦在单元调用前 → 单元不执行、tool_result 记 is_error、run 不崩', async () => {
+  it('额度用满：拦在能力调用前 → 能力不执行、tool_result 记 is_error、run 不崩', async () => {
     const { app, spentTokens, toolRuns } = tenantApp(0); // 一开始就是满的
     const { client } = mockClient([toolUseMsg('work', {}), endTurnMsg('那算了')]);
     const { result } = await app.run([{ role: 'user', content: 'go' }], {
@@ -86,7 +86,7 @@ describe('多租户配额（D4：middleware + sink + BudgetGuard 组合）', () 
     });
 
     assert.equal(result.stopReason, 'end_turn', '配额拦截不该杀死 run（模型可以换路）');
-    assert.equal(toolRuns(), 0, '被拦下的单元绝不能产生副作用');
+    assert.equal(toolRuns(), 0, '被拦下的能力绝不能产生副作用');
     const turn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;
     const out = turn.events.find((e) => e.name === 'tool.output')!;
     assert.equal((out.body as { ok: boolean }).ok, false);

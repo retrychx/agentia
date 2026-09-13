@@ -6,13 +6,13 @@
 export type TraceId = string;
 export type SpanId = string;
 
-/** span 层级：run=整次运行；unit=对单元的调用；llm.turn=每次模型往返。
- *  注意 unit span 只由 skill / subagent 创建（toolkit/skill.ts、toolkit/subagent.ts 里的
- *  recorder.begin('unit', …)）；普通工具与 @Prompt 资产【不建 span】，只记 turn 上的
+/** span 层级：run=整次运行；capability=对能力的调用；llm.turn=每次模型往返。
+ *  注意 capability span 只由 skill / subagent 创建（toolkit/skill.ts、toolkit/subagent.ts 里的
+ *  recorder.begin('capability', …)）；普通工具与 @Prompt 资产【不建 span】，只记 turn 上的
  *  tool.input / tool.output 事件（engine/loop.ts）。 */
-export type SpanKind = 'run' | 'unit' | 'llm.turn';
+export type SpanKind = 'run' | 'capability' | 'llm.turn';
 
-export type UnitType = 'tool' | 'skill' | 'prompt' | 'subagent';
+export type CapabilityType = 'tool' | 'skill' | 'prompt' | 'subagent';
 
 export interface Usage {
   inputTokens: number;
@@ -44,7 +44,7 @@ export interface Span {
   traceId: TraceId;
   parentSpanId: SpanId | null;
   kind: SpanKind;
-  name: string; // unit: `${unitType}:${unitName}`；llm.turn: model id
+  name: string; // capability: `${capabilityType}:${capabilityName}`；llm.turn: model id
   startedAt: number;
   endedAt?: number;
   status: SpanStatus;
@@ -52,7 +52,7 @@ export interface Span {
   /**
    * usage —— 语义按 kind 区分：
    * - `llm.turn`：该次模型往返的**自身计量**，是 Trace.totalUsage 的唯一来源；
-   * - `unit`（skill / subagent）：其**子孙 llm.turn 的聚合**，仅供展示（看某个单元花了多少），
+   * - `capability`（skill / subagent）：其**子孙 llm.turn 的聚合**，仅供展示（看某个能力花了多少），
    *   **不**计入 totalUsage（否则与子孙重复计数）。
    */
   usage?: Usage;
@@ -65,7 +65,7 @@ export interface Trace {
   rootSpanId: SpanId;
   spans: Span[];
   status: SpanStatus;
-  totalUsage: Usage; // run 汇总 = 各 llm.turn span 求和（不含 unit 聚合，避免重复计数）
+  totalUsage: Usage; // run 汇总 = 各 llm.turn span 求和（不含 capability 聚合，避免重复计数）
 }
 
 /**

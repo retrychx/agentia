@@ -78,7 +78,7 @@
 
   const COPY_SIM = {
     badge: '模拟演示：本地预置脚本，非真实模型调用',
-    sub: '选一个任务，看主 agent 如何思考、从菜单选中单元、发起 llm.turn、调用单元并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。',
+    sub: '选一个任务，看主 agent 如何思考、从菜单选中能力、发起 llm.turn、调用能力并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。',
     note: '按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。',
   };
   function copyReal(p) {
@@ -311,7 +311,7 @@
           for (let i = 0; i < toolUses.length; i++) {
             const tu = toolUses[i];
             pg.highlightMenu('tool:' + tu.name);
-            // 框架里普通工具【不建 unit span】，只记 turn 上的两个事件
+            // 框架里普通工具【不建 capability span】，只记 turn 上的两个事件
             // （engine/loop.ts: recorder.event(turnId, 'tool.input' | 'tool.output', …)）——
             // 所以入参与出参都挂到【发起它的那个 llm.turn】上，而不是给工具建行。
             pg.traceEvent(spanId, 'tool.input', 'tool:' + tu.name, pg.fmtArg(tu.input));

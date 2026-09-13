@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Skill, collectSkills, skillToTool, TraceRecorder } from '../../src/index.js';
-import type { SkillContext, SkillUnit, ToolRunContext } from '../../src/index.js';
+import type { SkillContext, SkillCapability, ToolRunContext } from '../../src/index.js';
 import { mockClient, endTurnMsg, U } from '../helpers.js';
 
 /** 自造 stop_reason：让受限子运行以「未识别的 stop_reason」失败（loop.error 由 engine 挂） */
@@ -23,15 +23,15 @@ function makeCtx(client: ToolRunContext['client']) {
   return { ctx, recorder };
 }
 
-/** 取容器实例上的唯一 skill 单元 */
-function onlySkill(instance: object): SkillUnit {
-  const units = collectSkills(instance);
-  assert.equal(units.length, 1);
-  return units[0];
+/** 取容器实例上的唯一 skill 能力 */
+function onlySkill(instance: object): SkillCapability {
+  const capabilities = collectSkills(instance);
+  assert.equal(capabilities.length, 1);
+  return capabilities[0];
 }
 
-describe('Skill 单元（ctx.llm 受限子运行）', () => {
-  it('方法体调 ctx.llm 拿到文本；unit span 正常收尾且 llm.turn 递归其下', async () => {
+describe('Skill 能力（ctx.llm 受限子运行）', () => {
+  it('方法体调 ctx.llm 拿到文本；capability span 正常收尾且 llm.turn 递归其下', async () => {
     class Summarizer {
       @Skill({ description: 'd' })
       async summarize(input: { text: string }, ctx: SkillContext): Promise<string> {
@@ -47,14 +47,14 @@ describe('Skill 单元（ctx.llm 受限子运行）', () => {
     assert.equal(out, '[end_turn] 摘要内容');
 
     const trace = recorder.snapshot('ok');
-    const unit = trace.spans.find((s) => s.kind === 'unit')!;
-    assert.equal(unit.status, 'ok');
-    // 受限子运行的回合挂在 unit 下（不双开 run 根）
+    const capability = trace.spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'ok');
+    // 受限子运行的回合挂在 capability 下（不双开 run 根）
     const turn = trace.spans.find((s) => s.kind === 'llm.turn')!;
-    assert.equal(turn.parentSpanId, unit.spanId);
+    assert.equal(turn.parentSpanId, capability.spanId);
   });
 
-  it('受限子运行失败：unit span 挂的是 engine 的丰富 error（type/retryable），不是新造的 Error', async () => {
+  it('受限子运行失败：capability span 挂的是 engine 的丰富 error（type/retryable），不是新造的 Error', async () => {
     class Fragile {
       @Skill({ description: 'd' })
       async go(_input: unknown, ctx: SkillContext): Promise<string> {
@@ -69,13 +69,13 @@ describe('Skill 单元（ctx.llm 受限子运行）', () => {
     // 对主 agent 仍是 is_error 语义（抛错 → engine 包成 tool_result）
     await assert.rejects(async () => tool.run({}, ctx), /unknown_stop_reason/);
 
-    const unit = recorder.snapshot('error').spans.find((s) => s.kind === 'unit')!;
-    assert.equal(unit.status, 'error');
+    const capability = recorder.snapshot('error').spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'error');
     // loop.error 是 { type:'agent_error', retryable:false }（engine 判定的语义）；
     // 若走外层 catch 的 classifyError(new Error(report)) 会退化成 type:'unknown'，
     // 「不可重试的模型侧异常」这个信息就丢了
-    assert.equal(unit.error?.type, 'agent_error');
-    assert.equal(unit.error?.retryable, false);
-    assert.match(unit.error?.message ?? '', /model_context_window_exceeded/);
+    assert.equal(capability.error?.type, 'agent_error');
+    assert.equal(capability.error?.retryable, false);
+    assert.match(capability.error?.message ?? '', /model_context_window_exceeded/);
   });
 });

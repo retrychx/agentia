@@ -208,7 +208,7 @@ describe('usage-guide.md 与源码一致', () => {
     let checked = 0;
     for (const t of tables) {
       if (membershipTypeOf(t.heading)) continue;
-      // 第 0 节「四类单元」表的表头是「单元」，首列非标识符已在解析时过滤
+      // 第 0 节「四类能力」表的表头是「能力」，首列非标识符已在解析时过滤
       for (const name of t.names) {
         checked++;
         if (!exported.has(name)) problems.push(`${name}（在「${t.heading}」表里）`);

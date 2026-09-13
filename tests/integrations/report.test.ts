@@ -4,7 +4,7 @@ import { buildRunReport, mergeRunReports, renderRunReport } from '../../src/inde
 import type { Span, Trace } from '../../src/index.js';
 
 /**
- * G1 调优报告 —— 「哪个单元慢 / 贵 / 爱失败」。
+ * G1 调优报告 —— 「哪个能力慢 / 贵 / 爱失败」。
  * 没有它，面对 budgetTokens / keepToolPairs / maxCostUsd 一堆旋钮不知道该拧哪个。
  */
 
@@ -33,7 +33,7 @@ function traceWith(spans: Span[], over: Partial<Trace> = {}): Trace {
 }
 
 describe('G1 buildRunReport', () => {
-  it('单元按总耗时降序；错误计数、tokens/cost 各归各位', () => {
+  it('能力按总耗时降序；错误计数、tokens/cost 各归各位', () => {
     const trace = traceWith([
       span({
         spanId: 'turn-1',
@@ -48,8 +48,8 @@ describe('G1 buildRunReport', () => {
         ],
       }),
       span({
-        spanId: 'unit-1',
-        kind: 'unit',
+        spanId: 'capability-1',
+        kind: 'capability',
         name: 'researcher',
         attributes: { subagent: 'researcher' },
         startedAt: 200,
@@ -63,20 +63,20 @@ describe('G1 buildRunReport', () => {
     assert.equal(r.durationMs, 500, '根 span 起止');
     assert.equal(r.runs, 1);
     assert.deepEqual(
-      r.units.map((u) => u.unit),
+      r.capabilities.map((u) => u.capability),
       ['tool:search', 'subagent:researcher', 'tool:fetch'],
       '按总耗时降序（200 / 100 / 10）',
     );
-    const search = r.units[0]!;
+    const search = r.capabilities[0]!;
     assert.deepEqual(
       { calls: search.calls, errors: search.errors, total: search.durationMs.total, max: search.durationMs.max },
       { calls: 1, errors: 0, total: 200, max: 200 },
     );
     assert.equal(search.tokens, null, '工具没有 token 语义');
-    const researcher = r.units[1]!;
+    const researcher = r.capabilities[1]!;
     assert.equal(researcher.tokensTotal, 15);
     assert.equal(researcher.costUsd, 0.002);
-    assert.equal(r.units[2]!.errors, 1, 'fetch 失败一次');
+    assert.equal(r.capabilities[2]!.errors, 1, 'fetch 失败一次');
     assert.equal(r.models[0]!.model, 'claude-opus-5');
     assert.equal(r.models[0]!.turns, 1);
     assert.equal(r.models[0]!.tokensTotal, 120);
@@ -101,7 +101,7 @@ describe('G1 buildRunReport', () => {
 
   it('空 trace（只有根）→ 空排行，不抛错', () => {
     const r = buildRunReport(traceWith([]));
-    assert.deepEqual(r.units, []);
+    assert.deepEqual(r.capabilities, []);
     assert.deepEqual(r.models, []);
     assert.equal(r.durationMs, 500);
   });
@@ -138,12 +138,12 @@ describe('G1 mergeRunReports', () => {
     assert.equal(merged.runs, 2);
     assert.equal(merged.traceId, 'merged(2 runs)');
     assert.equal(merged.durationMs, 1000, '两条各 500');
-    const slow = merged.units.find((u) => u.unit === 'tool:slow')!;
+    const slow = merged.capabilities.find((u) => u.capability === 'tool:slow')!;
     assert.equal(slow.calls, 2);
     assert.equal(slow.errors, 1);
     assert.equal(slow.durationMs.total, 350);
     assert.equal(slow.durationMs.max, 300);
-    assert.equal(merged.units[0]!.unit, 'tool:slow', '总耗时最大的排最前');
+    assert.equal(merged.capabilities[0]!.capability, 'tool:slow', '总耗时最大的排最前');
     assert.equal(merged.models[0]!.turns, 2);
   });
 
@@ -190,8 +190,8 @@ describe('G1 renderRunReport（CLI / 日志用）', () => {
     assert.match(text, /未定价/, '未定价模型在 cost 列显式标出');
   });
 
-  it('无单元/模型时给出人话说明（不输出空表头）', () => {
+  it('无能力/模型时给出人话说明（不输出空表头）', () => {
     const text = renderRunReport(buildRunReport(traceWith([])));
-    assert.match(text, /没有可归因的单元\/模型/);
+    assert.match(text, /没有可归因的能力\/模型/);
   });
 });

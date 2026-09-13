@@ -1,5 +1,5 @@
-import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
-import type { UnitDecoratorContext } from './collect.js';
+import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
+import type { CapabilityDecoratorContext } from './collect.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
@@ -10,16 +10,16 @@ import { classifyError } from '../engine/errors.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 
 /**
- * Agentia —— Skill 单元（spec §3：指令 + 脚本，受限子运行，回产物/结论）。
+ * Agentia —— Skill 能力（spec §3：指令 + 脚本，受限子运行，回产物/结论）。
  *
  * 与 @SubAgent 的可感知区别：
  * - 子 agent = **模型自主循环**：你只给 role/任务/工具，走几步、何时停由模型决定；
  * - Skill     = **代码控制的流程**：方法体是确定性脚本，把“要不要调模型、调几次、
  *   拿结果怎么算”写死在代码里 —— 模型调用只在你显式 `ctx.llm()` 时发生（受限子运行），
- *   每次都在 skill 自己的 `unit` span 下开 llm.turn 记账，中间结果可继续加工，
+ *   每次都在 skill 自己的 `capability` span 下开 llm.turn 记账，中间结果可继续加工，
  *   方法返回值即产物/结论，以 tool_result 交回主 agent。
  *
- * trace：skill = 主 trace 里一个 `unit` span（attribute `skill`），内部 ctx.llm() 的
+ * trace：skill = 主 trace 里一个 `capability` span（attribute `skill`），内部 ctx.llm() 的
  * llm.turn 递归成它的子孙 —— 与 @SubAgent 同款 parentSpanId 传播，不双开 run 根。
  */
 export interface SkillSpec {
@@ -57,11 +57,11 @@ export interface SkillLlmResult {
 export interface SkillContext {
   /** 本次 skill 的缺省模型（spec.model 或 undefined → engine 缺省） */
   readonly model?: string;
-  /** 受限子运行：每次调用在 skill unit span 下开一轮独立 agent 循环（无工具则纯文本）。 */
+  /** 受限子运行：每次调用在 skill capability span 下开一轮独立 agent 循环（无工具则纯文本）。 */
   llm(opts: SkillLlmOptions): Promise<SkillLlmResult>;
 }
 
-export interface SkillUnit {
+export interface SkillCapability {
   name: string;
   description: string;
   inputSchema: JsonSchema;
@@ -81,19 +81,19 @@ const EMPTY_SCHEMA: JsonSchema = {
 
 /** 方法装饰器：登记 skill spec。被装饰方法体由运行时以 (input, skillCtx) 调用。 */
 export function Skill(spec: SkillSpec) {
-  return function (value: Function, context: UnitDecoratorContext): void {
+  return function (value: Function, context: CapabilityDecoratorContext): void {
     assertMethodTarget(context, '@Skill');
     skillSpecs.set(value, spec);
   };
 }
 
-/** 把容器实例上所有 @Skill 方法收集成 SkillUnit[]（沿原型链）。 */
-export function collectSkills(instance: object): SkillUnit[] {
+/** 把容器实例上所有 @Skill 方法收集成 SkillCapability[]（沿原型链）。 */
+export function collectSkills(instance: object): SkillCapability[] {
   // 动态查表而非捕获 fn：子类「未装饰地 override」时 spec 继承自父类，
   // 实现必须取实例上的（与 @Tool 的 run 同款），否则子类 override 被静默绕过。
   const inst = instance as Record<string | symbol, unknown>;
   return scanDecoratedMethods(instance, skillSpecs).map(({ key, spec }) => ({
-    name: unitName(spec, key, '@Skill'),
+    name: capabilityName(spec, key, '@Skill'),
     description: spec.description,
     inputSchema: spec.schema ?? EMPTY_SCHEMA,
     spec,
@@ -103,20 +103,20 @@ export function collectSkills(instance: object): SkillUnit[] {
 }
 
 /**
- * 把 SkillUnit 变成主 agent 菜单里的 AgentTool。
+ * 把 SkillCapability 变成主 agent 菜单里的 AgentTool。
  * run(input, ctx) 需要 ToolRunContext（engine 调用时必有）；手动直调会抛错提示。
- * 开 `unit` span → 构造 SkillContext（llm 闭包挂 unit 下）→ 执行方法体 →
- * 返回值字符串化交回；抛错关 unit error 后重抛（引擎包成 is_error，不中断 run）。
+ * 开 `capability` span → 构造 SkillContext（llm 闭包挂 capability 下）→ 执行方法体 →
+ * 返回值字符串化交回；抛错关 capability error 后重抛（引擎包成 is_error，不中断 run）。
  */
 export function skillToTool(
-  unit: SkillUnit,
+  capability: SkillCapability,
   resolveTools: () => AgentTool[],
 ): AgentTool {
-  const { name, spec } = unit;
+  const { name, spec } = capability;
   return {
     name,
     description: spec.description,
-    inputSchema: unit.inputSchema,
+    inputSchema: capability.inputSchema,
     run: async (input: unknown, ctx?: ToolRunContext): Promise<unknown> => {
       if (!ctx) {
         throw new Error(
@@ -124,13 +124,13 @@ export function skillToTool(
         );
       }
       const recorder = ctx.recorder;
-      const unitId = recorder.begin('unit', name, ctx.parentSpanId);
-      recorder.setAttribute(unitId, 'skill', name);
+      const capabilityId = recorder.begin('capability', name, ctx.parentSpanId);
+      recorder.setAttribute(capabilityId, 'skill', name);
       let closed = false;
       const close = (patch: { status: 'ok' | 'error'; error?: SpanError }): void => {
         if (closed) return;
         closed = true;
-        recorder.end(unitId, patch);
+        recorder.end(capabilityId, patch);
       };
 
       const skillCtx: SkillContext = {
@@ -156,7 +156,7 @@ export function skillToTool(
             messages,
             tools: spec.tools?.length ? resolveTools() : [],
             recorder,
-            parentSpanId: unitId,
+            parentSpanId: capabilityId,
             signal: ctx.signal,
             // 价格覆盖透传（F1）：子循环用同一模型也要能算成本
             priceOverrides: ctx.priceOverrides,
@@ -170,7 +170,7 @@ export function skillToTool(
               message: report,
               retryable: true,
             };
-            // 先把丰富错误挂到 unit span（loop.error 的 type/retryable 比新造的
+            // 先把丰富错误挂到 capability span（loop.error 的 type/retryable 比新造的
             // Error 信息量大），再抛出走外层 catch 的通用收尾 —— 外层 close 幂等，
             // 不会覆盖这里写的 error（与 subagent.ts 同款）。
             close({ status: 'error', error });
@@ -181,7 +181,7 @@ export function skillToTool(
       };
 
       try {
-        const out = await unit.invoke(input ?? {}, skillCtx);
+        const out = await capability.invoke(input ?? {}, skillCtx);
         close({ status: 'ok' });
         return out;
       } catch (e) {

@@ -1,7 +1,7 @@
 /**
  * `agentia report <file.jsonl>` —— 从 trace 落盘文件生成**调优报告**（G1 的 CLI 薄壳）。
  *
- * 回答的是调优第一步的问题：「**哪个单元慢 / 贵 / 爱失败**」—— 有了它才知道该拧哪个旋钮
+ * 回答的是调优第一步的问题：「**哪个能力慢 / 贵 / 爱失败**」—— 有了它才知道该拧哪个旋钮
  * （budgetTokens / keepToolPairs / maxCostUsd / toolTimeoutMs …）。
  *
  * 输入格式（每行一个 JSON，两种都收）：
@@ -15,7 +15,7 @@
 import { readFile } from 'node:fs/promises';
 
 interface SummaryRow {
-  unit: string;
+  capability: string;
   calls: number;
   errors: number;
   totalMs: number;
@@ -43,7 +43,7 @@ function extractTrace(v: unknown): TraceLike | null {
   return null;
 }
 
-/** 打印一张按总耗时降序的单元排行（跨多行记录时按单元合并） */
+/** 打印一张按总耗时降序的能力排行（跨多行记录时按能力合并） */
 export async function reportCommand(args: string[]): Promise<number> {
   const file = args[0];
   // 失败一律**抛错**（而不是就地设 process.exitCode）—— 本命令是异步的，
@@ -89,8 +89,8 @@ export async function reportCommand(args: string[]): Promise<number> {
   for (const t of traces) {
     if (t.status !== 'error') okRuns += 1;
     for (const row of summarizeTrace(t)) {
-      const cur = merged.get(row.unit);
-      if (!cur) merged.set(row.unit, { ...row });
+      const cur = merged.get(row.capability);
+      if (!cur) merged.set(row.capability, { ...row });
       else {
         cur.calls += row.calls;
         cur.errors += row.errors;
@@ -109,11 +109,11 @@ export async function reportCommand(args: string[]): Promise<number> {
   console.log(`runs       ${traces.length}（失败 ${traces.length - okRuns}）${badLines > 0 ? `  ·  跳过无法解析 ${badLines} 行` : ''}`);
   console.log('');
   if (rows.length === 0) {
-    console.log('（没有可归因的单元：这些 trace 里既没有 unit span，也没有 tool.output 事件）');
+    console.log('（没有可归因的能力：这些 trace 里既没有 capability span，也没有 tool.output 事件）');
     return 0;
   }
   console.log(
-    `${pad('unit', 34)} ${pad('calls', 6)} ${pad('err', 5)} ${pad('total', 9)} ${pad('max', 9)} ${pad('tokens', 9)} ${pad('cost', 12)}`,
+    `${pad('capability', 34)} ${pad('calls', 6)} ${pad('err', 5)} ${pad('total', 9)} ${pad('max', 9)} ${pad('tokens', 9)} ${pad('cost', 12)}`,
   );
   let total = 0;
   let errs = 0;
@@ -121,13 +121,13 @@ export async function reportCommand(args: string[]): Promise<number> {
     total += r.totalMs;
     errs += r.errors;
     console.log(
-      `${pad(r.unit, 34)} ${pad(String(r.calls), 6)} ${pad(String(r.errors), 5)} ` +
+      `${pad(r.capability, 34)} ${pad(String(r.calls), 6)} ${pad(String(r.errors), 5)} ` +
         `${pad(fmtMs(r.totalMs), 9)} ${pad(fmtMs(r.maxMs), 9)} ` +
         `${pad(r.tokens != null ? String(r.tokens) : '-', 9)} ` +
         `${pad(r.costUsd != null ? r.costUsd.toFixed(6) : '-', 12)}`,
     );
   }
   console.log('');
-  console.log(`合计耗时 ${fmtMs(total)}  ·  失败 ${errs} 次  ·  单元 ${rows.length} 个`);
+  console.log(`合计耗时 ${fmtMs(total)}  ·  失败 ${errs} 次  ·  能力 ${rows.length} 个`);
   return 0;
 }

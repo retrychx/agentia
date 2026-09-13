@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /** agentia CLI 入口：手写参数解析 + 命令分发（零依赖） */
 import { createProject } from './create.js';
-import { generateUnit } from './generate.js';
-import { isUnitType, isValidName, UNIT_TYPES } from './templates.js';
+import { generateCapability } from './generate.js';
+import { isCapabilityType, isValidName, CAPABILITY_TYPES } from './templates.js';
 import { RegistryError } from './registry.js';
 import { devServer } from './dev.js';
 import { doctor } from './doctor.js';
@@ -13,12 +13,12 @@ const USAGE = `agentia —— Agentia 框架命令行工具
 
 用法：
   agentia create <name> [--dir <parent>]   创建项目脚手架（目录 <parent|当前目录>/<name>/）
-  agentia g <type> <name>                  在当前目录生成单元（别名：generate）
-                                           type: ${UNIT_TYPES.join(' | ')}
+  agentia g <type> <name>                  在当前目录生成能力（别名：generate）
+                                           type: ${CAPABILITY_TYPES.join(' | ')}
   agentia dev                              启动开发模式（tsx watch 热重载 + 本地 inspector 面板）
   agentia doctor                           装配体检（未登记/悬空单板/命名规范/重复条目）
-  agentia report <trace.jsonl>             从 trace 落盘文件生成调优报告（单元耗时/成本/错误率排行）
-  agentia add <pkg>                        安装第三方单元包并登记到 units.ts
+  agentia report <trace.jsonl>             从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
+  agentia add <pkg>                        安装第三方能力包并登记到 src/registry.ts
   agentia --help                           显示本帮助
 
 name 规则：小写字母开头的小写 kebab-case（如 hello、doc-reviewer）
@@ -65,16 +65,16 @@ function main(argv: string[]): number {
   if (command === 'g' || command === 'generate') {
     const [type, name, ...extra] = rest;
     if (type === undefined || name === undefined || extra.length > 0) {
-      return fail(`用法：agentia g <type> <name>（type: ${UNIT_TYPES.join(' | ')}）`);
+      return fail(`用法：agentia g <type> <name>（type: ${CAPABILITY_TYPES.join(' | ')}）`);
     }
-    if (!isUnitType(type)) {
-      return fail(`未知单元类型「${type}」，可选：${UNIT_TYPES.join(' | ')}`);
+    if (!isCapabilityType(type)) {
+      return fail(`未知能力类型「${type}」，可选：${CAPABILITY_TYPES.join(' | ')}`);
     }
     if (!checkName(name)) {
-      return fail(`非法单元名「${name}」：需匹配小写 kebab-case（如 doc-reviewer）`);
+      return fail(`非法能力名「${name}」：需匹配小写 kebab-case（如 doc-reviewer）`);
     }
     try {
-      return generateUnit(type, name);
+      return generateCapability(type, name);
     } catch (err) {
       if (err instanceof RegistryError) return fail(err.message);
       throw err;

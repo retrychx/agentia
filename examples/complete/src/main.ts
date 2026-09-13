@@ -2,7 +2,7 @@
  * Agentia 完整示例 —— 一个「可上线」的 agent 服务该有的样子。
  *
  * 覆盖框架的完整表面：
- *   装配      显式注册表 + 四类单元（@Tool / @Skill / @SubAgent / @Prompt）
+ *   装配      显式注册表 + 四类能力（@Tool / @Skill / @SubAgent / @Prompt）
  *   观测      指标 + 采样 + 脱敏 + 落库 + 结构化日志（见 observability.ts）
  *   触发      POST /run（同步/SSE）· POST /tasks（异步）· Scheduler（定时）
  *   宿主      鉴权缝 + 并发闸门 + /healthz + 优雅停机 + 重启续跑
@@ -28,7 +28,7 @@ import {
 } from '@migor/agentia';
 import type { AppCallable } from '@migor/agentia';
 import { buildObservability } from './observability.js';
-import { providers } from './units.js';
+import { providers } from './registry.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const DB_PATH = process.env.AGENTIA_DB ?? 'agentia.db';
@@ -42,7 +42,7 @@ if (DB_PATH !== ':memory:') mkdirSync(dirname(DB_PATH), { recursive: true });
 // —— 1) 观测栈 ——
 const obs = buildObservability({ dbPath: DB_PATH, sampleRate: SAMPLE_RATE });
 
-// —— 2) 装配：四类单元 + 全观测栈 ——
+// —— 2) 装配：四类能力 + 全观测栈 ——
 const app = await createApp({
   name: 'complete-example',
   providers,

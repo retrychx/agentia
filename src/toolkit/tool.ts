@@ -1,6 +1,6 @@
 import type { AgentTool, JsonSchema, SchemaInput } from '../core/tool.js';
-import { assertMethodTarget, scanDecoratedMethods, unitName } from './collect.js';
-import type { UnitDecoratorContext } from './collect.js';
+import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
+import type { CapabilityDecoratorContext } from './collect.js';
 
 /**
  * Agentia —— 声明式工具层（spec §4：标准装饰器 + 显式 DI，无 param 反射）。
@@ -48,7 +48,7 @@ const toolSpecs = new WeakMap<Function, ToolSpec>();
 export function Tool<S extends JsonSchema = JsonSchema, O = any>(spec: ToolSpec<S>) {
   return function (
     value: (input: SchemaInput<S>) => O | Promise<O>,
-    context: UnitDecoratorContext,
+    context: CapabilityDecoratorContext,
   ): void {
     assertMethodTarget(context, '@Tool');
     // spec 的 schema 在类型上更精确（S），登记表按擦除后的形态存（与 collect 一致）
@@ -65,7 +65,7 @@ export function collectTools(instance: object): AgentTool[] {
 
 function buildTool(instance: object, key: string | symbol, spec: ToolSpec): AgentTool {
   return {
-    name: unitName(spec, key, '@Tool'),
+    name: capabilityName(spec, key, '@Tool'),
     description: spec.description,
     inputSchema: spec.schema,
     ...(spec.strict ? { strict: true } : {}),

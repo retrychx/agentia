@@ -3,13 +3,13 @@ import type { Span, Trace, Usage } from '../core/trace.js';
 /**
  * Agentia —— 调优报告（G1）。
  *
- * 把一条（或多条）`Trace` 变成「**哪个单元慢 / 贵 / 爱失败**」的排行 —— 这是"可调优"
+ * 把一条（或多条）`Trace` 变成「**哪个能力慢 / 贵 / 爱失败**」的排行 —— 这是"可调优"
  * 的依据：没有它，用户面对一堆旋钮（budgetTokens / keepToolPairs / maxCostUsd …）
  * 不知道该拧哪一个。
  *
  * 数据全部从既有 trace 派生，**纯函数、无副作用、不联网**：
- * - 单元级：`tool` 读 turn 上的 `tool.output` 事件（E1 补的 `durationMs`/`ok`），
- *   `skill`/`subagent` 读 `unit` span（tracer 已聚合其子孙 usage）；
+ * - 能力级：`tool` 读 turn 上的 `tool.output` 事件（E1 补的 `durationMs`/`ok`），
+ *   `skill`/`subagent` 读 `capability` span（tracer 已聚合其子孙 usage）；
  * - 模型级：读 `llm.turn` span（`name` 即模型 id）。
  *
  * ⚠️ **单条 run 的分位没有统计意义**（样本常 < 5）：报告以 `total` / `max` 为主，
@@ -28,9 +28,9 @@ export interface DurationReport {
   p95: number;
 }
 
-export interface UnitReport {
+export interface CapabilityReport {
   /** `${kind}:${name}`，如 `tool:search` / `subagent:researcher` */
-  unit: string;
+  capability: string;
   calls: number;
   errors: number;
   durationMs: DurationReport;
@@ -69,7 +69,7 @@ export interface RunReport {
   totalUsage: Usage;
   models: ModelReport[];
   /** 按 `durationMs.total` 降序（并列时按 calls 降序） */
-  units: UnitReport[];
+  capabilities: CapabilityReport[];
   /** 价格表外、成本算不出来的模型（成本护栏失效的显式信号） */
   unpricedModels: string[];
   /** 参与合并的 run 数（单条报告为 1） */
@@ -111,7 +111,7 @@ function addUsage(into: Usage, add: Usage): void {
   if (add.costEstimate != null) into.costEstimate = (into.costEstimate ?? 0) + add.costEstimate;
 }
 
-interface UnitAcc {
+interface CapabilityAcc {
   calls: number;
   errors: number;
   durations: number[];
@@ -119,20 +119,20 @@ interface UnitAcc {
   costUsd: number | null;
 }
 
-function unitKindOf(span: Span): string {
+function capabilityKindOf(span: Span): string {
   if (span.attributes.skill !== undefined) return 'skill';
   if (span.attributes.subagent !== undefined) return 'subagent';
-  return 'unit';
+  return 'capability';
 }
 
 /** 从一条 Trace 生成报告（纯函数） */
 export function buildRunReport(trace: Trace): RunReport {
-  const units = new Map<string, UnitAcc>();
-  const acc = (unit: string): UnitAcc => {
-    let a = units.get(unit);
+  const capabilities = new Map<string, CapabilityAcc>();
+  const acc = (capability: string): CapabilityAcc => {
+    let a = capabilities.get(capability);
     if (!a) {
       a = { calls: 0, errors: 0, durations: [], tokens: null, costUsd: null };
-      units.set(unit, a);
+      capabilities.set(capability, a);
     }
     return a;
   };
@@ -141,8 +141,8 @@ export function buildRunReport(trace: Trace): RunReport {
   const unpriced = new Set<string>();
 
   for (const span of trace.spans) {
-    if (span.kind === 'unit') {
-      const a = acc(`${unitKindOf(span)}:${span.name}`);
+    if (span.kind === 'capability') {
+      const a = acc(`${capabilityKindOf(span)}:${span.name}`);
       a.calls++;
       if (span.status === 'error') a.errors++;
       if (span.endedAt !== undefined) a.durations.push(Math.max(0, span.endedAt - span.startedAt));
@@ -194,8 +194,8 @@ export function buildRunReport(trace: Trace): RunReport {
     }
   }
 
-  const unitReports: UnitReport[] = [...units.entries()].map(([unit, a]) => ({
-    unit,
+  const capabilityReports: CapabilityReport[] = [...capabilities.entries()].map(([capability, a]) => ({
+    capability,
     calls: a.calls,
     errors: a.errors,
     durationMs: durationReport(a.durations),
@@ -205,7 +205,7 @@ export function buildRunReport(trace: Trace): RunReport {
     durations: [...a.durations],
   }));
   // 按总耗时降序 —— 排在最前的是「最该看的那个」
-  unitReports.sort((x, y) => y.durationMs.total - x.durationMs.total || y.calls - x.calls);
+  capabilityReports.sort((x, y) => y.durationMs.total - x.durationMs.total || y.calls - x.calls);
 
   const modelReports: ModelReport[] = [...models.values()].map((m) => ({
     ...m,
@@ -221,13 +221,13 @@ export function buildRunReport(trace: Trace): RunReport {
     durationMs: root && root.endedAt !== undefined ? Math.max(0, root.endedAt - root.startedAt) : 0,
     totalUsage: { ...trace.totalUsage },
     models: modelReports,
-    units: unitReports,
+    capabilities: capabilityReports,
     unpricedModels: [...unpriced].sort(),
     runs: 1,
   };
 }
 
-/** 汇总多条报告（跨 run 的单元排行才有统计意义）。空数组 → 空报告。 */
+/** 汇总多条报告（跨 run 的能力排行才有统计意义）。空数组 → 空报告。 */
 export function mergeRunReports(reports: readonly RunReport[]): RunReport {
   const total: RunReport = {
     traceId: `merged(${reports.length} runs)`,
@@ -235,11 +235,11 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
     durationMs: 0,
     totalUsage: emptyUsage(),
     models: [],
-    units: [],
+    capabilities: [],
     unpricedModels: [],
     runs: reports.length,
   };
-  const units = new Map<string, UnitAcc>();
+  const capabilities = new Map<string, CapabilityAcc>();
   const models = new Map<string, ModelReport>();
   const unpriced = new Set<string>();
 
@@ -267,11 +267,11 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
       acc.unpricedTurns += m.unpricedTurns;
       acc.durations.push(...m.durations);
     }
-    for (const u of r.units) {
-      let acc = units.get(u.unit);
+    for (const u of r.capabilities) {
+      let acc = capabilities.get(u.capability);
       if (!acc) {
         acc = { calls: 0, errors: 0, durations: [], tokens: null, costUsd: null };
-        units.set(u.unit, acc);
+        capabilities.set(u.capability, acc);
       }
       acc.calls += u.calls;
       acc.errors += u.errors;
@@ -285,8 +285,8 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
     for (const m of r.unpricedModels) unpriced.add(m);
   }
 
-  total.units = [...units.entries()].map(([unit, a]) => ({
-    unit,
+  total.capabilities = [...capabilities.entries()].map(([capability, a]) => ({
+    capability,
     calls: a.calls,
     errors: a.errors,
     durationMs: durationReport(a.durations),
@@ -295,7 +295,7 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
     costUsd: a.costUsd,
     durations: [...a.durations],
   }));
-  total.units.sort((x, y) => y.durationMs.total - x.durationMs.total || y.calls - x.calls);
+  total.capabilities.sort((x, y) => y.durationMs.total - x.durationMs.total || y.calls - x.calls);
   total.models = [...models.values()].map((m) => ({
     ...m,
     tokensTotal: usageTotal(m.tokens),
@@ -333,23 +333,23 @@ export function renderRunReport(report: RunReport): string {
     }
   }
 
-  if (report.units.length > 0) {
+  if (report.capabilities.length > 0) {
     lines.push('');
     lines.push(
-      `${pad('unit', 32)} ${pad('calls', 6)} ${pad('err', 5)} ${pad('total ms', 9)} ${pad('max ms', 8)} ${pad('tokens', 8)} ${pad('cost', 10)}`,
+      `${pad('capability', 32)} ${pad('calls', 6)} ${pad('err', 5)} ${pad('total ms', 9)} ${pad('max ms', 8)} ${pad('tokens', 8)} ${pad('cost', 10)}`,
     );
-    for (const x of report.units) {
+    for (const x of report.capabilities) {
       lines.push(
-        `${pad(x.unit, 32)} ${pad(String(x.calls), 6)} ${pad(String(x.errors), 5)} ` +
+        `${pad(x.capability, 32)} ${pad(String(x.calls), 6)} ${pad(String(x.errors), 5)} ` +
           `${pad(String(x.durationMs.total), 9)} ${pad(String(x.durationMs.max), 8)} ` +
           `${pad(x.tokensTotal != null ? String(x.tokensTotal) : '-', 8)} ` +
           `${pad(x.costUsd != null ? x.costUsd.toFixed(6) : '-', 10)}`,
       );
     }
   }
-  if (report.units.length === 0 && report.models.length === 0) {
+  if (report.capabilities.length === 0 && report.models.length === 0) {
     lines.push('');
-    lines.push('（没有可归因的单元/模型：trace 里没有 unit span、llm.turn span 或 tool.output 事件）');
+    lines.push('（没有可归因的能力/模型：trace 里没有 capability span、llm.turn span 或 tool.output 事件）');
   }
   return lines.join('\n') + '\n';
 }

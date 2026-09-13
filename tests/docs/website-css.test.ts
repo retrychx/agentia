@@ -98,6 +98,6 @@ describe('官网 API 页表格版式不变量', () => {
     );
     assert.match(card.body, /\.page-api \.doc-table tbody tr\s*\{[^}]*display:\s*block/, '行未变成块（卡片）');
     assert.match(card.body, /\.page-api \.doc-table\s*\{[^}]*min-width:\s*0/, '卡片模式下未解除表格 min-width');
-    assert.match(card.body, /\.page-api \.doc-table td\s*\{[^}]*display:\s*block/, '单元格未变成块');
+    assert.match(card.body, /\.page-api \.doc-table td\s*\{[^}]*display:\s*block/, '能力格未变成块');
   });
 });

@@ -142,7 +142,7 @@ function expectExposed(raw: string): string {
   return `mcp_time_${raw.trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}`;
 }
 
-/** doctor 只做静态体检（不 import 用户代码）—— 造一个登记了 MCP 单元的项目，看它认不认 */
+/** doctor 只做静态体检（不 import 用户代码）—— 造一个登记了 MCP 能力的项目，看它认不认 */
 function doctorDemo(): void {
   const cli = join(process.cwd(), 'packages', 'cli', 'dist', 'cli.js');
   if (!existsSync(cli)) {
@@ -150,15 +150,15 @@ function doctorDemo(): void {
     return;
   }
   const dir = mkdtempSync(join(tmpdir(), 'agentia-mcp-'));
-  mkdirSync(join(dir, 'units', 'mcp-time'), { recursive: true });
+  mkdirSync(join(dir, 'src', 'tools', 'mcp-time'), { recursive: true });
   writeFileSync(
-    join(dir, 'units', 'mcp-time', 'index.ts'),
+    join(dir, 'src', 'tools', 'mcp-time', 'index.ts'),
     [
       "import { mcpTools } from '@migor/agentia';",
       "import type { AgentTool, McpClientLike } from '@migor/agentia';",
       '',
       '/** MCP server 的工具经 mcpTools() 映射成框架的 AgentTool[]（装配时塞进 AppOptions.tools） */',
-      'export class McpTimeUnit {',
+      'export class McpTimeCapability {',
       '  private readonly client: McpClientLike;',
       '  constructor(client: McpClientLike) {',
       '    this.client = client;',
@@ -171,11 +171,11 @@ function doctorDemo(): void {
     ].join('\n'),
   );
   writeFileSync(
-    join(dir, 'units.ts'),
+    join(dir, 'src', 'registry.ts'),
     [
-      "import { McpTimeUnit } from './units/mcp-time/index.js';",
+      "import { McpTimeCapability } from './tools/mcp-time/index.js';",
       '',
-      'export const providers = [{ provide: \'mcp-time\', useClass: McpTimeUnit }];',
+      'export const providers = [{ provide: \'mcp-time\', useClass: McpTimeCapability }];',
       '',
     ].join('\n'),
   );
@@ -188,7 +188,7 @@ function doctorDemo(): void {
   }
   console.log('  ── agentia doctor（临时项目）──');
   for (const line of out.trim().split('\n')) console.log(`    ${line}`);
-  check('doctor 认到 MCP 单元已登记且入口齐全', /mcp-time：已登记且入口齐全/.test(out));
+  check('doctor 认到 MCP 能力已登记且入口齐全', /src\/tools\/mcp-time：已登记且入口齐全/.test(out));
 }
 
 // ───────────────────────────── 主流程 ─────────────────────────────
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
   check('metrics 记到了 token（20+8+30+12=70）', snap.tokens === 70, `tokens=${snap.tokens}`);
   check('metrics 记到了耗时样本', /agentia_run_duration_ms_count 1/.test(metricsText));
 
-  console.log('\n== 6. agentia doctor 认不认这个 MCP 单元 ==');
+  console.log('\n== 6. agentia doctor 认不认这个 MCP 能力 ==');
   doctorDemo();
 
   mcp.close();

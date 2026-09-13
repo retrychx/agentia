@@ -9,7 +9,7 @@
       <a href="#integrations">integrations · MCP 与指标</a>
       <a href="#eval">eval · 回归断言</a>
       <a href="#container">container · 显式 DI</a>
-      <a href="#toolkit">toolkit · 单元与装配</a>
+      <a href="#toolkit">toolkit · 能力与装配</a>
     </aside>
 
     <div class="docs-content">
@@ -24,7 +24,7 @@
           <span class="api-chip"><b>173</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 运行时依赖</span>
-          <span class="api-chip"><b>4</b> 类单元</span>
+          <span class="api-chip"><b>4</b> 类能力</span>
         </div>
       </header>
 
@@ -37,25 +37,25 @@
         <a class="layer-card" href="#integrations"><span class="lc-k">INTEGRATIONS</span><span class="lc-n">MCP 与指标</span></a>
         <a class="layer-card" href="#eval"><span class="lc-k">EVAL</span><span class="lc-n">回归断言</span></a>
         <a class="layer-card" href="#container"><span class="lc-k">CONTAINER</span><span class="lc-n">显式 DI</span></a>
-        <a class="layer-card" href="#toolkit"><span class="lc-k">TOOLKIT</span><span class="lc-n">单元与装配</span></a>
+        <a class="layer-card" href="#toolkit"><span class="lc-k">TOOLKIT</span><span class="lc-n">能力与装配</span></a>
       </nav>
 
       <section id="core">
         <h2>core · 数据模型</h2>
-        <p>core 层是零依赖的数据模型与结构面：四类单元最终都编译成 <code>AgentTool</code>，一次 run 沉淀为一条 <code>Trace</code>。</p>
+        <p>core 层是零依赖的数据模型与结构面：四类能力最终都编译成 <code>AgentTool</code>，一次 run 沉淀为一条 <code>Trace</code>。</p>
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>AgentTool&lt;I, O&gt;</td><td><code>{ name; description; inputSchema; strict?; run(input: I, ctx?: ToolRunContext) }</code></td><td>模型可见工具的最小结构面。run 抛错被包成 is_error 的 tool_result 回给模型，run 不中断。</td></tr>
             <tr><td>JsonSchema</td><td><code>{ type; description?; properties?; required?; additionalProperties?; … }</code></td><td>工具 input_schema 的 JSON Schema 子集（v1 裸 schema，不依赖 zod）。</td></tr>
             <tr><td>ModelClient</td><td><code>{ messages.stream(params) → { on('text', cb); finalMessage() } }</code></td><td>engine 对模型端的最小结构面；Anthropic SDK 天然满足，其他 provider 适配成同一形态。params 含可选 <code>signal</code>（取消传播）。</td></tr>
-            <tr><td>ToolRunContext</td><td><code>{ client; recorder; parentSpanId; signal? }</code></td><td>engine 调用每个工具时注入的执行上下文，供子单元把嵌套 span 挂进当前 trace；signal 由工具自行决定是否尊重。</td></tr>
-            <tr><td>RecorderBackend</td><td><code>begin / end / event / setAttribute / snapshot</code></td><td>TraceRecorder 面向子单元的最小记账面（core 不依赖 engine）。</td></tr>
-            <tr><td>Trace</td><td><code>{ traceId; rootSpanId; spans: Span[]; status; totalUsage }</code></td><td>一次 run == 一条 trace（traceId == runId）；totalUsage 只累加 llm.turn span（unit 的 usage 是子孙聚合，仅供展示）。</td></tr>
-            <tr><td>Span</td><td><code>{ spanId; parentSpanId; kind; name; startedAt; endedAt?; status; error?; usage?; attributes; events }</code></td><td>调用树节点；unit 名为 <code>${unitType}:${unitName}</code>，llm.turn 名为模型 id。</td></tr>
+            <tr><td>ToolRunContext</td><td><code>{ client; recorder; parentSpanId; signal? }</code></td><td>engine 调用每个工具时注入的执行上下文，供子能力把嵌套 span 挂进当前 trace；signal 由工具自行决定是否尊重。</td></tr>
+            <tr><td>RecorderBackend</td><td><code>begin / end / event / setAttribute / snapshot</code></td><td>TraceRecorder 面向子能力的最小记账面（core 不依赖 engine）。</td></tr>
+            <tr><td>Trace</td><td><code>{ traceId; rootSpanId; spans: Span[]; status; totalUsage }</code></td><td>一次 run == 一条 trace（traceId == runId）；totalUsage 只累加 llm.turn span（capability 的 usage 是子孙聚合，仅供展示）。</td></tr>
+            <tr><td>Span</td><td><code>{ spanId; parentSpanId; kind; name; startedAt; endedAt?; status; error?; usage?; attributes; events }</code></td><td>调用树节点；capability 名为 <code>${capabilityType}:${capabilityName}</code>，llm.turn 名为模型 id。</td></tr>
             <tr><td>Usage</td><td><code>{ inputTokens; outputTokens; cacheReadTokens; cacheCreationTokens; costEstimate? }</code></td><td>span 聚合用量；成本由 token × 单价表估算。</td></tr>
-            <tr><td>SpanKind</td><td><code>'run' | 'unit' | 'llm.turn'</code></td><td>span 层级：整次运行 / 单元调用（仅 skill 与 subagent 建）/ 每次模型往返。普通工具与 @Prompt 只记 turn 上的事件，不建 span。</td></tr>
-            <tr><td>UnitType</td><td><code>'tool' | 'skill' | 'prompt' | 'subagent'</code></td><td>四类单元，共用命名空间。</td></tr>
+            <tr><td>SpanKind</td><td><code>'run' | 'capability' | 'llm.turn'</code></td><td>span 层级：整次运行 / 能力调用（仅 skill 与 subagent 建）/ 每次模型往返。普通工具与 @Prompt 只记 turn 上的事件，不建 span。</td></tr>
+            <tr><td>CapabilityType</td><td><code>'tool' | 'skill' | 'prompt' | 'subagent'</code></td><td>四类能力，共用命名空间。</td></tr>
             <tr><td>SpanEvent</td><td><code>{ time; name; body }</code></td><td>span 上的结构化事件（如 tool.input / tool.output / compaction / budget.exceeded）。</td></tr>
             <tr><td>SpanError</td><td><code>{ type; message; retryable }</code></td><td>错误分类；retryable 标记 429 / 5xx / 网络类可安全重试（重试逻辑消费它）。</td></tr>
             <tr><td>SpanStatus / SpanId / TraceId</td><td><code>'ok' | 'error'</code> / <code>string</code> / <code>string</code></td><td>基础类型别名。</td></tr>
@@ -212,15 +212,15 @@
             <tr><td>McpToolInfo</td><td><code>{ name; description?; inputSchema? }</code></td><td>tools/list 条目的结构面子集；inputSchema 已是 JSON Schema → 原样当 input_schema 用。</td></tr>
             <tr><td>McpToolsOptions</td><td><code>{ prefix?; server?; timeoutMs?=60000 }</code></td><td>缺省前缀 <code>mcp_&lt;server&gt;_</code>（没给 server 时 <code>mcp_</code>）；timeoutMs 是单次调用超时（放弃等待，非取消）。</td></tr>
             <tr><td>MCP_DEFAULT_TIMEOUT_MS</td><td><code>60000</code></td><td>桥的缺省单次调用超时。</td></tr>
-            <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。三个维度都从既有 trace 派生（<strong>不用埋点</strong>）：run 级、<strong>单元级</strong>（每个 tool/skill/subagent 的调用数、失败数、耗时、token、成本 —— 工具读 turn 上的 <code>tool.output</code> 事件，skill/subagent 读 unit span）、模型级（按模型归因，另出 <code>model_unpriced_turns_total</code>）。</td></tr>
-            <tr><td>MetricsSink</td><td><code>TraceSink &amp; { snapshot(); render(); flush(); stop(); reset() }</code></td><td>snapshot 给数值（含 <code>units</code> / <code>models</code> / <code>droppedUnits</code>），render 给 Prometheus 文本（<code>/metrics</code> 直接回它），flush 主动导出一次（OTLP 模式），stop 停掉定时导出，reset 清空累计。</td></tr>
-            <tr><td>MetricsSinkOptions</td><td><code>{ export?='prometheus' | 'otlp'; endpoint?; intervalMs?=60000; resourceAttributes?; serviceName?; onExportError?; windowSize?=1024; prefix?='agentia_'; labelMode?='unit' | 'kind' | 'none'; maxUnits?=200; buckets? }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）。时长给两种口径<strong>并存</strong>：histogram（<code>*_bucket/_sum/_count</code>，累积语义、可跨实例聚合）+ 窗口内精确分位（gauge、单实例好读）。<code>export:'otlp'</code> 零依赖手写 OTLP/JSON，<strong>必须同时给 endpoint</strong>（不给就构造期抛错）。<code>labelMode</code>/<code>maxUnits</code> 防单元标签爆炸（超限归入 <code>unit="__other__"</code>）。</td></tr>
-            <tr><td>MetricsSnapshot / UnitMetrics / ModelMetrics</td><td><code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd; units; models; droppedUnits }</code></td><td><code>units</code> 按单元 label 给 calls/errors/分位/tokens/costUsd（工具没有 token 语义，为 null）；<code>models</code> 按模型给 turns/tokens/costUsd/<strong>unpricedTurns</strong>/分位。</td></tr>
+            <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。三个维度都从既有 trace 派生（<strong>不用埋点</strong>）：run 级、<strong>能力级</strong>（每个 tool/skill/subagent 的调用数、失败数、耗时、token、成本 —— 工具读 turn 上的 <code>tool.output</code> 事件，skill/subagent 读 capability span）、模型级（按模型归因，另出 <code>model_unpriced_turns_total</code>）。</td></tr>
+            <tr><td>MetricsSink</td><td><code>TraceSink &amp; { snapshot(); render(); flush(); stop(); reset() }</code></td><td>snapshot 给数值（含 <code>capabilities</code> / <code>models</code> / <code>droppedCapabilities</code>），render 给 Prometheus 文本（<code>/metrics</code> 直接回它），flush 主动导出一次（OTLP 模式），stop 停掉定时导出，reset 清空累计。</td></tr>
+            <tr><td>MetricsSinkOptions</td><td><code>{ export?='prometheus' | 'otlp'; endpoint?; intervalMs?=60000; resourceAttributes?; serviceName?; onExportError?; windowSize?=1024; prefix?='agentia_'; labelMode?='capability' | 'kind' | 'none'; maxCapabilities?=200; buckets? }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）。时长给两种口径<strong>并存</strong>：histogram（<code>*_bucket/_sum/_count</code>，累积语义、可跨实例聚合）+ 窗口内精确分位（gauge、单实例好读）。<code>export:'otlp'</code> 零依赖手写 OTLP/JSON，<strong>必须同时给 endpoint</strong>（不给就构造期抛错）。<code>labelMode</code>/<code>maxCapabilities</code> 防能力标签爆炸（超限归入 <code>capability="__other__"</code>）。</td></tr>
+            <tr><td>MetricsSnapshot / CapabilityMetrics / ModelMetrics</td><td><code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd; capabilities; models; droppedCapabilities }</code></td><td><code>capabilities</code> 按能力 label 给 calls/errors/分位/tokens/costUsd（工具没有 token 语义，为 null）；<code>models</code> 按模型给 turns/tokens/costUsd/<strong>unpricedTurns</strong>/分位。</td></tr>
             <tr><td>DEFAULT_BUCKETS</td><td><code>readonly number[]</code></td><td>时长直方图的缺省桶边界（毫秒）：25 / 50 / 100 / 250 / 500 / 1k / 2.5k / 5k / 10k / 30k。可用 <code>buckets</code> 覆盖（须严格升序）。</td></tr>
-            <tr><td>buildRunReport</td><td><code>(trace: Trace) → RunReport</code></td><td><strong>调优报告</strong>（纯函数）：单元按总耗时降序排行（calls / errors / total / max / tokens / cost）、模型归因、未定价模型清单 —— 回答「该拧哪个旋钮」。单条 run 样本少，故以 total / max 为主，不给分位。</td></tr>
-            <tr><td>mergeRunReports</td><td><code>(reports: RunReport[]) → RunReport</code></td><td>跨 run 汇总（分位只在多条 run 上才有统计意义）：calls/errors/耗时累加，单元按新的总耗时重排，未定价模型取并集。</td></tr>
+            <tr><td>buildRunReport</td><td><code>(trace: Trace) → RunReport</code></td><td><strong>调优报告</strong>（纯函数）：能力按总耗时降序排行（calls / errors / total / max / tokens / cost）、模型归因、未定价模型清单 —— 回答「该拧哪个旋钮」。单条 run 样本少，故以 total / max 为主，不给分位。</td></tr>
+            <tr><td>mergeRunReports</td><td><code>(reports: RunReport[]) → RunReport</code></td><td>跨 run 汇总（分位只在多条 run 上才有统计意义）：calls/errors/耗时累加，能力按新的总耗时重排，未定价模型取并集。</td></tr>
             <tr><td>renderRunReport</td><td><code>(report: RunReport) → string</code></td><td>人类可读的纯文本表（CLI / 日志用）；未定价模型在 cost 列显式标出。<code>agentia report &lt;trace.jsonl&gt;</code> 就是它的薄壳。</td></tr>
-            <tr><td>RunReport / UnitReport</td><td><code>{ traceId; status; durationMs; totalUsage; models; units; unpricedModels; runs }</code></td><td>报告结构；<code>UnitReport</code> 含 <code>durations</code>（原始样本，merge 靠它重算跨 run 分位）。</td></tr>
+            <tr><td>RunReport / CapabilityReport</td><td><code>{ traceId; status; durationMs; totalUsage; models; capabilities; unpricedModels; runs }</code></td><td>报告结构；<code>CapabilityReport</code> 含 <code>durations</code>（原始样本，merge 靠它重算跨 run 分位）。</td></tr>
             <tr><td>ModelReport / DurationReport</td><td><code>{ model; turns; tokens; tokensTotal; costUsd; unpricedTurns; durationMs }</code> / <code>{ total; max; p50; p95 }</code></td><td>模型归因与时长汇总（单 run 的 p50/p95 仅供参考）。</td></tr>
           </tbody>
         </table></div>
@@ -261,8 +261,8 @@
       </section>
 
       <section id="toolkit">
-        <h2>toolkit · 声明式单元与装配</h2>
-        <p>装饰器声明四类单元，<code>createApp</code> 装配：DI 注册 → 扫描收集菜单 → 装配期静态校验（菜单查重、tools 引用存在性、toolSources 指向、DI 循环依赖）。</p>
+        <h2>toolkit · 声明式能力与装配</h2>
+        <p>装饰器声明四类能力，<code>createApp</code> 装配：DI 注册 → 扫描收集菜单 → 装配期静态校验（菜单查重、tools 引用存在性、toolSources 指向、DI 循环依赖）。</p>
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
@@ -275,24 +275,24 @@
             <tr><td>Tool</td><td><code>@Tool(spec: ToolSpec)</code> 方法装饰器</td><td>类方法即工具：入参按 schema 先校验再执行。</td></tr>
             <tr><td>ToolSpec</td><td><code>{ name?; description; schema: JsonSchema; strict? }</code></td><td>name 缺省取方法名；strict 需 additionalProperties:false + required 齐全；schema 给 <code>fromZod&lt;T&gt;</code> 时方法签名会被校验。</td></tr>
             <tr><td>collectTools</td><td><code>(instance: object) → AgentTool[]</code></td><td>沿原型链扫描 @Tool 方法并绑定实例。</td></tr>
-            <tr><td>Skill</td><td><code>@Skill(spec: SkillSpec)</code> 方法装饰器</td><td>方法体是确定性脚本；模型调用只在显式 <code>ctx.llm()</code> 时发生，记在 skill 自己的 unit span 下。</td></tr>
+            <tr><td>Skill</td><td><code>@Skill(spec: SkillSpec)</code> 方法装饰器</td><td>方法体是确定性脚本；模型调用只在显式 <code>ctx.llm()</code> 时发生，记在 skill 自己的 capability span 下。</td></tr>
             <tr><td>SkillSpec</td><td><code>{ name?; description; schema?; model?; maxTokens?; maxIterations?; tools? }</code></td><td>tools 为容器 provider token 列表（ctx.llm() 可调）。</td></tr>
-            <tr><td>SkillContext</td><td><code>{ model?; llm(opts: SkillLlmOptions) → Promise&lt;SkillLlmResult&gt; }</code></td><td>受限子运行句柄：每次 llm() 在 unit span 下开一轮独立 agent 循环。</td></tr>
+            <tr><td>SkillContext</td><td><code>{ model?; llm(opts: SkillLlmOptions) → Promise&lt;SkillLlmResult&gt; }</code></td><td>受限子运行句柄：每次 llm() 在 capability span 下开一轮独立 agent 循环。</td></tr>
             <tr><td>SkillLlmOptions / SkillLlmResult</td><td><code>{ prompt?; messages?; system?; model?; maxTokens?; maxIterations? }</code> / <code>{ text; stopReason }</code></td><td>prompt 与 messages 二选一；system 接受 string 或 SystemPrompt。</td></tr>
-            <tr><td>collectSkills / skillToTool</td><td><code>(instance) → SkillUnit[]</code> / <code>(unit, resolveTools) → AgentTool</code></td><td>扫描 @Skill 方法 / 编译成主 agent 菜单项。</td></tr>
-            <tr><td>SkillUnit</td><td><code>{ name; description; inputSchema; spec; invoke(input, ctx) }</code></td><td>含绑定实例的方法执行器。</td></tr>
+            <tr><td>collectSkills / skillToTool</td><td><code>(instance) → SkillCapability[]</code> / <code>(capability, resolveTools) → AgentTool</code></td><td>扫描 @Skill 方法 / 编译成主 agent 菜单项。</td></tr>
+            <tr><td>SkillCapability</td><td><code>{ name; description; inputSchema; spec; invoke(input, ctx) }</code></td><td>含绑定实例的方法执行器。</td></tr>
             <tr><td>SubAgent</td><td><code>@SubAgent(spec: SubAgentSpec)</code> 方法装饰器</td><td>方法体不执行：框架按 system 另起隔离循环，中间过程不外泄，只有最终报告回流。</td></tr>
             <tr><td>SubAgentSpec</td><td><code>{ name?; description; schema; system; tools?; model?; maxTokens?; maxIterations? }</code></td><td>system 支持 string / SystemPrompt / <code>(task) =&gt; SystemParam</code>（动态拼，框架不附加）；tools 为 provider token 列表。</td></tr>
-            <tr><td>collectSubAgents / subagentToTool</td><td><code>(instance) → SubAgentUnit[]</code> / <code>(unit, resolveTools) → AgentTool</code></td><td>扫描 @SubAgent 方法 / 编译成 AgentTool（子循环复用 ctx.client 与 recorder）。</td></tr>
-            <tr><td>SubAgentUnit</td><td><code>{ name; description; inputSchema; spec }</code></td><td>子代理单元元数据。</td></tr>
+            <tr><td>collectSubAgents / subagentToTool</td><td><code>(instance) → SubAgentCapability[]</code> / <code>(capability, resolveTools) → AgentTool</code></td><td>扫描 @SubAgent 方法 / 编译成 AgentTool（子循环复用 ctx.client 与 recorder）。</td></tr>
+            <tr><td>SubAgentCapability</td><td><code>{ name; description; inputSchema; spec }</code></td><td>子代理能力元数据。</td></tr>
             <tr><td>Prompt</td><td><code>@Prompt(spec: PromptSpec)</code> 方法装饰器</td><td>纯文本资产编译成无副作用的拉取型工具；每次调用重算（volatile 语义）。</td></tr>
             <tr><td>PromptSpec</td><td><code>{ name?; description; schema? }</code></td><td>description 写清何时该拉取，模型据此决定调用；schema 缺省空对象（无参资产）。</td></tr>
             <tr><td>collectPrompts</td><td><code>(instance: object) → AgentTool[]</code></td><td>扫描 @Prompt 方法（static 方法亦可）。</td></tr>
-            <tr><td>asset</td><td><code>(base: string | URL, rel: string) → string</code></td><td><code>asset(import.meta.url, './system.md')</code> 相对单元目录读文本资产；每次调用现读不缓存。</td></tr>
-            <tr><td>discoverProviders</td><td><code>(dir: string) → Promise&lt;Provider[]&gt;</code></td><td>目录约定扫描 <code>units/&lt;name&gt;/index.ts</code>：default export 为类 / Provider / Provider[]，类以文件夹名为 token 注册。</td></tr>
-            <tr><td>applyMiddleware</td><td><code>(tools: AgentTool[], middleware: UnitMiddleware[]) → AgentTool[]</code></td><td>洋葱模型包裹整个菜单（链序 = 注册顺序，先注册最外层）；链为空原样返回，零开销。</td></tr>
-            <tr><td>UnitMiddleware</td><td><code>(call: UnitCall, next: UnitNext) =&gt; unknown</code></td><td>单元调用前后横切（鉴权 / 限流 / 缓存 / 审计 / 配额）；不调 next 即短路，抛错按单元失败处理。</td></tr>
-            <tr><td>UnitCall / UnitNext</td><td><code>{ unit; input; ctx? }</code> / <code>(input?) =&gt; unknown</code></td><td>入参 schema 校验已过；<code>next(newInput)</code> 可改写入参；连调两次会抛错。</td></tr>
+            <tr><td>asset</td><td><code>(base: string | URL, rel: string) → string</code></td><td><code>asset(import.meta.url, './system.md')</code> 相对能力目录读文本资产；每次调用现读不缓存。</td></tr>
+            <tr><td>discoverProviders</td><td><code>(dir: string | string[]) → Promise&lt;Provider[]&gt;</code></td><td>给一个目录或一组目录（<strong>数组顺序即装配顺序</strong>），扫各目录下的 <code>&lt;name&gt;/index.ts</code>：default export 为类 / Provider / Provider[]，类以文件夹名为 token 注册；数组里任一目录不存在即报错，跨目录重名 token 留告警（装配期后者覆盖）。</td></tr>
+            <tr><td>applyMiddleware</td><td><code>(tools: AgentTool[], middleware: CapabilityMiddleware[]) → AgentTool[]</code></td><td>洋葱模型包裹整个菜单（链序 = 注册顺序，先注册最外层）；链为空原样返回，零开销。</td></tr>
+            <tr><td>CapabilityMiddleware</td><td><code>(call: CapabilityCall, next: CapabilityNext) =&gt; unknown</code></td><td>能力调用前后横切（鉴权 / 限流 / 缓存 / 审计 / 配额）；不调 next 即短路，抛错按能力失败处理。</td></tr>
+            <tr><td>CapabilityCall / CapabilityNext</td><td><code>{ capability; input; ctx? }</code> / <code>(input?) =&gt; unknown</code></td><td>入参 schema 校验已过；<code>next(newInput)</code> 可改写入参；连调两次会抛错。</td></tr>
             <tr><td>fromZod</td><td><code>(jsonSchema: JsonSchema, zod: unknown) → JsonSchema</code></td><td>zod 可选接入（peer）：校验走 zod safeParse（结构面识别，框架不 import zod），错误路径原样回给模型自我修正。</td></tr>
           </tbody>
         </table></div>
@@ -301,7 +301,7 @@
       <aside class="api-cta">
         <p>参数看明白了，想直接上手？</p>
         <p class="api-cta-links">
-          <a href="./docs.html">使用指南：四类单元怎么声明 →</a>
+          <a href="./docs.html">使用指南：四类能力怎么声明 →</a>
           <a href="./playground.html">Playground：用真实模型跑一次 →</a>
         </p>
       </aside>

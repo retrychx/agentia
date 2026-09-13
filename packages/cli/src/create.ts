@@ -3,15 +3,17 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  CAPABILITY_DIR_LIST,
+  emptyRegistryTemplate,
   mainTs,
   projectGitignore,
   projectPackageJson,
   projectReadme,
   projectTsconfig,
+  REGISTRY_PATH,
   toolIndexTs,
-  emptyRegistryTemplate,
 } from './templates.js';
-import { registerUnit } from './registry.js';
+import { registerCapability } from './registry.js';
 
 function write(dir: string, rel: string, content: string): void {
   const file = join(dir, rel);
@@ -59,14 +61,19 @@ export function createProject(name: string, parent: string | undefined): number 
   write(dir, 'package.json', projectPackageJson(name));
   write(dir, 'tsconfig.json', projectTsconfig());
   write(dir, 'src/main.ts', mainTs(name));
-  write(dir, 'units/hello/index.ts', toolIndexTs('hello'));
-  write(dir, 'units.ts', emptyRegistryTemplate());
+  write(dir, 'src/tools/hello/index.ts', toolIndexTs('hello'));
+  write(dir, REGISTRY_PATH, emptyRegistryTemplate());
   write(dir, 'README.md', projectReadme(name));
   write(dir, '.gitignore', projectGitignore());
+  // 把四个分类目录都建出来：目录名自解释，用户一眼知道「新能力往哪放」
+  // （.gitkeep 让空目录能进版本库；discover 只认目录，会忽略它）
+  for (const relDir of CAPABILITY_DIR_LIST) {
+    write(dir, `${relDir}/.gitkeep`, '');
+  }
   // AI 使用说明：让 Claude Code / Cursor / Copilot 等一进项目就拿到权威 API 速查
   write(dir, 'AGENTS.md', guide);
 
-  registerUnit(dir, 'hello');
+  registerCapability(dir, 'hello', 'tool');
 
   console.log(`已创建项目 ${dir}
 
@@ -75,6 +82,8 @@ export function createProject(name: string, parent: string | undefined): number 
   npm install
   export ANTHROPIC_API_KEY=sk-ant-...
   npm run dev
+
+目录约定：src/tools/ · src/skills/ · src/prompts/ · src/subagents/（一能力一文件夹）
 
 提示：项目内 AGENTS.md 是本框架的使用说明（API 速查 + 已知边界），
       交给 AI 辅助编码时会自动被读，能显著减少猜 API 的错。`);

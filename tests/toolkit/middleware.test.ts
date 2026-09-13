@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp, SystemPrompt, Tool } from '../../src/index.js';
-import type { UnitMiddleware } from '../../src/index.js';
+import type { CapabilityMiddleware } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
@@ -14,16 +14,16 @@ class Echo {
   }
 }
 
-describe('单元调用中间件（R1）', () => {
+describe('能力调用中间件（R1）', () => {
   it('洋葱模型：链序 = 注册顺序，next 前后都能切面', async () => {
     const log: string[] = [];
-    const m1: UnitMiddleware = async (call, next) => {
-      log.push(`m1-before:${call.unit.name}`);
+    const m1: CapabilityMiddleware = async (call, next) => {
+      log.push(`m1-before:${call.capability.name}`);
       const out = await next();
       log.push('m1-after');
       return out;
     };
-    const m2: UnitMiddleware = async (call, next) => {
+    const m2: CapabilityMiddleware = async (call, next) => {
       log.push('m2-before');
       const out = await next();
       log.push('m2-after');
@@ -40,7 +40,7 @@ describe('单元调用中间件（R1）', () => {
   });
 
   it('next(newInput) 改写入参；不调 next 短路（结果缓存）', async () => {
-    const rewrite: UnitMiddleware = (call, next) => next({ replaced: true });
+    const rewrite: CapabilityMiddleware = (call, next) => next({ replaced: true });
     const app = createApp({
       providers: [{ provide: 'e', useClass: Echo }],
       system: sys(),
@@ -48,7 +48,7 @@ describe('单元调用中间件（R1）', () => {
     });
     const { client, seen } = mockClient([toolUseMsg('echo', { a: 1 }), endTurnMsg('ok')]);
     await app.run([{ role: 'user', content: 'go' }], { client });
-    assert.ok(JSON.stringify(seen[1]).includes('replaced'), '单元应收到改写后的入参');
+    assert.ok(JSON.stringify(seen[1]).includes('replaced'), '能力应收到改写后的入参');
 
     let calls = 0;
     class Count {
@@ -58,7 +58,7 @@ describe('单元调用中间件（R1）', () => {
         return 'real';
       }
     }
-    const cache: UnitMiddleware = () => 'cached!';
+    const cache: CapabilityMiddleware = () => 'cached!';
     const app2 = createApp({
       providers: [{ provide: 'c', useClass: Count }],
       system: sys(),
@@ -66,7 +66,7 @@ describe('单元调用中间件（R1）', () => {
     });
     const m2 = mockClient([toolUseMsg('probe', {}), endTurnMsg('ok')]);
     const { result } = await app2.run([{ role: 'user', content: 'go' }], { client: m2.client });
-    assert.equal(calls, 0, '短路时单元执行体不被调用');
+    assert.equal(calls, 0, '短路时能力执行体不被调用');
     assert.ok(JSON.stringify(m2.seen[1]).includes('cached!'), '短路结果应回给模型');
     void result;
   });
@@ -80,7 +80,7 @@ describe('单元调用中间件（R1）', () => {
         return 'ok';
       }
     }
-    const clearInput: UnitMiddleware = (_call, next) => next(undefined); // 显式传 undefined
+    const clearInput: CapabilityMiddleware = (_call, next) => next(undefined); // 显式传 undefined
     const app = createApp({
       providers: [{ provide: 'p', useClass: Probe }],
       system: sys(),
@@ -91,8 +91,8 @@ describe('单元调用中间件（R1）', () => {
     assert.equal(seen[0], undefined, 'next(undefined) 应改写为 undefined，而非沿用原入参');
   });
 
-  it('next() 重复调用直接报错（否则单元体跑两遍，有副作用的单元尤其危险）', async () => {
-    const twice: UnitMiddleware = async (_call, next) => {
+  it('next() 重复调用直接报错（否则能力体跑两遍，有副作用的能力尤其危险）', async () => {
+    const twice: CapabilityMiddleware = async (_call, next) => {
       await next();
       return next(); // 编程错误：一次调用只能放行一次
     };
@@ -107,8 +107,8 @@ describe('单元调用中间件（R1）', () => {
     assert.ok(result.includes('重复调用'), '重复 next 报错应以 is_error 回给模型');
   });
 
-  it('中间件抛错按单元失败处理（is_error 回模型，run 不中断）', async () => {
-    const guard: UnitMiddleware = () => {
+  it('中间件抛错按能力失败处理（is_error 回模型，run 不中断）', async () => {
+    const guard: CapabilityMiddleware = () => {
       throw new Error('forbidden');
     };
     const app = createApp({
@@ -123,7 +123,7 @@ describe('单元调用中间件（R1）', () => {
     assert.ok(JSON.stringify(seen[1]).includes('is_error'));
   });
 
-  it('孤儿单元告警：toolSources 收窄时被排除 provider 的单元不可达', () => {
+  it('孤儿能力告警：toolSources 收窄时被排除 provider 的能力不可达', () => {
     const warnings: string[] = [];
     const orig = console.warn;
     console.warn = (m: string) => warnings.push(m);
@@ -146,6 +146,6 @@ describe('单元调用中间件（R1）', () => {
       console.warn = orig;
     }
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /孤儿单元.*idle/);
+    assert.match(warnings[0], /孤儿能力.*idle/);
   });
 });

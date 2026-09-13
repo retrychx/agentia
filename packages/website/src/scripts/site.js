@@ -8,7 +8,7 @@ import Lenis from 'lenis';
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const hasGsap = true; // gsap 由上方 import 保证存在（原先判断 gsap）
 
-  /* ---------- Hero canvas：主 agent 调度单元的节点脉冲网络 ---------- */
+  /* ---------- Hero canvas：主 agent 调度能力的节点脉冲网络 ---------- */
   const canvas = document.getElementById('orchestra');
   if (canvas) {
     const ctx = canvas.getContext('2d');
@@ -51,7 +51,7 @@ import Lenis from 'lenis';
         });
         edges.push([0, i + 1]);
       }
-      // 卫星之间的少量弱连接（单元间协作）
+      // 卫星之间的少量弱连接（能力间协作）
       edges.push([1, 3], [2, 5], [4, 6], [3, 7]);
       pulses = [];
     }

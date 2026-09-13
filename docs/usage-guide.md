@@ -12,17 +12,17 @@
 
 一次 **run** = 一个 agent 循环跑完一件事，产出一条 **trace**（`traceId === runId`）。
 
-你声明 **四类单元**，它们进同一个「工具菜单」；**主 agent 的模型按 `description` 自己选**：
+你声明 **四类能力**，它们进同一个「工具菜单」；**主 agent 的模型按 `description` 自己选**：
 
-| 单元 | 装饰器 | 谁决定流程 | 典型用途 |
+| 能力 | 装饰器 | 谁决定流程 | 典型用途 |
 |---|---|---|---|
 | 工具 | `@Tool` | 你的代码（一次调用 = 一个函数） | 确定性操作：查库、算数、调 API |
 | 技能 | `@Skill` | 你的代码（脚本式，可显式调模型） | 「先取数 → 再让模型写 → 再加工」这种固定流程 |
 | 子 agent | `@SubAgent` | **模型自己**（独立循环 + 裁剪上下文） | 需要自主多步、且中间过程不该污染主上下文 |
 | 提示资产 | `@Prompt` | 模型拉取（本质是「按需注入的文本」） | 长文规范/模板，平时不进上下文，需要时拉 |
 
-**关键推论**：单元是**运行时**从装饰器注册表收集的，所以 TypeScript 里**没有**「你的单元清单」这种类型 ——
-不要写 `app.hello()`。模型通过 `description` 选单元，你通过 `schema` 约束入参。
+**关键推论**：能力是**运行时**从装饰器注册表收集的，所以 TypeScript 里**没有**「你的能力清单」这种类型 ——
+不要写 `app.hello()`。模型通过 `description` 选能力，你通过 `schema` 约束入参。
 
 ---
 
@@ -71,13 +71,13 @@ npx @migor/cli create my-app     # 脚手架
 cd my-app && npm install
 export ANTHROPIC_API_KEY=sk-ant-...
 npx @migor/cli dev               # tsx watch + 本地 inspector 面板
-npx @migor/cli g tool fetch-weather   # 生成单元文件夹（tool/skill/prompt/subagent）
+npx @migor/cli g tool fetch-weather   # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
 npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复）
 ```
 
-`units/<name>/index.ts` 的 `default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。
+四分类目录，一能力一文件夹：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— **目录名就是类型**，不用记别名。每个文件夹的 `index.ts` 是入口，`default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。显式注册表在 `src/registry.ts`（`agentia g` 自动维护，也可手改）。
 
-> **陷阱**：装饰器注册表是模块级 `WeakMap`。框架必须是**单一模块实例** —— 混用 `src` 与 `dist`、或在一个仓库里装两份 agentia，会让单元收集为空。让 CLI 生成的 `package.json` 里只依赖一份框架即可。
+> **陷阱**：装饰器注册表是模块级 `WeakMap`。框架必须是**单一模块实例** —— 混用 `src` 与 `dist`、或在一个仓库里装两份 agentia，会让能力收集为空。让 CLI 生成的 `package.json` 里只依赖一份框架即可。
 
 ---
 
@@ -144,14 +144,14 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `name` | 应用名，同时作为 run 名写进 trace |
 | `providers` | DI providers：`useValue` / `useClass` / `useFactory` + `deps` |
 | `modules` | 能力包（`defineModule({ providers, middleware })`），模块级先注册、应用级可覆盖同 token |
-| `discover` | 单元目录路径（给出后 `createApp` 返回 `Promise<AgentApp>`） |
+| `discover` | 能力目录路径：**一个目录或一组目录**（数组顺序即装配顺序，典型是四分类目录）。给出后 `createApp` 返回 `Promise<AgentApp>`；数组里任一目录不存在会**报错**（显式给出的搜索路径不该静默落空） |
 | `model` | 缺省模型；不给则 `AGENTIA_MODEL` env，再回落 `claude-opus-5` |
 | `maxTokens` | 缺省 `max_tokens` |
 | `maxIterations` | 缺省循环上限 |
 | `contextPolicy` | 上下文预算策略（`createBudgetPolicy(...)`） |
-| `toolSources` | 白名单：只把这些 provider 的单元放进主菜单 |
-| `tools` | 直接追加到主菜单的**裸工具**（`AgentTool[]`）：给「构造期才知道有哪些工具」的场合（典型：MCP 桥，见 §6）。与单元**同过中间件、同进重名查重**，不是旁路 |
-| `middleware` | 单元调用中间件（洋葱链，链序 = 注册顺序） |
+| `toolSources` | 白名单：只把这些 provider 的能力放进主菜单 |
+| `tools` | 直接追加到主菜单的**裸工具**（`AgentTool[]`）：给「构造期才知道有哪些工具」的场合（典型：MCP 桥，见 §6）。与能力**同过中间件、同进重名查重**，不是旁路 |
+| `middleware` | 能力调用中间件（洋葱链，链序 = 注册顺序） |
 | `sinks` | trace 出口，run 收尾投递 |
 | `maxTotalTokens` | 缺省成本硬管控：整条 run 累计 token 上限（可被单次 run 覆盖） |
 | `maxCostUsd` | 缺省成本硬管控：累计成本（美元）上限（**依赖模型在价格表内**，见 `priceOverrides`；未定价模型会留 `usage.unpriced` 事件，所以「护栏有没有真的生效」看得见） |
@@ -386,11 +386,11 @@ process.on('SIGTERM', async () => {
 | `TraceRecorder` | 内存 recorder（一次 run 一个） |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖 |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
-| `buildRunReport` | 从一条 trace 生成**调优报告**（单元/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
+| `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
 > 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
-> `examples/observability/`。**完整的示例**（四类单元 + 三种触发 + 鉴权 + 全观测栈）在 `examples/complete/`；
+> `examples/observability/`。**完整的示例**（四类能力 + 三种触发 + 鉴权 + 全观测栈）在 `examples/complete/`；
 > 最小可交付示例（Dockerfile + compose）在 `examples/deploy/`。
 
 ### 长上下文
@@ -537,9 +537,9 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 三个维度，全部从既有 trace 派生，**不需要在业务代码里埋点**：
 
 - **run 级** —— 总数 / 失败数 /四类 token / 成本 / 时长；
-- **单元级** —— 每个 `tool` / `skill` / `subagent` 的**调用次数、失败次数、耗时、token、成本**。
+- **能力级** —— 每个 `tool` / `skill` / `subagent` 的**调用次数、失败次数、耗时、token、成本**。
   工具的数据来自 turn 上的 `tool.output` 事件（框架已补 `durationMs` / `ok`）；`skill`/`subagent`
-  来自 `unit` span。**`@Prompt` 不建 span、无独立耗时，因此不产出单元指标**（如实缺省，不硬凑）。
+  来自 `capability` span。**`@Prompt` 不建 span、无独立耗时，因此不产出能力指标**（如实缺省，不硬凑）。
 - **模型级** —— 按模型（`llm.turn` 的 span name）归因 turn 数 / token / 成本 / 耗时，并单独给出
   `model_unpriced_turns_total`（算不出成本的 turn 数 —— **成本护栏失效的显式信号**）。
 
@@ -560,10 +560,10 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 | `intervalMs` | OTLP 导出间隔（毫秒，缺省 60000）；`0` = 每次 run 收尾立即导出。定时器已 `unref()`，不阻止进程退出 |
 | `resourceAttributes` / `serviceName` | OTLP resource 属性（`service.name` 缺省 `agentia`） |
 | `onExportError` | 导出失败回调（缺省吞掉 —— 观测失败不得击穿业务） |
-| `windowSize` | 时长分位保留的样本数（环形窗口，缺省 1024，**run / 单元 / 模型各自独立**）；非正数抛错 |
+| `windowSize` | 时长分位保留的样本数（环形窗口，缺省 1024，**run / 能力 / 模型各自独立**）；非正数抛错 |
 | `prefix` | 指标名前缀，缺省 `agentia_` |
-| `labelMode` | 单元标签粒度：`'unit'`（缺省，`tool:search` 这种）/ `'kind'`（只按类型，基数极小）/ `'none'`（不产出单元指标） |
-| `maxUnits` | 单元标签基数上限（缺省 200）：超出后新单元归入 `unit="__other__"`（防标签爆炸）；非正数抛错 |
+| `labelMode` | 能力标签粒度：`'capability'`（缺省，`tool:search` 这种）/ `'kind'`（只按类型，基数极小）/ `'none'`（不产出能力指标） |
+| `maxCapabilities` | 能力标签基数上限（缺省 200）：超出后新能力归入 `capability="__other__"`（防标签爆炸）；非正数抛错 |
 | `buckets` | 直方图桶边界（毫秒，严格升序）；缺省 `DEFAULT_BUCKETS` |
 
 ### `MetricsSink`（`metricsSink()` 的返回值）
@@ -571,24 +571,24 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 | 成员 | 说明 |
 |---|---|
 | `export` | `TraceSink` 的实现（run 收尾投递）—— 也是接进 `sinks` 的形状 |
-| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, units, models, droppedUnits }` |
+| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, droppedCapabilities }` |
 | `render` | Prometheus 文本（`/metrics` 直接回它） |
 | `flush` | 主动导出一次（`export:'otlp'` 时有意义；prometheus 模式为空操作） |
 | `stop` | 停掉定时导出（进程收尾 / 测试用） |
-| `reset` | 清空累计（含单元与模型维度） |
+| `reset` | 清空累计（含能力与模型维度） |
 
 - `tokens` 口径 = **四类之和**（input + output + cacheRead + cacheCreation），与 `BudgetGuard` 一致；分项在 `render()` 里以 label 给出，不会丢。
 - 分位是**窗口内精确值**（最近 rank 法），只反映最近 `windowSize` 条样本；**直方图计数是累积的**（全历史），两者语义不同、各有各的用处。
-- **内存上限** ≈ `(1 + 单元数 + 模型数) × windowSize` —— 单元数由 `maxUnits` 封顶，长跑宿主不会被拖住。
+- **内存上限** ≈ `(1 + 能力数 + 模型数) × windowSize` —— 能力数由 `maxCapabilities` 封顶，长跑宿主不会被拖住。
 - `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
 
-### 调优报告（**哪个单元慢 / 贵 / 爱失败**）
+### 调优报告（**哪个能力慢 / 贵 / 爱失败**）
 
 指标回答「整体怎么样」，报告回答「**该拧哪个旋钮**」：
 
 | API | 说明 |
 |---|---|
-| `buildRunReport(trace)` | 一条 trace → `RunReport`：单元排行（按总耗时降序）、模型归因、未定价模型清单 |
+| `buildRunReport(trace)` | 一条 trace → `RunReport`：能力排行（按总耗时降序）、模型归因、未定价模型清单 |
 | `mergeRunReports(reports)` | 跨 run 汇总（**分位只在多条 run 上才有统计意义**） |
 | `renderRunReport(report)` | 人类可读的纯文本表（CLI / 日志用） |
 
@@ -597,17 +597,17 @@ import { buildRunReport, mergeRunReports, renderRunReport } from '@migor/agentia
 
 const report = buildRunReport(trace);
 console.log(renderRunReport(report));
-// unit                              calls  err   total     max       tokens    cost
+// capability                              calls  err   total     max       tokens    cost
 // subagent:researcher               1      0     400ms     400ms     60        0.004000
 // tool:search                       2      1     325ms     300ms     -         -
 ```
 
 CLI 侧有薄壳：`agentia report <trace.jsonl>` —— 每行一个 JSON（裸 Trace，或含 `result.trace` /
-`trace` 的 TaskRecord，如 `FileTaskStore` 的导出），跨行按单元合并后打印排行。
+`trace` 的 TaskRecord，如 `FileTaskStore` 的导出），跨行按能力合并后打印排行。
 
 > ⚠️ **单条 run 内样本常 < 5，分位没有意义** —— 所以报告以 `total` / `max` 为主；
 > 要看分位请用 `mergeRunReports` 汇总多条，或用 `metricsSink` 的直方图。
-> CLI 报告的聚合口径与 `agentia dev` 面板的单元排行同源（同一份 `@migor/trace-view` 实现）。
+> CLI 报告的聚合口径与 `agentia dev` 面板的能力排行同源（同一份 `@migor/trace-view` 实现）。
 
 ### 生效配置快照（「这条 run 用了哪套旋钮」）
 
@@ -625,7 +625,7 @@ CLI 侧有薄壳：`agentia report <trace.jsonl>` —— 每行一个 JSON（裸
 
 ### 多租户配额（组合既有缝，不是子系统）
 
-框架不提供配额组件 —— 用 `middleware`（拦在单元调用前）+ `TraceSink`（收尾后记账）+ `BudgetGuard`（单次 run 上限）组合即可，存储与策略是你的事：
+框架不提供配额组件 —— 用 `middleware`（拦在能力调用前）+ `TraceSink`（收尾后记账）+ `BudgetGuard`（单次 run 上限）组合即可，存储与策略是你的事：
 
 ```ts
 declare module '@migor/agentia' { interface Blackboard { tenant: string } }
@@ -633,7 +633,7 @@ declare module '@migor/agentia' { interface Blackboard { tenant: string } }
 const spentTokens = new Map<string, number>(); // 真实场景换成 Redis / DB
 const TENANT_LIMIT = 200_000;
 
-const quota: UnitMiddleware = async (call, next) => {
+const quota: CapabilityMiddleware = async (call, next) => {
   const tenant = RunContext.current()?.get('tenant');
   if (tenant && (spentTokens.get(tenant) ?? 0) >= TENANT_LIMIT) {
     throw new Error(`租户 ${tenant} 的额度已用满`); // → 该条 tool_result 记 is_error，不杀 run
@@ -655,7 +655,7 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 ```
 
 - 拦下来的那次 run **仍然要记账**（模型的钱已经花了）—— 记账在 sink 里、拦截在 middleware 里，两者独立。
-- 被拦下的单元**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
+- 被拦下的能力**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
 
 ### 人工介入：审批闸门（缺口只在「跨进程挂起」，闸门现成）
 
@@ -665,10 +665,10 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 ```ts
 const DANGEROUS = new Set(['send_email', 'deploy', 'delete_records']);
 
-const requireApproval: UnitMiddleware = async (call, next) => {
-  if (!DANGEROUS.has(call.unit.name)) return next();
-  const ok = await askHuman(call.unit.name, call.input); // 在这里 await —— run 就地停着等人
-  if (!ok) throw new Error(`调用 ${call.unit.name} 未获批准`); // → tool_result 记 is_error，run 不中断
+const requireApproval: CapabilityMiddleware = async (call, next) => {
+  if (!DANGEROUS.has(call.capability.name)) return next();
+  const ok = await askHuman(call.capability.name, call.input); // 在这里 await —— run 就地停着等人
+  if (!ok) throw new Error(`调用 ${call.capability.name} 未获批准`); // → tool_result 记 is_error，run 不中断
   return next();
 };
 
@@ -679,7 +679,7 @@ createApp({ system, providers: [...], middleware: [requireApproval] });
 
 - **放行**：`next()`；**拒绝**（副作用不发生）：不调 `next()` —— 短路；**拒绝并让模型改道**：抛错 → 该条
   `tool_result` 记 `is_error`，模型换路，run 不中断。
-- 决策依据随你：`call.unit.name` / `call.input`，或在中间件里 `RunContext.current()?.get('…')` 读黑板
+- 决策依据随你：`call.capability.name` / `call.input`，或在中间件里 `RunContext.current()?.get('…')` 读黑板
   （ALS 传播，见上一节）。
 - 等待不会被默认掐断（`toolTimeoutMs` 缺省 0 = 不限）；真设了它，注意别把人的思考时间算进去。
 
@@ -727,12 +727,12 @@ const callable = {
 | 方法入参要自己标注 | TS 不会从 JSON Schema 反向推断方法形参；`strict` 下不标注会报隐式 any |
 | 裸 schema 不校验签名 | 只给 `schema: {...}` 时，schema 与方法签名**互不关联**（要护栏就用 `fromZod<T>`） |
 | 黑板键默认无类型 | 不合并 `Blackboard` 就是裸 `string` + `unknown`；动态键需 `as BlackboardKey` |
-| 没有「单元清单」类型 | 单元是运行时从装饰器注册表收集的，所以 `app.my_tool()` 这种写法不存在 |
+| 没有「能力清单」类型 | 能力是运行时从装饰器注册表收集的，所以 `app.my_tool()` 这种写法不存在 |
 | `strict` 只是透传 | 框架**不校验** schema 的合规性（是否 `additionalProperties:false` 等） |
 | schema 校验是**子集** | 只覆盖 `type/properties/required/additionalProperties/enum/items`；`format`/`minimum`/`oneOf` 一律放行 |
 | 历史畸形就放弃裁剪 | `trimToolPairs` 遇到非严格交替历史会整体放弃（宁可少裁，也不切出孤立 tool_use 让请求 400） |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
-| 单元引用是 provider 粒度 | 子 agent / skill 的 `tools` 写的是 **provider token**，不是单个工具名 |
+| 能力引用是 provider 粒度 | 子 agent / skill 的 `tools` 写的是 **provider token**，不是单个工具名 |
 | 取消要传进客户端才有效 | 传 `signal` 后框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发）；不转发 `signal` 的自定义 `ModelClient` 只能「放弃等待」（请求在后台跑完、产物丢弃） |
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
 | 框架不读 env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外不读环境变量；不含 dev 逻辑 |
@@ -749,14 +749,14 @@ const callable = {
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
 | MCP 超时同样是「不等了」 | 桥自带的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它与 engine 的 `toolTimeoutMs` **双重计时**，谁短谁生效 |
 | MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool` attribute 里查得到） |
-| MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的单元的 `tools` 引用 —— 引用是 provider 粒度 |
+| MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用 —— 引用是 provider 粒度 |
 | 指标分位是窗口内精确值 | `*{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
 | 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |
 | OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run） |
 | `GET /metrics` 不鉴权 | 与 `/healthz` 同档（拉取端在集群内网）。要保护请放反代之后，或不传 `metrics` 选项自行在外层挂路由 |
-| 工具没有 token/成本指标 | 工具是**你的代码**、本身不消耗 token，所以只产出调用数/失败数/耗时；token 与成本只对 `skill`/`subagent`（有 `unit` span）与模型维度产出 |
-| `@Prompt` 没有单元指标 | 资产类单元不建 span、无独立耗时，故不出现在单元排行里（这是刻意的：硬凑一个假耗时会误导调优） |
-| 单元标签有基数上限 | `labelMode:'unit'`（缺省）+ `maxUnits`（缺省 200），超出的单元归入 `unit="__other__"`；`snapshot().droppedUnits` 给出被归并的单元个数。要完整明细请用 `buildRunReport`（不设上限） |
+| 工具没有 token/成本指标 | 工具是**你的代码**、本身不消耗 token，所以只产出调用数/失败数/耗时；token 与成本只对 `skill`/`subagent`（有 `capability` span）与模型维度产出 |
+| `@Prompt` 没有能力指标 | 资产类能力不建 span、无独立耗时，故不出现在能力排行里（这是刻意的：硬凑一个假耗时会误导调优） |
+| 能力标签有基数上限 | `labelMode:'capability'`（缺省）+ `maxCapabilities`（缺省 200），超出的能力归入 `capability="__other__"`；`snapshot().droppedCapabilities` 给出被归并的能力个数。要完整明细请用 `buildRunReport`（不设上限） |
 | 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工介入只到「闸门」 | `middleware` 能 `await` 审批决策再放行；**跨进程挂起/续跑框架不做** —— `RunStatus` 无「待批准」态、循环位置不落库，`traceToMessages` 重放有损，不能拿它假装续跑（要跨重启审批请上工作流引擎）|
@@ -769,13 +769,13 @@ const callable = {
 
 | 症状 | 原因与修法 |
 |---|---|
-| 菜单里没有我的单元 | ① 方法没写装饰器；② 类没注册进 `providers`；③ 框架双实例（见第 2 节陷阱）；④ `toolSources` 白名单把它排除了 |
-| `菜单单元重名` 装配期抛错 | 四类单元**共用命名空间**，改名即可 |
+| 菜单里没有我的能力 | ① 方法没写装饰器；② 类没注册进 `providers`；③ 框架双实例（见第 2 节陷阱）；④ `toolSources` 白名单把它排除了 |
+| `菜单能力重名` 装配期抛错 | 四类能力**共用命名空间**，改名即可 |
 | 编译错 `不能把 X 赋给 Y` | 用了 `fromZod<T>`，方法签名与 `T` 不一致（这是护栏，不是 bug） |
 | 模型传的入参没被拦 | 只填了 `schema` 没写 `strict`；且框架的校验是**子集校验**（`format`/`minimum` 等不校验） |
 | `ctx.get('k')` 没有类型 | 没做 `Blackboard` 声明合并（见 5.1） |
 | `result.typed` 是 `unknown` | `resultSchema` 用的是裸 JsonSchema；改 `fromZod<T>`（见 5.3） |
-| TS 里想 `app.my_tool(...)` | 不要这样写：单元由模型选择，不是你的方法。要确定性调用就**直接调类方法** |
+| TS 里想 `app.my_tool(...)` | 不要这样写：能力由模型选择，不是你的方法。要确定性调用就**直接调类方法** |
 | 子 agent 调不到工具 | `tools` 是 **provider token**（文件夹名）列表，不是工具名 |
 | 长跑内存涨 | 缺省内存 store 不淘汰；设 `InMemoryTaskStore({ maxRecords })` 或换耐久 store |
 | 鉴权钩子抛错，客户端只看到「未通过鉴权」 | 这是设计：非 `HttpException` 的错误原文只进服务端日志（要回给调用方就抛 `HttpException(status, body)`） |

@@ -1,7 +1,7 @@
 import { SubAgent, asset } from '@migor/agentia';
 
 /**
- * @SubAgent —— **模型自主循环 + 独立裁剪上下文**：内部开 unit span，只把最终结论以
+ * @SubAgent —— **模型自主循环 + 独立裁剪上下文**：内部开 capability span，只把最终结论以
  * tool_result 交回主 agent（隔离报告，中间过程不污染主对话）。
  *
  * 注意：方法体不会被执行 —— 框架只读方法名与装饰器元数据，调用时按 `system` 另起 agent。

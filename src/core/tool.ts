@@ -4,8 +4,8 @@ import type { SpanError, SpanId, SpanKind, SpanStatus, Trace, Usage } from './tr
 /**
  * Agentia —— 工具定义。
  * v1 用裸 JSON Schema，不引 zod。
- * run 执行体可接收第二参 ctx（ToolRunContext），供子 agent/嵌套单元把
- * 自己的 llm.turn 递归挂进当前 trace（unit span 的父由 engine 给定）。
+ * run 执行体可接收第二参 ctx（ToolRunContext），供子 agent/嵌套能力把
+ * 自己的 llm.turn 递归挂进当前 trace（capability span 的父由 engine 给定）。
  */
 
 /** JSON Schema 对象子集，供工具的 input_schema */
@@ -49,8 +49,8 @@ export type SchemaInput<S> = S extends TypedSchema<infer T>
   : any;
 
 /**
- * engine 的 TraceRecorder 面向子单元的最小结构面（core 不依赖 engine）。
- * 需要开嵌套 span 的单元（如 @SubAgent）通过 ctx.recorder 记账，
+ * engine 的 TraceRecorder 面向子能力的最小结构面（core 不依赖 engine）。
+ * 需要开嵌套 span 的能力（如 @SubAgent）通过 ctx.recorder 记账，
  * 其余工具可完全忽略它。
  */
 export interface RecorderBackend {
@@ -96,8 +96,8 @@ export interface ModelPricing {
 /**
  * engine 在调用每个工具时注入的执行上下文（spec §9.2：当前 span 句柄随调用传播，
  * 不用全局单例，保证并行工具调用父子关系准确）。
- * - recorder：整条 run 共享的 recorder（新子单元/子 agent 的 span 写它下面）；
- * - parentSpanId：发起本次调用的上层 span —— 子单元 span 应挂它下面；
+ * - recorder：整条 run 共享的 recorder（新子能力/子 agent 的 span 写它下面）；
+ * - parentSpanId：发起本次调用的上层 span —— 子能力 span 应挂它下面；
  * - client：与主循环同一注入（子 agent 独立循环复用它）。
  */
 export interface ToolRunContext {
@@ -110,7 +110,7 @@ export interface ToolRunContext {
    */
   signal?: AbortSignal;
   /**
-   * 宿主的价格覆盖表（见 `engine/usage.ts` 的 `buildPricing`）。嵌套单元
+   * 宿主的价格覆盖表（见 `engine/usage.ts` 的 `buildPricing`）。嵌套能力
    * （@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去，否则自定义定价的
    * 模型在子循环里会退化成"未定价"（成本恒 0，`maxCostUsd` 静默失效）。
    */
@@ -126,7 +126,7 @@ export interface AgentTool<I = unknown, O = unknown> {
   strict?: boolean;
   /**
    * 执行体。入参 = 模型按 schema 解析的结构化 input；
-   * ctx 由 engine 注入（含 recorder/父 span），需要开嵌套 span 的单元（子 agent）用，
+   * ctx 由 engine 注入（含 recorder/父 span），需要开嵌套 span 的能力（子 agent）用，
    * 普通工具可忽略。抛错会被包成 is_error 的 tool_result 回给模型，不中断 run。
    */
   run: (input: I, ctx?: ToolRunContext) => Promise<O> | O;

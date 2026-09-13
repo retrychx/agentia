@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp, SystemPrompt, Tool, SubAgent } from '../../src/index.js';
 import { defineModule } from '../../src/toolkit/module.js';
-import type { UnitMiddleware } from '../../src/toolkit/middleware.js';
+import type { CapabilityMiddleware } from '../../src/toolkit/middleware.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
@@ -26,14 +26,14 @@ describe('createApp 装配期静态校验', () => {
       providers: [
         { provide: 'a', useClass: A },
         { provide: 'b', useClass: B },
-        { provide: 'cfg', useValue: {} }, // 无单元 provider 不产出菜单
+        { provide: 'cfg', useValue: {} }, // 无能力 provider 不产出菜单
       ],
       system: sys(),
     });
     assert.deepEqual(app.tools.map((t) => t.name).sort(), ['tool_a', 'tool_b']);
   });
 
-  it('菜单重名 → 装配期抛错（四类单元共用命名空间）', () => {
+  it('菜单重名 → 装配期抛错（四类能力共用命名空间）', () => {
     class A {
       @Tool({ description: 'd', schema: OBJ })
       same(): string {
@@ -55,7 +55,7 @@ describe('createApp 装配期静态校验', () => {
           ],
           system: sys(),
         }),
-      /菜单单元重名.*same/,
+      /菜单能力重名.*same/,
     );
   });
 
@@ -87,15 +87,15 @@ describe('createApp 装配期静态校验', () => {
     assert.equal(app.tools.length, 1);
   });
 
-  it('toolSources 里写重同一 token：只收一份菜单，不误报「菜单单元重名」', () => {
+  it('toolSources 里写重同一 token：只收一份菜单，不误报「菜单能力重名」', () => {
     class A {
       @Tool({ description: 'd', schema: OBJ })
       tool_a(): string {
         return 'a';
       }
     }
-    // 白名单重复写 token 是笔误，不是单元定义重名：报「菜单单元重名」会把诊断
-    // 指向单元（错误来源），真正的问题在这份清单本身
+    // 白名单重复写 token 是笔误，不是能力定义重名：报「菜单能力重名」会把诊断
+    // 指向能力（错误来源），真正的问题在这份清单本身
     const app = createApp({
       providers: [{ provide: 'a', useClass: A }],
       toolSources: ['a', 'a'],
@@ -156,7 +156,7 @@ describe('modules 能力包装配（R5）', () => {
       }
     }
     const order: string[] = [];
-    const mw = (tag: string): UnitMiddleware => (_call, next) => {
+    const mw = (tag: string): CapabilityMiddleware => (_call, next) => {
       order.push(tag);
       return next();
     };
@@ -169,7 +169,7 @@ describe('modules 能力包装配（R5）', () => {
     assert.deepEqual(order, ['module', 'app']);
   });
 
-  it('嵌套单元（子 agent 内部工具）也走中间件 —— 不绕过鉴权/限流/审计', async () => {
+  it('嵌套能力（子 agent 内部工具）也走中间件 —— 不绕过鉴权/限流/审计', async () => {
     class Tools {
       @Tool({ description: 'd', schema: OBJ })
       inner_tool(): string {
@@ -181,8 +181,8 @@ describe('modules 能力包装配（R5）', () => {
       runner_agent(_input: unknown): void {}
     }
     const calls: string[] = [];
-    const mw: UnitMiddleware = (call, next) => {
-      calls.push(call.unit.name);
+    const mw: CapabilityMiddleware = (call, next) => {
+      calls.push(call.capability.name);
       return next();
     };
     const app = createApp({

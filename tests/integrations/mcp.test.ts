@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mcpTools } from '../../src/integrations/mcp.js';
 import type { McpClientLike, McpToolInfo } from '../../src/integrations/mcp.js';
 import { createApp, runAgent, Tool } from '../../src/index.js';
-import type { UnitMiddleware } from '../../src/index.js';
+import type { CapabilityMiddleware } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 /** 记录调用、可脚本化响应的假 MCP client（真连接器在 @migor/mcp，这里只验桥） */
@@ -186,7 +186,7 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
 
     assert.throws(
       () => createApp({ system: 'x', providers, tools }),
-      /菜单单元重名.*echo/,
+      /菜单能力重名.*echo/,
       'MCP 工具与本地 @Tool 同名 → 装配期就炸，不留歧义菜单',
     );
   });
@@ -195,8 +195,8 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
     const mcp = fakeMcp([{ name: 'ping', inputSchema: OBJ }], async () => 'pong');
     const tools = await mcpTools(mcp.client, { server: 's' });
     const seen: string[] = [];
-    const spy: UnitMiddleware = async (call, next) => {
-      seen.push(call.unit.name);
+    const spy: CapabilityMiddleware = async (call, next) => {
+      seen.push(call.capability.name);
       return next();
     };
     const app = createApp({ system: 'x', tools, middleware: [spy] });
@@ -206,7 +206,7 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
     assert.equal(out, 'pong');
   });
 
-  it('裸工具与 provider 单元同池后，重名查重也管它们（两方向都拦）', async () => {
+  it('裸工具与 provider 能力同池后，重名查重也管它们（两方向都拦）', async () => {
     const mcp = fakeMcp([{ name: 'dup', inputSchema: OBJ }], async () => 1);
     const tools = await mcpTools(mcp.client, { prefix: '' });
     class P {

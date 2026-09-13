@@ -9,7 +9,7 @@ import { traceToMessages } from '../../src/engine/replay.js';
  * 构造一条带 tool 往返 + 子 agent 嵌套的 trace：
  * run
  * ├─ llm.turn#1（主 agent，model-a）：并行调 search/fetch（输出完成序与发起序相反）
- * ├─ unit「researcher」（子 agent）
+ * ├─ capability「researcher」（子 agent）
  * │  └─ llm.turn#2（子 agent，model-b）：submit_result 一回合并
  * └─ llm.turn#3（主 agent，model-a）：纯文本收尾（无工具事件）
  */
@@ -25,13 +25,13 @@ function buildTrace(): Trace {
   r.event(t1, 'tool.output', { tool: 'search', ok: true, content: '搜索结果' });
   r.end(t1);
 
-  const unit = r.begin('unit', 'researcher', t1);
-  r.setAttribute(unit, 'subagent', 'researcher');
-  const t2 = r.begin('llm.turn', 'model-b', unit);
+  const capability = r.begin('capability', 'researcher', t1);
+  r.setAttribute(capability, 'subagent', 'researcher');
+  const t2 = r.begin('llm.turn', 'model-b', capability);
   r.event(t2, 'tool.input', { tool: 'submit_result', input: JSON.stringify({ answer: '42' }) });
   r.event(t2, 'tool.output', { tool: 'submit_result', ok: true, content: 'submitted' });
   r.end(t2);
-  r.end(unit);
+  r.end(capability);
 
   const t3 = r.begin('llm.turn', 'model-a', root);
   r.end(t3);
@@ -87,15 +87,15 @@ describe('traceToMessages（trace 重放基底）', () => {
     assert.ok(String(msgs[6].content).includes('以上是全部回合'));
   });
 
-  it('嵌套 llm.turn 被线性化并标注来源 unit；主 agent 回合标注 run', () => {
+  it('嵌套 llm.turn 被线性化并标注来源 capability；主 agent 回合标注 run', () => {
     const msgs = traceToMessages(buildTrace());
     const note = (m: Anthropic.MessageParam) => blocks(m).find((b) => b.type === 'text')!.text!;
 
     assert.ok(note(msgs[1]).includes('model=model-a'));
-    assert.ok(note(msgs[1]).includes('unit=(主 agent run)'));
+    assert.ok(note(msgs[1]).includes('capability=(主 agent run)'));
     // 子 agent 回合线性化进同一序列（位置在主 agent 两回合之间），标注来自 researcher
     assert.ok(note(msgs[3]).includes('model=model-b'));
-    assert.ok(note(msgs[3]).includes('unit=researcher'));
+    assert.ok(note(msgs[3]).includes('capability=researcher'));
     assert.ok(note(msgs[5]).includes('turn 3/3'));
   });
 

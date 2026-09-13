@@ -9,9 +9,9 @@ import type { Span, Trace, TraceSink, Usage } from '../core/trace.js';
  *
  * 三个维度（都是**进程内累加**，不是分布式聚合）：
  * - **run 级**：总数 / 失败数 / token 四类 / 成本 / 时长；
- * - **单元级**（E2）：`tool` 来自 turn 上的 `tool.output` 事件（E1 补的 `durationMs`/`ok`），
- *   `skill` / `subagent` 来自 `unit` span（tracer 已把子孙 llm.turn 的 usage 聚合上去）；
- *   `@Prompt` 不建 span、无独立耗时，**不产出**单元指标（如实缺省，不硬凑）；
+ * - **能力级**（E2）：`tool` 来自 turn 上的 `tool.output` 事件（E1 补的 `durationMs`/`ok`），
+ *   `skill` / `subagent` 来自 `capability` span（tracer 已把子孙 llm.turn 的 usage 聚合上去）；
+ *   `@Prompt` 不建 span、无独立耗时，**不产出**能力指标（如实缺省，不硬凑）；
  * - **模型级**（E3）：来自 `llm.turn` span（其 `name` 即模型 id）。
  *
  * 时长同时给两种口径，**并存不冲突**：
@@ -21,11 +21,11 @@ import type { Span, Trace, TraceSink, Usage } from '../core/trace.js';
  * 零依赖：Prometheus 文本与 OTLP/JSON 都手写（纯文本 / JSON，不值得为此引客户端库）。
  */
 
-/** 单元维度指标（`snapshot().units[label]`） */
-export interface UnitMetrics {
-  /** 该单元的调用次数 */
+/** 能力维度指标（`snapshot().capabilities[label]`） */
+export interface CapabilityMetrics {
+  /** 该能力的调用次数 */
   calls: number;
-  /** 其中失败次数（工具 `ok:false`；skill/subagent 的 unit span `status:'error'`） */
+  /** 其中失败次数（工具 `ok:false`；skill/subagent 的 capability span `status:'error'`） */
   errors: number;
   /** 单次调用耗时（毫秒）的窗口内精确分位；无样本时 0 */
   latencyP50: number;
@@ -66,12 +66,12 @@ export interface MetricsSnapshot {
   tokens: number;
   /** 累计成本估算（美元）；模型不在价格表内时该 run 不计入（见 usage.ts） */
   costUsd: number;
-  /** 单元维度（`labelMode:'none'` 时为空对象） */
-  units: Record<string, UnitMetrics>;
+  /** 能力维度（`labelMode:'none'` 时为空对象） */
+  capabilities: Record<string, CapabilityMetrics>;
   /** 模型维度 */
   models: Record<string, ModelMetrics>;
-  /** 因 `maxUnits` 上限被归入 `__other__` 的不同单元数（未开启上限时为 0） */
-  droppedUnits: number;
+  /** 因 `maxCapabilities` 上限被归入 `__other__` 的不同能力数（未开启上限时为 0） */
+  droppedCapabilities: number;
 }
 
 export interface MetricsSinkOptions {
@@ -97,26 +97,26 @@ export interface MetricsSinkOptions {
   /** 导出失败回调（缺省吞掉 —— 观测失败不得击穿业务） */
   onExportError?: (err: unknown) => void;
   /**
-   * 时长分位保留的样本数（环形窗口，缺省 1024，**run / 单元 / 模型各自独立**）。
+   * 时长分位保留的样本数（环形窗口，缺省 1024，**run / 能力 / 模型各自独立**）。
    * 分位是**窗口内精确值**而非全历史近似 —— 长跑宿主不会被无界数组拖住内存，
    * 代价是分位只反映最近这么多条样本（这也是监控想要的）。
-   * 注意：每个单元/模型各持一个窗口 → 内存上限 ≈ (1 + 单元数 + 模型数) × windowSize。
+   * 注意：每个能力/模型各持一个窗口 → 内存上限 ≈ (1 + 能力数 + 模型数) × windowSize。
    */
   windowSize?: number;
   /** 指标名前缀，缺省 `agentia_` */
   prefix?: string;
   /**
-   * 单元标签粒度（E2）：
-   * - `'unit'`（缺省）—— 按 `kind:name`（如 `tool:search`）；
+   * 能力标签粒度（E2）：
+   * - `'capability'`（缺省）—— 按 `kind:name`（如 `tool:search`）；
    * - `'kind'` —— 只按类型（`tool` / `skill` / `subagent`），基数极小；
-   * - `'none'` —— 完全不产出单元指标。
+   * - `'none'` —— 完全不产出能力指标。
    */
-  labelMode?: 'unit' | 'kind' | 'none';
+  labelMode?: 'capability' | 'kind' | 'none';
   /**
-   * 单元标签基数上限（缺省 200，仅 `labelMode:'unit'` 生效）。
-   * 超出后新单元归入 `unit="__other__"` —— 用户可定义任意多工具，裸打标签会打爆 Prometheus。
+   * 能力标签基数上限（缺省 200，仅 `labelMode:'capability'` 生效）。
+   * 超出后新能力归入 `capability="__other__"` —— 用户可定义任意多工具，裸打标签会打爆 Prometheus。
    */
-  maxUnits?: number;
+  maxCapabilities?: number;
   /** 时长直方图的桶边界（毫秒，升序）；缺省见 DEFAULT_BUCKETS */
   buckets?: readonly number[];
 }
@@ -134,16 +134,16 @@ export interface MetricsSink extends TraceSink {
 }
 
 const DEFAULT_WINDOW = 1024;
-const DEFAULT_MAX_UNITS = 200;
+const DEFAULT_MAX_CAPABILITIES = 200;
 /** 缺省时长桶（毫秒）：覆盖"工具几十毫秒 → run 几十秒"的常见区间 */
 export const DEFAULT_BUCKETS: readonly number[] = [25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 
-/** 超过 maxUnits 后的兜底标签 */
-const OTHER_UNIT = '__other__';
+/** 超过 maxCapabilities 后的兜底标签 */
+const OTHER_CAPABILITY = '__other__';
 
 /**
  * 时长统计：环形窗口（算窗口内精确分位）+ 累积直方图（算可聚合的 bucket）。
- * run / 单元 / 模型共用同一个实现，保证三种粒度的口径与取整完全一致。
+ * run / 能力 / 模型共用同一个实现，保证三种粒度的口径与取整完全一致。
  */
 class DurationStat {
   private readonly ring: number[] = [];
@@ -217,8 +217,8 @@ class DurationStat {
   }
 }
 
-/** 单元累加器：调用数 / 失败数 / 时长；skill·subagent 还带 token 与成本 */
-interface UnitAcc {
+/** 能力累加器：调用数 / 失败数 / 时长；skill·subagent 还带 token 与成本 */
+interface CapabilityAcc {
   calls: number;
   errors: number;
   stat: DurationStat;
@@ -241,11 +241,11 @@ function runDurationMs(trace: Trace): number | undefined {
   return root.endedAt - root.startedAt;
 }
 
-/** 单元 span 的类型标签：`attributes.skill` → 'skill'，`attributes.subagent` → 'subagent'，否则 'unit' */
-function unitKindOf(span: Span): string {
+/** 能力 span 的类型标签：`attributes.skill` → 'skill'，`attributes.subagent` → 'subagent'，否则 'capability' */
+function capabilityKindOf(span: Span): string {
   if (span.attributes.skill !== undefined) return 'skill';
   if (span.attributes.subagent !== undefined) return 'subagent';
-  return 'unit';
+  return 'capability';
 }
 
 function num(v: unknown): number {
@@ -265,11 +265,11 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   if (!(windowSize > 0)) {
     throw new Error(`metricsSink: windowSize 必须为正数，收到 ${opts.windowSize}`);
   }
-  const maxUnits = opts.maxUnits ?? DEFAULT_MAX_UNITS;
-  if (!(maxUnits > 0)) {
-    throw new Error(`metricsSink: maxUnits 必须为正数，收到 ${opts.maxUnits}`);
+  const maxCapabilities = opts.maxCapabilities ?? DEFAULT_MAX_CAPABILITIES;
+  if (!(maxCapabilities > 0)) {
+    throw new Error(`metricsSink: maxCapabilities 必须为正数，收到 ${opts.maxCapabilities}`);
   }
-  const labelMode = opts.labelMode ?? 'unit';
+  const labelMode = opts.labelMode ?? 'capability';
   const buckets = opts.buckets ?? DEFAULT_BUCKETS;
   for (let i = 1; i < buckets.length; i++) {
     if (buckets[i]! <= buckets[i - 1]!) {
@@ -287,14 +287,14 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
   const runStat = new DurationStat(windowSize, buckets);
 
-  const units = new Map<string, UnitAcc>();
+  const capabilities = new Map<string, CapabilityAcc>();
   const models = new Map<string, ModelAcc>();
-  /** 已分配独立标签的单元键（超 maxUnits 后新键归 __other__） */
-  const assignedUnits = new Set<string>();
-  /** 被归入 __other__ 的不同单元键 */
+  /** 已分配独立标签的能力键（超 maxCapabilities 后新键归 __other__） */
+  const assignedCapabilities = new Set<string>();
+  /** 被归入 __other__ 的不同能力键 */
   const dropped = new Set<string>();
 
-  const newUnit = (): UnitAcc => ({
+  const newCapability = (): CapabilityAcc => ({
     calls: 0,
     errors: 0,
     stat: new DurationStat(windowSize, buckets),
@@ -302,17 +302,17 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     costUsd: null,
   });
 
-  /** 单元标签分配：labelMode 决定粒度，maxUnits 决定基数上限 */
+  /** 能力标签分配：labelMode 决定粒度，maxCapabilities 决定基数上限 */
   const labelFor = (kind: string, name: string): string | null => {
     if (labelMode === 'none') return null;
     if (labelMode === 'kind') return kind;
     const key = `${kind}:${name}`;
-    if (assignedUnits.has(key)) return key;
-    if (assignedUnits.size >= maxUnits) {
+    if (assignedCapabilities.has(key)) return key;
+    if (assignedCapabilities.size >= maxCapabilities) {
       dropped.add(key);
-      return OTHER_UNIT;
+      return OTHER_CAPABILITY;
     }
-    assignedUnits.add(key);
+    assignedCapabilities.add(key);
     return key;
   };
 
@@ -330,15 +330,15 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     if (d !== undefined) runStat.add(d);
 
     for (const span of trace.spans) {
-      if (span.kind === 'unit') {
-        const label = labelFor(unitKindOf(span), span.name);
+      if (span.kind === 'capability') {
+        const label = labelFor(capabilityKindOf(span), span.name);
         // 时长与错误无论哪种 labelMode 都要累计；labelMode:'none' 时整块跳过
         if (label !== null) {
-          const acc = units.get(label) ?? newUnit();
+          const acc = capabilities.get(label) ?? newCapability();
           acc.calls++;
           if (span.status === 'error') acc.errors++;
           if (span.endedAt !== undefined) acc.stat.add(Math.max(0, span.endedAt - span.startedAt));
-          // unit.usage = 子孙 llm.turn 聚合（tracer 写入）；工具没有这个语义
+          // capability.usage = 子孙 llm.turn 聚合（tracer 写入）；工具没有这个语义
           if (span.usage) {
             const sum =
               span.usage.inputTokens +
@@ -348,7 +348,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
             acc.tokens = (acc.tokens ?? 0) + sum;
             if (span.usage.costEstimate != null) acc.costUsd = (acc.costUsd ?? 0) + span.usage.costEstimate;
           }
-          units.set(label, acc);
+          capabilities.set(label, acc);
         }
         continue;
       }
@@ -373,28 +373,28 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         }
         if (span.endedAt !== undefined) acc.stat.add(Math.max(0, span.endedAt - span.startedAt));
         models.set(model, acc);
-        // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）—— 单元指标的另一路数据源
+        // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）—— 能力指标的另一路数据源
         for (const e of span.events) {
           if (e.name !== 'tool.output') continue;
           const body = e.body as Record<string, unknown> | null;
           if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
           const label = labelFor('tool', body.tool);
           if (label === null) continue;
-          const tacc = units.get(label) ?? newUnit();
+          const tacc = capabilities.get(label) ?? newCapability();
           tacc.calls++;
           if (body.ok === false) tacc.errors++;
           tacc.stat.add(Math.max(0, num(body.durationMs)));
-          units.set(label, tacc);
+          capabilities.set(label, tacc);
         }
       }
     }
   };
 
   const snapshot = (): MetricsSnapshot => {
-    const unitOut: Record<string, UnitMetrics> = {};
+    const capabilityOut: Record<string, CapabilityMetrics> = {};
     if (labelMode !== 'none') {
-      for (const [label, acc] of units) {
-        unitOut[label] = {
+      for (const [label, acc] of capabilities) {
+        capabilityOut[label] = {
           calls: acc.calls,
           errors: acc.errors,
           latencyP50: acc.stat.percentile(0.5),
@@ -422,9 +422,9 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       latencyP95: runStat.percentile(0.95),
       tokens: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheCreation,
       costUsd,
-      units: unitOut,
+      capabilities: capabilityOut,
       models: modelOut,
-      droppedUnits: dropped.size,
+      droppedCapabilities: dropped.size,
     };
   };
 
@@ -471,24 +471,24 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       line(`${p}run_duration_ms`, 'gauge', runStat.percentile(0.95), 'run 时长分位（毫秒，滑动窗口内精确值）', '{quantile="0.95"}'),
     );
 
-    // —— 单元维度（E2）——
-    for (const label of [...units.keys()].sort()) {
-      const acc = units.get(label)!;
-      const l = `{unit="${label}"}`;
-      out.push(line(`${p}unit_calls_total`, 'counter', acc.calls, '单元调用次数', l));
-      out.push(line(`${p}unit_errors_total`, 'counter', acc.errors, '单元失败次数', l));
-      out.push(histogram(`${p}unit_duration_ms`, acc.stat, '单元调用耗时（毫秒）', l));
+    // —— 能力维度（E2）——
+    for (const label of [...capabilities.keys()].sort()) {
+      const acc = capabilities.get(label)!;
+      const l = `{capability="${label}"}`;
+      out.push(line(`${p}capability_calls_total`, 'counter', acc.calls, '能力调用次数', l));
+      out.push(line(`${p}capability_errors_total`, 'counter', acc.errors, '能力失败次数', l));
+      out.push(histogram(`${p}capability_duration_ms`, acc.stat, '能力调用耗时（毫秒）', l));
       out.push(
-        line(`${p}unit_duration_ms`, 'gauge', acc.stat.percentile(0.5), '单元调用耗时分位（窗口内精确值）', `{unit="${label}",quantile="0.5"}`),
+        line(`${p}capability_duration_ms`, 'gauge', acc.stat.percentile(0.5), '能力调用耗时分位（窗口内精确值）', `{capability="${label}",quantile="0.5"}`),
       );
       out.push(
-        line(`${p}unit_duration_ms`, 'gauge', acc.stat.percentile(0.95), '单元调用耗时分位（窗口内精确值）', `{unit="${label}",quantile="0.95"}`),
+        line(`${p}capability_duration_ms`, 'gauge', acc.stat.percentile(0.95), '能力调用耗时分位（窗口内精确值）', `{capability="${label}",quantile="0.95"}`),
       );
       if (acc.tokens !== null) {
-        out.push(line(`${p}unit_tokens_total`, 'counter', acc.tokens, 'skill/subagent 的子孙 token 合计', l));
+        out.push(line(`${p}capability_tokens_total`, 'counter', acc.tokens, 'skill/subagent 的子孙 token 合计', l));
       }
       if (acc.costUsd !== null) {
-        out.push(line(`${p}unit_cost_usd_total`, 'counter', acc.costUsd, 'skill/subagent 的估算成本（美元）', l));
+        out.push(line(`${p}capability_cost_usd_total`, 'counter', acc.costUsd, 'skill/subagent 的估算成本（美元）', l));
       }
     }
 
@@ -562,14 +562,14 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       sum(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []),
       hist(`${p}run_duration_ms`, runStat, 'run 时长（毫秒）', []),
     ];
-    for (const label of [...units.keys()].sort()) {
-      const acc = units.get(label)!;
-      const attrs = [strAttr('unit', label)];
-      metrics.push(sum(`${p}unit_calls_total`, acc.calls, '单元调用次数', attrs));
-      metrics.push(sum(`${p}unit_errors_total`, acc.errors, '单元失败次数', attrs));
-      metrics.push(hist(`${p}unit_duration_ms`, acc.stat, '单元调用耗时（毫秒）', attrs));
-      if (acc.tokens !== null) metrics.push(sum(`${p}unit_tokens_total`, acc.tokens, '子孙 token 合计', attrs));
-      if (acc.costUsd !== null) metrics.push(sum(`${p}unit_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs));
+    for (const label of [...capabilities.keys()].sort()) {
+      const acc = capabilities.get(label)!;
+      const attrs = [strAttr('capability', label)];
+      metrics.push(sum(`${p}capability_calls_total`, acc.calls, '能力调用次数', attrs));
+      metrics.push(sum(`${p}capability_errors_total`, acc.errors, '能力失败次数', attrs));
+      metrics.push(hist(`${p}capability_duration_ms`, acc.stat, '能力调用耗时（毫秒）', attrs));
+      if (acc.tokens !== null) metrics.push(sum(`${p}capability_tokens_total`, acc.tokens, '子孙 token 合计', attrs));
+      if (acc.costUsd !== null) metrics.push(sum(`${p}capability_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs));
     }
     for (const model of [...models.keys()].sort()) {
       const acc = models.get(model)!;
@@ -655,9 +655,9 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       tokens.cacheRead = 0;
       tokens.cacheCreation = 0;
       runStat.reset();
-      units.clear();
+      capabilities.clear();
       models.clear();
-      assignedUnits.clear();
+      assignedCapabilities.clear();
       dropped.clear();
     },
   };

@@ -1,10 +1,10 @@
-/* 单元排行（G2）—— 「哪个单元慢 / 贵 / 爱失败」。
+/* 能力排行（G2）—— 「哪个能力慢 / 贵 / 爱失败」。
  *
  * 与 trace 调用树同属**框架无关**的展示层：入参是 duck-typed 的 trace 形状，零依赖。
  * CLI inspector 与官网 playground 共用同一份实现，避免两处聚合口径漂移。
  *
  * 数据来源（与框架侧的具名约定一致）：
- * - `unit` span（skill / subagent）→ 调用耗时与子孙 usage 聚合（tokens / costUsd）；
+ * - `capability` span（skill / subagent）→ 调用耗时与子孙 usage 聚合（tokens / costUsd）；
  * - `llm.turn` span 上的 `tool.output` 事件（普通工具不建 span）→ 工具耗时与成败，
  *   读 `body.durationMs` / `body.ok`。
  *
@@ -15,22 +15,22 @@
 function kindOf(span) {
   if (span.attributes && span.attributes.skill !== undefined) return 'skill';
   if (span.attributes && span.attributes.subagent !== undefined) return 'subagent';
-  return 'unit';
+  return 'capability';
 }
 
 /**
- * 从一条 trace 算单元排行。
+ * 从一条 trace 算能力排行。
  * @param {any} trace Trace 形状（spans[] / events[] / usage?）
- * @returns {Array<{unit:string,calls:number,errors:number,totalMs:number,maxMs:number,tokens:number|null,costUsd:number|null}>}
+ * @returns {Array<{capability:string,calls:number,errors:number,totalMs:number,maxMs:number,tokens:number|null,costUsd:number|null}>}
  *          按 totalMs 降序
  */
 export function summarizeTrace(trace) {
   const acc = new Map();
-  const get = (unit) => {
-    let a = acc.get(unit);
+  const get = (capability) => {
+    let a = acc.get(capability);
     if (!a) {
-      a = { unit, calls: 0, errors: 0, totalMs: 0, maxMs: 0, tokens: null, costUsd: null };
-      acc.set(unit, a);
+      a = { capability, calls: 0, errors: 0, totalMs: 0, maxMs: 0, tokens: null, costUsd: null };
+      acc.set(capability, a);
     }
     return a;
   };
@@ -42,7 +42,7 @@ export function summarizeTrace(trace) {
 
   const spans = (trace && trace.spans) || [];
   for (const span of spans) {
-    if (span.kind === 'unit') {
+    if (span.kind === 'capability') {
       const a = get(`${kindOf(span)}:${span.name}`);
       a.calls += 1;
       if (span.status === 'error') a.errors += 1;
@@ -72,18 +72,18 @@ export function summarizeTrace(trace) {
 /** 把排行渲染成一个小表格（返回 HTML 字符串；样式由 trace-view.css 提供） */
 export function renderSummary(rows) {
   if (!rows || rows.length === 0) {
-    return '<div class="tv-sum-empty">// 没有可归因的单元（没有 unit span，也没有 tool.output 事件）</div>';
+    return '<div class="tv-sum-empty">// 没有可归因的能力（没有 capability span，也没有 tool.output 事件）</div>';
   }
   const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
   const body = rows
     .map((r) => {
       const err = r.errors > 0 ? `<span class="tv-sum-err">${r.errors}</span>` : '0';
       const cost = r.costUsd != null ? (r.costUsd < 0.000001 ? r.costUsd.toExponential(2) : r.costUsd.toFixed(6)) : '-';
-      return `<tr><td class="tv-sum-unit">${escapeHtml(r.unit)}</td><td>${r.calls}</td><td>${err}</td><td>${fmtMs(r.totalMs)}</td><td>${fmtMs(r.maxMs)}</td><td>${r.tokens != null ? r.tokens : '-'}</td><td>${cost}</td></tr>`;
+      return `<tr><td class="tv-sum-capability">${escapeHtml(r.capability)}</td><td>${r.calls}</td><td>${err}</td><td>${fmtMs(r.totalMs)}</td><td>${fmtMs(r.maxMs)}</td><td>${r.tokens != null ? r.tokens : '-'}</td><td>${cost}</td></tr>`;
     })
     .join('');
   return (
-    '<table class="tv-sum"><thead><tr><th>unit</th><th>calls</th><th>err</th><th>total</th><th>max</th><th>tokens</th><th>cost</th></tr></thead>' +
+    '<table class="tv-sum"><thead><tr><th>capability</th><th>calls</th><th>err</th><th>total</th><th>max</th><th>tokens</th><th>cost</th></tr></thead>' +
     `<tbody>${body}</tbody></table>`
   );
 }

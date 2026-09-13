@@ -47,7 +47,7 @@ function traceOf(opts: {
   };
 }
 
-/** 造一条**含单元与模型**的 trace：两次 llm.turn（带 tool.output 事件）+ 一个 subagent unit span */
+/** 造一条**含能力与模型**的 trace：两次 llm.turn（带 tool.output 事件）+ 一个 subagent capability span */
 function richTrace(): Trace {
   const root = 'root-1';
   const spans: Span[] = [
@@ -93,10 +93,10 @@ function richTrace(): Trace {
       ],
     },
     {
-      spanId: 'unit-1',
+      spanId: 'capability-1',
       traceId: 't-rich',
       parentSpanId: root,
-      kind: 'unit',
+      kind: 'capability',
       name: 'researcher',
       startedAt: 1210,
       endedAt: 1280,
@@ -189,7 +189,7 @@ describe('metricsSink（D3 基础：run 级）', () => {
     assert.match(txt, /^agentia_run_duration_ms_count 1$/m);
   });
 
-  it('prefix 可换；reset 清空累计（含单元/模型维度）', () => {
+  it('prefix 可换；reset 清空累计（含能力/模型维度）', () => {
     const m = metricsSink({ prefix: 'myapp_' });
     m.export(traceOf({ durationMs: 1, input: 9 }));
     m.export(richTrace());
@@ -197,14 +197,14 @@ describe('metricsSink（D3 基础：run 级）', () => {
     m.reset();
     const s = m.snapshot();
     assert.deepEqual([s.runs, s.failed, s.tokens, s.costUsd], [0, 0, 0, 0]);
-    assert.deepEqual(s.units, {});
+    assert.deepEqual(s.capabilities, {});
     assert.deepEqual(s.models, {});
     assert.match(m.render(), /^myapp_run_duration_ms_count 0$/m);
   });
 
-  it('windowSize / maxUnits / buckets 非法 → 构造期抛错', () => {
+  it('windowSize / maxCapabilities / buckets 非法 → 构造期抛错', () => {
     assert.throws(() => metricsSink({ windowSize: 0 }), /必须为正数/);
-    assert.throws(() => metricsSink({ maxUnits: 0 }), /必须为正数/);
+    assert.throws(() => metricsSink({ maxCapabilities: 0 }), /必须为正数/);
     assert.throws(() => metricsSink({ buckets: [10, 5] }), /严格升序/);
     assert.throws(() => metricsSink({ export: 'nope' as never }), /只支持/);
   });
@@ -223,66 +223,66 @@ describe('E4 histogram（可聚合的分位）', () => {
   });
 });
 
-describe('E2 单元级指标', () => {
-  it('工具来自 tool.output 事件；skill/subagent 来自 unit span（带 token/成本）', () => {
+describe('E2 能力级指标', () => {
+  it('工具来自 tool.output 事件；skill/subagent 来自 capability span（带 token/成本）', () => {
     const m = metricsSink();
     m.export(richTrace());
     const txt = m.render();
-    assert.match(txt, /^agentia_unit_calls_total\{unit="tool:search"\} 2$/m);
-    assert.match(txt, /^agentia_unit_errors_total\{unit="tool:search"\} 1$/m);
+    assert.match(txt, /^agentia_capability_calls_total\{capability="tool:search"\} 2$/m);
+    assert.match(txt, /^agentia_capability_errors_total\{capability="tool:search"\} 1$/m);
     assert.match(
       txt,
-      /^agentia_unit_duration_ms\{unit="tool:search",quantile="0.5"\} 8$/m,
+      /^agentia_capability_duration_ms\{capability="tool:search",quantile="0.5"\} 8$/m,
       '窗口内 [42,8] 排序 [8,42] → ceil(0.5·2)=1 → 8',
     );
-    assert.match(txt, /^agentia_unit_duration_ms\{unit="tool:search",quantile="0.95"\} 42$/m);
-    assert.match(txt, /^agentia_unit_calls_total\{unit="tool:fetch"\} 1$/m);
-    assert.match(txt, /^agentia_unit_calls_total\{unit="subagent:researcher"\} 1$/m);
-    assert.match(txt, /^agentia_unit_tokens_total\{unit="subagent:researcher"\} 150$/m, '120+30');
-    assert.match(txt, /^agentia_unit_cost_usd_total\{unit="subagent:researcher"\} 0.012$/m);
+    assert.match(txt, /^agentia_capability_duration_ms\{capability="tool:search",quantile="0.95"\} 42$/m);
+    assert.match(txt, /^agentia_capability_calls_total\{capability="tool:fetch"\} 1$/m);
+    assert.match(txt, /^agentia_capability_calls_total\{capability="subagent:researcher"\} 1$/m);
+    assert.match(txt, /^agentia_capability_tokens_total\{capability="subagent:researcher"\} 150$/m, '120+30');
+    assert.match(txt, /^agentia_capability_cost_usd_total\{capability="subagent:researcher"\} 0.012$/m);
     // 工具没有 token 语义 → 不产出 token/cost 行
-    assert.equal(/agentia_unit_tokens_total\{unit="tool:search"\}/.test(txt), false);
-    // 每个单元的调用耗时直方图都在
-    assert.match(txt, /^agentia_unit_duration_ms_count\{unit="tool:fetch"\} 1$/m);
+    assert.equal(/agentia_capability_tokens_total\{capability="tool:search"\}/.test(txt), false);
+    // 每个能力的调用耗时直方图都在
+    assert.match(txt, /^agentia_capability_duration_ms_count\{capability="tool:fetch"\} 1$/m);
   });
 
-  it('snapshot().units 给排序无关的键值视图；工具 tokens/costUsd 为 null', () => {
+  it('snapshot().capabilities 给排序无关的键值视图；工具 tokens/costUsd 为 null', () => {
     const m = metricsSink();
     m.export(richTrace());
-    const { units } = m.snapshot();
-    assert.deepEqual(Object.keys(units).sort(), ['subagent:researcher', 'tool:fetch', 'tool:search']);
-    assert.equal(units['tool:search']!.calls, 2);
-    assert.equal(units['tool:search']!.errors, 1);
-    assert.equal(units['tool:search']!.tokens, null);
-    assert.equal(units['tool:search']!.costUsd, null);
-    assert.equal(units['subagent:researcher']!.tokens, 150);
-    assert.equal(units['subagent:researcher']!.costUsd, 0.012);
-    assert.equal(units['tool:fetch']!.latencyP50, 100, '单样本 → 分位即它自己');
+    const { capabilities } = m.snapshot();
+    assert.deepEqual(Object.keys(capabilities).sort(), ['subagent:researcher', 'tool:fetch', 'tool:search']);
+    assert.equal(capabilities['tool:search']!.calls, 2);
+    assert.equal(capabilities['tool:search']!.errors, 1);
+    assert.equal(capabilities['tool:search']!.tokens, null);
+    assert.equal(capabilities['tool:search']!.costUsd, null);
+    assert.equal(capabilities['subagent:researcher']!.tokens, 150);
+    assert.equal(capabilities['subagent:researcher']!.costUsd, 0.012);
+    assert.equal(capabilities['tool:fetch']!.latencyP50, 100, '单样本 → 分位即它自己');
   });
 
-  it('labelMode:"none" 不产出任何单元指标', () => {
+  it('labelMode:"none" 不产出任何能力指标', () => {
     const m = metricsSink({ labelMode: 'none' });
     m.export(richTrace());
-    assert.deepEqual(m.snapshot().units, {});
+    assert.deepEqual(m.snapshot().capabilities, {});
     assert.equal(/agentia_unit_/.test(m.render()), false);
   });
 
   it('labelMode:"kind" 只按类型打标签（基数极小）', () => {
     const m = metricsSink({ labelMode: 'kind' });
     m.export(richTrace());
-    const { units } = m.snapshot();
-    assert.deepEqual(Object.keys(units).sort(), ['subagent', 'tool']);
-    assert.equal(units['tool']!.calls, 3, '两次 search + 一次 fetch');
-    assert.equal(units['subagent']!.calls, 1);
+    const { capabilities } = m.snapshot();
+    assert.deepEqual(Object.keys(capabilities).sort(), ['subagent', 'tool']);
+    assert.equal(capabilities['tool']!.calls, 3, '两次 search + 一次 fetch');
+    assert.equal(capabilities['subagent']!.calls, 1);
   });
 
-  it('maxUnits 上限：新单元归 __other__，droppedUnits 记被归并的不同单元数', () => {
-    const m = metricsSink({ maxUnits: 1 });
+  it('maxCapabilities 上限：新能力归 __other__，droppedCapabilities 记被归并的不同能力数', () => {
+    const m = metricsSink({ maxCapabilities: 1 });
     m.export(richTrace());
     const s = m.snapshot();
-    assert.equal(s.units['tool:search']!.calls, 2, '首个单元保住自己的标签');
-    assert.equal(s.units['__other__']!.calls, 2, 'fetch 与 subagent 被归并');
-    assert.equal(s.droppedUnits, 2);
+    assert.equal(s.capabilities['tool:search']!.calls, 2, '首个能力保住自己的标签');
+    assert.equal(s.capabilities['__other__']!.calls, 2, 'fetch 与 subagent 被归并');
+    assert.equal(s.droppedCapabilities, 2);
   });
 });
 
@@ -356,11 +356,11 @@ describe('E5 OTLP/JSON 指标导出', () => {
       assert.equal(hist.count, 1);
       assert.equal(hist.sum, 300);
       assert.equal(hist.explicitBounds.length, hist.bucketCounts.length - 1);
-      // 单元维度带 attributes
-      const unitCalls = byName('agentia_unit_calls_total').find(
+      // 能力维度带 attributes
+      const capabilityCalls = byName('agentia_capability_calls_total').find(
         (x) => x.sum.dataPoints[0].attributes[0].value.stringValue === 'tool:search',
       );
-      assert.equal(unitCalls!.sum.dataPoints[0].asInt, '2');
+      assert.equal(capabilityCalls!.sum.dataPoints[0].asInt, '2');
     } finally {
       await close(server);
     }

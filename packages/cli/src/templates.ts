@@ -19,22 +19,43 @@ export function kebabToSnake(name: string): string {
   return name.replace(/-/g, '_');
 }
 
-export type UnitType = 'tool' | 'skill' | 'prompt' | 'subagent';
+export type CapabilityType = 'tool' | 'skill' | 'prompt' | 'subagent';
 
-export const UNIT_TYPES: readonly UnitType[] = ['tool', 'skill', 'prompt', 'subagent'];
+export const CAPABILITY_TYPES: readonly CapabilityType[] = ['tool', 'skill', 'prompt', 'subagent'];
 
-export function isUnitType(value: string): value is UnitType {
-  return (UNIT_TYPES as readonly string[]).includes(value);
+export function isCapabilityType(value: string): value is CapabilityType {
+  return (CAPABILITY_TYPES as readonly string[]).includes(value);
 }
 
-// ---------- units.ts 注册表模板 ----------
+// ---------- 目录约定（spec §7：四分类目录，一能力一文件夹，无伞形词） ----------
+
+/**
+ * 能力类型 → 分类目录。目录名即「里面装什么」，不再用一个需要图例解释的伞形词：
+ * 用户看一眼 `src/tools/weather/index.ts` 就知道它是工具。
+ */
+export const CAPABILITY_DIRS: Record<CapabilityType, string> = {
+  tool: 'src/tools',
+  skill: 'src/skills',
+  prompt: 'src/prompts',
+  subagent: 'src/subagents',
+};
+
+/** 全部能力目录（顺序即 discover 的装配顺序） */
+export const CAPABILITY_DIR_LIST: readonly string[] = CAPABILITY_TYPES.map(
+  (t) => CAPABILITY_DIRS[t],
+);
+
+/** 显式注册表位置（`agentia g` / `agentia add` 维护，`agentia doctor` 校验） */
+export const REGISTRY_PATH = 'src/registry.ts';
+
+// ---------- 注册表模板 ----------
 
 export const IMPORTS_END_MARKER = '// @agentia:imports-end';
 export const ENTRIES_END_MARKER = '// @agentia:entries-end';
 
-/** 空注册表模板（无任何单元条目） */
+/** 空注册表模板（无任何能力条目） */
 export function emptyRegistryTemplate(): string {
-  return `// Agentia 单元注册表 —— 由 agentia CLI 维护（agentia g 自动更新，也可手工编辑）
+  return `// Agentia 能力注册表 —— 由 agentia CLI 维护（agentia g 自动更新，也可手工编辑）
 // @agentia:imports
 ${IMPORTS_END_MARKER}
 import type { Provider } from '@migor/agentia';
@@ -83,7 +104,7 @@ export function projectTsconfig(): string {
         esModuleInterop: true,
         skipLibCheck: true,
       },
-      include: ['src', 'units.ts'],
+      include: ['src'],
     },
     null,
     2,
@@ -95,8 +116,8 @@ export function mainTs(name: string): string {
 
 const app = await createApp({
   name: '${name}',
-  discover: 'units', // 目录约定：units/<name>/ 一单元一文件夹，启动期扫描装配
-  system: new SystemPrompt().add('role', '你是 ${name} 的主 agent，按任务自主调度菜单里的单元。', true),
+  discover: [${CAPABILITY_DIR_LIST.map((p) => `'${p}'`).join(', ')}], // 四分类目录，顺序即装配顺序
+  system: new SystemPrompt().add('role', '你是 ${name} 的主 agent，按任务自主调度菜单里的能力。', true),
 });
 
 const { result } = await app.run(
@@ -113,30 +134,32 @@ export function projectReadme(name: string): string {
 
 ## 目录约定
 
-\`units/<name>/\` 一单元一文件夹，每个单元是一个 default export 的类，用装饰器声明能力：
+四分类目录，一能力一文件夹，每个能力是一个 default export 的类，用装饰器声明：
 
-- \`@Tool\` 工具：主 agent 可调用（input → value）
-- \`@Skill\` 技能：方法体内通过 \`ctx.llm()\` 调 LLM
-- \`@SubAgent\` 子代理：按 system 角色设定独立跑一轮
-- \`@Prompt\` 文本资产：.md 文件，按需拉取进上下文
+- \`src/tools/<name>/\` —— \`@Tool\` 工具：主 agent 可调用（input → value）
+- \`src/skills/<name>/\` —— \`@Skill\` 技能：方法体内通过 \`ctx.llm()\` 调 LLM
+- \`src/subagents/<name>/\` —— \`@SubAgent\` 子代理：按 system 角色设定独立跑一轮
+- \`src/prompts/<name>/\` —— \`@Prompt\` 文本资产：.md 文件，按需拉取进上下文
+
+目录名就是类型，不用记别名。
 
 ## 两条装配路线
 
-1. **目录扫描**：\`createApp({ discover: 'units' })\` 启动期扫描 \`units/*/index.ts\`，default export 为类时以文件夹名为 DI token 注册（见 \`src/main.ts\`）。
-2. **显式装配**：\`createApp({ providers, system })\`，providers 来自 \`units.ts\` 注册表（由 \`agentia g\` 自动维护，也可手工编辑）。
+1. **目录扫描**：\`createApp({ discover: [...] })\` 启动期按给定顺序扫各目录下的 \`<name>/index.ts\`，default export 为类时以文件夹名为 DI token 注册（见 \`src/main.ts\`）。
+2. **显式装配**：\`createApp({ providers, system })\`，providers 来自 \`src/registry.ts\` 注册表（由 \`agentia g\` 自动维护，也可手工编辑）。
 
 两者二选一或混用。
 
-## 生成单元
+## 生成能力
 
 \`\`\`bash
-agentia g tool my-tool        # 工具
-agentia g skill my-skill      # 技能
-agentia g prompt my-prompt    # 文本资产（含 asset.md）
-agentia g subagent my-agent   # 子代理（含 system.md）
+agentia g tool my-tool        # → src/tools/my-tool/
+agentia g skill my-skill      # → src/skills/my-skill/
+agentia g prompt my-prompt    # → src/prompts/my-prompt/（含 asset.md）
+agentia g subagent my-agent   # → src/subagents/my-agent/（含 system.md）
 \`\`\`
 
-生成的单元在 \`units/<name>/\`，并自动登记到 \`units.ts\`。
+生成的能力自动登记到 \`src/registry.ts\`。
 
 ## 运行
 
@@ -155,14 +178,14 @@ dist
 `;
 }
 
-// ---------- g 命令单元模板 ----------
+// ---------- g 命令能力模板 ----------
 
 export function toolIndexTs(name: string): string {
   const cls = kebabToPascal(name);
   const method = kebabToSnake(name);
   return `import { Tool } from '@migor/agentia';
 
-/** ${name} 工具单元 */
+/** ${name} 工具能力 */
 export default class ${cls} {
   @Tool({
     description: '示例工具：回显输入',
@@ -186,7 +209,7 @@ export function promptIndexTs(name: string): string {
   const method = kebabToSnake(name);
   return `import { Prompt, asset } from '@migor/agentia';
 
-/** ${name} 文本资产单元 */
+/** ${name} 文本资产能力 */
 export default class ${cls} {
   @Prompt({ description: '${name} 文本资产（描述何时该拉取）' })
   ${method}(): string {
@@ -208,7 +231,7 @@ export function subagentIndexTs(name: string): string {
   const method = kebabToSnake(name);
   return `import { SubAgent, asset } from '@migor/agentia';
 
-/** ${name} 子代理单元 */
+/** ${name} 子代理能力 */
 export default class ${cls} {
   @SubAgent({
     description: '示例子代理：按 system.md 的角色设定独立处理任务',
@@ -239,7 +262,7 @@ export function skillIndexTs(name: string): string {
   return `import { Skill } from '@migor/agentia';
 import type { SkillContext } from '@migor/agentia';
 
-/** ${name} 技能单元 */
+/** ${name} 技能能力 */
 export default class ${cls} {
   @Skill({
     description: '示例技能：就给定主题调用 LLM 产出要点',

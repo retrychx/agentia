@@ -1,4 +1,4 @@
-/** add 命令：npm install 第三方单元包并登记进 units.ts 注册表 */
+/** add 命令：npm install 第三方能力包并登记进 src/registry.ts 注册表 */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -39,7 +39,7 @@ export function addPackage(arg: string): number {
 
   const r = spawnSync('npm', ['install', arg], { cwd, stdio: 'inherit' });
   if (r.error || r.status !== 0) {
-    console.error(`错误：npm install ${arg} 失败，units.ts 未改动`);
+    console.error(`错误：npm install ${arg} 失败，src/registry.ts 未改动`);
     process.exitCode = 1;
     return 1;
   }
@@ -56,13 +56,13 @@ export function addPackage(arg: string): number {
   const result = registerPackage(cwd, token, pkgName);
 
   if (result === 'registered') {
-    console.log(`已登记到 units.ts：import ${pkgName} → { provide: '${token}' }`);
+    console.log(`已登记到 src/registry.ts：import ${pkgName} → { provide: '${token}' }`);
   } else {
-    console.log(`units.ts 中「${token}」已注册，跳过登记`);
+    console.log(`src/registry.ts 中「${token}」已注册，跳过登记`);
   }
   console.log(
-    '约定提示：第三方单元包应 default export 一个 provider 类（或 Provider 对象）；' +
-      '若该包不符合约定，请手工调整 units.ts 中的 import 与条目',
+    '约定提示：第三方能力包应 default export 一个 provider 类（或 Provider 对象）；' +
+      '若该包不符合约定，请手工调整 src/registry.ts 中的 import 与条目',
   );
   return 0;
 }

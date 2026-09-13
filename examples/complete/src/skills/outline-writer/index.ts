@@ -18,7 +18,7 @@ export default class OutlineWriter {
     },
   })
   async outline_writer(input: { topic: string }, ctx: SkillContext): Promise<string> {
-    // ctx.llm = 受限子运行（复用 runAgentScoped，不自开 run 根），在 skill 自己的 unit span 下记账
+    // ctx.llm = 受限子运行（复用 runAgentScoped，不自开 run 根），在 skill 自己的 capability span 下记账
     const r = await ctx.llm({ prompt: `为主题「${input.topic}」写三段式提纲，每段一行，不要多余解释。` });
     return r.text;
   }

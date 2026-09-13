@@ -164,7 +164,7 @@ async function dPhaseTypeChecks(): Promise<void> {
   const badClient: McpClientLike = { listTools: async () => [] };
   void badClient;
 
-  /* D1：mcpTools 的产物直接进 AppOptions.tools（裸工具缝，与 @Tool 单元同池） */
+  /* D1：mcpTools 的产物直接进 AppOptions.tools（裸工具缝，与 @Tool 能力同池） */
   const tools: AgentTool[] = await mcpTools(okClient, { server: 'time', timeoutMs: 1000 });
   createApp({ system: new SystemPrompt().add('role', 'r', true), tools });
   // @ts-expect-error tools 要的是 AgentTool[]（name/description/inputSchema/run 一个不能少）

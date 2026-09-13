@@ -33,7 +33,7 @@ function sampleTrace(): Trace {
         spanId: childId,
         traceId,
         parentSpanId: rootId,
-        kind: 'unit',
+        kind: 'capability',
         name: 'tool:search',
         startedAt: 1100,
         endedAt: 1500,
