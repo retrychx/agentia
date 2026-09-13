@@ -51,7 +51,7 @@ export const GET: APIRoute = () => {
 
   const body = `# Agentia
 
-> 面向应用开发者的声明式 agent 服务开发框架：用装饰器 + 显式 DI 声明 tool / skill / subagent / prompt 四类能力，主 agent 编排执行，交付可上线的 Agent 服务。npm 包 \`@migor/agentia\` 与 \`@migor/cli\`；ESM、Node ≥ 18。
+> 面向应用开发者的声明式 agent 服务开发框架：用装饰器 + 显式 DI 声明 tool / skill / subagent / prompt 四类能力，主 agent 编排执行，交付可上线的 Agent 服务。**每次 run 自带调用树（trace）、成本与指标 —— 可回放、可审计**。npm 包 \`@migor/agentia\` 与 \`@migor/cli\`；ESM、Node ≥ 18。
 
 本文件是所有内容的纯文本入口。**需要完整说明时读 \`/llms-full.txt\`**（同一份单源的完整版）。
 

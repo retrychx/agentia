@@ -4,12 +4,13 @@
 
 [![CI](https://github.com/retrychx/agentia/actions/workflows/ci.yml/badge.svg)](https://github.com/retrychx/agentia/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-声明式 agent 服务开发框架：TS 装饰器 + DI，主 agent 调度 `@Tool` / `@Skill` / `@SubAgent` / `@Prompt` 能力执行任务，产出结构化结果与调用树（trace）。
+声明式 agent 服务开发框架：TS 装饰器 + DI，主 agent 调度 `@Tool` / `@Skill` / `@SubAgent` / `@Prompt` 能力执行任务；**每次 run 产出结构化结果与可观测的调用树**（trace / token / 成本 / 指标）。
 
 - [安装与配置](#安装与配置)
 - [快速开始](#快速开始)
 - [四类能力](#四类能力)
 - [运行时特性](#运行时特性)
+- [可观测性与成本](#可观测性与成本)
 - [集成](#集成)
 - [API 速查](#api-速查)
 - [开发本仓库](#开发本仓库)
@@ -238,6 +239,33 @@ const app = createApp({
 });
 ```
 
+## 可观测性与成本
+
+一次 run == 一条 trace（`traceId === runId`），**Turn 0 起内建** —— 不是外挂的第三方追踪 SDK 集成：
+
+```ts
+const { run, result } = await app.run(messages);
+result.trace.spans;       // 调用树：llm.turn / 能力 span / 事件
+result.trace.totalUsage;  // token 汇总（只累加 llm.turn；能力 span 是子孙聚合，不参与求和）
+```
+
+- **每步记账**：span 属性带 model、input/output/cache tokens、成本估计、状态、错误类型
+- **出口是一条缝**：`TraceSink { export(trace) }` —— run 收尾（成功/失败两条路径）都投递，sink 抛错不影响 run。落库 / 采样 / 脱敏都在缝外用 sink 组合（实码见 `examples/observability/`，说明见 `docs/observability.md`）
+- **指标**：`metricsSink` 满足 `TraceSink` 即可接入（Prometheus 文本 / OTLP metrics），零依赖
+- **成本**：`priceOverrides` 注入价目表；未定价模型显式发 `usage.unpriced` 事件；`createBudgetGuard` 做**硬管控**（超限 run 以 `budget_exceeded` 收尾、算失败）
+- **调优闭环**：`buildRunReport` 出「能力 / 模型的耗时·token·成本·错误率排行」，CLI `agentia report <trace.jsonl>` 直接渲染
+- **回放**：`traceToMessages` 把已完成的 trace 线性化喂回模型（调试基底）
+- **本地开发**：`agentia dev` 的 inspector 面板与 `@migor/trace-view` 共用同一份渲染器（避免两处漂移）
+- **导出 OTLP**：
+
+```ts
+import { createOtlpExporter } from '@migor/agentia';
+
+await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.trace);
+```
+
+> 权威口径见 `docs/usage-guide.md` 的「观测」与「成本硬管控」两节。
+
 ## 集成
 
 ### HTTP 宿主
@@ -274,14 +302,6 @@ import { InMemoryMemoryStore } from '@migor/agentia';
 const { result } = await app.run(messages, {
   memory: { store: new InMemoryMemoryStore(), keys: ['profile'] },
 });
-```
-
-### trace 导出 OTLP
-
-```ts
-import { createOtlpExporter } from '@migor/agentia';
-
-await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.trace);
 ```
 
 ## API 速查
