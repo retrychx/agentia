@@ -4,8 +4,9 @@
     "noEmit": true,
     "rootDir": ".",
     "declaration": false,
-    "sourceMap": false
+    "sourceMap": false,
+    "paths": { "@migor/agentia": ["./src/index.ts"] }
   },
-  "include": ["src", "tests", "examples/observability"],
-  "exclude": ["node_modules", "dist", "tests/fixtures/units-loadfail", "tests/types", "examples/deploy"]
+  "include": ["src", "tests", "examples/observability/src"],
+  "exclude": ["node_modules", "dist", "tests/fixtures/units-loadfail", "tests/types", "examples/deploy", "examples/complete"]
 }

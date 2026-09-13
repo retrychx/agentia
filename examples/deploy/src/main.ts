@@ -8,7 +8,7 @@
  *   + 指标（/metrics，Prometheus 文本）
  *   + 优雅停机（drain，框架不订阅信号 —— 这里是宿主自己的事）
  *
- * 观测配方（落库 / 采样 / 脱敏 / 日志关联）见 ../observability/sinks.ts 与 docs/observability.md。
+ * 观测配方（落库 / 采样 / 脱敏 / 日志关联）见 ../observability/ 与 docs/observability.md。
  */
 import { mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';

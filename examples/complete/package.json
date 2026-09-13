@@ -1,17 +1,18 @@
 {
-  "name": "agentia-deploy-example",
+  "name": "agentia-complete-example",
   "private": true,
   "type": "module",
-  "description": "Agentia 部署示例：最小可交付 Agent 服务（HTTP 宿主 + SQLite 耐久存储 + 指标 + 优雅停机）",
+  "description": "Agentia 完整示例：四类单元 + 三种触发 + 鉴权 + 全观测栈 + 优雅停机",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "serve": "node dist/main.js"
   },
   "dependencies": {
-    "@migor/agentia": "file:../.."
+    "@migor/agentia": "file:../..",
+    "@migor/agentia-observability": "file:../observability"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

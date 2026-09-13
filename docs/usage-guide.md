@@ -291,6 +291,18 @@ result.typed;   // { answer: string } | undefined
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`） |
 
+### HTTP 端点速查（`createHttpHandler` 的路由）
+
+| 端点 | 请求 | 响应 |
+|---|---|---|
+| `POST /run` | body 是 `RunInput`（string / messages / `{prompt\|text\|messages}`）；带 `Accept: text/event-stream` 则走 SSE | 200 `{ runId, status, stopReason, finalText, typed?, trace, error? }` —— **`status=failed` 也照返 200**（`rethrow:false` 语义：硬失败以 `error` 字段表达，不用 HTTP 错误码） |
+| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重，直接返回既有记录 |
+| `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
+| `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
+
+方法不符 → 405（带 `Allow` 头）；路径不符 → 404；body 非法 JSON → 400；body 超 `maxBodyBytes` → 413；
+`POST /run` 超 `maxConcurrentRuns` → 503 + `Retry-After`；停机中 `POST /run`、`POST /tasks` → 503。
+
 ### `createHttpHandler(app, opts?: HttpHandlerOptions)`
 
 | 选项 | 说明 |
@@ -360,7 +372,8 @@ process.on('SIGTERM', async () => {
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
 > 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
-> `examples/observability/sinks.ts`。一个可上线的部署示例（Dockerfile + compose）在 `examples/deploy/`。
+> `examples/observability/`。**完整的示例**（四类单元 + 三种触发 + 鉴权 + 全观测栈）在 `examples/complete/`；
+> 最小可交付示例（Dockerfile + compose）在 `examples/deploy/`。
 
 ### 长上下文
 

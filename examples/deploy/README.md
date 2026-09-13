@@ -19,20 +19,25 @@
 
 ```bash
 # 本地（需要 Node ≥ 22.5 —— SqliteTaskStore 用 Node 内置 node:sqlite）
-export ANTHROPIC_API_KEY=sk-ant-...
-cd examples/deploy
-npm install
-npm start                       # 或 npm run dev（tsx watch）
+cd ..                              # 仓库根
+npm install && npm run build       # 先把框架构建到 dist/
 
-# Docker
+cd examples/deploy
+npm install                        # file:../.. → 装上刚构建的框架
+export ANTHROPIC_API_KEY=sk-ant-...
+npm start                          # 或 npm run dev（tsx watch）
+
+# Docker（构建上下文是**仓库根**，见 Dockerfile 头部说明）
 export ANTHROPIC_API_KEY=sk-ant-...
 docker compose up --build
 ```
 
-> ⚠️ 框架尚未发布到 npm（见 `spec §11`），`package.json` 里的 `@migor/agentia: ^0.2.2` 与
-> `agentia create` 脚手架模板一致 —— **发布后** `npm install` 可直接拉取。在仓库内验证时，
-> 子目录没有 `node_modules`，用仓库的 tsx 跑即可（`npx tsx examples/deploy/src/main.ts`），
-> 或按 `scripts/e2e-cli.ts` 的做法把仓库根 symlink 进 `node_modules/@migor/agentia`。
+> **为什么依赖写 `file:../..`**：框架当前版本尚未发布 —— registry 上最新是 0.2.1，
+> **缺** `metricsSink` 等本示例用到/仓库已具备的能力。`file:../..` 指向本仓库，先
+> `npm run build` 就能用上最新代码。框架发布后改成 `^0.2.2`（与 `agentia create`
+> 脚手架模板一致），Dockerfile 也能退回常规单包写法。
+>
+> 想要**更完整**的示例（四类单元 + 三种触发 + 鉴权 + 全观测栈）见 [`../complete/`](../complete/)。
 
 ## 端点
 
@@ -58,7 +63,7 @@ curl -s localhost:3000/metrics | head
   框架不订阅 `SIGTERM`，所以这里显式接了；compose 的 `stop_grace_period` 必须大于该超时。
 - **成本硬管控**：`maxTotalTokens` 超限以 `budget_exceeded` 收尾（**算失败**）。
 - **观测**：`/metrics` 已接；**落库 / 采样 / 脱敏 / 日志关联**四条配方见
-  [`../observability/sinks.ts`](../observability/sinks.ts) 与 [`docs/observability.md`](../../docs/observability.md)。
+  [`../observability/`](../observability/) 与 [`docs/observability.md`](../../docs/observability.md)。
 
 ## 本示例**没有**做的（生产按需补）
 

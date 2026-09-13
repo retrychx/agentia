@@ -3,7 +3,8 @@
 面向「把 agentia 服务**交付上线**」的人 —— 定位见 [spec §1](./spec.md)（交付物是可上线的 Agent 服务，
 不是对话助手）。本文只讲**观测落地**：框架给什么、不给什么，以及四条开箱即用的 sink 配方。
 
-> 代码：`examples/observability/sinks.ts`（四个 sink 的完整实现，零依赖）。
+> 代码：[`examples/observability/`](./../examples/observability/)（本地小包 `@migor/agentia-observability`，
+> 四个 sink 的完整实现，零依赖）。
 > 该文件与本文的写法由 `tests/docs/observability.test.ts` 真跑一遍钉住 —— 仓库既有约定：
 > 文档里的写法必须真能工作。
 
@@ -43,7 +44,7 @@ interface TraceSink {
 
 ## 2. 四条配方
 
-现成实现在 `examples/observability/sinks.ts`。下面给**接线**与**为什么**，实现细节读那个文件。
+现成实现在 `examples/observability/`（本地小包）。下面给**接线**与**为什么**，实现细节读那个包。
 
 ### 2.1 按 runId 落库检索（span 与 run 记录同库）
 
@@ -51,7 +52,7 @@ interface TraceSink {
 
 ```ts
 import { DatabaseSync } from 'node:sqlite';
-import { sqliteTraceSink } from './sinks.js';
+import { sqliteTraceSink } from '@migor/agentia-observability';
 
 // 与 SqliteTaskStore 用**同一个库文件** —— run 记录（tasks 表）与 trace（traces/spans 表）共库
 const db = new DatabaseSync('agentia.db');
@@ -94,7 +95,7 @@ SELECT name, input_tokens + output_tokens AS tok FROM spans
 ### 2.2 日志关联
 
 ```ts
-import { jsonLogSink } from './sinks.js';
+import { jsonLogSink } from '@migor/agentia-observability';
 
 createApp({ sinks: [jsonLogSink({ labels: { service: 'svc', env: 'prod' } })] });
 ```
@@ -110,7 +111,7 @@ createApp({ sinks: [jsonLogSink({ labels: { service: 'svc', env: 'prod' } })] })
 ### 2.3 采样
 
 ```ts
-import { sampleSink } from './sinks.js';
+import { sampleSink } from '@migor/agentia-observability';
 
 const sink = sampleSink({ rate: 0.1, sinks: [/* 下游 */] });  // 只留 10%
 ```
@@ -122,7 +123,7 @@ const sink = sampleSink({ rate: 0.1, sinks: [/* 下游 */] });  // 只留 10%
 ### 2.4 脱敏
 
 ```ts
-import { redactSink } from './sinks.js';
+import { redactSink } from '@migor/agentia-observability';
 
 const sink = redactSink({
   keys: ['authorization', 'api_key', 'password', 'cookie'],   // 字段名（大小写不敏感子串）

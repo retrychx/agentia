@@ -5,8 +5,8 @@
  * Trace 交给每个 sink，sink 抛错被吞、不影响 run。落地形态（落库 / 采样 / 脱敏 / 日志）
  * 全由这里组合 —— 框架不内建、不含 dev 逻辑，sink 的 endpoint / 库路径一律由宿主显式传入。
  *
- * ⚠️ 这是**示例代码**：拷进你的宿主工程时，把下面的相对 import 换成
- *    `import type { …, TraceSink } from '@migor/agentia';`
+ * 这是**示例代码**，可以直接拷进你的宿主工程 —— 它只 import 框架的公共类型面
+ * （`@migor/agentia`），不碰任何内部路径。
  *
  * 组合方式（数组顺序 = 调用顺序，最外层先看到原始 trace）：
  *
@@ -26,7 +26,7 @@
  * 详细说明与「按 runId 检索一次历史 run」的查法见 `docs/observability.md`。
  */
 import { DatabaseSync } from 'node:sqlite';
-import type { Span, Trace, TraceSink } from '../../src/index.js';
+import type { Span, Trace, TraceSink } from '@migor/agentia';
 
 const REDACTED = '[REDACTED]';
 

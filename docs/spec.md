@@ -362,7 +362,16 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   「同库存储 = sink 配方之一，非内建」。
   **新增 `docs/observability.md`**：把出口边界讲清 + 四条**现成 sink 配方**（按 runId 落库检索 /
   日志关联 / 采样 / 脱敏），全部零 engine 改动、零新增依赖、零新出口 —— 正好兑现 §9.3 那句「同库存储」。
-  **新增 `examples/deploy/`**：Dockerfile + compose + 最小可交付 app，落地定位里「可交付」这一脚。
+  **新增 `examples/complete/`**：完整示例（四类单元 + 显式注册表 + 三种触发 + 鉴权缝 + 全观测栈 + 优雅停机），
+  并把观测栈接成真实链路（metrics 全量 → 采样 → 脱敏 → [落库, 日志]）。**`examples/observability/` 升为本地小包**
+  `@migor/agentia-observability`：示例要用这四个 sink，而 `tsc` 的 `rootDir` 不允许跨目录引源码 —— 做成小包
+  与仓库对 `packages/trace-view` 是同一套办法（零重复、无 rootDir 取巧）。
+  **usage-guide 补「HTTP 端点速查」表**（`POST /tasks` 的 body 形状此前没写；表格格式经确认不会踩到
+  `usage-guide.test.ts` 的表格校验 —— 该测试只收「首列是单个反引号标识符」的行）。
+  **Docker 修正**：实测 registry 上最新只有 0.2.1，且**缺** `metricsSink` / `mcpTools` / `defineEval` /
+  `createBudgetGuard` / `registerDefaultTraceSink` —— 两个示例的 Dockerfile 因此**无法**用 `npm install` 构建
+  （上一版是我留下的缺陷）。改为 `dependency: file:../..` + **以仓库根为构建上下文**（镜像里先从源码构建框架），
+  发布后改回 `^0.2.2` 即可退回常规单包写法。`.dockerignore` 放**仓库根**（Docker 只认上下文根上那一份）。
   **不改框架实现**（`src/` 零改动）；sink 配方的写法由 `tests/docs/observability.test.ts` 真跑一遍钉住
   （仓库既有约定：文档里的写法必须真能工作）。
 

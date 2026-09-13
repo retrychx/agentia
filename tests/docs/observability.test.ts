@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { SqliteTaskStore } from '../../src/index.js';
 import type { Span, Trace, TraceSink } from '../../src/index.js';
-import { jsonLogSink, redactSink, sampleSink, sqliteTraceSink } from '../../examples/observability/sinks.js';
+import { jsonLogSink, redactSink, sampleSink, sqliteTraceSink } from '../../examples/observability/src/index.js';
 
 /**
- * 生产可观测栈配方的校验：`docs/observability.md` 与 `examples/observability/sinks.ts`。
+ * 生产可观测栈配方的校验：`docs/observability.md` 与 `examples/observability/`（本地小包）。
  *
  * 仓库既有约定 —— 文档里写的写法必须**真能工作**（同 usage-guide §6 被单测真跑一遍）。
  * 这里跑四个 sink，并真的验掉 spec §9.3 那句「span 与 run 记录同库存储」。
@@ -19,7 +19,7 @@ import { jsonLogSink, redactSink, sampleSink, sqliteTraceSink } from '../../exam
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(here, '..', '..');
 const DOC = join(repoRoot, 'docs', 'observability.md');
-const SINKS = join(repoRoot, 'examples', 'observability', 'sinks.ts');
+const SINKS = join(repoRoot, 'examples', 'observability', 'src', 'index.ts');
 
 /** 造一条含根 span + 两次 llm.turn + 一个错误 span 的 trace */
 function makeTrace(opts: { traceId?: string; status?: 'ok' | 'error' } = {}): Trace {
@@ -114,7 +114,7 @@ describe('可观测配方：文档与示例互相覆盖', () => {
     for (const needle of ['sqliteTraceSink', 'jsonLogSink', 'sampleSink', 'redactSink']) {
       assert.ok(doc.includes(needle), `docs/observability.md 未提到 ${needle}`);
     }
-    assert.ok(doc.includes('examples/observability/sinks.ts'), '文档应指向示例实现');
+    assert.ok(doc.includes('examples/observability/'), '文档应指向示例实现');
     assert.ok(doc.includes('spec'), '文档应回指 spec 定位/出口');
   });
 

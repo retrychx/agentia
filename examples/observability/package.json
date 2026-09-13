@@ -1,0 +1,23 @@
+{
+  "name": "@migor/agentia-observability",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agentia 生产可观测栈的现成 sink（落库检索 / 日志关联 / 采样 / 脱敏）—— 零依赖，只消费 TraceSink 出口",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
+  }
+}
