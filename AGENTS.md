@@ -103,6 +103,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     同时当回落守卫）。**`verify` 的 job name 是分支保护的必需状态检查，改名 = PR 永远等不到该检查 → 卡死**；
     同理**不要给 `verify` 加 matrix**（matrix 会给检查名加后缀）。要挡更低 Node 版本请另开 job。
     `verify-all.sh` 用 `cd "$(dirname "$0")/.."` 自推仓库根 —— **别再往里写绝对路径**（本地能跑、CI 必挂）。
+    失败分支**必须先用 `grep` 抽失败标记行**（`✖` / `not ok` / `AssertionError` / `error TS`）再 `tail` ——
+    整段输出被捕获进 `$out`，只 `tail -30` 恰好会把「哪条测试挂了」冲掉，CI 上就只剩一个 exit 1，谁也查不出是谁。
   - 文档改完记得重建派生产物：`npm run build`（→ 框架包 `dist/AGENTS.md`）、
     `npm run build:cli`（→ CLI `dist/AGENTS.md`）与 `npm run build:website`
     （→ `llms.txt` / `llms-full.txt`），否则线上与实际说明漂移。
