@@ -1,4 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
+import { createAnthropicClient } from '../integrations/anthropic.js';
 import type {
   AgentTool,
   JsonSchema,
@@ -514,7 +515,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   let result: AgentLoopResult<SchemaType<S>>;
   try {
     result = await agentLoop<S>({
-      client: options.client ?? new Anthropic(),
+      client: options.client ?? createAnthropicClient(),
       model: resolveDefaultModel(options.model),
       maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
       maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
@@ -593,7 +594,7 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   onUnpricedModel?: (info: { model: string; spanId: string }) => void;
 }): Promise<AgentLoopResult<SchemaType<S>>> {
   return agentLoop<S>({
-    client: opts.client ?? new Anthropic(),
+    client: opts.client ?? createAnthropicClient(),
     model: resolveDefaultModel(opts.model),
     maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
     maxIterations: opts.maxIterations ?? DEFAULT_MAX_ITERATIONS,

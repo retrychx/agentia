@@ -158,6 +158,34 @@ const sink = sampleSink({
 createApp({ name: 'svc', providers, sinks: [sink] });
 ```
 
+### 2.6 送进现成平台（以 Langfuse 为例）
+
+平台基本都提供 **OTLP 端点**或**自己的 ingestion API**，两种接法都**不需要新增框架代码**：
+
+```ts
+import { createOtlpExporter, type TraceSink } from '@migor/agentia';
+
+// ① 平台支持 OTLP（Langfuse / Arize Phoenix / Grafana Tempo …）→ 用内置导出器即可
+//    它本身就是一个 TraceSink（{ export(trace) }），直接挂进 sinks。
+//    端点与鉴权以各平台官方文档为准（Langfuse 形如 …/api/public/otel + Basic 鉴权）。
+const otlp = createOtlpExporter({
+  endpoint: 'https://cloud.langfuse.com/api/public/otel',
+  headers: { Authorization: `Basic ${btoa(`${publicKey}:${secretKey}`)}` },
+});
+createApp({ name: 'svc', providers, sinks: [otlp] });
+
+// ② 平台只有自家 ingestion API → 自己写一个 sink（面就这么小）
+const platform: TraceSink = {
+  async export(trace) {
+    /* 把 trace 映射成平台的事件体，POST 过去 */
+  },
+};
+createApp({ name: 'svc', providers, sinks: [platform] });
+```
+
+> 框架**不内置任何平台 SDK**。理由：`TraceSink` 只有一个 `export(trace)`，自己写一个比引依赖更省心，
+> 也不会把「平台 SDK 的版本」变成框架的维护负担。内置的只有 OTLP（协议标准、零依赖）。
+
 ## 3. 与内置件的关系（别重复造）
 
 | 内置件 | 干什么 | 和上面的关系 |

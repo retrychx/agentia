@@ -26,6 +26,11 @@ export ANTHROPIC_API_KEY=sk-...      # 或 ANTHROPIC_AUTH_TOKEN
 > **版本**：npm 上当前最新为 `0.2.1`，仓库为 `0.2.2`。要从本仓库源码使用（例如跑 `examples/`），
 > 见 [`examples/README.md`](examples/README.md) 的「依赖说明」。
 
+> **运行时**：Node ≥ 18（`engines` 唯一要求，CI 在 18/20/22 上守）。按 Node 设计并测试，
+> **未对 Deno / edge 做验证**。唯一碰内置模块的 store 是 `SqliteTaskStore`（需 Node ≥ 22.5 的
+> `node:sqlite`）—— 未提供时**构造期给可读报错**，不影响包本身被导入。
+
+
 ## 快速开始
 
 两条路线，按需选一即可（也可混用）。
@@ -254,6 +259,11 @@ const { result } = await app.run(messages, {
 });
 ```
 
+> **本地模型（Ollama 等）**：Ollama 暴露 OpenAI 兼容端点，用同一个适配器即可 ——
+> `createOpenAIClient({ baseURL: 'http://localhost:11434/v1' })` + `model: 'qwen3'`，
+> **不需要任何新代码或新依赖**。
+
+
 ### 跨 run 记忆
 
 ```ts
@@ -286,6 +296,7 @@ await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.tr
 | `AsyncRunner` / `Scheduler` / `runSync` / `createHttpHandler` | 异步 / 定时 / 同步 / HTTP 触发 |
 | `FileTaskStore` / `SqliteTaskStore` / `RedisTaskStore` / `InMemoryTaskStore` | 任务记录存储 |
 | `createBudgetPolicy` | 长上下文预算护栏 |
+| `createAnthropicClient` | 默认 ModelClient（Anthropic）：自定义只传 `apiKey` / `baseURL`，不必直接依赖厂商 SDK |
 | `createOpenAIClient` | OpenAI 兼容端点适配（多模型） |
 | `InMemoryMemoryStore`（`memory` 选项） | 跨 run 记忆水合/回写 |
 | `createOtlpExporter` | trace 导出 OTLP |

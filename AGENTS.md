@@ -57,7 +57,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 
 - **分层单向**（`tests/architecture/layering.test.ts` 强制；改依赖方向必须同步改该测试的 ALLOWED）：
   core ← engine ← { runtime, store }；store ← transport；runtime ← toolkit；
-  `integrations` 只依赖 core（模型/trace 适配器）；`container` 与 core 是叶子
+  `integrations` 只依赖 core（模型/trace 适配器），**engine 依赖 integrations**（仅为取默认
+  ModelClient，见下条）；`container` 与 core 是叶子
   （不 import 任何东西），container 仅被 toolkit 依赖。core 不依赖任何上层。
   `index.ts` 是公共唯一出口，允许引用全部层。
   `eval/` 是**叶子消费模块**（依赖 toolkit 与公共面）：它 import 别人，别人不 import 它。
@@ -69,6 +70,14 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   一旦进了公共导出面，`tests/docs/api-page.test.ts` 的反向全覆盖就会要求官网 API 页同步，
   而那些是纯内部实现细节。
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
+- **厂商 SDK 只有一个实例化点**：`@anthropic-ai/sdk` 的唯一 `new` 在
+  `src/integrations/anthropic.ts` 的 `createAnthropicClient()`。引擎不得直接 `new Anthropic()`
+  （改回散落 = 厂商细节重新渗进引擎）。使用者自定义 client 只需
+  `createAnthropicClient({ apiKey, baseURL })`，**不必直接依赖该 SDK**。
+  ⚠️ 已知边界：`engine/errors.ts` 仍用 `instanceof` 判 SDK 错误类（不做实例化）。
+  实测该 SDK 的错误类 `name` 恒为 `'Error'`、`type` 为 null，鸭子类型只能靠
+  `constructor.name`（压缩即失效）—— 故保留 `instanceof`；若使用者自装一份**不兼容版本**
+  的 SDK 会形成双副本，届时分类退化为 unknown（该重试的不再重试）。
 - **lint / format**：Biome 单工具二合一（`biome.jsonc`）。`npm run lint` 检查、`npm run lint:fix` 写回；
   CI 有独立 `lint` job。规则基线刻意关掉三条与既有风格冲突的（理由写在 `biome.jsonc` 注释里）；
   `.astro` 与独立 `.svg` **不在 lint 面**（Biome 对 Astro 语法支持不全，会误报）。
