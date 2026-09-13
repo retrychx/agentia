@@ -33,7 +33,7 @@
     "prepublishOnly": "node ../../scripts/check-release.mjs && npm run build"
   },
   "devDependencies": {
-    "@types/node": "^22.0.2",
+    "@types/node": "^26.5.1",
     "typescript": "^7.0.2"
   }
 }
