@@ -44,6 +44,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector）
 │   ├── trace-view/          # trace 调用树渲染器（零依赖 ESM）：createTraceView + playTrace(真实 Trace)
 │   │                        #   官网 playground 与 CLI inspector 共用同一份，避免两处渲染漂移
+│   │                        #   test/ 用 node:test，**已并入根 `npm test`** —— 这份共用的渲染器
+│   │                        #   此前没有任何门禁在跑，等于「两边都靠它、却谁都不守它」
 │   └── website/             # 官网（Astro 静态站，构建产物 dist/ 部署 Cloudflare Pages）
 │                            #   src/layouts/Base.astro 全站外壳、src/components/ 共享组件
 │                            #   src/fragments/*.html 页面正文（?raw 注入）、src/scripts/ 客户端脚本

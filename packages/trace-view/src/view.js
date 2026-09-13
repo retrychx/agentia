@@ -95,7 +95,9 @@ export function createTraceView(rootEl, opts = {}) {
         row.appendChild(el('span', 'tr-pre', branch));
         row.appendChild(el('span', 'tr-evv', ev.type === 'tool.output' ? '◂' : '▸'));
         row.appendChild(el('span', 'tr-evtype', ev.type));
-        row.appendChild(el('span', 'tr-name', ev.tool));
+        // 非 tool.* 事件（usage.unpriced / llm.retry / budget.* / context.budget）没有工具名 ——
+        // 这一格整个不渲染，别把「无工具」显示成假工具名（.tr-name 是 flex:none，.tr-io 自然占满）
+        if (ev.tool) row.appendChild(el('span', 'tr-name', ev.tool));
         const io = el('span', 'tr-io', ev.text || '');
         io.title = ev.text || '';
         row.appendChild(io);

@@ -44,8 +44,13 @@ function usageOf(s) {
   };
 }
 
-/** 事件工具名补前缀：事件体只有裸工具名，靠兄弟 capability span 反查类型，找不到按 tool 算 */
-function eventToolName(bodyTool, typeMap) {
+/** 事件工具名：**只有 `tool.*` 事件带工具名**。
+ *  框架的事件里 `usage.unpriced` / `llm.retry` / `budget.exceeded` / `context.budget` 的事件体
+ *  根本没有 `tool` 字段 —— 一律套前缀只会得到 `tool:?` 这种把「无工具」显示成「名字叫 ? 的工具」
+ *  的误导标签（面板与官网 playground 共用本渲染器，等于把假工具摆给使用者看）。
+ *  工具裸名靠兄弟 capability span 反查类型，找不到按 tool 算。 */
+function eventToolName(evName, bodyTool, typeMap) {
+  if (!String(evName || '').startsWith('tool.')) return '';
   const raw = String(bodyTool || '?');
   if (capabilityTypeOf(raw)) return raw;
   return `${typeMap.get(raw) || 'tool'}:${raw}`;
@@ -118,7 +123,7 @@ export function playTrace(view, trace) {
       view.event(
         it.s.spanId,
         it.ev.name,
-        eventToolName(it.ev.body && it.ev.body.tool, typeMap),
+        eventToolName(it.ev.name, it.ev.body && it.ev.body.tool, typeMap),
         eventText(it.ev),
         !it.ev.body || it.ev.body.ok !== false,
       );

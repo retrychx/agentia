@@ -154,4 +154,92 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
     // 能力行的标识符节点存在且字形为 ⊕
     assert.ok(unitRow.children.some((c) => c.className === 'tr-ico' && c.textContent === '⊕'));
   });
+
+  /* 回归：面板上 `usage.unpriced` 那几行曾被标成 `tool:?` —— 事件体里没有 tool 字段，
+     旧实现一律套前缀，于是把「没有工具」显示成了「名字叫 ? 的工具」。 */
+  it('非 tool.* 事件不带工具名：usage.unpriced / llm.retry 不再被标成 tool:?', () => {
+    const t = {
+      spans: [
+        { spanId: 'r', traceId: 'x', parentSpanId: null, kind: 'run', name: 'app', startedAt: 0, endedAt: 10, status: 'ok', attributes: {}, events: [] },
+        {
+          spanId: 't', traceId: 'x', parentSpanId: 'r', kind: 'llm.turn', name: 'deepseek-chat',
+          startedAt: 1, endedAt: 5, status: 'ok', attributes: {},
+          events: [
+            { time: 2, name: 'usage.unpriced', body: { model: 'deepseek-chat' } },
+            { time: 3, name: 'llm.retry', body: { attempt: 2, delayMs: 500, error: 'overloaded' } },
+            { time: 4, name: 'tool.input', body: { tool: 'get_weather', input: { city: '上海' } } },
+          ],
+        },
+      ],
+    };
+    const v = fakeView();
+    playTrace(v, t);
+    const evs = v.calls.filter((c) => c[0] === 'event');
+    assert.deepEqual(
+      evs.map((c) => [c[2], c[3]]),
+      [
+        ['usage.unpriced', ''],
+        ['llm.retry', ''],
+        ['tool.input', 'tool:get_weather'],
+      ],
+      '只有 tool.* 事件带工具名；其余为空串',
+    );
+    assert.ok(!evs.some((c) => c[3] === 'tool:?'), '不得再出现 tool:? 这个假工具名');
+  });
+
+  it('renderSummary 不受影响：非 tool.* 事件不进能力排行（只有 tool.output 计入）', async () => {
+    const { summarizeTrace } = await import('../src/summary.js');
+    const rows = summarizeTrace({
+      spans: [
+        {
+          spanId: 't', traceId: 'x', parentSpanId: 'r', kind: 'llm.turn', name: 'deepseek-chat',
+          startedAt: 1, endedAt: 5, status: 'ok', attributes: {},
+          events: [
+            { time: 2, name: 'usage.unpriced', body: { model: 'deepseek-chat' } },
+            { time: 3, name: 'tool.output', body: { tool: 'get_weather', ok: true, durationMs: 120, content: '晴' } },
+          ],
+        },
+      ],
+    });
+    assert.deepEqual(
+      rows.map((r) => r.capability),
+      ['tool:get_weather'],
+      'usage.unpriced 不该被当成一个能力',
+    );
+  });
+
+  it('DOM：非 tool.* 事件行不渲染 tr-name 节点，tool.* 事件行照旧渲染', () => {
+    const makeNode = () => ({
+      className: '', textContent: '', title: '', dataset: {}, children: [],
+      set innerHTML(_v) { this.children = []; },
+      get innerHTML() { return ''; },
+      appendChild(c) { this.children.push(c); return c; },
+    });
+    globalThis.document = { createElement: () => makeNode() };
+
+    const root = makeNode();
+    const view = createTraceView(root);
+    playTrace(view, {
+      spans: [
+        { spanId: 'r', traceId: 'x', parentSpanId: null, kind: 'run', name: 'app', startedAt: 0, endedAt: 10, status: 'ok', attributes: {}, events: [] },
+        {
+          spanId: 't', traceId: 'x', parentSpanId: 'r', kind: 'llm.turn', name: 'm',
+          startedAt: 1, endedAt: 5, status: 'ok', attributes: {},
+          events: [
+            { time: 2, name: 'usage.unpriced', body: { model: 'deepseek-chat' } },
+            { time: 3, name: 'tool.input', body: { tool: 'get_weather', input: { city: '上海' } } },
+          ],
+        },
+      ],
+    });
+
+    const rowsOf = (cls) => root.children.filter((r) => (r.className || '').includes(cls));
+    const evRows = rowsOf('tr-ev');
+    assert.equal(evRows.length, 2, '两个事件行');
+    const usageRow = evRows.find((r) => r.dataset.ev === 'usage.unpriced');
+    const toolRow = evRows.find((r) => r.dataset.ev === 'tool.input');
+    assert.ok(!usageRow.children.some((c) => c.className === 'tr-name'), 'usage 行没有 tr-name 格');
+    assert.ok(usageRow.children.some((c) => c.className === 'tr-io'), 'usage 行仍带 payload 摘要');
+    assert.ok(toolRow.children.some((c) => c.className === 'tr-name' && c.textContent === 'tool:get_weather'), 'tool 行照旧');
+  });
 });
