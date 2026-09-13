@@ -5,8 +5,18 @@
     "rootDir": ".",
     "declaration": false,
     "sourceMap": false,
-    "paths": { "@migor/agentia": ["./src/index.ts"] }
+    "paths": {
+      "@migor/agentia": ["./src/index.ts"],
+      "@migor/agentia-observability": ["./examples/observability/src/index.ts"]
+    }
   },
-  "include": ["src", "tests", "scripts", "examples/observability/src"],
-  "exclude": ["node_modules", "dist", "tests/fixtures/capabilities-loadfail", "tests/types", "examples/deploy", "examples/complete"]
+  "include": [
+    "src",
+    "tests",
+    "scripts",
+    "examples/observability/src",
+    "examples/complete/src",
+    "examples/deploy/src"
+  ],
+  "exclude": ["node_modules", "dist", "tests/fixtures/capabilities-loadfail", "tests/types"]
 }

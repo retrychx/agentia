@@ -72,7 +72,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
 - **验证顺序**：`npm run typecheck && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完。
-  - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）；
+  - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）**+ `examples/` 三份示例的 `src`**
+    —— 示例此前被 tsconfig 排除在外，等于「文档指着它说『完整可跑写法』、却没有任何门禁守着」；
+    靠 `paths` 映射指到框架 `src` 与 `examples/observability` 源码，因此**无需在示例目录里 install** 即可检查；
   - `typecheck:types` = **针对构建产物 dist 的类型断言测试**（`tests/types/`，用 `@ts-expect-error`
     断言「应当报错」的场景真的报错）—— 必须先 `build`。它与 src 分开编译是**必须**的：模块增强
     （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
