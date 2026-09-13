@@ -1,6 +1,6 @@
 # 目录约定：去伞形词（四类分置）—— 设计文档
 
-> **状态**：**设计待拍板** —— §4 有 6 个分叉，每条都给了建议，等你勾。
+> **状态**：**已拍板，落地中** —— 拍板结果：**F1 = A（全部放 `src/` 下）· F4 = B（`Unit*` 全部换掉，用 `Capability*`）· F2 / F3 / F5 = A · F6 = A + B**。各分叉结论见 §4。
 > **日期**：2026-09-13
 > **缘起**：`agentia create` 产出的 `units/` 目录被指出「命名不太好」。核实后发现问题不止是名字 —— 仓库里**同时跑着两套目录约定**，而且没有任何一步验证能发现（§1）。
 > **前置**：本文是**设计**，不是逐步实现计划。拍板后另起 `docs/plans/2026-09-13-typed-unit-dirs-*.md` 列任务。
@@ -103,7 +103,15 @@ my-app/
 
 ---
 
-## 4. 设计分叉（待拍板）
+## 4. 设计分叉（**已拍板**）
+
+> **拍板结果（2026-09-13）**：**F1 = A**（四类目录放 `src/` 下）· **F4 = B**（公共类型面全部换掉，采用 `Capability*`）· **F2 = A** · **F3 = A** · **F5 = A** · **F6 = A + B**。
+> **附带决定（F4=B 的必要配套，文档里未单列）**：中文里「单元」这个说法**一并去掉**，改称「**能力**」（`usage-guide` 的「四类单元」→「四类能力」）。选「能力」而不是别的词，是因为它跟已有的「能力包」（`defineModule` / `AgentModule`）**同族且语义相容** —— 一个能力包 = 一包能力，不引入第二套词汇。
+> **F4=B 的替换映射**（公共面 + 用户可见面）：
+> - 类型：`UnitType→CapabilityType` · `UnitCall→CapabilityCall` · `UnitNext→CapabilityNext` · `UnitMiddleware→CapabilityMiddleware` · `UnitDecoratorContext→CapabilityDecoratorContext` · `SkillUnit→SkillCapability` · `SubAgentUnit→SubAgentCapability` · `UnitMetrics→CapabilityMetrics` · `UnitReport→CapabilityReport`
+> - 字段：`maxUnits→maxCapabilities` · `droppedUnits→droppedCapabilities` · `labelMode:'unit'→'capability'` · 快照/报告的 `units→capabilities`
+> - 观测：Prometheus 指标名 `agentia_unit_*→agentia_capability_*` · 标签 `unit="…"→capability="…"` · trace span kind `'unit'→'capability'` · trace-view 前缀 `unit:→capability:` · `UNIT_ICO→CAP_ICO`
+> - 内部标识符一并统一（`unitName→capabilityName` 等），不留两套词汇
 
 ### F1 —— 目录放哪
 
