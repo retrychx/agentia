@@ -214,7 +214,7 @@ await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.tr
 | `fromZod` | zod schema 接入（peer 可选） |
 | `runAgent` / `executeRun` | 裸引擎入口（不走装配） |
 
-完整导出见 [`src/index.ts`](src/index.ts)，设计规格见 [`docs/spec.md`](docs/spec.md)，roadmap 见 [`docs/roadmap.md`](docs/roadmap.md)，官网见 [agentia-web.pages.dev](https://agentia-web.pages.dev)（含[在线 Playground](https://agentia-web.pages.dev/playground.html) 与[文档](https://agentia-web.pages.dev/docs.html)）。
+完整导出见 [`src/index.ts`](src/index.ts)，设计规格见 [`docs/spec.md`](docs/spec.md)，**生产可观测配方**（落库检索 / 日志关联 / 采样 / 脱敏）见 [`docs/observability.md`](docs/observability.md)，**可上线部署示例**（Dockerfile + compose）见 [`examples/deploy/`](examples/deploy/)，roadmap 见 [`docs/roadmap.md`](docs/roadmap.md)，官网见 [agentia-web.pages.dev](https://agentia-web.pages.dev)（含[在线 Playground](https://agentia-web.pages.dev/playground.html) 与[文档](https://agentia-web.pages.dev/docs.html)）。
 
 ## 本仓库脚本
 

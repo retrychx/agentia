@@ -6,6 +6,6 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["src", "tests"],
-  "exclude": ["node_modules", "dist", "tests/fixtures/units-loadfail", "tests/types"]
+  "include": ["src", "tests", "examples/observability"],
+  "exclude": ["node_modules", "dist", "tests/fixtures/units-loadfail", "tests/types", "examples/deploy"]
 }

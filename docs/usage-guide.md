@@ -358,6 +358,10 @@ process.on('SIGTERM', async () => {
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖 |
 | `metricsSink` | 指标累加器（Prometheus 文本），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 
+> **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
+> 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
+> `examples/observability/sinks.ts`。一个可上线的部署示例（Dockerfile + compose）在 `examples/deploy/`。
+
 ### 长上下文
 
 | API | 说明 |

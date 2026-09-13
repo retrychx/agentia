@@ -121,7 +121,9 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 ### 9.3 产出与导出
 
 - v1：内存 trace store，随 run 结果/运行记录返回（结构化输出 / JSONL），便于回放调试。
-- 生产：OTLP 导出 + span 与 run 记录同库存储。
+- 生产：经 **sink 出口**（见下）导出 —— `createOtlpExporter` 现成、零依赖；「span 与 run 记录**同库**存储」
+  只是**一种 sink 配方**（`docs/observability.md`），**不是框架内建** —— 框架只保证出口，落库 / 采样 / 脱敏 /
+  按 runId 检索都由宿主用 sink 组合，零 engine 改动。
 - 成本：span 级 usage 聚合自 API usage 字段（`cache_read_input_tokens` 等），run 汇总 = 各 span 求和。
 - **trace 出口（sink）**：`TraceSink { export(trace) }` —— run 收尾（成功 / 失败两条路径）后框架把
   完整 trace 交给每个 sink；sink 抛错被吞，不影响 run。装配层 `AppOptions.sinks` 与
@@ -353,6 +355,16 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   的导出名）；② **反向全覆盖**（导出面的每个导出都必须在页面上出现 —— 防「代码有了、文档没写」）。
   `index.html` 的 hero 数字（「140+ 例单测」）与 `docs.html`（新增「稳定性与流式 / 宿主硬化 / 成本硬管控 /
   生态与观测」四节）同步更新。测试 363 → 367。
+
+- 2026-09-13：**可观测口径对齐 + 生产配方文档 + 部署示例**。修一处 spec 自相矛盾：§9.3 原写
+  「生产：OTLP 导出 + span 与 run 记录同库存储」，读起来像框架内建「同库存储」，与本文件「trace 出口缝」
+  条目锁定的**只保证出口**口径冲突（frame 只有 `TraceSink`，没有任何存储实现）。已改 §9.3 为
+  「同库存储 = sink 配方之一，非内建」。
+  **新增 `docs/observability.md`**：把出口边界讲清 + 四条**现成 sink 配方**（按 runId 落库检索 /
+  日志关联 / 采样 / 脱敏），全部零 engine 改动、零新增依赖、零新出口 —— 正好兑现 §9.3 那句「同库存储」。
+  **新增 `examples/deploy/`**：Dockerfile + compose + 最小可交付 app，落地定位里「可交付」这一脚。
+  **不改框架实现**（`src/` 零改动）；sink 配方的写法由 `tests/docs/observability.test.ts` 真跑一遍钉住
+  （仓库既有约定：文档里的写法必须真能工作）。
 
 ## 11. 开放项
 

@@ -1,0 +1,21 @@
+{
+  "name": "agentia-deploy-example",
+  "private": true,
+  "type": "module",
+  "description": "Agentia 部署示例：最小可交付 Agent 服务（HTTP 宿主 + SQLite 耐久存储 + 指标 + 优雅停机）",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "serve": "node dist/main.js"
+  },
+  "dependencies": {
+    "@migor/agentia": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}
