@@ -46,6 +46,21 @@ npm install                       # file:../.. → 装上刚构建的框架
 ANTHROPIC_API_KEY=sk-ant-... npm start
 ```
 
+### 换成 OpenAI 兼容端点（DeepSeek / vLLM / Ollama…）
+
+```bash
+OPENAI_BASE_URL=https://api.deepseek.com OPENAI_API_KEY=sk-... \
+  AGENTIA_MODEL=deepseek-chat npm start
+```
+
+原理（值得一看，也是框架的一个缝）：**HTTP 宿主不持有 model client** —— 同步 `/run` 走的是
+`app.run(messages, opts)`，而 `AppCallable` 就是 `{ name, run }`。所以换 provider 靠**包一层**把
+client 补进 opts（`src/main.ts` 的「注入 model client」段，约 10 行）；异步侧另可直接给
+`AsyncRunner` 传 `client`。这也是「框架只给缝、组合优于内建」的一个具体例子。
+
+> 另一种不用改代码的走法：任何**Anthropic 协议兼容**的端点都可以直接用
+> `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` 顶上（DeepSeek 也提供 `https://api.deepseek.com/anthropic`）。
+
 ### Docker
 
 构建上下文是**仓库根**（镜像里先从源码构建框架）：

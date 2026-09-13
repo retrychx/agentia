@@ -378,6 +378,12 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   （`as Span` 硬断言）—— 既骗类型、又丢掉表里全部反规范化列（name/kind/耗时/tokens/errorType）；
   改为返回 `SpanRow[]`（真实列），用例同步加强。官网 hero 单测数 `360+` → `380+`（实际 387），
   `docs.html` 的端点注释补 `/healthz`（两者都是手写、无自动校验，按 AGENTS.md 须人工同步）。
+  **跑真机时发现一处没文档的缝**：HTTP 宿主**不持有 model client**（同步 `/run` 走
+  `app.run(messages, opts)`，`/tasks` 才经 `AsyncRunner` 的 `client`）—— 想接 OpenAI 兼容端点
+  只能靠 `ANTHROPIC_BASE_URL` 或自己包一层 `AppCallable`，而**两者都没写进文档**。已在 usage-guide
+  §宿主 补「换 model client 的缝」小节（含 `AppCallable` 包一层的写法），并让 `examples/complete`
+  支持 `OPENAI_BASE_URL`（本机用 DeepSeek 真跑验证：OpenAI 协议与 Anthropic 兼容协议两条路都跑通）。
+  **不改框架实现**（`src/` 仍零改动 —— 这是组合缝，不是缺功能）。
 
 ## 11. 开放项
 

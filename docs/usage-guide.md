@@ -303,6 +303,17 @@ result.typed;   // { answer: string } | undefined
 方法不符 → 405（带 `Allow` 头）；路径不符 → 404；body 非法 JSON → 400；body 超 `maxBodyBytes` → 413；
 `POST /run` 超 `maxConcurrentRuns` → 503 + `Retry-After`；停机中 `POST /run`、`POST /tasks` → 503。
 
+**换 model client 的缝**：HTTP 宿主**不持有 client** —— 同步 `/run` 走的是 `app.run(messages, opts)`，
+而 `AppCallable` 就是 `{ name, run }`。所以要换 provider（OpenAI 兼容端点 / 自建 client），
+**包一层**把 `client` 补进 `opts` 即可：
+
+```ts
+const callable = { name: app.name, run: (msgs, opts) => app.run(msgs, { ...opts, client: myClient }) };
+const handler = createHttpHandler(callable, { runner });
+```
+
+异步侧更直接：`AsyncRunner` 的构造选项就有 `client`。完整可跑写法见仓库 `examples/complete/`。
+
 ### `createHttpHandler(app, opts?: HttpHandlerOptions)`
 
 | 选项 | 说明 |
