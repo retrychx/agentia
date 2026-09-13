@@ -6,17 +6,16 @@
 > ② **F2** 的 `usage.unpriced` 事件落在**该 turn span**（而非 run 根）—— turn 才能准确指出"哪次往返未定价"；
 > ③ **G2** 的排行**无法**复用 `buildRunReport`（trace-view 零依赖、要在浏览器里跑；CLI 又零运行时依赖），故落成两条口径：`trace-view.summarizeTrace`（展示层，CLI `agentia report` 与 dev 面板同源）与 `buildRunReport`（库层，含未定价/成本语义与跨 run 合并）；
 > ④ **指标 `_count` 语义变更** —— `run_duration_ms_count` 从「窗口内样本数」改为**累积观测数**（Prometheus 直方图语义，可跨实例聚合），窗口只再约束分位 gauge；旧断言已按新语义同步。
-> 另**顺带修一处 doc-vs-code 漂移**：`core/trace.ts` 声明已久的「`unit.usage` = 子孙 `llm.turn` 聚合」此前从未写入 —— 已在 `TraceRecorder.end()` 补上（只累加 `llm.turn`，嵌套不双算）。
+> 另**顺带修一处 doc-vs-code 漂移**：`core/trace.ts` 声明已久的「`capability.usage` = 子孙 `llm.turn` 聚合」此前从未写入 —— 已在 `TraceRecorder.end()` 补上（只累加 `llm.turn`，嵌套不双算）。
 > ⑤ **命名统一（同日稍晚，伞形术语 → `capability`）** —— 见 `2026-09-13-typed-unit-dirs.md` 与 spec §10。
->    **本文正文与样例按历史快照保留不改**；其中旧的观测面命名请自行替换后使用：
->   `agentia_unit_*` → `agentia_capability_*` · `unit="…"` → `capability="…"` · `maxUnits` → `maxCapabilities` ·
->   `droppedUnits` → `droppedCapabilities` · `labelMode:'unit'` → `'capability'` · `unit.usage` → `capability.usage`。
->   指标真实名称与用法以 `docs/observability.md` 与 `docs/usage-guide.md` 为准。
+>    **本文正文与样例已同步更新**为 `capability*` 命名（`agentia_capability_*` · `capability="…"` ·
+>    `maxCapabilities` · `droppedCapabilities` · `labelMode:'capability'` · `CapabilityReport` · `capability span`）。
+>    指标真实名称与用法以 `docs/observability.md` 与 `docs/usage-guide.md` 为准。
 > **日期**：2026-09-13
 > **前置**：本文是**设计**，不是逐步实现计划。分期任务计划落地时另起 `docs/plans/2026-09-13-observability-tunability-*.md`。
-> **缘起**：框架定位是「要长期使用、要能被观测、要能被调优的 agent 框架」。当前观测只到 **run 级**（看不到「哪个单元慢/贵/爱失败」），调优旋钮虽齐但**有两处"看着有、实际不生效"**（成本护栏会静默失效）。这块不做透，框架相对"自己拼 SDK"的优势就不成立。
+> **缘起**：框架定位是「要长期使用、要能被观测、要能被调优的 agent 框架」。当前观测只到 **run 级**（看不到「哪个能力慢/贵/爱失败」），调优旋钮虽齐但**有两处"看着有、实际不生效"**（成本护栏会静默失效）。这块不做透，框架相对"自己拼 SDK"的优势就不成立。
 
-**Goal**：把观测从「**整条 run 的汇总**」下沉到「**单元 / 模型 / 工具维度**」，把调优从「**一堆散落选项**」变成「**有依据、能验证、不会静默失效的闭环**」。
+**Goal**：把观测从「**整条 run 的汇总**」下沉到「**能力 / 模型 / 工具维度**」，把调优从「**一堆散落选项**」变成「**有依据、能验证、不会静默失效的闭环**」。
 
 **Architecture**：**不新增层**，全部在既有落点上收口：
 
@@ -34,7 +33,7 @@
 4. **改语义必须记 `spec.md §10`**；方向性工作更新 `roadmap.md`。
 5. **新行为必须带测试**（`node:test`），并纳入 `npm test` 全链；**每块能力带 e2e 或可执行证明**。
 6. **观测失败被吞** —— 指标/报告/sink 抛错绝不影响 run（沿用既有原则）。
-7. **不重复计数** —— 单元级 `usage` 是**子孙聚合**（`core/trace.ts` 已定语义），任何新指标都必须守住「`totalUsage` 只累加 `llm.turn`」这条口径。
+7. **不重复计数** —— 能力级 `usage` 是**子孙聚合**（`core/trace.ts` 已定语义），任何新指标都必须守住「`totalUsage` 只累加 `llm.turn`」这条口径。
 
 **非目标（YAGNI，明确不做）**：跨 run 的账单/多维分析平台、告警与 SLO 系统、可视化 dashboard UI、TraceQL/Grafana 模板、OpenTelemetry SDK 依赖、采样（sampling）策略、向量检索记忆。理由见 §7。
 
@@ -44,15 +43,15 @@
 
 | # | 缺口 | 证据（代码事实） | 性质 |
 |---|---|---|---|
-| 1 | **普通工具测不到耗时** | `core/trace.ts`：span 只有 `run`/`unit`/`llm.turn`；`unit` span **只由 skill/subagent 建**。普通工具只在 turn 上记 `tool.input`/`tool.output` 事件（`loop.ts:339,403`），**事件里没有时序** → 占多数的普通工具，耗时/错误率**从 trace 里拿不到** | 观测盲区（最大） |
-| 2 | **指标只到 run 级** | `integrations/metrics.ts` 的 label 只有 `{kind=…}`（token 分项）与 `{quantile=…}`；**没有 `unit` / `model` 维度** → 答不出「哪个工具慢/贵/失败多」 | 观测盲区 |
+| 1 | **普通工具测不到耗时** | `core/trace.ts`：span 只有 `run`/`capability`/`llm.turn`；`capability` span **只由 skill/subagent 建**。普通工具只在 turn 上记 `tool.input`/`tool.output` 事件（`loop.ts:339,403`），**事件里没有时序** → 占多数的普通工具，耗时/错误率**从 trace 里拿不到** | 观测盲区（最大） |
+| 2 | **指标只到 run 级** | `integrations/metrics.ts` 的 label 只有 `{kind=…}`（token 分项）与 `{quantile=…}`；**没有 `capability` / `model` 维度** → 答不出「哪个工具慢/贵/失败多」 | 观测盲区 |
 | 3 | **分位不可聚合** | `metrics.ts`：分位是**进程内滑动窗口精确值**（`windowSize`，缺省 1024），非 Prometheus 原生 histogram → 多实例无法相加、无法跨实例算全局分位 | 生产可用性 |
 | 4 | **OTLP metrics 未实现** | `metrics.ts`：`export:'otlp'` **构造期抛错**（"后置，见 roadmap D3"）→ 进不了 OTel 采集链路，只能被拉 `/metrics` | 生态缺口 |
 | 5 | **`/metrics` 没接线** | `transport/http.ts` 全仓 grep 无 `metrics` 命中 → `createHttpHandler` 不提供指标路由，用户得自己在外面接 | 易用性 |
 | 6 | **成本护栏会静默失效** | `engine/usage.ts`：`PRICING` 只硬编码 **6 个模型**；未知模型 `costEstimate` 返回 `undefined` → `Trace.totalUsage.costEstimate` 恒 undefined → **`maxCostUsd` 永不触发**，且**无任何提示**（`budget.ts` 注释已如实标注，但"如实标注"不等于能用） | 调优硬伤 |
 | 7 | **价格表不可注入** | `usage.ts`：`PRICING` 是模块内常量，无任何覆盖入口 → 走非 Anthropic 端点（DeepSeek / OpenAI / 自建）的用户**永远算不出成本** | 调优硬伤 |
-| 8 | **成本无归因** | 成本只落在 `llm.turn` span 的 `usage.costEstimate`（`loop.ts:245`）；**没有按模型 / 按单元聚合的出口** → 答不出「钱花在哪个模型 / 哪个子 agent 上」 | 观测盲区 |
-| 9 | **无调优依据产物** | 没有任何「per-unit 耗时/成本/错误率排行」的函数或命令；`trace-view` 只渲染调用树，不做汇总 | 闭环缺失 |
+| 8 | **成本无归因** | 成本只落在 `llm.turn` span 的 `usage.costEstimate`（`loop.ts:245`）；**没有按模型 / 按能力聚合的出口** → 答不出「钱花在哪个模型 / 哪个子 agent 上」 | 观测盲区 |
+| 9 | **无调优依据产物** | 没有任何「per-capability 耗时/成本/错误率排行」的函数或命令；`trace-view` 只渲染调用树，不做汇总 | 闭环缺失 |
 | 10 | **不知道一条 run 用了哪套旋钮** | policy/guard/retry/trimming 的参数**不落 trace** → 事后无法回答「这条 run 的 `keepToolPairs` 是几、`maxCostUsd` 设了没」 | 可调试性 |
 
 > 已记档的**边界**（本设计**不**当新缺口重复处理）：`metricsSink` 分位是窗口内精确值（#3 正是要**补**掉）、OTLP metrics 后置（#4 推翻）、价格表覆盖不足（#6/#7 推翻）、MCP 只做 tools、HITL 只到同步闸门、无代码沙箱、`canCall` 只有 provider 粒度、记忆只两钩子 —— 后四条**本设计不碰**。
@@ -61,11 +60,11 @@
 
 ## 2. 分期总览
 
-顺序原则：**先把"看不见"变成"看得见"（E），再把"旋钮失灵"修成"旋钮可靠"（F），最后给"怎么调"的依据（G）**。E 是 F/G 的数据前提（没有单元维度，归因与报告都无从谈起）。
+顺序原则：**先把"看不见"变成"看得见"（E），再把"旋钮失灵"修成"旋钮可靠"（F），最后给"怎么调"的依据（G）**。E 是 F/G 的数据前提（没有能力维度，归因与报告都无从谈起）。
 
 | 期 | 主题 | 条目 | 依赖 |
 |---|---|---|---|
-| **E** | 观测下沉 | E1 工具时序、E2 单元级指标、E3 模型维度指标、E4 histogram、E5 OTLP metrics | E1 → E2（工具指标依赖 E1 的时序） |
+| **E** | 观测下沉 | E1 工具时序、E2 能力级指标、E3 模型维度指标、E4 histogram、E5 OTLP metrics | E1 → E2（工具指标依赖 E1 的时序） |
 | **F** | 成本可调优 | F1 价格可注入、F2 未定价显式、F3 成本归因 | F1 → F2；F3 依赖 E3 |
 | **G** | 调优闭环 | G1 聚合报告（库 + CLI）、G2 inspector/trace-view 汇总视图、G3 生效配置快照、G4 `/metrics` 接线 | G1 依赖 E1+E2；G3 独立；G4 依赖 E2/E4 |
 
@@ -101,16 +100,16 @@ recorder.event(turnId, 'tool.output', {
 - **中间件的计时不进这里**：中间件（R1）能测「包了一层的总耗时」，但它是用户接缝、可能不存在；E1 测的是**框架侧的可信基线**。两者不冲突（文档写明区别）。
 
 **取舍 / 被否**：
-- **被否 B**：给普通工具也建 `unit` span。理由：当初显式把普通工具降为事件就是为了**控 trace 体积与渲染成本**（一次 run 可能几十上百次工具调用）；为一个耗时会把这笔账重新付一遍，且会让缺省 trace 变大、`trace-view` 变卡。若用户需要 per-tool span，可用中间件自己在 trance 外记。
+- **被否 B**：给普通工具也建 `capability` span。理由：当初显式把普通工具降为事件就是为了**控 trace 体积与渲染成本**（一次 run 可能几十上百次工具调用）；为一个耗时会把这笔账重新付一遍，且会让缺省 trace 变大、`trace-view` 变卡。若用户需要 per-tool span，可用中间件自己在 trance 外记。
 - **被否 C**：在 turn 事件上记 `startedAt`/`endedAt` 绝对时间戳。理由：`SpanEvent` 已有 `time`，再记绝对时间会让"耗时"要跨两个事件相减才能得，且并行时容易读错；直接给 `durationMs` 语义最清晰。
 
 **测试**：mock client 触发一次工具调用 → 断言 `tool.output` 事件带 `durationMs ≥ 0` 且 `status:'ok'`；工具抛错 → `status:'error'` 且 run 不失败；工具超时 → `status:'error'` 且 `durationMs ≈ timeoutMs`。
 
-### E2. 单元级指标（`metricsSink` 下沉到 `unit` 维度）
+### E2. 能力级指标（`metricsSink` 下沉到 `capability` 维度）
 
-**问题**：`metricsSink` 只有 run 级标签，答不出「**哪个单元慢 / 贵 / 爱失败**」—— 而这正是调优第一步。
+**问题**：`metricsSink` 只有 run 级标签，答不出「**哪个能力慢 / 贵 / 爱失败**」—— 而这正是调优第一步。
 
-**设计**：`metricsSink` 在 `export(trace)` 时**遍历 span 与 turn 事件**，按单元聚合：
+**设计**：`metricsSink` 在 `export(trace)` 时**遍历 span 与 turn 事件**，按能力聚合：
 
 ```ts
 // integrations/metrics.ts —— 新增选项
@@ -119,40 +118,40 @@ export interface MetricsSinkOptions {
   windowSize?: number;
   prefix?: string;
   /**
-   * 单元标签粒度：'unit'（缺省，按 `kind:name` 如 `tool:search`）| 'kind'（只按类型，基数极小）| 'none'（关掉单元指标）。
+   * 能力标签粒度：'capability'（缺省，按 `kind:name` 如 `tool:search`）| 'kind'（只按类型，基数极小）| 'none'（关掉能力指标）。
    */
-  labelMode?: 'unit' | 'kind' | 'none';
+  labelMode?: 'capability' | 'kind' | 'none';
   /**
-   * 单元标签基数上限（缺省 200）。超出后新单元归入 `unit="__other__"`，防标签爆炸。
-   * 只对 labelMode:'unit' 生效。
+   * 能力标签基数上限（缺省 200）。超出后新能力归入 `capability="__other__"`，防标签爆炸。
+   * 只对 labelMode:'capability' 生效。
    */
-  maxUnits?: number;
+  maxCapabilities?: number;
 }
 ```
 
 新增指标（Prometheus 文本）：
 
 ```
-agentia_unit_calls_total{unit="tool:search"}            3
-agentia_unit_errors_total{unit="tool:search"}           0
-agentia_unit_duration_ms_bucket{unit="tool:search",le="50"} 2
-agentia_unit_duration_ms_bucket{unit="tool:search",le="+Inf"} 3
-agentia_unit_duration_ms_count{unit="tool:search"}      3
-agentia_unit_duration_ms_sum{unit="tool:search"}        142
-agentia_unit_tokens_total{unit="skill:summarize",kind="input"} 1200   ← 仅 skill/subagent（unit span 有 usage）
+agentia_capability_calls_total{capability="tool:search"}            3
+agentia_capability_errors_total{capability="tool:search"}           0
+agentia_capability_duration_ms_bucket{capability="tool:search",le="50"} 2
+agentia_capability_duration_ms_bucket{capability="tool:search",le="+Inf"} 3
+agentia_capability_duration_ms_count{capability="tool:search"}      3
+agentia_capability_duration_ms_sum{capability="tool:search"}        142
+agentia_capability_tokens_total{capability="skill:summarize",kind="input"} 1200   ← 仅 skill/subagent（capability span 有 usage）
 ```
 
 要点：
 - **数据来源分两路**（必须写进注释）：
-  - `skill` / `subagent` → 读 `unit` span（有起止 + 子孙 usage 聚合）；
+  - `skill` / `subagent` → 读 `capability` span（有起止 + 子孙 usage 聚合）；
   - `tool` → 读 turn 上的 `tool.output` 事件（依赖 **E1** 的 `durationMs`/`status`）。
-  - `prompt` → 不建 span、无独立耗时，**不产出单元指标**（如实缺省，不硬凑）。
+  - `prompt` → 不建 span、无独立耗时，**不产出能力指标**（如实缺省，不硬凑）。
 - **token 指标只对 skill/subagent**：普通工具是用户代码，本身不消耗 token；给它记 token 是伪指标。
-- **错误口径**：`unit_errors_total` 数 `status:'error'` 的单元调用（工具失败/抛错/超时/入参被拒 + skill/subagent span `status:'error'`）。**不**把 `budget_exceeded` 算成某单元的错。
-- **基数防护**：`maxUnits`（缺省 200）+ `labelMode` 开关；超限归 `__other__`，并在 `snapshot()` 里给出 `droppedUnits` 计数（可观测"标签被截断了"）。
+- **错误口径**：`capability_errors_total` 数 `status:'error'` 的能力调用（工具失败/抛错/超时/入参被拒 + skill/subagent span `status:'error'`）。**不**把 `budget_exceeded` 算成某能力的错。
+- **基数防护**：`maxCapabilities`（缺省 200）+ `labelMode` 开关；超限归 `__other__`，并在 `snapshot()` 里给出 `droppedCapabilities` 计数（可观测"标签被截断了"）。
 - **仍零依赖**：Prometheus 文本继续手写。
 
-**测试**：构造一条含 2 个工具（一成功一失败）+ 1 个 skill 的 trace → 断言 `render()` 里出现对应 `unit_calls_total` / `unit_errors_total` / `duration_ms_*`，且 `labelMode:'none'` 时不出现任何 `unit=` 标签、`maxUnits:1` 时第二个单元归 `__other__`。
+**测试**：构造一条含 2 个工具（一成功一失败）+ 1 个 skill 的 trace → 断言 `render()` 里出现对应 `capability_calls_total` / `capability_errors_total` / `duration_ms_*`，且 `labelMode:'none'` 时不出现任何 `capability=` 标签、`maxCapabilities:1` 时第二个能力归 `__other__`。
 
 ### E3. 模型维度指标（成本 / token / 延迟按模型归因）
 
@@ -272,10 +271,10 @@ export function buildPricing(overrides?: Record<string, Pricing>): Record<string
 ### F3. 成本归因出口
 
 - 复用 **E3** 的 `agentia_model_cost_usd_total{model=…}`；
-- 再加**单元维度**成本：skill/subagent 的 `unit` span 有**子孙 usage 聚合** → `agentia_unit_cost_usd_total{unit="subagent:researcher"}`（仅 skill/subagent；普通工具无 token，不产出）。
+- 再加**能力维度**成本：skill/subagent 的 `capability` span 有**子孙 usage 聚合** → `agentia_capability_cost_usd_total{capability="subagent:researcher"}`（仅 skill/subagent；普通工具无 token，不产出）。
 - **不做**（YAGNI，见 §7）：跨 run 账单、按租户/客户的多维成本分析、"成本预测"。
 
-**测试**：主 agent + 一个子 agent → 模型成本与子 agent 单元成本都能在 `render()` 里读到，且**不与 `totalUsage` 双算**（断言两者之和关系符合"单元聚合 = 子孙之和"）。
+**测试**：主 agent + 一个子 agent → 模型成本与子 agent 能力成本都能在 `render()` 里读到，且**不与 `totalUsage` 双算**（断言两者之和关系符合"能力聚合 = 子孙之和"）。
 
 ---
 
@@ -289,8 +288,8 @@ export function buildPricing(overrides?: Record<string, Pricing>): Record<string
 
 ```ts
 // integrations/report.ts（只依赖 core）
-export interface UnitReport {
-  unit: string;          // `${kind}:${name}`
+export interface CapabilityReport {
+  capability: string;          // `${kind}:${name}`
   calls: number;
   errors: number;
   durationMs: { total: number; p50: number; p95: number; max: number };
@@ -303,27 +302,27 @@ export interface RunReport {
   durationMs: number;
   totalUsage: Usage;
   models: Array<{ model: string; turns: number; tokens: Usage; costUsd: number | null }>;
-  units: UnitReport[];   // 按 durationMs.total 降序
+  capabilities: CapabilityReport[];   // 按 durationMs.total 降序
   unpricedModels: string[];
 }
 /** 从一条 Trace 生成报告（纯函数，无副作用） */
 export function buildRunReport(trace: Trace): RunReport;
-/** 多条 trace（如 JSONL 落盘）→ 汇总（跨 run 的单元排行；report 里的"跨 run"仅此一处，不做多维分析） */
+/** 多条 trace（如 JSONL 落盘）→ 汇总（跨 run 的能力排行；report 里的"跨 run"仅此一处，不做多维分析） */
 export function mergeRunReports(reports: RunReport[]): RunReport;
 ```
 
-CLI：`agentia report <trace.jsonl>` —— 读 `FileTaskStore` / trace 落盘的 JSONL，打印单元耗时/成本/错误率排行 + 未定价模型清单。**纯读，不联网、不调模型。**
+CLI：`agentia report <trace.jsonl>` —— 读 `FileTaskStore` / trace 落盘的 JSONL，打印能力耗时/成本/错误率排行 + 未定价模型清单。**纯读，不联网、不调模型。**
 
 要点：
 - 报告是**派生视图**，不新造数据源；`traceToMessages` 不改。
 - 分位在单条 run 内样本太少 → 报告以 `total`/`max` 为主、分位作参考，跨 run 用 `mergeRunReports` 才有统计意义（注释写明）。
 - **被否 B**（只做 CLI）：库函数才能被 inspector / 用户自己的 dashboard 复用；CLI 只是薄壳（同 `trace-view` 的"共享渲染器"思路）。
 
-**测试**：对一条已知 trace 断言排序、`errors` 计数、未定价清单；两条 trace merge 后 `calls` 相加、`units` 按总耗时重排。
+**测试**：对一条已知 trace 断言排序、`errors` 计数、未定价清单；两条 trace merge 后 `calls` 相加、`capabilities` 按总耗时重排。
 
 ### G2. inspector / trace-view 汇总视图
 
-- `Dev Inspector` 在调用树旁加一格 **per-unit 汇总**（耗时/成本/错误率排行），数据源 = **G1** 的 `buildRunReport`；
+- `Dev Inspector` 在调用树旁加一格 **per-capability 汇总**（耗时/成本/错误率排行），数据源 = **G1** 的 `buildRunReport`；
 - **不新写渲染**：沿用"共享渲染器"原则 —— 排行视图放 `@migor/trace-view`，官网 playground 与 CLI 面板共用。
 - **被否**：另做一套 dashboard —— 与「框架是代码优先、不做可视化编排」冲突。
 
@@ -371,9 +370,9 @@ export interface HttpHandlerOptions {
 
 | # | 分叉 | 选项 A | 选项 B | 我的建议 |
 |---|---|---|---|---|
-| F1 | 工具耗时怎么测 | 在既有 `tool.output` 事件上**补** `durationMs`/`status`（零 span 增量） | 给普通工具也建 `unit` span | **A** —— 守住"普通工具降为事件"的既定决策（trace 体积/渲染成本） |
+| F1 | 工具耗时怎么测 | 在既有 `tool.output` 事件上**补** `durationMs`/`status`（零 span 增量） | 给普通工具也建 `capability` span | **A** —— 守住"普通工具降为事件"的既定决策（trace 体积/渲染成本） |
 | F2 | 指标形态 | **补** histogram buckets，**保留**窗口精确分位（并存） | 只保留窗口分位 | **A** —— B 让多实例无法聚合；C（只 histogram、删分位）是破坏性变更 |
-| F3 | 单元标签基数 | 默认 `labelMode:'unit'` + `maxUnits`（缺省 200，超限归 `__other__`） | 不设上限，全量打标签 | **A** —— 用户可定义任意多工具，裸打标签会打爆 Prometheus |
+| F3 | 能力标签基数 | 默认 `labelMode:'capability'` + `maxCapabilities`（缺省 200，超限归 `__other__`） | 不设上限，全量打标签 | **A** —— 用户可定义任意多工具，裸打标签会打爆 Prometheus |
 | F4 | OTLP metrics 实现 | **零依赖手写** OTLP/JSON over HTTP | 引 `@opentelemetry/exporter-*` | **A** —— 守住"零运行时依赖"；与 `createOtlpExporter`(traces) 同款 |
 | F5 | 价格注入形态 | `priceOverrides` **选项**（`AppOptions`→`RunAgentOptions`） | 全局 `registerPricing()` 单例 | **A** —— 无全局可变状态、与"配置走选项"一致 |
 | F6 | 未定价模型怎么处理 | 记 `usage.unpriced` 事件 + 指标 + `onUnpricedModel` 回调（**不**改 run 结局） | 让 run 失败 / 抛错 | **A** —— 定价缺失是宿主配置问题，不该毁掉一次成功的 run |
@@ -387,7 +386,7 @@ export interface HttpHandlerOptions {
 **风险**
 
 - **E1 的语义面**：给 `tool.output` 加字段是**事件体扩展**（非破坏，但 `tests/docs` 里若有对事件体的逐字断言需同步）。`usage-guide §7` 要补一条"普通工具耗时从 `tool.output.durationMs` 读"。
-- **E2/E3 的基数风险**：用户若有海量工具名 → 标签爆炸。缓解：**F3 的 `maxUnits` + `labelMode` + `droppedUnits` 计数**三件套，并在文档写明调法。
+- **E2/E3 的基数风险**：用户若有海量工具名 → 标签爆炸。缓解：**F3 的 `maxCapabilities` + `labelMode` + `droppedCapabilities` 计数**三件套，并在文档写明调法。
 - **E5 OTLP/JSON 的协议漂移**：OTLP JSON 结构随规范演进 → 只承诺**当前规范**的 `resourceMetrics/scopeMetrics/metrics` 最小结构，不追新。
 - **G1 单 run 分位的统计意义**：单条 run 内样本数常 `< 5`，分位没有意义 → 报告以 `total`/`max` 为主，跨 run 用 `mergeRunReports`；文档必须写明，避免用户误读。
 - **性能**：E2/E3 让 `metricsSink.export` 从 O(1) 变成 O(spans + events)。对超长 trace（几百 span）要**复用一次遍历**，别每个指标扫一遍；纳入性能自检（既有 `deps` 无变化，不引新依赖）。
@@ -398,7 +397,7 @@ export interface HttpHandlerOptions {
 - 告警系统与 SLO/预算外推（只出指标与事件，规则是宿主/监控系统的事）；
 - 可视化 dashboard UI / Grafana 模板 / 采样策略；
 - 引入 `@opentelemetry/*` SDK（零依赖硬约束）；
-- 向量检索记忆、HITL 跨进程续跑、`canCall` 单元级边（**本期不碰**，各自独立议题）。
+- 向量检索记忆、HITL 跨进程续跑、`canCall` 能力级边（**本期不碰**，各自独立议题）。
 
 ---
 
@@ -413,7 +412,7 @@ npm run e2e && npm run build:website
 外加**本期特有**的可执行证明：
 
 - **E1**：mock client 跑通一条含成功/失败/超时工具的 run → `tool.output` 事件三态 `status` + `durationMs` 齐全。
-- **E2/E3/E4**：对一条构造 trace `render()` → 断言出现 `unit_*`、`model_*`、`*_bucket` 三类指标；`labelMode:'none'` / `maxUnits:1` 的边界各一例。
+- **E2/E3/E4**：对一条构造 trace `render()` → 断言出现 `capability_*`、`model_*`、`*_bucket` 三类指标；`labelMode:'none'` / `maxCapabilities:1` 的边界各一例。
 - **E5**：本地起 HTTP server 收 `/v1/metrics` → 断言合法 OTLP JSON（真导出，不是"调了就算"）。
 - **F1/F2**：`priceOverrides` 让非 Anthropic 模型算出成本；未知模型 → `usage.unpriced` 事件 + `onUnpricedModel` + run 仍 `succeeded`。
 - **G1**：`agentia report <trace.jsonl>` 打印排行（真读文件、真排序）。

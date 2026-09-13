@@ -31,7 +31,7 @@
 | 1 | 无法中止在飞 run | `AbortSignal` 全仓 0 命中；`cancel` 仅存在于 `Scheduler`。HTTP 客户端断开后 run 继续跑、继续计费 | 成本漏洞 |
 | 2 | 无重试 / 退避 | `engine/errors.ts` 产出 `retryable: true/false`，但**全仓无人读取** —— 一次 429/网络抖动 = 整个 run `failed` | 稳定性 |
 | 3 | 传输层无流式出口 | `onText` 回调存在，但 `createHttpHandler` 只回一元 JSON；`text/event-stream` 0 命中 | 体感 / 首字延迟 |
-| 4 | HTTP 入口零鉴权 | 框架无鉴权概念，`POST /run` 裸奔；middleware 只拦**单元调用**，拦不住**run 入口** | 安全 |
+| 4 | HTTP 入口零鉴权 | 框架无鉴权概念，`POST /run` 裸奔；middleware 只拦**能力调用**，拦不住**run 入口** | 安全 |
 | 5 | 无优雅停机 / 健康检查 | `SIGTERM`/`/healthz`/`readiness` 0 命中；仅 `Scheduler.stop()` | 运维 |
 | 6 | 成本硬管控缺失 | `spec §6.4` 明列「task budget」为服务层要求，但 `§10`/`usage-guide §7` 记的是「预算只是护栏」→ **说了没做** | 成本 |
 | 7 | 工具级超时 / 并发上限缺失 | `loop.ts` 用 `Promise.all` 并行全部 tool，无上限、无单工具超时；`runTimeoutMs` 是任务级 | 稳定性 |
@@ -144,7 +144,7 @@ export interface RetryOptions {
 
 ```ts
 // transport/http.ts
-// 事件序列（第一版只做前两类 + 收尾；全量单元事件后置）
+// 事件序列（第一版只做前两类 + 收尾；全量能力事件后置）
 //   event: run.start   data: { runId }
 //   event: text.delta  data: { text }            ← 逐 token
 //   event: run.end     data: RunHttpResponse     ← 与原 JSON 响应体同形状
@@ -179,7 +179,7 @@ export interface HttpHandlerOptions {
 }
 ```
 
-**取舍**：为什么不做成 middleware？middleware 拦的是**单元调用**（run 内部）；鉴权要拦的是**run 入口**，且必须在读 body 之前（省资源）。**被否**：内置 API-Key 校验 —— 框架不读 env、不该碰凭据。
+**取舍**：为什么不做成 middleware？middleware 拦的是**能力调用**（run 内部）；鉴权要拦的是**run 入口**，且必须在读 body 之前（省资源）。**被否**：内置 API-Key 校验 —— 框架不读 env、不该碰凭据。
 
 ### B2. 优雅停机 + 健康检查
 
@@ -295,7 +295,7 @@ export interface McpClientLike {
 }
 
 export interface McpToolsOptions {
-  /** 工具名前缀，避免与本地单元撞名；缺省 `mcp_<server>_` */
+  /** 工具名前缀，避免与本地能力撞名；缺省 `mcp_<server>_` */
   prefix?: string;
   /** 单次调用超时（毫秒），超时 → is_error 回模型；缺省 60000 */
   timeoutMs?: number;
@@ -406,7 +406,7 @@ npm run e2e && npm run build:website
 - D1：真接一个 MCP server（如 `mcp-server-time`），`agentia doctor` 能看到其工具进菜单。
   **落地方式（实测）**：`npm run e2e:mcp` —— 真起 `uvx mcp-server-time`（第三方 server，真 stdio JSON-RPC），
   走完「`tools/list` → `mcpTools()` 映射 → `createApp` 主菜单 → 真跑一轮（模型经它拿到真实时区时间）」。
-  注：`agentia doctor` 是**静态**体检（不 import 用户代码，见 spec §10），它只能看到「MCP 单元已登记且入口齐全」；
+  注：`agentia doctor` 是**静态**体检（不 import 用户代码，见 spec §10），它只能看到「MCP 能力已登记且入口齐全」；
   「工具进了菜单」这条由 e2e 脚本打印 `app.tools` 来证明。无网 / 无 uv 时自动回落
   `scripts/mcp-fixture-server.py`（同一协议面）。
 

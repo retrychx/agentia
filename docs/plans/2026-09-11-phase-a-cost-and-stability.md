@@ -8,7 +8,7 @@
 
 **Architecture**：`signal` 作为可选参数从入口（HTTP / AsyncRunner / app.run）一路贯穿到 `ModelClient.messages.stream`；重试在 `agentLoop` 内建（消费既有的 `classifyError.retryable`）；SSE 在 `transport/http.ts` 做内容协商，复用已有的 `onText`。全部零新增依赖。
 
-**非目标**：异步任务的流式（`GET /tasks/:id/stream`，需 run 内事件跨进程）、SSE 的单元级事件（`unit.start/end`）、工具的真中断（无 signal 给工具就无法回滚副作用）。
+**非目标**：异步任务的流式（`GET /tasks/:id/stream`，需 run 内事件跨进程）、SSE 的能力级事件（`capability.start/end`）、工具的真中断（无 signal 给工具就无法回滚副作用）。
 
 **验证**：`npm run typecheck && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿。
 

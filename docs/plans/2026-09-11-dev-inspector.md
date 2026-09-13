@@ -3,7 +3,7 @@
 > **状态**：已评审，执行中。注入方式按评审结论改走 **B（preload + `registerDefaultTraceSink`）**。
 > **日期**：2026-09-11
 
-**Goal**：`agentia dev` 默认启动一个本地 inspector —— 开发者能在浏览器里看到每次 run 的调用树，以及每个单元（tool / skill / prompt / subagent）的执行情况：入参、出参、耗时、token、cache 命中、状态与错误。
+**Goal**：`agentia dev` 默认启动一个本地 inspector —— 开发者能在浏览器里看到每次 run 的调用树，以及每个能力（tool / skill / prompt / subagent）的执行情况：入参、出参、耗时、token、cache 命中、状态与错误。
 
 **Architecture**：
 1. **框架层加一条「trace 出口缝」**：`TraceSink { export(trace) }` + `AppOptions.sinks` + `registerDefaultTraceSink()`。run 收尾后框架把完整 `Trace` 投给每个 sink（sink 抛错被吞，绝不影响 run）。**框架不含任何 dev/inspector 逻辑，不读 env。**
@@ -243,7 +243,7 @@ Run: `git add docs/ && git commit -m "docs(spec): trace 出口缝决策记录"`
 - 节点模型：`traceRoot`、`node.order`、`node.{kind,name,arg,done,status,error,usage,ms}`
 - `traceReset(sc) / traceStart / traceEnd / traceEvent / traceFinish / renderTrace / renderUsage`
 - 事件行语义（`tool.input` 先于其触发的 unit span、`tool.output` 后于它）
-- 四类标识符 `UNIT_ICO = { tool:'⚙', skill:'◆', prompt:'¶', subagent:'⊕' }` + `unitTypeOf`
+- 四类标识符 `CAP_ICO = { tool:'⚙', skill:'◆', prompt:'¶', subagent:'⊕' }` + `capabilityTypeOf`
 - LIFO 工具配对（`pending` 栈）**不迁移** —— 那是模拟脚本回放器的职责，属 host 侧
 
 **导出形态**：
