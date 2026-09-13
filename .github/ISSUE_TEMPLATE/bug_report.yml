@@ -1,0 +1,55 @@
+name: Bug 报告
+description: 行为与预期不符
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ 安全漏洞请**不要**在这里报 —— 走 [私有通道](https://github.com/retrychx/agentia/security/advisories/new)。
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: '@migor/agentia 的版本'
+      placeholder: '0.2.2'
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node 版本
+      placeholder: 'node -v 的输出，如 v22.14.0'
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象与预期
+      description: 实际发生了什么？你期望什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 最小复现
+      description: 代码或仓库链接 —— 越简越好（去掉与问题无关的能力/配置）
+      render: ts
+    validations:
+      required: true
+
+  - type: textarea
+    id: trace
+    attributes:
+      label: trace / 报错输出
+      description: 若有 trace，贴调用树（`result.trace`）；报错请贴原文而非转述
+      render: json
+
+  - type: input
+    id: model
+    attributes:
+      label: 模型 / 端点
+      description: 如 claude-opus-5 · deepseek-chat · 自建兼容网关
