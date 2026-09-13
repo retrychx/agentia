@@ -1,15 +1,16 @@
 import type { APIRoute } from 'astro';
-import { readFileSync } from 'node:fs';
+import guide from '../../../../docs/usage-guide.md?raw';
 
 /**
  * /llms.txt —— llms.txt 约定的入口索引（给联网 AI 助手）。
  *
  * - `/llms-full.txt` 是完整使用说明（由仓库单源 docs/usage-guide.md 生成）；
  * - 本站是静态托管，没有后端，因此这里只列事实与链接。
+ *
+ * ⚠️ 单源用 `?raw` 构建期注入（理由同 `llms-full.txt.ts` 的注释：Astro 7 下 `import.meta.url`
+ * 指向产物目录，`readFileSync` + 相对 URL 会在构建期 ENOENT）。
  */
 export const GET: APIRoute = () => {
-  const guide = readFileSync(new URL('../../../../docs/usage-guide.md', import.meta.url), 'utf8');
-
   // 从单源里抠出 API 名单，保证这里的清单不会与说明漂移
   const roster = new Map<string, string[]>();
   let heading = '';
