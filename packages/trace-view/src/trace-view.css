@@ -65,3 +65,18 @@
 .tv-sum tbody tr:hover td { background: #17171a; }
 .tv-sum-err { color: #f7768e; }
 .tv-sum-empty { color: #71717a; margin-top: 10px; font-size: 11.5px; }
+
+/* 失败行的错误原文：单起一行（.tr-row 是 nowrap，挤在同一行会把行撑爆） */
+.tr-errm {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0 4px;
+  white-space: normal;
+}
+.tr-errm-msg {
+  color: #f7768e;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
+}

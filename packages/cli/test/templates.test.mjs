@@ -33,4 +33,13 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     const main = T.mainTs('demo');
     for (const dir of T.CAPABILITY_DIR_LIST) assert.ok(main.includes(`'${dir}'`), `main.ts 缺 ${dir}`);
   });
+
+  it('main.ts 模板在 run 失败时给出原因并置非零退出码', () => {
+    // run 失败**不抛**（硬失败记进 result.error），模板若不显式检查就会「打印空行 + 退出 0」，
+    // 让首次运行（如没配 ANTHROPIC_API_KEY）看起来像成功 —— 实测过这个静默失败。
+    const main = T.mainTs('demo');
+    assert.ok(main.includes('result.error'), 'main.ts 应检查 result.error');
+    assert.ok(main.includes('result.stopReason'), 'main.ts 应打印 stopReason');
+    assert.ok(main.includes('process.exitCode = 1'), 'main.ts 失败时应置非零退出码');
+  });
 });

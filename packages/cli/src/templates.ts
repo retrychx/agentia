@@ -123,7 +123,15 @@ const app = await createApp({
 const { result } = await app.run(
   [{ role: 'user', content: process.argv[2] ?? '介绍一下你自己' }],
 );
-console.log(result.finalText);
+
+// 注意：run 失败**不会抛**（硬失败被记进 result.error 与 trace 后正常返回）—— 不显式检查就会
+// 「打印一行空白 + 退出 0」，让首次运行（比如忘了配 ANTHROPIC_API_KEY）看起来像成功。
+if (result.error) {
+  console.error(\`run 失败（stopReason=\${result.stopReason}）：\${result.error.message}\`);
+  console.error('提示：模型调用默认读 ANTHROPIC_API_KEY；换端点或注入 client 见项目内 AGENTS.md。');
+  process.exitCode = 1;
+}
+if (result.finalText) console.log(result.finalText);
 `;
 }
 
