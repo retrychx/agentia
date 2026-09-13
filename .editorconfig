@@ -1,0 +1,21 @@
+root = true
+
+# 跨编辑器的统一约定。Biome 管已支持的语言的最终格式，这里兜住它不管的
+# （换行符、文件末尾空行、末尾空格）—— 也是 .gitattributes 之外的第二道防线。
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Markdown 里行尾两空格是「硬换行」，不能删
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

@@ -1,0 +1,25 @@
+# 统一换行符为 LF（跨平台协作 + 与 .editorconfig 一致）
+* text=auto eol=lf
+
+# 二进制别做文本处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff2 binary
+*.tgz binary
+
+# ---- GitHub 语言统计与 diff 体验 ----
+# 构建产物 / 锁文件不是源码：标为 generated，避免污染语言占比、并在 diff 里折叠
+dist/** linguist-generated=true
+packages/*/dist/** linguist-generated=true
+package-lock.json linguist-generated=true -diff
+tests/fixtures/** linguist-generated=true
+
+# 文档不计入「代码」语言占比
+*.md linguist-documentation=true
+docs/** linguist-documentation=true
+
+# 官网的静态资源与片段不是可执行源码
+packages/website/public/** linguist-documentation=true
