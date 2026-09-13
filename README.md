@@ -1,5 +1,7 @@
 # Agentia
 
+[中文](./README.md) · [English](./README.en.md)
+
 [![CI](https://github.com/retrychx/agentia/actions/workflows/ci.yml/badge.svg)](https://github.com/retrychx/agentia/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 声明式 agent 服务开发框架：TS 装饰器 + DI，主 agent 调度 `@Tool` / `@Skill` / `@SubAgent` / `@Prompt` 能力执行任务，产出结构化结果与调用树（trace）。
