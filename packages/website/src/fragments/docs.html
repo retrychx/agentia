@@ -294,7 +294,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
 
 <span class="kw">const</span> runner = <span class="kw">new</span> <span class="fn">AsyncRunner</span>(app, { store: <span class="kw">new</span> <span class="fn">SqliteTaskStore</span>(<span class="str">'./tasks.db'</span>) });
 <span class="fn">createServer</span>(<span class="fn">createHttpHandler</span>(app, { runner })).<span class="fn">listen</span>(<span class="dec">8080</span>);
-<span class="cm">// POST /run（同步）  POST /tasks（异步）  GET /tasks/:id（轮询）</span>
+<span class="cm">// POST /run（同步 / SSE）  POST /tasks（异步）  GET /tasks/:id（轮询）  GET /healthz（探针）</span>
 
 <span class="kw">const</span> otlp = <span class="fn">createOtlpExporter</span>({ endpoint: <span class="str">'http://localhost:4318'</span> });
 <span class="kw">await</span> otlp.<span class="fn">export</span>(result.trace);</code></pre></div>

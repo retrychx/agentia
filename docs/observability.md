@@ -68,7 +68,7 @@ createApp({ name: 'svc', providers, sinks: [store] });
 
 ```ts
 store.getTrace(runId);   // → Trace | undefined（按 runId 检索，回放调试的入口）
-store.getSpans(runId);   // → span 明细行
+store.getSpans(runId);   // → SpanRow[]（反规范化列：name / kind / durationMs / tokens / errorType）
 store.listRecent(20);    // → 最近 N 条 run 摘要（按开始时间倒序）
 ```
 

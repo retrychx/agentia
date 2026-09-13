@@ -166,11 +166,32 @@ export interface RunSummary {
   costUsd: number | null;
 }
 
+/** `spans` 表的一行 —— 反规范化列，供直接查（慢 span / 错误 span / token 大户），不必解析 JSON */
+export interface SpanRow {
+  spanId: string;
+  runId: string;
+  parentSpanId: string | null;
+  kind: string;
+  name: string;
+  status: string;
+  startedAt: number;
+  /** 未收尾（失败路径的半截 trace）时为 null */
+  endedAt: number | null;
+  /** 毫秒；未收尾时为 null */
+  durationMs: number | null;
+  errorType: string | null;
+  retryable: boolean | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  attributes: Record<string, unknown>;
+  events: unknown[];
+}
+
 export interface SqliteTraceSink extends TraceSink {
   /** 按 runId 取回**完整** trace（JSON 列反序列化），即「按 runId 检索一次历史 run」 */
   getTrace(runId: string): Trace | undefined;
-  /** 按 runId 取 span 明细行（供 SQL 直接查：慢 span / 错误 span / token 大户） */
-  getSpans(runId: string): Span[];
+  /** 按 runId 取 span 明细行（`spans` 表的反规范化列，见 `SpanRow`） */
+  getSpans(runId: string): SpanRow[];
   /** 最近 N 条 run 摘要（按开始时间倒序） */
   listRecent(limit?: number): RunSummary[];
   /** 仅当连接是本 sink 自建时才真正关闭 */
@@ -282,14 +303,46 @@ export function sqliteTraceSink(opts: SqliteTraceSinkOptions): SqliteTraceSink {
       return row ? (JSON.parse(row.json) as Trace) : undefined;
     },
 
-    getSpans(runId: string): Span[] {
+    getSpans(runId: string): SpanRow[] {
       const rows = db
-        .prepare('SELECT attributes_json, events_json FROM spans WHERE run_id = ? ORDER BY started_at')
-        .all(runId) as Array<{ attributes_json: string; events_json: string }>;
-      return rows.map(
-        (r) =>
-          ({ attributes: JSON.parse(r.attributes_json), events: JSON.parse(r.events_json) }) as Span,
-      );
+        .prepare(
+          `SELECT span_id, run_id, parent_span_id, kind, name, status, started_at, ended_at,
+                  error_type, retryable, input_tokens, output_tokens, attributes_json, events_json
+             FROM spans WHERE run_id = ? ORDER BY started_at`,
+        )
+        .all(runId) as Array<{
+        span_id: string;
+        run_id: string;
+        parent_span_id: string | null;
+        kind: string;
+        name: string;
+        status: string;
+        started_at: number;
+        ended_at: number | null;
+        error_type: string | null;
+        retryable: number | null;
+        input_tokens: number | null;
+        output_tokens: number | null;
+        attributes_json: string;
+        events_json: string;
+      }>;
+      return rows.map((r) => ({
+        spanId: r.span_id,
+        runId: r.run_id,
+        parentSpanId: r.parent_span_id,
+        kind: r.kind,
+        name: r.name,
+        status: r.status,
+        startedAt: r.started_at,
+        endedAt: r.ended_at,
+        durationMs: r.ended_at === null ? null : r.ended_at - r.started_at,
+        errorType: r.error_type,
+        retryable: r.retryable === null ? null : r.retryable === 1,
+        inputTokens: r.input_tokens,
+        outputTokens: r.output_tokens,
+        attributes: JSON.parse(r.attributes_json) as Record<string, unknown>,
+        events: JSON.parse(r.events_json) as unknown[],
+      }));
     },
 
     listRecent(limit = 20): RunSummary[] {

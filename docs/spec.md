@@ -374,6 +374,10 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   发布后改回 `^0.2.2` 即可退回常规单包写法。`.dockerignore` 放**仓库根**（Docker 只认上下文根上那一份）。
   **不改框架实现**（`src/` 零改动）；sink 配方的写法由 `tests/docs/observability.test.ts` 真跑一遍钉住
   （仓库既有约定：文档里的写法必须真能工作）。
+  **自查补漏**：`sqliteTraceSink.getSpans()` 此前声明 `Span[]` 却只塞了 `attributes`/`events`
+  （`as Span` 硬断言）—— 既骗类型、又丢掉表里全部反规范化列（name/kind/耗时/tokens/errorType）；
+  改为返回 `SpanRow[]`（真实列），用例同步加强。官网 hero 单测数 `360+` → `380+`（实际 387），
+  `docs.html` 的端点注释补 `/healthz`（两者都是手写、无自动校验，按 AGENTS.md 须人工同步）。
 
 ## 11. 开放项
 

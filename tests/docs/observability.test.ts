@@ -147,10 +147,25 @@ describe('配方 ③ sqliteTraceSink：按 runId 落库检索', () => {
     assert.deepEqual(sink.getTrace('run-1'), trace, 'getTrace 应按 runId 取回完整 trace');
     assert.equal(sink.getTrace('nope'), undefined);
 
-    // spans 明细行：一 span 一行（只回 attributes/events，够 SQL 直接查）
+    // spans 明细行：一 span 一行，反规范化列可直接用（不必解析 JSON）
     const spans = sink.getSpans('run-1');
     assert.equal(spans.length, 4);
+    assert.equal(spans[0]!.name, 'agent.run');
+    assert.equal(spans[0]!.kind, 'run');
+    assert.equal(spans[0]!.durationMs, 300);
+    assert.equal(spans[0]!.errorType, null);
     assert.deepEqual(spans[0]!.attributes, { 'service.name': 'svc' });
+
+    // 错误 span 的 errorType / retryable 落列
+    const errSpan = spans.find((s) => s.spanId === 'tool-1')!;
+    assert.equal(errSpan.status, 'error');
+    assert.equal(errSpan.errorType, 'rate_limit');
+    assert.equal(errSpan.retryable, true);
+
+    // llm.turn 的**自身**计量落列（与 Trace.totalUsage 口径一致）
+    const turn = spans.find((s) => s.spanId === 'turn-1')!;
+    assert.equal(turn.inputTokens, 100);
+    assert.equal(turn.outputTokens, 20);
 
     const recent = sink.listRecent(10);
     assert.equal(recent.length, 1);
