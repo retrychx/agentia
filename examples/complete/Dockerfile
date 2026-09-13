@@ -22,8 +22,16 @@ COPY scripts ./scripts
 RUN npm install --no-audit --no-fund \
  && npm run build
 
-# 2) 示例应用。它的依赖 `file:../..` 指向 /repo —— 上面刚构建出的 dist。
+# 2) 观测栈示例包 @migor/agentia-observability。它是 examples/complete 的 file: 依赖，
+#    且 package.json 只声明了 `files: ["dist"]` —— **必须先构建**：否则下一步 install 会把它
+#    当成「只有 README + package.json」的空包拷进去，examples/complete 的 tsc 当场
+#    TS2307 Cannot find module '@migor/agentia-observability'（本机按同一套步骤复现过）。
 COPY examples ./examples
+WORKDIR /repo/examples/observability
+RUN npm install --install-links --no-audit --no-fund \
+ && npm run build
+
+# 3) 示例应用。它的依赖 `file:../..` 指向 /repo —— 上面刚构建出的 dist。
 WORKDIR /repo/examples/complete
 # --install-links：file: 依赖按普通包**拷贝**而非软链，运行期 stage 才能整体搬运
 RUN npm install --install-links --no-audit --no-fund \
