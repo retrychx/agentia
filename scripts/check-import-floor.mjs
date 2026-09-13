@@ -29,12 +29,16 @@ if (sqliteSupported) {
   const store = new mod.SqliteTaskStore(':memory:');
   store.save({ taskId: 't1', status: 'queued', spec: {}, createdAt: Date.now() });
   assert.equal(store.get('t1')?.taskId, 't1', 'SqliteTaskStore 读写异常');
-  console.log(`OK  Node ${process.versions.node}：包可导入（${exportsCount} 导出）、SqliteTaskStore 可用`);
+  console.log(
+    `OK  Node ${process.versions.node}：包可导入（${exportsCount} 导出）、SqliteTaskStore 可用`,
+  );
 } else {
   assert.throws(
     () => new mod.SqliteTaskStore(':memory:'),
     /需要 Node ≥ 22\.5/,
     '旧 Node 上 SqliteTaskStore 应给出可读报错',
   );
-  console.log(`OK  Node ${process.versions.node}：包可导入（${exportsCount} 导出）、SqliteTaskStore 给出可读报错`);
+  console.log(
+    `OK  Node ${process.versions.node}：包可导入（${exportsCount} 导出）、SqliteTaskStore 给出可读报错`,
+  );
 }
