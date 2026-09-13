@@ -21,7 +21,7 @@ agentia add <pkg>              # 安装第三方单元包并登记
 | `agentia g <type> <name>` | 生成单元（`tool` / `skill` / `subagent` / `prompt`）到 `units/<name>/` 并登记注册表；长文本资产（`system.md` / `asset.md`）一并生成 |
 | `agentia dev` | `tsx watch` 启动 `src/main.ts`，改单元文件自动重启；内建 inspector 面板查看 trace |
 | `agentia doctor` | 纯静态体检，不加载用户代码 |
-| `agentia add <pkg>` | 安装第三方单元包（`@AgentModule`）并登记到注册表 |
+| `agentia add <pkg>` | 安装第三方单元包（`defineModule` 能力包）并登记到注册表 |
 
 ## 与框架的关系
 

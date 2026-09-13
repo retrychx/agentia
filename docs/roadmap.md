@@ -33,8 +33,9 @@
 ## R4 —— 多模型 + 记忆 ✅
 
 - **provider 抽象**：engine 目前绑死 Anthropic SDK 的 stream 形态，抽一层
-  `ModelProvider`（stream/finalMessage 结构面），先适配 OpenAI 兼容端点；
-  `AGENTIA_MODEL` 语义扩展为 `provider:model`。
+  `ModelClient`（stream/finalMessage 结构面，定义在 core，Anthropic SDK 天然满足），
+  先适配 OpenAI 兼容端点（`createOpenAIClient`）；换 provider 靠**注入 client**，
+  `AGENTIA_MODEL` 仍只管模型名（不做 `provider:model` 路由）。
 - **跨 run 记忆**：blackboard 是 run 级；加可选的 `MemoryStore`（按 session/租户键控），
   run 启动时水合、结束时回写——明确"记忆是次级问题"的边界，只做键值与检索两个钩子。
 
@@ -42,7 +43,7 @@
 
 - **CLI**：`agentia dev`（watch + 热重装配）、`agentia add <pkg>`（第三方单元包安装
   并登记）、`agentia doctor`（装配体检：未登记 / 悬空单板 / 命名规范 / 重复条目）。
-- **模块系统**：`@AgentModule` 能力包（单元 + providers + 拦截器打包分发），
+- **模块系统**：`defineModule` 能力包（单元 + providers + 拦截器打包分发），
   spec §4 草图的正式落地；property-injection 便利写法（spec §11 待定项）。
 - **官网**：文档站（指南 + API 参考），从单页宣传站演进。
 

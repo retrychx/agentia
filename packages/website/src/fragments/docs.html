@@ -405,7 +405,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>生成单元（tool / skill / subagent / prompt）到 units/&lt;name&gt;/，并自动登记 units.ts；长文本资产（system.md / asset.md）一并生成。</td></tr>
             <tr><td>agentia dev</td><td>tsx watch 启动 src/main.ts：改单元文件自动重启。</td></tr>
             <tr><td>agentia doctor</td><td>装配体检：未登记/悬空单元、命名规范、重复条目。</td></tr>
-            <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方单元包（@AgentModule）并登记到注册表。</td></tr>
+            <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方单元包（defineModule 能力包）并登记到注册表。</td></tr>
           </tbody>
         </table></div>
       </section>
