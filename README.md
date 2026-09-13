@@ -2,49 +2,54 @@
 
 声明式 agent 服务开发框架：TS 装饰器 + DI，主 agent 调度 `@Tool` / `@Skill` / `@SubAgent` / `@Prompt` 能力执行任务，产出结构化结果与调用树（trace）。
 
-## 环境准备
+- [安装与配置](#安装与配置)
+- [快速开始](#快速开始)
+- [四类能力](#四类能力)
+- [运行时特性](#运行时特性)
+- [集成](#集成)
+- [API 速查](#api-速查)
+- [开发本仓库](#开发本仓库)
+- [延伸阅读](#延伸阅读)
+
+## 安装与配置
 
 ```bash
-export ANTHROPIC_API_KEY=sk-...        # 或 ANTHROPIC_AUTH_TOKEN
+npm i @migor/agentia                 # 框架（项目依赖）
+npm i -g @migor/cli                  # 命令行工具（脚手架 / 生成 / 调试）
+
+export ANTHROPIC_API_KEY=sk-...      # 或 ANTHROPIC_AUTH_TOKEN
 # 可选：ANTHROPIC_BASE_URL（兼容端点）、AGENTIA_MODEL（缺省 claude-opus-5）
 ```
 
-## 快速开始（CLI）
+> **版本**：npm 上当前最新为 `0.2.1`，仓库为 `0.2.2`。要从本仓库源码使用（例如跑 `examples/`），
+> 见 [`examples/README.md`](examples/README.md) 的「依赖说明」。
+
+## 快速开始
+
+两条路线，按需选一即可（也可混用）。
+
+### 路线 A：CLI 脚手架
 
 ```bash
-npm i -g @migor/cli                 # 安装 CLI（提供 agentia 命令）
 agentia create my-app                  # 脚手架新项目（依赖 @migor/agentia）
 cd my-app && npm install
 agentia g tool weather                 # 生成 src/tools/weather/index.ts 并登记 src/registry.ts
 agentia g subagent doc-reviewer        # 生成 src/subagents/doc-reviewer/{index.ts,system.md}
 agentia g skill note-writer            # 生成 src/skills/note-writer/index.ts
 agentia g prompt style-guide           # 生成 src/prompts/style-guide/{index.ts,asset.md}
-npm run dev                            # 运行脚手架生成的入口（src/main.ts）
+agentia dev                            # tsx watch + 本地 inspector 面板
 ```
 
 **目录约定**：四分类目录，一能力一文件夹 —— `src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/`。
 目录名就是类型，不用记别名。每个文件夹的 `index.ts` default export 一个 provider 类，DI token 缺省 = 文件夹名；
 长文本放文件夹内 `.md`，代码里用 `asset(import.meta.url, './system.md')` 读取。
 
-**装配两条路（可混用）**：
+### 路线 B：手写装配
+
+不依赖 CLI，直接声明能力并装配成应用：
 
 ```ts
-// 1) 目录扫描：按给定顺序扫各目录（返回 Promise）
-const app = await createApp({
-  name: 'my-app',
-  discover: ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'],
-  system,
-});
-
-// 2) 显式注册表：src/registry.ts 由 CLI 自动维护
-import { providers } from './src/registry.js';
-const app = createApp({ name: 'my-app', providers, system });
-```
-
-## 手写能力
-
-```ts
-import { Tool, SubAgent, createApp, SystemPrompt, RunContext } from '@migor/agentia';
+import { Tool, createApp, SystemPrompt, RunContext } from '@migor/agentia';
 
 class WeatherTools {
   // 工具名缺省取方法名（建议 snake_case）；入参 = 模型按 schema 解析的结构化 input
@@ -67,24 +72,9 @@ class WeatherTools {
   }
 }
 
-class Pipeline {
-  // 子 agent：独立循环 + 裁剪上下文，只有最终报告回流主上下文（方法体不执行）
-  @SubAgent({
-    name: 'reviewer',
-    description: '审查给定文档并输出书面评审意见',
-    schema: { type: 'object', properties: { doc: { type: 'string' } }, required: ['doc'], additionalProperties: false },
-    system: '你是评审 agent。结论必须以“审查通过/不通过”开头。',
-    tools: ['weather'], // 子 agent 自己的工具菜单（provider token）
-  })
-  reviewer(_input: { doc: string }): void {}
-}
-
 const app = createApp({
   name: 'weather-app',
-  providers: [
-    { provide: 'weather', useClass: WeatherTools },
-    { provide: 'pipeline', useClass: Pipeline },
-  ],
+  providers: [{ provide: 'weather', useClass: WeatherTools }],
   system: new SystemPrompt().add('role', '你是天气助手。', true),
 });
 
@@ -96,9 +86,33 @@ console.log(result.finalText); // 最终文本
 console.log(result.trace);     // 调用树 + 每步 token/成本（traceId == runId）
 ```
 
-另外两类能力：
+装配还有**目录扫描**这条路（与显式注册表可混用）：
 
 ```ts
+// 按给定顺序扫各目录（返回 Promise）；也可用 CLI 维护的 src/registry.ts 显式注册
+const app = await createApp({
+  name: 'my-app',
+  discover: ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'],
+  system,
+});
+```
+
+## 四类能力
+
+主 agent 按 `description` 从同一张「能力菜单」自选；装饰器只决定**谁控制流程**：
+
+| 能力 | 装饰器 | 谁决定流程 | 典型用途 |
+|---|---|---|---|
+| 工具 | `@Tool` | 你的代码（一次调用 = 一个函数） | 确定性操作：查库、算数、调 API |
+| 技能 | `@Skill` | 你的代码（脚本式，显式 `ctx.llm()`） | 「先取数 → 再让模型写 → 再加工」的固定流程 |
+| 子 agent | `@SubAgent` | **模型自己**（独立循环 + 裁剪上下文） | 自主多步、且中间过程不该污染主上下文 |
+| 提示资产 | `@Prompt` | 模型拉取（按需注入的文本） | 长文规范/模板，平时不进上下文 |
+
+`@Tool` 的写法见上方路线 B；其余三类：
+
+```ts
+import { Skill, SubAgent, Prompt, asset, type SkillContext } from '@migor/agentia';
+
 // @Skill：代码控制的流程，模型调用只发生在显式 ctx.llm()
 class Notes {
   @Skill({ description: '按主题整理要点' })
@@ -106,6 +120,18 @@ class Notes {
     const r = await ctx.llm({ prompt: `就「${input.topic}」给出三个要点` });
     return r.text; // 返回值即产物，以 tool_result 交回主 agent
   }
+}
+
+// @SubAgent：独立循环 + 裁剪上下文，只有最终报告回流主上下文（方法体不执行）
+class Pipeline {
+  @SubAgent({
+    name: 'reviewer',
+    description: '审查给定文档并输出书面评审意见',
+    schema: { type: 'object', properties: { doc: { type: 'string' } }, required: ['doc'], additionalProperties: false },
+    system: '你是评审 agent。结论必须以“审查通过/不通过”开头。',
+    tools: ['weather'], // 子 agent 自己的工具菜单（provider token）
+  })
+  reviewer(_input: { doc: string }): void {}
 }
 
 // @Prompt：纯文本资产，模型判定需要时拉取进上下文
@@ -117,11 +143,32 @@ class Assets {
 }
 ```
 
-## 触发方式
+四类一起装配（`providers` 里逐个登记；token 即子 agent / 技能引用工具的菜单名）：
+
+```ts
+import { createApp, SystemPrompt } from '@migor/agentia';
+
+const app = createApp({
+  name: 'weather-app',
+  providers: [
+    { provide: 'weather', useClass: WeatherTools },
+    { provide: 'notes', useClass: Notes },
+    { provide: 'pipeline', useClass: Pipeline },
+    { provide: 'assets', useClass: Assets },
+  ],
+  system: new SystemPrompt().add('role', '你是天气助手。', true),
+});
+```
+
+## 运行时特性
+
+### 触发方式
 
 同一份应用，三种触发任选：
 
 ```ts
+import { AsyncRunner, FileTaskStore, Scheduler } from '@migor/agentia';
+
 // 同步 RPC
 const { run, result } = await app.run(messages);
 
@@ -135,7 +182,7 @@ const scheduler = new Scheduler(runner);
 scheduler.every(60_000, '巡检一次', { idempotencyKey: 'patrol' });
 ```
 
-## 长上下文预算
+### 长上下文预算
 
 ```ts
 import { createBudgetPolicy } from '@migor/agentia';
@@ -143,13 +190,28 @@ import { createBudgetPolicy } from '@migor/agentia';
 const app = createApp({
   // ...
   contextPolicy: createBudgetPolicy({
-    budgetTokens: 60_000,   // 超预算先丢旧工具对，仍超且有 summarize 才压缩
+    budgetTokens: 60_000,    // 超预算先丢旧工具对，仍超且有 summarize 才压缩
     summarize: (text) => mySummarizer(text), // 可选，框架不替你调模型
   }),
 });
 ```
 
-## 中间件
+### 结构化结果
+
+```ts
+const { result } = await app.run(messages, {
+  resultSchema: {
+    type: 'object',
+    properties: { pass: { type: 'boolean' }, reason: { type: 'string' } },
+    required: ['pass', 'reason'],
+    additionalProperties: false,
+  },
+});
+console.log(result.typed); // 校验过的结构化结果，不再从文本里猜 JSON
+// schema 也可来自 zod（peer 可选）：fromZod(z.toJSONSchema(S), S)
+```
+
+### 中间件
 
 挂在每一次能力调用前后的洋葱链——鉴权、限流、缓存、审计都走这里：
 
@@ -167,39 +229,48 @@ const app = createApp({
 });
 ```
 
-## 结构化结果
+## 集成
+
+### HTTP 宿主
 
 ```ts
-const { result } = await app.run(messages, {
-  resultSchema: {
-    type: 'object',
-    properties: { pass: { type: 'boolean' }, reason: { type: 'string' } },
-    required: ['pass', 'reason'],
-    additionalProperties: false,
-  },
-});
-console.log(result.typed); // 校验过的结构化结果，不再从文本里猜 JSON
-// schema 也可来自 zod（peer 可选）：fromZod(z.toJSONSchema(S), S)
+import { createServer } from 'node:http';
+import { createHttpHandler } from '@migor/agentia';
+
+// POST /run（同步） POST /tasks（异步） GET /tasks/:id（轮询）
+createServer(createHttpHandler(app, { runner })).listen(8080);
 ```
 
-## 宿主、多模型与记忆
+### 多模型（OpenAI 兼容端点）
 
 ```ts
-// HTTP 宿主：POST /run（同步） POST /tasks（异步） GET /tasks/:id（轮询）
-createServer(createHttpHandler(app, { runner })).listen(8080);
+import { createOpenAIClient } from '@migor/agentia';
 
-// OpenAI 兼容端点（DeepSeek 等）+ 跨 run 记忆
 const { result } = await app.run(messages, {
   client: createOpenAIClient({ baseURL: 'https://api.deepseek.com' }),
   model: 'deepseek-chat',
+});
+```
+
+### 跨 run 记忆
+
+```ts
+import { InMemoryMemoryStore } from '@migor/agentia';
+
+const { result } = await app.run(messages, {
   memory: { store: new InMemoryMemoryStore(), keys: ['profile'] },
 });
+```
 
-// trace 导出到 OTLP 收集器
+### trace 导出 OTLP
+
+```ts
+import { createOtlpExporter } from '@migor/agentia';
+
 await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.trace);
 ```
 
-## 常用 API
+## API 速查
 
 | 导出 | 用途 |
 |---|---|
@@ -220,9 +291,7 @@ await createOtlpExporter({ endpoint: 'http://localhost:4318' }).export(result.tr
 | `fromZod` | zod schema 接入（peer 可选） |
 | `runAgent` / `executeRun` | 裸引擎入口（不走装配） |
 
-完整导出见 [`src/index.ts`](src/index.ts)，设计规格见 [`docs/spec.md`](docs/spec.md)，**生产可观测配方**（落库检索 / 日志关联 / 采样 / 脱敏）见 [`docs/observability.md`](docs/observability.md)，**完整示例**（四类能力 + 三种触发 + 全观测栈）见 [`examples/complete/`](examples/complete/)，**最小部署示例**见 [`examples/deploy/`](examples/deploy/)，roadmap 见 [`docs/roadmap.md`](docs/roadmap.md)，官网见 [agentia-web.pages.dev](https://agentia-web.pages.dev)（含[在线 Playground](https://agentia-web.pages.dev/playground.html) 与[文档](https://agentia-web.pages.dev/docs.html)）。
-
-## 本仓库脚本
+## 开发本仓库
 
 ```bash
 npm install
@@ -232,4 +301,16 @@ npm test             # 单元测试（node:test）
 npm run e2e          # 端到端：CLI 脚手架 → 目录发现/注册表装配 → mock run
 ```
 
-> 注：`npm run dev`（tsx）前需先 `npm approve-scripts` 批准 esbuild/tsx 的 postinstall。
+> 注：本仓库的 `npm run dev`（tsx）前需先 `npm approve-scripts` 批准 esbuild/tsx 的 postinstall；
+> 脚手架项目里的 `agentia dev` 不受此限。
+
+## 延伸阅读
+
+- **使用者向完整说明**（API 速查 / 类型链路 / 已知边界 / 反例）：[`docs/usage-guide.md`](docs/usage-guide.md)
+- 完整导出清单：[`src/index.ts`](src/index.ts)
+- 设计规格：[`docs/spec.md`](docs/spec.md)
+- 生产可观测配方（落库检索 / 日志关联 / 采样 / 脱敏）：[`docs/observability.md`](docs/observability.md)
+- 完整示例（四类能力 + 三种触发 + 全观测栈）：[`examples/complete/`](examples/complete/)
+- 最小部署示例：[`examples/deploy/`](examples/deploy/)
+- 方向与状态：[`docs/roadmap.md`](docs/roadmap.md)
+- 官网：[agentia-web.pages.dev](https://agentia-web.pages.dev)（[在线 Playground](https://agentia-web.pages.dev/playground.html) · [文档](https://agentia-web.pages.dev/docs.html)）
