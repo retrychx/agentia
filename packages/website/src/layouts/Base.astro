@@ -25,6 +25,13 @@ import Footer from '../components/Footer.astro';
 const preloadFonts = [sg400, sg500, sg700, jbm400];
 
 const { title, description, page = 'home', footerLinks = [] } = Astro.props;
+
+// 社交分享卡片（Open Graph / Twitter）：
+// og:image 指向 public/og.png（1280×640、<1MB，与 GitHub Social preview 同一张）。
+// 用 Astro.site 拼绝对 URL —— OG 规范要求 og:image / og:url 必须是绝对地址。
+const site = Astro.site ?? new URL('https://agentia-web.pages.dev');
+const canonical = new URL(Astro.url.pathname, site).href;
+const ogImage = new URL('og.png', site).href;
 ---
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -34,6 +41,20 @@ const { title, description, page = 'home', footerLinks = [] } = Astro.props;
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <!-- 社交分享：Open Graph（Facebook/微信/Slack 等） + Twitter 大图卡片 -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Agentia" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta property="og:image:alt" content="Agentia —— 声明式 agent 服务开发框架" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
     {preloadFonts.map((href) => (
       <link rel="preload" as="font" type="font/woff2" href={href} crossorigin="anonymous" />
     ))}
