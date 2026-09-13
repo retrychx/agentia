@@ -14,6 +14,7 @@
       <a href="#hardening">宿主硬化</a>
       <a href="#budget">成本硬管控</a>
       <a href="#ecosystem">生态与观测</a>
+      <a href="#crosscut">横切配方</a>
       <a href="#cli">CLI 命令参考</a>
       <a href="#env">环境变量</a>
     </aside>
@@ -391,6 +392,44 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
 <span class="kw">if</span> (!report.ok) <span class="fn">console</span>.error(report.cases.<span class="fn">filter</span>((c) =&gt; !c.ok));
 
 <span class="cm">// 3) 指标：Prometheus 文本，接个路由回 metricsSink().render() 即可</span></code></pre></div>
+      </section>
+
+      <!-- 横切配方 -->
+      <section id="crosscut">
+        <h2>横切配方</h2>
+        <p>审批、护栏、代码隔离这三件事，框架<strong>只给缝、不做子系统</strong>（策略差异太大，硬编码必错）。三份配方都只用既有扩展点，完整边界见「已知边界」表与 <code>/llms-full.txt</code>。</p>
+
+        <h3>人工介入：审批闸门</h3>
+        <p>中间件可以 <code>await</code> 人的决策再放行 —— 引擎会等工具结果。<strong>放行</strong>＝<code>next()</code>；<strong>拒绝</strong>＝不调 <code>next()</code>（短路，副作用不发生）；<strong>拒绝并让模型改道</strong>＝抛错（该条结果记 <code>is_error</code>，run 不中断）。<strong>框架不做</strong>「跨进程挂起 / 续跑」：<code>RunStatus</code> 里没有「待批准」态、循环位置不落库，重放是有损的 —— 要跨重启审批得自备工作流引擎。</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>approval.ts</em></div>
+        <pre><code><span class="kw">import</span> { createApp } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+<span class="kw">import type</span> { UnitMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> DANGEROUS = <span class="kw">new</span> <span class="fn">Set</span>([<span class="str">'send_email'</span>, <span class="str">'deploy'</span>, <span class="str">'delete_records'</span>]);
+
+<span class="kw">const</span> requireApproval: <span class="fn">UnitMiddleware</span> = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">if</span> (!DANGEROUS.<span class="fn">has</span>(call.unit.name)) <span class="kw">return</span> <span class="fn">next</span>();
+  <span class="kw">const</span> ok = <span class="kw">await</span> <span class="fn">askHuman</span>(call.unit.name, call.input); <span class="cm">// 就地等人（run 停在这里）</span>
+  <span class="kw">if</span> (!ok) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">`未获批准：${call.unit.name}`</span>); <span class="cm">// → is_error，模型换路</span>
+  <span class="kw">return</span> <span class="fn">next</span>();                                     <span class="cm">// 放行</span>
+};
+
+<span class="fn">createApp</span>({ system, providers, middleware: [requireApproval] });</code></pre></div>
+
+        <h3>内容护栏：三处缝</h3>
+        <p>入参（包一层 <code>app.run</code>；HTTP 侧用 <code>createHttpHandler({ authenticate })</code>，拦在<strong>读 body 之前</strong>）、工具调用前（<code>middleware</code>）、出参（包返回值，或挂 <code>sinks</code>）。</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>guard.ts</em></div>
+        <pre><code><span class="kw">const</span> callable = {
+  name: app.name,
+  <span class="kw">async</span> <span class="fn">run</span>(msgs, opts) {
+    <span class="kw">const</span> out = <span class="kw">await</span> app.<span class="fn">run</span>(<span class="fn">redactInput</span>(msgs), opts);   <span class="cm">// 入参护栏</span>
+    <span class="kw">if</span> (<span class="fn">flagged</span>(out.finalText)) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">'输出被护栏拦下'</span>); <span class="cm">// 出参护栏</span>
+    <span class="kw">return</span> out;
+  },
+};</code></pre></div>
+
+        <h3>代码执行隔离：沙箱是工具的事</h3>
+        <p>框架<strong>从不执行模型生成的代码</strong> —— <code>@Skill</code> 跑的是你写的方法体、<code>@Tool</code> 是你写的函数，模型输出只会变成文本 / <code>tool_result</code>。要隔离就在<strong>工具实现内部</strong>做（Docker / 子进程 / 微 VM 随你），框架不参与 —— <code>AgentTool.run(input) → output</code> 这个契约把隔离整个挡在实现里。唯一沾边的一条：工具起了子进程，取消时要自己 kill（框架的超时是「不等了」，不是取消）。</p>
       </section>
 
       <section id="cli">
