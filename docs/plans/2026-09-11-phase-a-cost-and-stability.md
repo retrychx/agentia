@@ -48,7 +48,7 @@ export function combineSignals(...signals: Array<AbortSignal | undefined>): Abor
 - `catch (e)`：`recorder.end(turnId, {status:'error', error: classifyError(e)})`；若 `isAbortError(e) || signal?.aborted` → 置 `stopReason='aborted'`、`error`、`finished=true`、`break`（**不再 throw**，让 run 以确定方式收尾）；否则 `throw e`。
 - Test `tests/engine/loop.test.ts`：预中止的 signal → `stopReason==='aborted'`、`run.status==='failed'`；回合中途 abort（mock 的 `finalMessage` 抛 AbortError）→ 同断言。
 
-### A1.6 `src/runtime/spec.ts`
+### A1.6 `src/engine/spec.ts`
 - `RunInvocationOptions` 加 `signal?: AbortSignal;`（注释：调用方中断源，透传到模型请求）。
 
 ### A1.7 `src/runtime/run.ts`

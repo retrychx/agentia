@@ -28,10 +28,10 @@
 `agentia dev` 通过 tsx 起的是**子进程**，sink 必须在**子进程**里注册。**选用 B**：
 
 - 框架只提供一个**通用扩展点** `registerDefaultTraceSink(sink)` —— 不含任何 dev/inspector 逻辑，**不读 env**。
-- 注入全部在 **CLI 侧**：`agentia dev` 用 `NODE_OPTIONS=--import <cli>/dist/inspector-preload.mjs` 起子进程；preload 用 `createRequire(process.cwd())` 从**用户项目**解析 `@migor/agentia`（保证与应用同一模块实例），再 `registerDefaultTraceSink(inspectSink(port))`。
+- 注入全部在 **CLI 侧**：`agentia dev` 用 `NODE_OPTIONS=--import <cli>/dist/inspector-preload.js` 起子进程；preload 用 `createRequire(process.cwd())` 从**用户项目**解析 `@migor/agentia`（保证与应用同一模块实例），再 `registerDefaultTraceSink(inspectSink(port))`。
 - 端口经 env `AGENTIA_INSPECT_PORT` 传给 **preload**（CLI 自有模块读 env，框架完全不感知）。
 - `--import` 需 Node ≥20.6（≥18.19 已回移植）；`dev.ts` 启动前探测版本，不支持时打印明确提示（不静默失效）。
-- HTTP sink 实现归 **CLI**（`packages/cli/src/inspector-sink.mjs`），不进框架。
+- HTTP sink 实现归 **CLI**（`packages/cli/src/inspector-sink.ts`），不进框架。
 
 **被否方案（备查）**：`AGENTIA_INSPECT_PORT` 由 `createApp` 直接读取、框架内置 dev sink —— 简单但把 dev 逻辑塞进框架、框架依赖 env，与「分层纯净」相悖，弃用。
 
@@ -328,7 +328,7 @@ git commit -m "feat(trace-view): 抽共享调用树渲染器 + Trace 归一"
 | POST | `/ingest` | 接收 preload 侧 sink 投来的 Trace，入环形缓冲（默认 50 条），广播 SSE |
 | GET | `/stream` | SSE：新 run 到达时推摘要，页面自动刷新列表 |
 
-**验证**：`packages/cli/test/inspector.test.js` —— 起服务 → POST /ingest → GET /api/runs 含该 run → GET /api/runs/:id 返回完整 trace。
+**验证**：`packages/cli/test/inspector.test.mjs` —— 起服务 → POST /ingest → GET /api/runs 含该 run → GET /api/runs/:id 返回完整 trace。
 
 ---
 
@@ -336,8 +336,8 @@ git commit -m "feat(trace-view): 抽共享调用树渲染器 + Trace 归一"
 
 **Files**：
 - Modify: `packages/cli/src/dev.ts`
-- Create: `packages/cli/src/inspector-sink.mjs`（HTTP POST sink，CLI 自有）
-- Create: `packages/cli/src/inspector-preload.mjs`（从 cwd 解析框架 → registerDefaultTraceSink）
+- Create: `packages/cli/src/inspector-sink.ts`（HTTP POST sink，CLI 自有）
+- Create: `packages/cli/src/inspector-preload.ts`（从 cwd 解析框架 → registerDefaultTraceSink）
 
 **改动**：
 1. 起 inspector 服务，拿到端口。
@@ -425,7 +425,7 @@ Run: `npm run build:website && npm run deploy:website`
 |---|---|---|
 | 框架 | `npm run typecheck && npm run build && npm run build:cli && npm test && npm run e2e` | 全绿 |
 | 新包 | `cd packages/trace-view && npm test` | PASS |
-| CLI | `packages/cli/test/inspector.test.js`（并入 `npm test` 或独立跑） | PASS |
+| CLI | `packages/cli/test/inspector.test.mjs`（并入 `npm test` 或独立跑） | PASS |
 | 官网 | `npm run build:website` | 成功 |
 | 线上 | 真实浏览器跑 playground 三场景 + dev inspector | 树形/事件/标识正确，零溢出 |
 | 文档 | `docs/spec.md` §10 有决策记录；`roadmap.md` 状态更新 | 已同步 |
@@ -437,4 +437,4 @@ Run: `npm run build:website && npm run deploy:website`
 | Node <20.6（`--import` 不支持） | `dev.ts` 版本探测后**明确提示**（不静默）；文档给降级路径（升级 Node，或手动 `registerDefaultTraceSink`） |
 | preload 解析到的框架与 app 不是同一模块实例 | preload 强制从 `process.cwd()` 解析；dev 启动时断言注册已生效（探测一次，失败则告警） |
 | 渲染器抽取后官网视觉回归 | Phase D 最后做，且线上逐项比对；出问题可先只上 Phase A–C（本地面板独立可用） |
-| 无全局 `fetch` 的 Node（18.0–17 末） | `inspector-sink.mjs` duck-type：无 `fetch` 时降级 `node:http.request` |
+| 无全局 `fetch` 的 Node（18.0–17 末） | `inspector-sink.ts` duck-type：无 `fetch` 时降级 `node:http.request` |
