@@ -5,8 +5,9 @@
 [中文 README](./README.md) · **English**
 
 **A declarative framework for building agent services in TypeScript.** You declare capabilities with
-decorators + DI; the main agent orchestrates them; every run yields structured output **and** a complete
-call tree (trace) — replayable, auditable, shippable.
+decorators + DI; the main agent orchestrates them. Every run yields structured output **and** a
+first-class, observable call tree — trace, per-step token/cost accounting, metrics — replayable,
+auditable, shippable.
 
 > This is a **summary**. The authoritative and always-current documentation is Chinese:
 > [`docs/usage-guide.md`](./docs/usage-guide.md) (API reference, type wiring, known limits) and the
@@ -96,7 +97,9 @@ The model picks from one shared "menu" by `description`; the decorator decides *
 - **Structured output** — `resultSchema`; `result.typed` is validated, or use `fromZod<T>()` for full type inference
 - **Middleware** — an onion chain around every capability call (auth, rate limiting, caching, audit)
 - **Cancellation / retries / streaming / tool concurrency** — `signal`, retry policy, `onText`, `maxToolConcurrency`
-- **Observability** — full trace per run, `TraceSink` fan-out, `createOtlpExporter`, `metricsSink`
+- **Observability & cost** — a full trace per run (`traceId === runId`), `TraceSink` fan-out,
+  `createOtlpExporter`, `metricsSink`, priced cost roll-ups (`priceOverrides`, `usage.unpriced`),
+  `buildRunReport` / `agentia report`, and trace replay via `traceToMessages`
 
 ## Integrations
 
