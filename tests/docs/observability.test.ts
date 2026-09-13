@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,6 +137,51 @@ describe('可观测配方：文档与示例互相覆盖', () => {
   it('spec §9.3 不再把「同库存储」说成内建', () => {
     const spec = readFileSync(join(repoRoot, 'docs', 'spec.md'), 'utf8');
     assert.ok(spec.includes('不是框架内建'), 'spec §9.3 应明确「同库存储」是 sink 配方而非内建');
+  });
+});
+
+/**
+ * 「可观测是本框架的核心卖点」这句定位，必须活在**每一条对外说明**里，而不是只躺在 spec。
+ * 缺位是静默的：文档改一版、换个人写，卖点就悄悄没了 —— 同 `no-legacy-terms` 那类漂移。
+ * 所以钉成一条测试。
+ *
+ * 只断言「提到了」，**不断言怎么措辞** —— 措辞是人的地盘，缺位才是 bug。
+ */
+describe('可观测作为核心卖点：每条对外说明都不得缺位', () => {
+  /** 定位词（中文面 / 英文面各一）—— 命中任一即算「提到了」 */
+  const MARK = /可观测|observab/i;
+
+  /** 面向使用者的说明清单（发布面 + 官网 + 仓库门面） */
+  const SURFACES = [
+    'README.md',
+    'README.en.md',
+    'package.json',
+    'AGENTS.md',
+    'docs/usage-guide.md',
+    'packages/cli/README.md',
+    'packages/cli/package.json',
+    'packages/trace-view/README.md',
+    'packages/trace-view/package.json',
+    'packages/website/src/fragments/index.html',
+    'packages/website/src/fragments/docs.html',
+    'packages/website/src/fragments/api.html',
+    'packages/website/src/fragments/playground.html',
+  ];
+
+  it('说明清单非空、且每个文件都在（守卫自身不能空跑）', () => {
+    assert.ok(SURFACES.length >= 10, `说明清单过短（${SURFACES.length}），守卫可能空跑`);
+    for (const f of SURFACES) {
+      assert.ok(existsSync(join(repoRoot, f)), `清单里的说明文件不存在：${f}`);
+    }
+  });
+
+  it('每条说明都写了「可观测」', () => {
+    const missing = SURFACES.filter((f) => !MARK.test(readFileSync(join(repoRoot, f), 'utf8')));
+    assert.deepEqual(
+      missing,
+      [],
+      `这些对外说明没提「可观测」—— 它是对外承诺的核心卖点，不是可选项：\n  ${missing.join('\n  ')}`,
+    );
   });
 });
 

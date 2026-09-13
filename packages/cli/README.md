@@ -1,6 +1,6 @@
 # @migor/cli
 
-Agentia 框架的命令行工具：脚手架、能力生成与本地调试。
+Agentia 框架的命令行工具：脚手架、能力生成、本地调试与 **trace 观测**。
 
 ```bash
 npm i -g @migor/cli
@@ -23,6 +23,15 @@ agentia add <pkg>              # 安装第三方能力包并登记
 | `agentia doctor` | 纯静态体检，不加载用户代码 |
 | `agentia report <trace.jsonl>` | 从 trace 落盘文件生成调优报告（能力耗时 / 成本 / 错误率排行） |
 | `agentia add <pkg>` | 安装第三方能力包（`defineModule` 能力包）并登记到注册表 |
+
+## 可观测（trace）
+
+框架的观测面 **Turn 0 起内建**：一次 run == 一条 trace（`runId == traceId`）。CLI 把这份 trace 带进本地开发流程，**不需要另装追踪后端**：
+
+- **`agentia dev`** —— 起 `tsx watch` 的同时开一个本地 inspector 面板，实时看每次 run 的调用树（`llm.turn` / 能力 span / 每步 token 与成本）。面板的渲染器与官网 Playground 共用同一份 `@migor/trace-view` —— 两处一套代码，不漂移。
+- **`agentia report <trace.jsonl>`** —— 把落盘的 trace 汇成调优报告：「**哪个能力慢 / 贵 / 爱失败**」的排行。面对一堆旋钮时，这是「该拧哪个」的依据。
+
+落库检索 / 采样 / 脱敏、指标与 OTLP 导出都在框架侧的 `TraceSink` 缝上做 —— **策略归宿主，框架只给缝**。详见 [`@migor/agentia`](https://www.npmjs.com/package/@migor/agentia) 的「可观测性与成本」一节，以及仓库的 [`docs/observability.md`](https://github.com/retrychx/agentia/blob/main/docs/observability.md)。
 
 ## 目录约定
 
