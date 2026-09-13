@@ -94,6 +94,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   **不要另写第二份**：`tests/docs/usage-guide.test.ts` 会拿它里面的表格逐项对源码校验，改名/删字段立刻失败。
   三份副本都是**构建产物**（落在各自 `dist/`，已 gitignore），只拷不手写，因此不存在漂移。
 - **发布**：两包版本同步（@migor/agentia 与 @migor/cli），CLI 模板里的框架依赖版本跟着走。
+  这四个同步点（根 `package.json` / CLI `package.json` / `src/index.ts` 的 `AGENTIA_VERSION` /
+  `packages/cli/src/templates.ts` 的 pin）由 `scripts/check-release.mjs` 校验，挂在**两包的
+  `prepublishOnly`** 上 —— **不**进 `verify-all`：未发布窗口内 `AGENTIA_VERSION` 是**有意落后**的
+  （包版本先行），只有真发时才要求一致；不一致 `npm publish` 当场失败。
+  发版步骤：bump 四处 → `npm run verify-all` → 两包分别 `npm publish`（`prepublishOnly` 会先自检再 build）。
 - **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
   构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。
   - **wrangler 钉死 `4.131.0`，不要改回裸 `npx wrangler`**：`latest`（4.131.1）依赖的 workerd 二进制

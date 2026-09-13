@@ -33,7 +33,7 @@
     "build:cli": "npm run build -w @migor/trace-view && tsc -p packages/cli/tsconfig.json && node packages/cli/scripts/copy-assets.mjs",
     "build:website": "npm run build -w @migor/trace-view && npm run build -w @migor/website",
     "deploy:website": "npm run build:website && npx --yes wrangler@4.131.0 pages deploy packages/website/dist --project-name=agentia-web",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "node scripts/check-release.mjs && npm run build",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
