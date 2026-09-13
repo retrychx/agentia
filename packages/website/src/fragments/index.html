@@ -7,8 +7,8 @@
         <span class="line accent" data-intro>交付一个 Agent 服务</span>
       </h1>
       <p class="hero-sub" data-intro>
-        装饰器声明 + DI 装配，主 agent 编排执行。run 结束即得到结构化结果与完整调用树（trace）：
-        token、成本、指标一路记账 —— 可回放、可审计、可上线。
+        <span class="hs-line">装饰器 + DI 声明<b class="hl">四类能力</b>，主 agent 编排执行；</span>
+        <span class="hs-line">每次 run 产出结构化结果与<b class="hl">可观测调用树</b><em class="hs-tags">（trace、成本、指标）</em>，交付可直接上线的服务。</span>
       </p>
       <div class="hero-actions" data-intro>
         <a class="btn btn-primary" href="#quickstart">快速开始</a>
@@ -23,6 +23,7 @@
       </div>
       <div class="hero-stats" data-intro>
         <span><b>4</b> 类能力</span><i></i>
+        <span><b>1:1</b> run ↔ trace</span><i></i>
         <span><b>0</b> 运行时依赖</span><i></i>
         <span><b>3</b> 类触发</span><i></i>
         <span><b>0</b> 反射</span>
@@ -63,13 +64,14 @@
     <p class="sec-label" data-reveal>02 — FEATURES</p>
     <h2 data-reveal>为生产而生</h2>
     <div class="grid grid-3">
+      <div class="feature feature--key" data-card>
+        <span class="feature-flag">核心</span>
+        <h3>可观测：trace 一等公民</h3>
+        <p>runId == traceId，Turn 0 起内建。每次模型往返与能力调用都记账 —— token、成本、耗时、错误分类，子 agent 递归成树；trace 一条出口接 OTLP 或自建 sink，<strong>能力级与模型级指标</strong>从 trace 派生（不用埋点），<code>agentia report</code> 一行出「哪个能力慢 / 贵 / 爱失败」的调优报告。</p>
+      </div>
       <div class="feature" data-card>
         <h3>CLI 与目录约定</h3>
         <p><code>create</code> 脚手架、<code>g</code> 生成能力。一能力一文件夹，长文本放 .md；目录扫描与显式注册表双装配。</p>
-      </div>
-      <div class="feature" data-card>
-        <h3>Trace 一等公民</h3>
-        <p>runId == traceId。每次模型往返与能力调用都记账：token、成本、耗时、错误分类，子 agent 递归成树。</p>
       </div>
       <div class="feature" data-card>
         <h3>装配期静态校验</h3>
@@ -85,7 +87,7 @@
       </div>
       <div class="feature" data-card>
         <h3>能力中间件</h3>
-        <p><code>CapabilityMiddleware</code> 洋葱模型包裹每次能力调用：鉴权 / 限流 / 缓存 / 审计皆切面，trace 同级记账，业务能力零侵入。</p>
+        <p><code>CapabilityMiddleware</code> 洋葱模型包裹每次能力调用：鉴权 / 限流 / 缓存 / 审计皆切面，trace 同级记账，业务能力零侵入；宿主侧另有优雅停机与 <code>/healthz</code>。</p>
       </div>
       <div class="feature" data-card>
         <h3>零反射装饰器</h3>
@@ -94,10 +96,6 @@
       <div class="feature" data-card>
         <h3>MCP 与 evals</h3>
         <p>MCP server 的工具一行映射成菜单项（框架零依赖、不含传输）；<code>defineEval</code> 把「改 prompt 有没有回归」变成对 trace 的断言。</p>
-      </div>
-      <div class="feature" data-card>
-        <h3>可观测与护栏</h3>
-        <p>trace 出口（OTLP / 自建 sink）、<strong>能力级与模型级指标</strong>（Prometheus / OTLP，从 trace 派生不用埋点）、「哪个能力慢 / 贵 / 爱失败」的<strong>调优报告</strong>、鉴权缝、优雅停机与 <code>/healthz</code>。</p>
       </div>
     </div>
   </section>

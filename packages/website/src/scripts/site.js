@@ -200,11 +200,20 @@ import Lenis from 'lenis';
    * `paused` 起手、等字体就绪再播：否则入场动画会和「换字」叠在同一段时间里，
    * 观感就是那一下卡顿。 */
   gsap.set('[data-intro]', { opacity: 0, y: 26 });
+  // 关键词高亮：CSS 的默认态是「已点亮」，这里只把起点拉回 0，动画负责扫出来。
+  // （反过来做的话，JS 一旦没跑起来高亮就整个丢了。）
+  gsap.set('.hero-sub .hl', { backgroundSize: '0% 100%' });
   const introTl = gsap
     .timeline({ defaults: { ease: 'power3.out' }, paused: true })
     .to('.hero-kicker', { opacity: 1, y: 0, duration: 0.7 }, 0.15)
     .to('.hero h1 .line', { opacity: 1, y: 0, duration: 0.9, stagger: 0.12 }, 0.3)
     .to('.hero-sub', { opacity: 1, y: 0, duration: 0.8 }, 0.65)
+    // 副标落位后，两处关键词像记号笔一样自左扫过；错开一点，读起来有先后
+    .to(
+      '.hero-sub .hl',
+      { backgroundSize: '100% 100%', duration: 0.7, stagger: 0.16, ease: 'power2.inOut' },
+      1.0,
+    )
     .to('.hero-actions', { opacity: 1, y: 0, duration: 0.7 }, 0.85)
     .to('.hero-install', { opacity: 1, y: 0, duration: 0.7 }, 1.0)
     // hero 统计行此前漏在 timeline 之外：[data-intro] 被统设为 opacity:0 后没人点亮它，

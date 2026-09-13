@@ -60,6 +60,8 @@
   --ice: #34cbe0;
   --ice-dim: rgba(52, 203, 224, 0.1);
   --ice-border: rgba(52, 203, 224, 0.32);
+  /* hero 关键词的「记号笔」底色：比 --ice-dim 再实一点才看得见，又压不住字 */
+  --hl-bg: rgba(52, 203, 224, 0.16);
   --accent-dim: rgba(217, 226, 238, 0.09);
   /* 统一内容容器：header 与所有内容区共用同一宽度、同一档侧边距。
      此前 nav/section/docs 用 1080、playground 用 1280、footer 不限宽、
@@ -279,6 +281,7 @@ code {
   line-height: 1.08;
   font-weight: 700;
   letter-spacing: -0.025em;
+  text-wrap: balance;
 }
 .hero h1 .line {
   display: inline-block;
@@ -309,10 +312,39 @@ code {
   }
 }
 .hero-sub {
-  max-width: 600px;
+  max-width: 680px;
   margin: 26px auto 0;
   color: var(--muted);
-  font-size: 16.5px;
+  font-size: 16px;
+  line-height: 1.85;
+  text-wrap: pretty; /* 行尾不留孤字 */
+}
+/* 副标按**语义**显式分行，不交给浏览器自己折 —— 否则「；（trace、成本、指标）」这些
+   标点会被甩到下一行行首，读起来断气。窄屏下每行再各自自然回绕，分组仍然成立。 */
+.hero-sub .hs-line {
+  display: block;
+}
+/* 关键词高亮：冰蓝「记号笔」自左向右扫过。
+   ⚠️ 默认态就是**已点亮**的：`prefers-reduced-motion` 下 site.js 提前 return，GSAP 不会跑，
+   这里保持常亮才不会让高亮整个丢掉（起点 0 由 JS 设，动画负责「扫出来」）。 */
+.hero-sub .hl {
+  font-weight: 600;
+  font-style: normal;
+  color: var(--text);
+  padding: 0 0.15em;
+  background-image: linear-gradient(to top, var(--hl-bg) 0%, var(--hl-bg) 30%, transparent 30%);
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 100% 100%;
+  border-radius: 2px;
+}
+/* 括注里的三项（trace、成本、指标）降一级：等宽小字 + 钢灰，便于一眼扫过而不抢主句 */
+.hero-sub .hs-tags {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 0.84em;
+  color: var(--steel);
+  white-space: nowrap;
 }
 .hero-actions {
   margin-top: 40px;
@@ -552,6 +584,37 @@ code {
   color: var(--ice);
 }
 
+/* 重点特性卡：可观测（定位里的第四根支柱）。跨两列 + 冰蓝描边 + 顶部渐晕，
+   不让它和其余卡片同权 —— 9 张卡里它该是最先被读到的那张。 */
+.feature--key {
+  position: relative;
+  grid-column: span 2;
+  border-color: var(--ice-border);
+  background:
+    linear-gradient(180deg, rgba(52, 203, 224, 0.07), transparent 58%),
+    var(--card);
+}
+.feature--key h3 {
+  color: var(--ice);
+}
+.feature--key p {
+  font-size: 14.5px;
+  max-width: 64ch;
+}
+.feature-flag {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--ice);
+  border: 1px solid var(--ice-border);
+  background: var(--ice-dim);
+  border-radius: 3px;
+  padding: 2px 8px;
+}
+
 /* steps */
 .steps {
   display: grid;
@@ -727,6 +790,19 @@ pre code {
   .grid-4,
   .grid-3 {
     grid-template-columns: 1fr;
+  }
+  /* 单列下 span 2 会撑出一个幽灵列，必须收回 */
+  .feature--key {
+    grid-column: auto;
+  }
+  /* 窄屏：两行标语都得放得下，否则「交付一个 Agent 服务」会折出孤字。
+     公式与文件末尾的 ≤420px 规则**保持一致**，否则 420/421 边界上标题会突然缩一截。 */
+  .hero h1 {
+    font-size: clamp(30px, 9.5vw, 42px);
+  }
+  .hero-sub {
+    font-size: 15px;
+    line-height: 1.8;
   }
   .nav-links {
     gap: 14px;
@@ -1983,9 +2059,6 @@ pre code {
 }
 
 @media (max-width: 420px) {
-  .hero h1 {
-    font-size: clamp(30px, 9.5vw, 42px);
-  }
   .section h2 {
     font-size: clamp(24px, 7vw, 30px);
   }
