@@ -101,7 +101,10 @@ describe('createApp 装配期静态校验', () => {
       toolSources: ['a', 'a'],
       system: sys(),
     });
-    assert.deepEqual(app.tools.map((t) => t.name), ['tool_a']);
+    assert.deepEqual(
+      app.tools.map((t) => t.name),
+      ['tool_a'],
+    );
   });
 
   it('toolSources 指向未注册 token → 抛错', () => {
@@ -122,7 +125,10 @@ describe('modules 能力包装配（R5）', () => {
     }
     const mod = defineModule({ providers: [{ provide: 'a', useClass: A }] });
     const app = createApp({ modules: [mod], system: sys() });
-    assert.deepEqual(app.tools.map((t) => t.name), ['tool_a']);
+    assert.deepEqual(
+      app.tools.map((t) => t.name),
+      ['tool_a'],
+    );
   });
 
   it('应用级 providers 覆盖模块级同 token', () => {
@@ -144,7 +150,10 @@ describe('modules 能力包装配（R5）', () => {
       providers: [{ provide: 'x', useClass: FromApp }],
       system: sys(),
     });
-    assert.deepEqual(app.tools.map((t) => t.name), ['tool_app']);
+    assert.deepEqual(
+      app.tools.map((t) => t.name),
+      ['tool_app'],
+    );
     assert.ok(app.container.resolve('x') instanceof FromApp);
   });
 
@@ -156,10 +165,12 @@ describe('modules 能力包装配（R5）', () => {
       }
     }
     const order: string[] = [];
-    const mw = (tag: string): CapabilityMiddleware => (_call, next) => {
-      order.push(tag);
-      return next();
-    };
+    const mw =
+      (tag: string): CapabilityMiddleware =>
+      (_call, next) => {
+        order.push(tag);
+        return next();
+      };
     const mod = defineModule({
       providers: [{ provide: 'a', useClass: A }],
       middleware: [mw('module')],

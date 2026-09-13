@@ -241,10 +241,16 @@ export class AgentApp {
     const buildSlice = (token: Token): AgentTool[] => {
       const plain = plainByToken.get(token) ?? [];
       const subTools = (capabilitiesByToken.get(token) ?? []).map((capability) =>
-        subagentToTool(capability, resolveRefTools(`@SubAgent "${capability.name}"`, capability.spec.tools)),
+        subagentToTool(
+          capability,
+          resolveRefTools(`@SubAgent "${capability.name}"`, capability.spec.tools),
+        ),
       );
       const skillTools = (skillsByToken.get(token) ?? []).map((capability) =>
-        skillToTool(capability, resolveRefTools(`@Skill "${capability.name}"`, capability.spec.tools)),
+        skillToTool(
+          capability,
+          resolveRefTools(`@Skill "${capability.name}"`, capability.spec.tools),
+        ),
       );
       const promptTools = promptsByToken.get(token) ?? [];
       return [...plain, ...subTools, ...skillTools, ...promptTools];
@@ -326,8 +332,7 @@ export class AgentApp {
     opts: RunAppOptions<S> = {},
   ): Promise<AgentRunOutput<SchemaType<S>>> {
     const sys = opts.system ?? this.system;
-    const system: SystemParam =
-      sys instanceof SystemPrompt ? sys.build({ cache: true }) : sys;
+    const system: SystemParam = sys instanceof SystemPrompt ? sys.build({ cache: true }) : sys;
 
     const seed = opts.blackboard;
     return executeRun<S>({

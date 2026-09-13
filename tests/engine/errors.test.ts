@@ -17,7 +17,11 @@ describe('classifyError（异常分类 → SpanError）', () => {
   it('AbortError → aborted / 不可重试（中断不是可重试故障）', () => {
     const dom = new DOMException('The operation was aborted', 'AbortError');
     assert.equal(isAbortError(dom), true);
-    assert.deepEqual(classifyError(dom), { type: 'aborted', message: 'run 已被取消', retryable: false });
+    assert.deepEqual(classifyError(dom), {
+      type: 'aborted',
+      message: 'run 已被取消',
+      retryable: false,
+    });
 
     const plain = Object.assign(new Error('x'), { name: 'AbortError' });
     assert.equal(isAbortError(plain), true, '普通 Error 靠 name 也能识别');

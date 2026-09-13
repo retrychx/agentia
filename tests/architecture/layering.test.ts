@@ -84,7 +84,7 @@ const outside: string[] = [];
 
 for (const p of files) {
   const from = layerOf(p);
-  (layerEdges[from] ??= new Set());
+  layerEdges[from] ??= new Set();
   for (const spec of relativeImports(readFileSync(p, 'utf8'))) {
     const tgt = resolveTarget(p, spec);
     if (tgt === null) {
@@ -113,7 +113,8 @@ test('层间依赖不得越权：每条边都落在允许集合内', () => {
     if (from === BARREL) continue; // 出口层允许引用全部
     const allowed = new Set(ALLOWED[from] ?? []);
     for (const to of tos) {
-      if (!allowed.has(to)) violations.push(`${from} → ${to}（${from} 只允许 → {${[...allowed].join(', ')} }）`);
+      if (!allowed.has(to))
+        violations.push(`${from} → ${to}（${from} 只允许 → {${[...allowed].join(', ')} }）`);
     }
   }
   assert.deepEqual(
@@ -148,5 +149,6 @@ test('src 不得 import 到 src 之外（tests / packages / examples / scripts�
 
 test('约定表非空且与 src 实际分层一致（防 ALLOWED 写到一半）', () => {
   assert.ok(ALL_LAYERS.length >= 9, 'ALLOWED 少于 9 层 —— 大概率漏登记');
-  for (const l of ALL_LAYERS) assert.ok(existsSync(join(SRC, l)), `ALLOWED 里的层 src/${l}/ 不存在`);
+  for (const l of ALL_LAYERS)
+    assert.ok(existsSync(join(SRC, l)), `ALLOWED 里的层 src/${l}/ 不存在`);
 });

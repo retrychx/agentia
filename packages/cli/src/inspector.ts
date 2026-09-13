@@ -79,7 +79,9 @@ function summarize(t: TraceLike): RunSummary {
  * 起 inspector 服务。缺省监听 127.0.0.1 的随机空闲端口（port 0），
  * 便于 dev 命令并发多开互不打架；实际端口经 resolve 的 port 返回。
  */
-export function startInspector(opts: { port?: number; host?: string } = {}): Promise<InspectorServer> {
+export function startInspector(
+  opts: { port?: number; host?: string } = {},
+): Promise<InspectorServer> {
   const host = opts.host ?? '127.0.0.1';
   const runs = new Map<string, TraceLike>();
   const order: string[] = []; // 到达顺序，用于淘汰与列表排序
@@ -111,7 +113,9 @@ export function startInspector(opts: { port?: number; host?: string } = {}): Pro
       req.on('data', (c: Buffer) => {
         size += c.length;
         if (size > maxBytes) {
-          const err = new Error(`请求 body 过大（上限 ${maxBytes} 字节）`) as Error & { statusCode?: number };
+          const err = new Error(`请求 body 过大（上限 ${maxBytes} 字节）`) as Error & {
+            statusCode?: number;
+          };
           err.statusCode = 413; // 让 handler 的 catch 回 413 而非 500
           reject(err);
           req.destroy();
@@ -143,7 +147,14 @@ export function startInspector(opts: { port?: number; host?: string } = {}): Pro
       }
 
       if (req.method === 'GET' && path === '/api/runs') {
-        json(res, 200, order.slice().reverse().map((id) => summarize(runs.get(id) as TraceLike)));
+        json(
+          res,
+          200,
+          order
+            .slice()
+            .reverse()
+            .map((id) => summarize(runs.get(id) as TraceLike)),
+        );
         return;
       }
 
@@ -177,7 +188,9 @@ export function startInspector(opts: { port?: number; host?: string } = {}): Pro
 
       if (req.method === 'GET' && STATIC.has(path.slice(1))) {
         const name = path.slice(1);
-        const type = name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8';
+        const type = name.endsWith('.css')
+          ? 'text/css; charset=utf-8'
+          : 'text/javascript; charset=utf-8';
         text(res, 200, type, await readFile(join(ASSETS, name), 'utf8'));
         return;
       }

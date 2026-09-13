@@ -68,7 +68,8 @@ export class Scheduler {
       const job = this.jobs.get(id);
       if (job) this.dispatch(job);
     }, intervalMs);
-    if (typeof timer === 'object' && 'unref' in timer) (timer as ReturnType<typeof setTimeout>).unref?.();
+    if (typeof timer === 'object' && 'unref' in timer)
+      (timer as ReturnType<typeof setTimeout>).unref?.();
     this.jobs.set(id, {
       id,
       kind: 'every',
@@ -98,7 +99,8 @@ export class Scheduler {
       if (job) this.dispatch(job);
     }, delay);
     // 与 every() 一致：定时器不阻止进程退出（宿主 stop() 仍可显式取消）
-    if (typeof timer === 'object' && 'unref' in timer) (timer as ReturnType<typeof setTimeout>).unref?.();
+    if (typeof timer === 'object' && 'unref' in timer)
+      (timer as ReturnType<typeof setTimeout>).unref?.();
     this.jobs.set(id, {
       id,
       kind: 'at',

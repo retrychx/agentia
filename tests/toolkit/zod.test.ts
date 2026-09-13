@@ -42,7 +42,14 @@ describe('zod 可选接入（fromZod）', () => {
     // （seen 里的 messages 是同一数组引用、随回合增长，按 tool_result 块找）
     const msgs = (seen[1] as { messages: Array<{ role: string; content: unknown }> }).messages;
     const tr = msgs
-      .flatMap((m) => (Array.isArray(m.content) ? m.content : []) as Array<{ type?: string; is_error?: boolean; content: string }>)
+      .flatMap(
+        (m) =>
+          (Array.isArray(m.content) ? m.content : []) as Array<{
+            type?: string;
+            is_error?: boolean;
+            content: string;
+          }>,
+      )
       .find((b) => b.type === 'tool_result')!;
     assert.equal(tr.is_error, true);
     assert.ok(tr.content.includes('invalid input'), tr.content);
@@ -69,7 +76,14 @@ describe('zod 可选接入（fromZod）', () => {
     assert.equal(result.stopReason, 'end_turn');
     const msgs = (seen[1] as { messages: Array<{ role: string; content: unknown }> }).messages;
     const tr = msgs
-      .flatMap((m) => (Array.isArray(m.content) ? m.content : []) as Array<{ type?: string; is_error?: boolean; content: string }>)
+      .flatMap(
+        (m) =>
+          (Array.isArray(m.content) ? m.content : []) as Array<{
+            type?: string;
+            is_error?: boolean;
+            content: string;
+          }>,
+      )
       .find((b) => b.type === 'tool_result')!;
     assert.ok(!tr.is_error);
     assert.ok(tr.content.includes('北京:3天晴'), tr.content);

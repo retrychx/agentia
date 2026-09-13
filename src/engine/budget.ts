@@ -60,7 +60,13 @@ export function createBudgetGuard(opts: BudgetGuardOptions = {}): BudgetGuard {
         u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
       const costUsd = u.costEstimate ?? 0;
       if (maxTotalTokens != null && totalTokens > maxTotalTokens) {
-        onExceed?.({ kind: 'tokens', limit: maxTotalTokens, actual: totalTokens, totalTokens, costUsd });
+        onExceed?.({
+          kind: 'tokens',
+          limit: maxTotalTokens,
+          actual: totalTokens,
+          totalTokens,
+          costUsd,
+        });
         return 'tokens';
       }
       if (maxCostUsd != null && costUsd > maxCostUsd) {

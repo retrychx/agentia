@@ -31,7 +31,9 @@ export const DEFAULT_PRICING: Readonly<Record<string, ModelPricing>> = Object.fr
  * 非法单价（非有限数 / 负数）在**构造期抛错** —— 与其让它算出 NaN 成本、再让
  * `maxCostUsd` 拿 NaN 去比较（永远 false，护栏静默失效），不如立刻响亮失败。
  */
-export function buildPricing(overrides?: Record<string, ModelPricing>): Record<string, ModelPricing> {
+export function buildPricing(
+  overrides?: Record<string, ModelPricing>,
+): Record<string, ModelPricing> {
   if (!overrides) return DEFAULT_PRICING as Record<string, ModelPricing>;
   for (const [model, p] of Object.entries(overrides)) {
     const ok = (n: unknown): boolean => typeof n === 'number' && Number.isFinite(n) && n >= 0;

@@ -72,9 +72,17 @@ function richTrace(): Trace {
       startedAt: 1010,
       endedAt: 1100,
       status: 'ok',
-      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheCreationTokens: 0, costEstimate: 0.01 },
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 5,
+        cacheCreationTokens: 0,
+        costEstimate: 0.01,
+      },
       attributes: {},
-      events: [{ time: 1050, name: 'tool.output', body: { tool: 'search', ok: true, durationMs: 42 } }],
+      events: [
+        { time: 1050, name: 'tool.output', body: { tool: 'search', ok: true, durationMs: 42 } },
+      ],
     },
     {
       spanId: 'turn-2',
@@ -85,10 +93,20 @@ function richTrace(): Trace {
       startedAt: 1110,
       endedAt: 1200,
       status: 'ok',
-      usage: { inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.002 },
+      usage: {
+        inputTokens: 20,
+        outputTokens: 10,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costEstimate: 0.002,
+      },
       attributes: {},
       events: [
-        { time: 1150, name: 'tool.output', body: { tool: 'search', ok: false, durationMs: 8, errorKind: 'threw' } },
+        {
+          time: 1150,
+          name: 'tool.output',
+          body: { tool: 'search', ok: false, durationMs: 8, errorKind: 'threw' },
+        },
         { time: 1160, name: 'tool.output', body: { tool: 'fetch', ok: true, durationMs: 100 } },
       ],
     },
@@ -101,7 +119,13 @@ function richTrace(): Trace {
       startedAt: 1210,
       endedAt: 1280,
       status: 'ok',
-      usage: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.012 },
+      usage: {
+        inputTokens: 120,
+        outputTokens: 30,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costEstimate: 0.012,
+      },
       attributes: { subagent: 'researcher' },
       events: [],
     },
@@ -175,7 +199,15 @@ describe('metricsSink（D3 基础：run 级）', () => {
   it('render：Prometheus 文本（HELP/TYPE + label 分项 + 分位 gauge）', () => {
     const m = metricsSink();
     m.export(
-      traceOf({ status: 'error', durationMs: 7, input: 3, output: 4, cacheRead: 5, cacheCreation: 6, costEstimate: 0.25 }),
+      traceOf({
+        status: 'error',
+        durationMs: 7,
+        input: 3,
+        output: 4,
+        cacheRead: 5,
+        cacheCreation: 6,
+        costEstimate: 0.25,
+      }),
     );
     const txt = m.render();
     assert.match(txt, /# TYPE agentia_runs_total counter/);
@@ -235,11 +267,21 @@ describe('E2 能力级指标', () => {
       /^agentia_capability_duration_ms\{capability="tool:search",quantile="0.5"\} 8$/m,
       '窗口内 [42,8] 排序 [8,42] → ceil(0.5·2)=1 → 8',
     );
-    assert.match(txt, /^agentia_capability_duration_ms\{capability="tool:search",quantile="0.95"\} 42$/m);
+    assert.match(
+      txt,
+      /^agentia_capability_duration_ms\{capability="tool:search",quantile="0.95"\} 42$/m,
+    );
     assert.match(txt, /^agentia_capability_calls_total\{capability="tool:fetch"\} 1$/m);
     assert.match(txt, /^agentia_capability_calls_total\{capability="subagent:researcher"\} 1$/m);
-    assert.match(txt, /^agentia_capability_tokens_total\{capability="subagent:researcher"\} 150$/m, '120+30');
-    assert.match(txt, /^agentia_capability_cost_usd_total\{capability="subagent:researcher"\} 0.012$/m);
+    assert.match(
+      txt,
+      /^agentia_capability_tokens_total\{capability="subagent:researcher"\} 150$/m,
+      '120+30',
+    );
+    assert.match(
+      txt,
+      /^agentia_capability_cost_usd_total\{capability="subagent:researcher"\} 0.012$/m,
+    );
     // 工具没有 token 语义 → 不产出 token/cost 行
     assert.equal(/agentia_capability_tokens_total\{capability="tool:search"\}/.test(txt), false);
     // 每个能力的调用耗时直方图都在
@@ -250,7 +292,11 @@ describe('E2 能力级指标', () => {
     const m = metricsSink();
     m.export(richTrace());
     const { capabilities } = m.snapshot();
-    assert.deepEqual(Object.keys(capabilities).sort(), ['subagent:researcher', 'tool:fetch', 'tool:search']);
+    assert.deepEqual(Object.keys(capabilities).sort(), [
+      'subagent:researcher',
+      'tool:fetch',
+      'tool:search',
+    ]);
     assert.equal(capabilities['tool:search']!.calls, 2);
     assert.equal(capabilities['tool:search']!.errors, 1);
     assert.equal(capabilities['tool:search']!.tokens, null);
@@ -292,8 +338,16 @@ describe('E3 模型级指标', () => {
     m.export(richTrace());
     const txt = m.render();
     assert.match(txt, /^agentia_model_turns_total\{model="claude-opus-5"\} 2$/m);
-    assert.match(txt, /^agentia_model_tokens_total\{model="claude-opus-5"\} 155$/m, '100+20+5 + 20+10');
-    assert.match(txt, /^agentia_model_cost_usd_total\{model="claude-opus-5"\} 0.012$/m, '0.01+0.002');
+    assert.match(
+      txt,
+      /^agentia_model_tokens_total\{model="claude-opus-5"\} 155$/m,
+      '100+20+5 + 20+10',
+    );
+    assert.match(
+      txt,
+      /^agentia_model_cost_usd_total\{model="claude-opus-5"\} 0.012$/m,
+      '0.01+0.002',
+    );
     assert.match(txt, /^agentia_model_duration_ms_count\{model="claude-opus-5"\} 2$/m);
     const s = m.snapshot();
     assert.equal(s.models['claude-opus-5']!.unpricedTurns, 0);
@@ -313,13 +367,19 @@ describe('E3 模型级指标', () => {
 });
 
 describe('E5 OTLP/JSON 指标导出', () => {
-  async function startCollector(statusCode: number): Promise<{ server: Server; base: string; bodies: any[] }> {
+  async function startCollector(
+    statusCode: number,
+  ): Promise<{ server: Server; base: string; bodies: any[] }> {
     const bodies: any[] = [];
     const server = createServer((req, res) => {
       let raw = '';
       req.on('data', (c) => (raw += c));
       req.on('end', () => {
-        bodies.push({ url: req.url, contentType: req.headers['content-type'], body: JSON.parse(raw) });
+        bodies.push({
+          url: req.url,
+          contentType: req.headers['content-type'],
+          body: JSON.parse(raw),
+        });
         res.writeHead(statusCode, { 'content-type': 'application/json' });
         res.end(statusCode === 200 ? '{}' : 'collector exploded');
       });
@@ -337,7 +397,12 @@ describe('E5 OTLP/JSON 指标导出', () => {
   it('flush 真发 POST /v1/metrics，结构是合法 OTLP（resourceMetrics→scopeMetrics→metrics）', async () => {
     const { server, base, bodies } = await startCollector(200);
     try {
-      const m = metricsSink({ export: 'otlp', endpoint: `${base}/`, intervalMs: 0, serviceName: 'svc-x' });
+      const m = metricsSink({
+        export: 'otlp',
+        endpoint: `${base}/`,
+        intervalMs: 0,
+        serviceName: 'svc-x',
+      });
       await m.export(richTrace());
       m.stop();
       assert.equal(bodies.length, 1, 'intervalMs:0 → 每次 export 立即导出');
@@ -370,7 +435,12 @@ describe('E5 OTLP/JSON 指标导出', () => {
     const { server, base } = await startCollector(500);
     try {
       const errs: unknown[] = [];
-      const m = metricsSink({ export: 'otlp', endpoint: base, intervalMs: 0, onExportError: (e) => errs.push(e) });
+      const m = metricsSink({
+        export: 'otlp',
+        endpoint: base,
+        intervalMs: 0,
+        onExportError: (e) => errs.push(e),
+      });
       await m.export(richTrace()); // 不应抛出
       m.stop();
       assert.equal(errs.length, 1);

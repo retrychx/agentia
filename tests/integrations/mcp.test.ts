@@ -12,7 +12,11 @@ function fakeMcp(
   call: (name: string, args: Record<string, unknown>) => Promise<unknown> = async () => ({
     content: [{ type: 'text', text: 'ok' }],
   }),
-): { client: McpClientLike; calls: Array<{ name: string; args: Record<string, unknown> }>; listed: () => number } {
+): {
+  client: McpClientLike;
+  calls: Array<{ name: string; args: Record<string, unknown> }>;
+  listed: () => number;
+} {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
   let listed = 0;
   const client: McpClientLike = {
@@ -45,14 +49,21 @@ describe('mcpTools —— MCP 桥（D1）', () => {
       '`-` / `.` 一律归一化成 `_`（LLM API 对工具名不友好）',
     );
     assert.equal(tools[0].description, '取当前时间');
-    assert.deepEqual(tools[0].inputSchema, OBJ, 'MCP 的 inputSchema 已是 JSON Schema，原样当 input_schema');
+    assert.deepEqual(
+      tools[0].inputSchema,
+      OBJ,
+      'MCP 的 inputSchema 已是 JSON Schema，原样当 input_schema',
+    );
     assert.equal(tools[1].description, 'MCP 工具 read.file', '没描述时给一个可读兜底');
   });
 
   it('prefix / server / prefix:"" 三种前缀形态', async () => {
     const one: McpToolInfo[] = [{ name: 'ping', inputSchema: OBJ }];
     assert.equal((await mcpTools(fakeMcp(one).client)).at(0)!.name, 'mcp_ping');
-    assert.equal((await mcpTools(fakeMcp(one).client, { server: 'fs' })).at(0)!.name, 'mcp_fs_ping');
+    assert.equal(
+      (await mcpTools(fakeMcp(one).client, { server: 'fs' })).at(0)!.name,
+      'mcp_fs_ping',
+    );
     assert.equal((await mcpTools(fakeMcp(one).client, { prefix: 'x-' })).at(0)!.name, 'x-ping');
     assert.equal(
       (await mcpTools(fakeMcp(one).client, { server: 'fs', prefix: '' })).at(0)!.name,
@@ -62,17 +73,19 @@ describe('mcpTools —— MCP 桥（D1）', () => {
   });
 
   it('inputSchema 缺失/非对象 → 回落 { type: "object" }（否则 engine 的校验器无从校验）', async () => {
-    const tools = await mcpTools(fakeMcp([{ name: 'a' }, { name: 'b', inputSchema: 'nope' as never }]).client);
+    const tools = await mcpTools(
+      fakeMcp([{ name: 'a' }, { name: 'b', inputSchema: 'nope' as never }]).client,
+    );
     assert.deepEqual(tools[0].inputSchema, { type: 'object' });
     assert.deepEqual(tools[1].inputSchema, { type: 'object' });
   });
 
   it('归一化后撞名 → 装配期直接抛错（不静默留两条同名工具）', async () => {
-    const tools = [{ name: 'a-b', inputSchema: OBJ }, { name: 'a.b', inputSchema: OBJ }];
-    await assert.rejects(
-      () => mcpTools(fakeMcp(tools).client, { server: 's' }),
-      /撞名/,
-    );
+    const tools = [
+      { name: 'a-b', inputSchema: OBJ },
+      { name: 'a.b', inputSchema: OBJ },
+    ];
+    await assert.rejects(() => mcpTools(fakeMcp(tools).client, { server: 's' }), /撞名/);
   });
 
   it('归一化后为空名 / 超长 → 抛错，不静默改名', async () => {
@@ -99,11 +112,14 @@ describe('mcpTools —— MCP 桥（D1）', () => {
 
 describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
   it('模型调归一化名 → 桥回调用**原名** → 结果回模型，且原名落进 turn attribute', async () => {
-    const mcp = fakeMcp([{ name: 'get-time', description: '取当前时间', inputSchema: OBJ }], async (name, args) => {
-      assert.equal(name, 'get-time', '回调 server 必须用原名（归一化名 server 不认识）');
-      assert.deepEqual(args, { tz: 'Asia/Shanghai' });
-      return { content: [{ type: 'text', text: '2026-09-12T07:30+08:00' }] };
-    });
+    const mcp = fakeMcp(
+      [{ name: 'get-time', description: '取当前时间', inputSchema: OBJ }],
+      async (name, args) => {
+        assert.equal(name, 'get-time', '回调 server 必须用原名（归一化名 server 不认识）');
+        assert.deepEqual(args, { tz: 'Asia/Shanghai' });
+        return { content: [{ type: 'text', text: '2026-09-12T07:30+08:00' }] };
+      },
+    );
     const tools = await mcpTools(mcp.client, { server: 'time' });
 
     const { client, seen } = mockClient([
@@ -124,7 +140,9 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
     //  messages 数组 —— 所以收尾后它含全部 4 条，不能取 at(-1)，要按类型找。）
     const second = seen[1] as { messages: Array<{ role: string; content: unknown }> };
     const carrier = second.messages.find(
-      (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>)[0]?.type === 'tool_result',
+      (m) =>
+        Array.isArray(m.content) &&
+        (m.content as Array<{ type?: string }>)[0]?.type === 'tool_result',
     )!;
     const toolResult = carrier.content as Array<{ content: string; is_error: boolean }>;
     assert.match(toolResult[0].content, /2026-09-12T07:30\+08:00/);
@@ -215,6 +233,9 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
         return 2;
       }
     }
-    assert.throws(() => createApp({ system: 'x', providers: [{ provide: 'p', useClass: P }], tools }), /重名/);
+    assert.throws(
+      () => createApp({ system: 'x', providers: [{ provide: 'p', useClass: P }], tools }),
+      /重名/,
+    );
   });
 });

@@ -16,9 +16,7 @@ export async function mapWithConcurrency<T, R>(
   const results = new Array<R>(items.length);
   if (items.length === 0) return results;
   const width =
-    Number.isFinite(limit) && limit > 0
-      ? Math.min(Math.floor(limit), items.length)
-      : items.length;
+    Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), items.length) : items.length;
   // 取号自增在同步段完成（`next++` 在读 item 之前），所以 worker 之间不会重号。
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -45,7 +43,10 @@ export const TIMED_OUT = Symbol('agentia.timed-out');
  *
  * `timeoutMs` 非正数 = 不设超时（直接返回原 promise）。
  */
-export async function withTimeout<T>(p: Promise<T>, timeoutMs: number): Promise<T | typeof TIMED_OUT> {
+export async function withTimeout<T>(
+  p: Promise<T>,
+  timeoutMs: number,
+): Promise<T | typeof TIMED_OUT> {
   if (!(timeoutMs > 0)) return p;
   let timer: NodeJS.Timeout | undefined;
   try {

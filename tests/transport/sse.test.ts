@@ -4,7 +4,12 @@ import type { ServerResponse } from 'node:http';
 import { sseWriter } from '../../src/transport/sse.js';
 
 /** 记录写入的假 ServerResponse */
-function fakeRes(): ServerResponse & { headers: Record<string, unknown>; status: number; out: string; ended: boolean } {
+function fakeRes(): ServerResponse & {
+  headers: Record<string, unknown>;
+  status: number;
+  out: string;
+  ended: boolean;
+} {
   const rec = {
     status: 0,
     headers: {} as Record<string, unknown>,

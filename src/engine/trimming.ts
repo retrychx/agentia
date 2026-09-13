@@ -152,7 +152,9 @@ export interface TrimOptions {
 /** assistant 消息里的 tool_use id 列表（无则空） */
 function toolUseIds(msg: Anthropic.MessageParam): string[] {
   if (msg.role !== 'assistant' || typeof msg.content === 'string') return [];
-  return msg.content.filter((b) => b.type === 'tool_use').map((b) => (b as Anthropic.ToolUseBlockParam).id);
+  return msg.content
+    .filter((b) => b.type === 'tool_use')
+    .map((b) => (b as Anthropic.ToolUseBlockParam).id);
 }
 
 /** user 消息里的 tool_result 对应 id 列表（无则空） */
@@ -196,7 +198,10 @@ function toolBlocksPaired(messages: Anthropic.MessageParam[]): boolean {
  * 前置：历史必须是工具块严格成对的（toolBlocksPaired）。畸形历史直接返回原数组
  * —— 宁可少裁剪，也不能切出孤立 tool_use/tool_result 让后续请求 400。
  */
-export function trimToolPairs(messages: Anthropic.MessageParam[], opts: TrimOptions = {}): Anthropic.MessageParam[] {
+export function trimToolPairs(
+  messages: Anthropic.MessageParam[],
+  opts: TrimOptions = {},
+): Anthropic.MessageParam[] {
   const keep = Math.max(0, opts.keepToolPairs ?? 1);
   if (!toolBlocksPaired(messages)) return messages;
   const pairs: Array<[assistant: number, result: number]> = [];

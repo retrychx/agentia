@@ -64,7 +64,12 @@ export type { RetryOptions } from './engine/retry.js';
 // run：run 生命周期
 export { Run, executeRun } from './runtime/run.js';
 export { RunContext, withRunContext } from './runtime/context.js';
-export type { Blackboard, BlackboardKey, BlackboardSeed, BlackboardValue } from './core/blackboard.js';
+export type {
+  Blackboard,
+  BlackboardKey,
+  BlackboardSeed,
+  BlackboardValue,
+} from './core/blackboard.js';
 export { SystemPrompt } from './runtime/systemPrompt.js';
 export type { SystemPromptOptions, SystemSection } from './runtime/systemPrompt.js';
 export type { ExecuteRunOptions } from './runtime/run.js';
@@ -176,4 +181,3 @@ export type {
   EvalDefinition,
   EvalReport,
 } from './eval/defineEval.js';
-

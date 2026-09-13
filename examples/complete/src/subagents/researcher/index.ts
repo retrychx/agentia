@@ -8,7 +8,8 @@ import { SubAgent, asset } from '@migor/agentia';
  */
 export default class Researcher {
   @SubAgent({
-    description: '就给定问题做独立调研，给出简明结论（适合需要多步推理、且不希望污染主上下文的子任务）',
+    description:
+      '就给定问题做独立调研，给出简明结论（适合需要多步推理、且不希望污染主上下文的子任务）',
     schema: {
       type: 'object',
       properties: { question: { type: 'string', description: '要调研的问题' } },

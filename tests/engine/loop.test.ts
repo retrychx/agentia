@@ -15,7 +15,12 @@ function rawMsg(stop_reason: string, text = 'part'): Record<string, unknown> {
     id: 'm-raw',
     model: 'claude-opus-5',
     stop_reason,
-    usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    usage: {
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    },
     content: [{ type: 'text', text }],
   };
 }
@@ -51,7 +56,10 @@ describe('agentLoop 边界与失败路径', () => {
 
   it('stop_reason=tool_use 但无可执行块：tool_use_no_blocks + 保留文本', async () => {
     const { client } = mockClient([
-      { ...rawMsg('tool_use', '想调工具但块是空的'), content: [{ type: 'text', text: '想调工具但块是空的' }] },
+      {
+        ...rawMsg('tool_use', '想调工具但块是空的'),
+        content: [{ type: 'text', text: '想调工具但块是空的' }],
+      },
     ]);
     const { result } = await executeRun({ messages: [{ role: 'user', content: 'go' }], client });
     assert.equal(result.stopReason, 'tool_use_no_blocks');
@@ -225,7 +233,12 @@ describe('agentLoop 边界与失败路径', () => {
     const { run, result } = await executeRun({
       messages: [{ role: 'user', content: 'go' }],
       client,
-      retry: { maxAttempts: 3, baseDelayMs: 1, jitter: 0, onRetry: (i) => attempts.push(i.attempt) },
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        jitter: 0,
+        onRetry: (i) => attempts.push(i.attempt),
+      },
     });
     assert.equal(result.stopReason, 'end_turn');
     assert.equal(result.finalText, '重试后成功');

@@ -36,8 +36,14 @@ describe('validateJsonSchema（运行时输入校验）', () => {
   });
 
   it('嵌套对象与数组元素给出路径', () => {
-    assert.match(validateJsonSchema(person, { name: 'a', addr: {} })!, /\$\.addr: 缺少必需属性 "city"/);
-    assert.match(validateJsonSchema(person, { name: 'a', tags: ['x', 1] })!, /\$\.tags\[1\]: 期望 string/);
+    assert.match(
+      validateJsonSchema(person, { name: 'a', addr: {} })!,
+      /\$\.addr: 缺少必需属性 "city"/,
+    );
+    assert.match(
+      validateJsonSchema(person, { name: 'a', tags: ['x', 1] })!,
+      /\$\.tags\[1\]: 期望 string/,
+    );
   });
 
   it('enum 校验（含对象深比较）', () => {

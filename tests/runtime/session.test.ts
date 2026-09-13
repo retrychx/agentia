@@ -85,10 +85,18 @@ describe('会话持久化接进 executeRun（C4）', () => {
   it('第二轮：历史拼在传入 messages **之前**（顺序是理解上下文的关键）', async () => {
     const { store } = spyStore();
     const c1 = capturingClient([endTurnMsg('第一答')]);
-    await executeRun({ messages: [user('第一问')], client: c1.client, session: { store, id: 's1' } });
+    await executeRun({
+      messages: [user('第一问')],
+      client: c1.client,
+      session: { store, id: 's1' },
+    });
 
     const c2 = capturingClient([endTurnMsg('第二答')]);
-    await executeRun({ messages: [user('第二问')], client: c2.client, session: { store, id: 's1' } });
+    await executeRun({
+      messages: [user('第二问')],
+      client: c2.client,
+      session: { store, id: 's1' },
+    });
     assert.deepEqual(
       c2.sent[0],
       [
@@ -131,11 +139,20 @@ describe('会话持久化接进 executeRun（C4）', () => {
         id: 'm',
         model: 'claude-opus-5',
         stop_reason: 'end_turn',
-        usage: { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        usage: {
+          input_tokens: 1,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
         content: [], // 没有任何文本块
       },
     ]);
-    const { result } = await executeRun({ messages: [user('q')], client, session: { store, id: 's1' } });
+    const { result } = await executeRun({
+      messages: [user('q')],
+      client,
+      session: { store, id: 's1' },
+    });
     assert.equal(result.finalText, '');
     assert.equal(appends[0].messages.length, 2);
     assert.equal(appends[0].messages[1].role, 'assistant');
@@ -152,7 +169,11 @@ describe('会话持久化接进 executeRun（C4）', () => {
       },
     };
     const { client, sent } = capturingClient([endTurnMsg('照样跑完')]);
-    const { run, result } = await executeRun({ messages: [user('q')], client, session: { store, id: 's1' } });
+    const { run, result } = await executeRun({
+      messages: [user('q')],
+      client,
+      session: { store, id: 's1' },
+    });
     assert.equal(run.status, 'succeeded');
     assert.equal(result.finalText, '照样跑完');
     assert.deepEqual(sent[0], [user('q')], '读不到历史就当没有，消息照发');

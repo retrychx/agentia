@@ -85,7 +85,11 @@ describe('Container（显式 DI）', () => {
 
     // 升级 cfg：svc/app 已在缓存里，若不传递失效会继续用「旧 cfg 造出来的」旧实例
     c.register({ provide: 'cfg', useValue: { v: 2 } });
-    assert.equal(c.resolve<{ svc: { cfg: { v: number } } }>('app').svc.cfg.v, 2, '下游必须跟着重建');
+    assert.equal(
+      c.resolve<{ svc: { cfg: { v: number } } }>('app').svc.cfg.v,
+      2,
+      '下游必须跟着重建',
+    );
     assert.notEqual(c.resolve('app'), first);
   });
 });

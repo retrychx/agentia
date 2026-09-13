@@ -75,6 +75,8 @@ export function generateCapability(type: CapabilityType, name: string): number {
   } else {
     console.log(`src/registry.ts 中「${name}」已注册，跳过登记`);
   }
-  console.log('提示：discover 目录扫描路线下无需登记即可生效；显式装配路线从 src/registry.ts 引入 providers');
+  console.log(
+    '提示：discover 目录扫描路线下无需登记即可生效；显式装配路线从 src/registry.ts 引入 providers',
+  );
   return 0;
 }

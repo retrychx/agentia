@@ -81,7 +81,7 @@ const EMPTY_SCHEMA: JsonSchema = {
 
 /** 方法装饰器：登记 skill spec。被装饰方法体由运行时以 (input, skillCtx) 调用。 */
 export function Skill(spec: SkillSpec) {
-  return function (value: Function, context: CapabilityDecoratorContext): void {
+  return (value: Function, context: CapabilityDecoratorContext): void => {
     assertMethodTarget(context, '@Skill');
     skillSpecs.set(value, spec);
   };
@@ -144,9 +144,7 @@ export function skillToTool(
             throw new Error(`skill "${name}".llm 需要 prompt 或 messages`);
           }
           const system =
-            opts.system instanceof SystemPrompt
-              ? opts.system.build({ cache: true })
-              : opts.system;
+            opts.system instanceof SystemPrompt ? opts.system.build({ cache: true }) : opts.system;
           const loop = await runAgentScoped({
             client: ctx.client,
             model: opts.model ?? spec.model,
@@ -162,9 +160,9 @@ export function skillToTool(
             priceOverrides: ctx.priceOverrides,
           });
           if (!isSuccessStopReason(loop.stopReason)) {
-            const report = `skill "${name}".llm ${loop.stopReason}: ${
-              (loop.finalText || loop.error?.message || '').slice(0, 2000)
-            }`;
+            const report = `skill "${name}".llm ${loop.stopReason}: ${(
+              loop.finalText || loop.error?.message || ''
+            ).slice(0, 2000)}`;
             const error: SpanError = loop.error ?? {
               type: 'agent_error',
               message: report,

@@ -40,7 +40,11 @@ describe('TraceRecorder：capability span 的 usage = 子孙 llm.turn 聚合', (
     );
     // totalUsage 口径不变：只累加 llm.turn（capability 的聚合值不得再算一遍）
     assert.deepEqual(
-      { i: trace.totalUsage.inputTokens, o: trace.totalUsage.outputTokens, c: trace.totalUsage.costEstimate },
+      {
+        i: trace.totalUsage.inputTokens,
+        o: trace.totalUsage.outputTokens,
+        c: trace.totalUsage.costEstimate,
+      },
       { i: 150, o: 30, c: 0.015 },
     );
   });
@@ -91,7 +95,10 @@ describe('TraceRecorder：capability span 的 usage = 子孙 llm.turn 聚合', (
     r.end(t, { usage: U(100, 0) });
     r.end(capability, { status: 'ok', usage: U(7, 8) });
     r.end(root, { status: 'ok' });
-    assert.equal(r.snapshot('ok').spans.find((s) => s.spanId === capability)!.usage?.inputTokens, 7);
+    assert.equal(
+      r.snapshot('ok').spans.find((s) => s.spanId === capability)!.usage?.inputTokens,
+      7,
+    );
   });
 
   it('未定价（无 costEstimate）的子孙不产出 costEstimate 字段', () => {

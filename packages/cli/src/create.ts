@@ -36,7 +36,9 @@ function readUsageGuide(): string {
   for (const p of candidates) {
     if (existsSync(p)) return readFileSync(p, 'utf8');
   }
-  throw new Error(`找不到 AI 使用说明（docs/usage-guide.md）。查找过：\n  ${candidates.join('\n  ')}`);
+  throw new Error(
+    `找不到 AI 使用说明（docs/usage-guide.md）。查找过：\n  ${candidates.join('\n  ')}`,
+  );
 }
 
 export function createProject(name: string, parent: string | undefined): number {

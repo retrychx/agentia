@@ -113,9 +113,7 @@ describe('createOtlpExporter', () => {
       assert.equal(root.startTimeUnixNano, String(1000 * 1e6));
       assert.equal(root.endTimeUnixNano, String(2000 * 1e6));
       assert.deepEqual(root.status, { code: 'STATUS_CODE_OK' });
-      assert.deepEqual(root.attributes, [
-        { key: 'agent.name', value: { stringValue: 'fake' } },
-      ]);
+      assert.deepEqual(root.attributes, [{ key: 'agent.name', value: { stringValue: 'fake' } }]);
 
       // 子 span：parent hex、ERROR 状态带 message、usage 展平、events 映射
       const child = spans[1];
@@ -133,9 +131,7 @@ describe('createOtlpExporter', () => {
       assert.equal(child.events.length, 1);
       assert.equal(child.events[0].timeUnixNano, String(1200 * 1e6));
       assert.equal(child.events[0].name, 'tool.input');
-      assert.deepEqual(child.events[0].attributes, [
-        { key: 'q', value: { stringValue: 'hi' } },
-      ]);
+      assert.deepEqual(child.events[0].attributes, [{ key: 'q', value: { stringValue: 'hi' } }]);
     } finally {
       await close(server);
     }

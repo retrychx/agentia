@@ -194,16 +194,18 @@ export function buildRunReport(trace: Trace): RunReport {
     }
   }
 
-  const capabilityReports: CapabilityReport[] = [...capabilities.entries()].map(([capability, a]) => ({
-    capability,
-    calls: a.calls,
-    errors: a.errors,
-    durationMs: durationReport(a.durations),
-    tokens: a.tokens,
-    tokensTotal: a.tokens ? usageTotal(a.tokens) : null,
-    costUsd: a.costUsd,
-    durations: [...a.durations],
-  }));
+  const capabilityReports: CapabilityReport[] = [...capabilities.entries()].map(
+    ([capability, a]) => ({
+      capability,
+      calls: a.calls,
+      errors: a.errors,
+      durationMs: durationReport(a.durations),
+      tokens: a.tokens,
+      tokensTotal: a.tokens ? usageTotal(a.tokens) : null,
+      costUsd: a.costUsd,
+      durations: [...a.durations],
+    }),
+  );
   // 按总耗时降序 —— 排在最前的是「最该看的那个」
   capabilityReports.sort((x, y) => y.durationMs.total - x.durationMs.total || y.calls - x.calls);
 
@@ -323,7 +325,9 @@ export function renderRunReport(report: RunReport): string {
   const pad = (s: string, n: number): string => (s.length >= n ? s : s + ' '.repeat(n - s.length));
   if (report.models.length > 0) {
     lines.push('');
-    lines.push(`${pad('model', 24)} ${pad('turns', 6)} ${pad('tokens', 10)} ${pad('cost', 10)} ${pad('avg ms', 8)}`);
+    lines.push(
+      `${pad('model', 24)} ${pad('turns', 6)} ${pad('tokens', 10)} ${pad('cost', 10)} ${pad('avg ms', 8)}`,
+    );
     for (const m of report.models) {
       const avg = m.turns > 0 ? Math.round(m.durationMs.total / m.turns) : 0;
       lines.push(
@@ -349,7 +353,9 @@ export function renderRunReport(report: RunReport): string {
   }
   if (report.capabilities.length === 0 && report.models.length === 0) {
     lines.push('');
-    lines.push('（没有可归因的能力/模型：trace 里没有 capability span、llm.turn span 或 tool.output 事件）');
+    lines.push(
+      '（没有可归因的能力/模型：trace 里没有 capability span、llm.turn span 或 tool.output 事件）',
+    );
   }
   return lines.join('\n') + '\n';
 }

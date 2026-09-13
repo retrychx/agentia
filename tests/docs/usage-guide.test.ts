@@ -116,13 +116,19 @@ function exportedNames(): Set<string> {
   const out = new Set<string>();
   const addList = (list: string) => {
     for (const part of list.split(',')) {
-      const name = part.trim().split(/\s+as\s+/).pop()!.trim();
+      const name = part
+        .trim()
+        .split(/\s+as\s+/)
+        .pop()!
+        .trim();
       if (name && /^[A-Za-z_$][\w$]*$/.test(name)) out.add(name);
     }
   };
   for (const m of text.matchAll(/export\s+(?:type\s+)?\{([^}]+)\}\s*from/g)) addList(m[1]);
   for (const m of text.matchAll(/export\s+(?:type\s+)?\{([^}]+)\}\s*;?/g)) addList(m[1]);
-  for (const m of text.matchAll(/export\s+(?:const|function|class|type|interface)\s+([A-Za-z_$][\w$]*)/g)) {
+  for (const m of text.matchAll(
+    /export\s+(?:const|function|class|type|interface)\s+([A-Za-z_$][\w$]*)/g,
+  )) {
     out.add(m[1]);
   }
   return out;

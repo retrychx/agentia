@@ -105,7 +105,11 @@ function redactString(s: string, patterns: readonly RegExp[]): string {
 }
 
 /** 递归深拷贝 + 抹值：原 trace 不被改动（其余 sink 仍拿得到原文） */
-function redactValue(value: unknown, keys: readonly string[], patterns: readonly RegExp[]): unknown {
+function redactValue(
+  value: unknown,
+  keys: readonly string[],
+  patterns: readonly RegExp[],
+): unknown {
   if (typeof value === 'string') return redactString(value, patterns);
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map((v) => redactValue(v, keys, patterns));
@@ -412,7 +416,9 @@ export function jsonLogSink(opts: JsonLogSinkOptions = {}): TraceSink {
         runId: trace.traceId, // ← 与 trace / 落库主键同一个，日志与 trace 的接缝就在这
         traceId: trace.traceId,
         status: trace.status,
-        ...(root && root.endedAt !== undefined ? { durationMs: root.endedAt - root.startedAt } : {}),
+        ...(root && root.endedAt !== undefined
+          ? { durationMs: root.endedAt - root.startedAt }
+          : {}),
         iterations: turns.length,
         tokens: {
           input: u.inputTokens,
@@ -422,7 +428,13 @@ export function jsonLogSink(opts: JsonLogSinkOptions = {}): TraceSink {
         },
         ...(u.costEstimate !== undefined ? { costUsd: u.costEstimate } : {}),
         ...(root?.error
-          ? { error: { type: root.error.type, message: root.error.message, retryable: root.error.retryable } }
+          ? {
+              error: {
+                type: root.error.type,
+                message: root.error.message,
+                retryable: root.error.retryable,
+              },
+            }
           : {}),
         ...labels,
       };

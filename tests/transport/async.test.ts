@@ -304,6 +304,10 @@ describe('AsyncRunner', () => {
     const t = runner.submit('go');
     const rec = await runner.awaitTask(t.taskId, { timeoutMs: 2_000 });
     assert.equal(rec.status, 'failed');
-    assert.equal(received?.aborted, true, '超时应 abort 传给 app 的 signal（真中止，不再白烧 token）');
+    assert.equal(
+      received?.aborted,
+      true,
+      '超时应 abort 传给 app 的 signal（真中止，不再白烧 token）',
+    );
   });
 });

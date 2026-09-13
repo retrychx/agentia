@@ -1,0 +1,66 @@
+{
+  // Biome 配置（lint + format 二合一，Rust 实现）。
+  // 为什么选 Biome 而非 eslint+prettier：单工具、单配置、无插件生态负担 —— 对一个
+  // 「零新增运行时依赖」的库来说，工具链也尽量收敛到一个二进制。
+  "$schema": "https://biomejs.dev/schemas/2.5.13/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/.astro",
+      "!**/package-lock.json",
+      // `.astro` 与独立 `.svg` 资产不进 lint 面：
+      // Biome 对 Astro 语法支持不全（会把确实用到的 frontmatter import 误报为未使用），
+      // 独立 SVG 是静态资产而非源码。官网版式另有 tests/docs/website-css.test.ts 钉不变量。
+      "!**/*.astro",
+      "!**/*.svg"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "assist": {
+    // 关掉 organizeImports：`src/index.ts` 的导出按层次（core→engine→runtime→…）人为分组，
+    // 自动排序会打乱这份「这就是分层」的可读顺序。
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "style": {
+        // 代码大量以 `!` 断言不变量（构造后必被 init 赋值、查表必命中），是有意为之。
+        "noNonNullAssertion": "off",
+        // 少量位置字符串拼接比模板串更直观，不强制统一。
+        "useTemplate": "off"
+      },
+      "complexity": {
+        // 泛型约束里的 `{}` / `Function` 是刻意写法（如 Blackboard 声明合并锚点、回调签名）。
+        "noBannedTypes": "off"
+      },
+      "suspicious": {
+        // 边界适配层（模型响应解析、duck-typed 桥）用 any 是刻意的 —— 保留为警告而非错误。
+        "noExplicitAny": "warn"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always",
+      "bracketSpacing": true
+    }
+  }
+}

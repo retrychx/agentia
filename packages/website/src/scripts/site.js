@@ -112,7 +112,14 @@ import Lenis from 'lenis';
       nodes.forEach((n, i) => {
         if (n.hub) {
           const pulse = 1 + 0.12 * Math.sin(time * 1.6);
-          const halo = ctx.createRadialGradient(pos[i].x, pos[i].y, 0, pos[i].x, pos[i].y, 26 * pulse);
+          const halo = ctx.createRadialGradient(
+            pos[i].x,
+            pos[i].y,
+            0,
+            pos[i].x,
+            pos[i].y,
+            26 * pulse,
+          );
           halo.addColorStop(0, `rgba(${ACCENT},0.30)`);
           halo.addColorStop(1, `rgba(${ACCENT},0)`);
           ctx.fillStyle = halo;

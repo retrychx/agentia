@@ -27,7 +27,17 @@ function traceWith(spans: Span[], over: Partial<Trace> = {}): Trace {
     rootSpanId: 'root',
     status: 'ok',
     totalUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
-    spans: [span({ spanId: 'root', kind: 'run', name: 'agent.run', parentSpanId: null, startedAt: 0, endedAt: 500 }), ...spans],
+    spans: [
+      span({
+        spanId: 'root',
+        kind: 'run',
+        name: 'agent.run',
+        parentSpanId: null,
+        startedAt: 0,
+        endedAt: 500,
+      }),
+      ...spans,
+    ],
     ...over,
   };
 }
@@ -41,10 +51,20 @@ describe('G1 buildRunReport', () => {
         name: 'claude-opus-5',
         startedAt: 10,
         endedAt: 110,
-        usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.01 },
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.01,
+        },
         events: [
           { time: 50, name: 'tool.output', body: { tool: 'search', ok: true, durationMs: 200 } },
-          { time: 60, name: 'tool.output', body: { tool: 'fetch', ok: false, durationMs: 10, errorKind: 'threw' } },
+          {
+            time: 60,
+            name: 'tool.output',
+            body: { tool: 'fetch', ok: false, durationMs: 10, errorKind: 'threw' },
+          },
         ],
       }),
       span({
@@ -54,7 +74,13 @@ describe('G1 buildRunReport', () => {
         attributes: { subagent: 'researcher' },
         startedAt: 200,
         endedAt: 400,
-        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.002 },
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.002,
+        },
       }),
     ]);
     const r = buildRunReport(trace);
@@ -69,7 +95,12 @@ describe('G1 buildRunReport', () => {
     );
     const search = r.capabilities[0]!;
     assert.deepEqual(
-      { calls: search.calls, errors: search.errors, total: search.durationMs.total, max: search.durationMs.max },
+      {
+        calls: search.calls,
+        errors: search.errors,
+        total: search.durationMs.total,
+        max: search.durationMs.max,
+      },
       { calls: 1, errors: 0, total: 200, max: 200 },
     );
     assert.equal(search.tokens, null, '工具没有 token 语义');
@@ -116,7 +147,9 @@ describe('G1 mergeRunReports', () => {
           kind: 'llm.turn',
           name: 'm',
           usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
-          events: [{ time: 1, name: 'tool.output', body: { tool: 'slow', ok: true, durationMs: 300 } }],
+          events: [
+            { time: 1, name: 'tool.output', body: { tool: 'slow', ok: true, durationMs: 300 } },
+          ],
         }),
       ]),
     );
@@ -152,7 +185,12 @@ describe('G1 mergeRunReports', () => {
     const bad = buildRunReport(traceWith([], { status: 'error' }));
     const unpriced = buildRunReport(
       traceWith([
-        span({ spanId: 't', kind: 'llm.turn', name: 'x', usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 } }),
+        span({
+          spanId: 't',
+          kind: 'llm.turn',
+          name: 'x',
+          usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        }),
       ]),
     );
     const merged = mergeRunReports([ok, bad, unpriced]);
@@ -178,7 +216,9 @@ describe('G1 renderRunReport（CLI / 日志用）', () => {
         startedAt: 10,
         endedAt: 210,
         usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0 },
-        events: [{ time: 50, name: 'tool.output', body: { tool: 'search', ok: true, durationMs: 200 } }],
+        events: [
+          { time: 50, name: 'tool.output', body: { tool: 'search', ok: true, durationMs: 200 } },
+        ],
       }),
     ]);
     const text = renderRunReport(buildRunReport(trace));

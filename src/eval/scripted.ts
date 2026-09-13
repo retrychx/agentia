@@ -46,9 +46,14 @@ export function scriptedClient(steps: ScriptedStep[]): ModelClient {
                 `scriptedClient 脚本耗尽：第 ${cursor + 1} 次调用模型，但只给了 ${steps.length} 步`,
               );
             }
-            const message = (await (typeof step === 'function' ? step(params) : step)) as unknown as Anthropic.Message;
+            const message = (await (typeof step === 'function'
+              ? step(params)
+              : step)) as unknown as Anthropic.Message;
             // 真的逐块吐文本 —— onText / SSE 链路在 eval 里按真实路径走一遍
-            for (const block of (message.content ?? []) as Array<{ type?: string; text?: string }>) {
+            for (const block of (message.content ?? []) as Array<{
+              type?: string;
+              text?: string;
+            }>) {
               if (block.type === 'text' && block.text) {
                 for (const h of handlers) h(block.text);
               }

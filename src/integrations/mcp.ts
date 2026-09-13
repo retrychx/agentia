@@ -69,7 +69,10 @@ export const MCP_DEFAULT_TIMEOUT_MS = 60_000;
  * 调用不回去的名字，比启动期报错难查得多。
  */
 function normalizeToolName(raw: string): string {
-  const cleaned = raw.trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  const cleaned = raw
+    .trim()
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
   return cleaned;
 }
 

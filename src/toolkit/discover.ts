@@ -92,7 +92,10 @@ async function discoverOne(dir: string): Promise<Provider[]> {
  * `isDirectory()` 为 false，直接用会把真能力目录静默漏掉、菜单空着却不报错 ——
  * 软链要 stat 解引用后再判。悬空软链按非目录处理。
  */
-function isDirLike(full: string, e: { isDirectory(): boolean; isSymbolicLink(): boolean }): boolean {
+function isDirLike(
+  full: string,
+  e: { isDirectory(): boolean; isSymbolicLink(): boolean },
+): boolean {
   if (e.isDirectory()) return true;
   if (!e.isSymbolicLink()) return false;
   try {

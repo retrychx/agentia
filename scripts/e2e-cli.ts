@@ -27,7 +27,14 @@ try {
   // —— 1) create：项目骨架 ——
   cli(['create', 'demo-app', '--dir', tmp], tmp);
   const proj = join(tmp, 'demo-app');
-  for (const f of ['package.json', 'tsconfig.json', 'src/main.ts', 'src/registry.ts', 'src/tools/hello/index.ts', 'AGENTS.md']) {
+  for (const f of [
+    'package.json',
+    'tsconfig.json',
+    'src/main.ts',
+    'src/registry.ts',
+    'src/tools/hello/index.ts',
+    'AGENTS.md',
+  ]) {
     assert(existsSync(join(proj, f)), `create 缺文件: ${f}`);
   }
   // 四个分类目录都建出来（空目录靠 .gitkeep 进版本库）：目录名自解释，用户一看就知道新能力往哪放
@@ -69,7 +76,10 @@ try {
   assert(existsSync(join(proj, 'src/tools/echo-back/index.ts')), 'tool 应落在 src/tools/');
   assert(existsSync(join(proj, 'src/skills/note-writer/index.ts')), 'skill 应落在 src/skills/');
   assert(existsSync(join(proj, 'src/prompts/style-guide/index.ts')), 'prompt 应落在 src/prompts/');
-  assert(existsSync(join(proj, 'src/subagents/doc-reviewer/index.ts')), 'subagent 应落在 src/subagents/');
+  assert(
+    existsSync(join(proj, 'src/subagents/doc-reviewer/index.ts')),
+    'subagent 应落在 src/subagents/',
+  );
 
   // —— 3) 注册表 codemod ——
   const registry = readFileSync(join(proj, 'src/registry.ts'), 'utf8');
@@ -77,7 +87,13 @@ try {
     assert(registry.includes(`'${tok}'`), `src/registry.ts 缺 token: ${tok}`);
   }
   // import 前缀按分类目录走（相对 src/registry.ts）
-  for (const rel of ['./tools/hello/index.js', './subagents/doc-reviewer/index.js', './skills/note-writer/index.js', './prompts/style-guide/index.js', './tools/echo-back/index.js']) {
+  for (const rel of [
+    './tools/hello/index.js',
+    './subagents/doc-reviewer/index.js',
+    './skills/note-writer/index.js',
+    './prompts/style-guide/index.js',
+    './tools/echo-back/index.js',
+  ]) {
     assert(registry.includes(`from '${rel}'`), `src/registry.ts 缺 import: ${rel}`);
   }
 
@@ -95,11 +111,14 @@ try {
   symlinkSync(repoRoot, join(proj, 'node_modules', '@migor', 'agentia'), 'dir');
 
   // —— 5) 发现机制：discoverProviders（四分类目录数组，顺序即装配顺序）——
-  const capabilityDirs = ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'].map((d) => join(proj, d));
+  const capabilityDirs = ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'].map((d) =>
+    join(proj, d),
+  );
   const discovered = await discoverProviders(capabilityDirs);
   const tokens = discovered.map((p) => p.provide).sort();
   assert(
-    JSON.stringify(tokens) === JSON.stringify(['doc-reviewer', 'echo-back', 'hello', 'note-writer', 'style-guide']),
+    JSON.stringify(tokens) ===
+      JSON.stringify(['doc-reviewer', 'echo-back', 'hello', 'note-writer', 'style-guide']),
     `发现 token=${tokens}`,
   );
 
@@ -124,7 +143,8 @@ try {
   });
   const menu = app.tools.map((t) => t.name).sort();
   assert(
-    JSON.stringify(menu) === JSON.stringify(['doc_reviewer', 'echo_back', 'hello', 'note_writer', 'style_guide']),
+    JSON.stringify(menu) ===
+      JSON.stringify(['doc_reviewer', 'echo_back', 'hello', 'note_writer', 'style_guide']),
     `菜单=${menu}`,
   );
 
@@ -132,7 +152,10 @@ try {
   assert(run.status === 'succeeded', `run.status=${run.status}`);
   assert(result.stopReason === 'end_turn', `stopReason=${result.stopReason}`);
   const s = JSON.stringify(secondParams);
-  assert(s.includes('tool_result') && s.includes('echo: smoke'), '发现的工具应真的被执行并回 tool_result');
+  assert(
+    s.includes('tool_result') && s.includes('echo: smoke'),
+    '发现的工具应真的被执行并回 tool_result',
+  );
 
   // —— 7) 注册表路线：import 生成的 src/registry.ts 显式装配 ——
   const registryMod = await import(`${proj}/src/registry.ts`);
@@ -144,15 +167,21 @@ try {
   assert(app2.tools.length === 5, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
 
   console.log('E2E-CLI PASS');
-  console.log(JSON.stringify({
-    scaffolded: proj.replace(tmp, '<tmp>'),
-    discoveredTokens: tokens,
-    menu,
-    runStatus: run.status,
-    toolResultReachedModel: s.includes('echo: smoke'),
-    registryRouteTools: app2.tools.length,
-    projectAgentsMdBytes: guide.length,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        scaffolded: proj.replace(tmp, '<tmp>'),
+        discoveredTokens: tokens,
+        menu,
+        runStatus: run.status,
+        toolResultReachedModel: s.includes('echo: smoke'),
+        registryRouteTools: app2.tools.length,
+        projectAgentsMdBytes: guide.length,
+      },
+      null,
+      2,
+    ),
+  );
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

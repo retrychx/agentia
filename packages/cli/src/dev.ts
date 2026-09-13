@@ -28,7 +28,9 @@ export function devServer(): number {
   const cwd = process.cwd();
   const entry = join(cwd, 'src', 'main.ts');
   if (!existsSync(entry)) {
-    console.error('错误：当前目录下未找到 src/main.ts，请先用 agentia create <name> 创建项目（或 cd 到项目根目录）');
+    console.error(
+      '错误：当前目录下未找到 src/main.ts，请先用 agentia create <name> 创建项目（或 cd 到项目根目录）',
+    );
     process.exitCode = 1;
     return 1;
   }

@@ -49,7 +49,12 @@ export function summarizeTrace(trace) {
       if (span.endedAt != null) addMs(a, span.endedAt - span.startedAt);
       const u = span.usage;
       if (u) {
-        a.tokens = (a.tokens || 0) + (u.inputTokens || 0) + (u.outputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheCreationTokens || 0);
+        a.tokens =
+          (a.tokens || 0) +
+          (u.inputTokens || 0) +
+          (u.outputTokens || 0) +
+          (u.cacheReadTokens || 0) +
+          (u.cacheCreationTokens || 0);
         if (u.costEstimate != null) a.costUsd = (a.costUsd || 0) + u.costEstimate;
       }
       continue;
@@ -78,7 +83,12 @@ export function renderSummary(rows) {
   const body = rows
     .map((r) => {
       const err = r.errors > 0 ? `<span class="tv-sum-err">${r.errors}</span>` : '0';
-      const cost = r.costUsd != null ? (r.costUsd < 0.000001 ? r.costUsd.toExponential(2) : r.costUsd.toFixed(6)) : '-';
+      const cost =
+        r.costUsd != null
+          ? r.costUsd < 0.000001
+            ? r.costUsd.toExponential(2)
+            : r.costUsd.toFixed(6)
+          : '-';
       return `<tr><td class="tv-sum-capability">${escapeHtml(r.capability)}</td><td>${r.calls}</td><td>${err}</td><td>${fmtMs(r.totalMs)}</td><td>${fmtMs(r.maxMs)}</td><td>${r.tokens != null ? r.tokens : '-'}</td><td>${cost}</td></tr>`;
     })
     .join('');
@@ -89,5 +99,8 @@ export function renderSummary(rows) {
 }
 
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  return String(s).replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+  );
 }

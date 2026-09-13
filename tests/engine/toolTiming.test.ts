@@ -20,7 +20,8 @@ const SCHEMA: AgentTool['inputSchema'] = {
 
 function toolOutputEvent(trace: Trace): Record<string, unknown> {
   for (const s of trace.spans) {
-    for (const e of s.events) if (e.name === 'tool.output') return e.body as Record<string, unknown>;
+    for (const e of s.events)
+      if (e.name === 'tool.output') return e.body as Record<string, unknown>;
   }
   throw new Error('trace 里没有 tool.output 事件');
 }
@@ -58,7 +59,10 @@ describe('E1 工具级时序（tool.output 事件带 durationMs / ok / errorKind
     assert.equal(body.ok, true);
     assert.equal('errorKind' in body, false, '成功路径不带 errorKind');
     assert.equal(typeof body.durationMs, 'number');
-    assert.ok((body.durationMs as number) >= 5, `durationMs 应覆盖工具内部 5ms 等待，实际 ${body.durationMs}`);
+    assert.ok(
+      (body.durationMs as number) >= 5,
+      `durationMs 应覆盖工具内部 5ms 等待，实际 ${body.durationMs}`,
+    );
   });
 
   it('工具抛错：ok=false + errorKind=threw，且 run 不失败（is_error 回模型）', async () => {

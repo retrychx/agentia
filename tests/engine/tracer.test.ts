@@ -9,7 +9,9 @@ describe('TraceRecorder', () => {
     const turn = r.begin('llm.turn', 'model-x', root);
     r.setAttribute(turn, 'input_tokens', 10);
     r.event(turn, 'tool.input', { tool: 't' });
-    r.end(turn, { usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 } });
+    r.end(turn, {
+      usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    });
     r.end(root, { status: 'ok' });
 
     const trace = r.snapshot('ok');

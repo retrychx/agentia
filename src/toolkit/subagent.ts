@@ -33,7 +33,10 @@ export interface SubAgentSpec {
    * - (task) => SystemParam | Promise<SystemParam> → 按任务动态拼，框架不附加（作者全权）。
    * 注意：这是裁剪上下文的源头 —— 只写子 agent 完成该任务所需的角色/约束。
    */
-  system: string | SystemPrompt | ((task: Record<string, unknown>) => SystemParam | Promise<SystemParam>);
+  system:
+    | string
+    | SystemPrompt
+    | ((task: Record<string, unknown>) => SystemParam | Promise<SystemParam>);
   /** 子 agent 可调工具：容器 provider token 列表（复用其 @Tool 菜单）；缺省 = 无工具纯文本 */
   tools?: string[];
   model?: string;
@@ -59,7 +62,7 @@ const subAgentSpecs = new WeakMap<Function, SubAgentSpec>();
 
 /** 方法装饰器：登记子 agent spec。被装饰方法体不执行 —— 运行时拉起独立循环。 */
 export function SubAgent(spec: SubAgentSpec) {
-  return function (value: Function, context: CapabilityDecoratorContext): void {
+  return (value: Function, context: CapabilityDecoratorContext): void => {
     assertMethodTarget(context, '@SubAgent');
     subAgentSpecs.set(value, spec);
   };
@@ -157,9 +160,9 @@ export function subagentToTool(
           return loop.finalText;
         }
         // 子 agent 没正常收尾 → 作为可重试语义的失败回主 agent（is_error）
-        const report = `subagent(${name}) ${loop.stopReason}: ${
-          (loop.finalText || loop.error?.message || '').slice(0, 2000)
-        }`;
+        const report = `subagent(${name}) ${loop.stopReason}: ${(
+          loop.finalText || loop.error?.message || ''
+        ).slice(0, 2000)}`;
         const error: SpanError = loop.error ?? {
           type: 'agent_error',
           message: report,

@@ -67,7 +67,9 @@ export class RedisTaskStore implements TaskStore {
     opts: RedisTaskStoreOptions = {},
   ) {
     if (!client.scanIterator && !client.keys) {
-      throw new Error('RedisTaskStore 需要 client 提供 scanIterator 或 keys 之一（list/clear 依赖按键枚举）');
+      throw new Error(
+        'RedisTaskStore 需要 client 提供 scanIterator 或 keys 之一（list/clear 依赖按键枚举）',
+      );
     }
     const prefix = opts.prefix ?? 'agentia:';
     if (!prefix) {
@@ -78,7 +80,9 @@ export class RedisTaskStore implements TaskStore {
     const ttl = opts.ttlSeconds ?? 0;
     if (!(ttl >= 0)) {
       // !(ttl >= 0) 同时拦 NaN —— NaN 会让 `ttl > 0` 恒假，静默把 TTL 关掉
-      throw new Error(`RedisTaskStore 的 ttlSeconds 必须为 ≥ 0 的数（0 = 不设 TTL），收到 ${opts.ttlSeconds}`);
+      throw new Error(
+        `RedisTaskStore 的 ttlSeconds 必须为 ≥ 0 的数（0 = 不设 TTL），收到 ${opts.ttlSeconds}`,
+      );
     }
     this.ttlSeconds = ttl;
   }
@@ -117,7 +121,8 @@ export class RedisTaskStore implements TaskStore {
       if (rec) recs.push(rec);
     }
     recs.sort(
-      (a, b) => a.createdAt - b.createdAt || (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0),
+      (a, b) =>
+        a.createdAt - b.createdAt || (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0),
     );
     return recs;
   }

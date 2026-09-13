@@ -38,7 +38,10 @@ describe('collect*（装饰器能力收集）', () => {
       }
     }
     class C extends P {}
-    assert.deepEqual(collectTools(new C()).map((t) => t.name), ['base_tool']);
+    assert.deepEqual(
+      collectTools(new C()).map((t) => t.name),
+      ['base_tool'],
+    );
   });
 
   it('override 语义：子类未装饰的 override 继承父类 spec 且调到子类实现', async () => {
@@ -83,7 +86,10 @@ describe('collect*（装饰器能力收集）', () => {
     const skills = collectSkills(inst);
     assert.equal(skills.length, 1, '父类 spec 继承，只出一个能力');
     assert.equal(
-      await skills[0].invoke({}, { llm: async () => ({ text: '', stopReason: 'end_turn' as const }) }),
+      await skills[0].invoke(
+        {},
+        { llm: async () => ({ text: '', stopReason: 'end_turn' as const }) },
+      ),
       'child-skill',
       '必须调用实例上的实现',
     );
@@ -99,7 +105,10 @@ describe('collect*（装饰器能力收集）', () => {
       reviewer(_input: unknown): void {}
 
       @Skill({ description: 'd' })
-      async writer(_input: unknown, ctx: { llm(o: { prompt: string }): Promise<{ text: string }> }) {
+      async writer(
+        _input: unknown,
+        ctx: { llm(o: { prompt: string }): Promise<{ text: string }> },
+      ) {
         const r = await ctx.llm({ prompt: 'x' });
         return r.text;
       }
@@ -122,7 +131,10 @@ describe('collect*（装饰器能力收集）', () => {
     const skills = collectSkills(inst);
     assert.equal(skills.length, 1);
     assert.equal(skills[0].name, 'writer');
-    const out = await skills[0].invoke({}, { llm: async () => ({ text: 'llm-done', stopReason: 'end_turn' as const }) });
+    const out = await skills[0].invoke(
+      {},
+      { llm: async () => ({ text: 'llm-done', stopReason: 'end_turn' as const }) },
+    );
     assert.equal(out, 'llm-done');
 
     const prompts = collectPrompts(inst);
@@ -150,7 +162,11 @@ describe('collect*（装饰器能力收集）', () => {
 
     // 非私有（含静态）照常登记
     assert.doesNotThrow(() =>
-      Tool({ description: 'd', schema: OBJ })(() => {}, { kind: 'method', name: 'x', private: false }),
+      Tool({ description: 'd', schema: OBJ })(() => {}, {
+        kind: 'method',
+        name: 'x',
+        private: false,
+      }),
     );
   });
 
@@ -221,7 +237,10 @@ describe('collect*（装饰器能力收集）', () => {
         return 1;
       }
     }
-    assert.deepEqual(collectTools(new G()).map((t) => t.name), ['ok']);
+    assert.deepEqual(
+      collectTools(new G()).map((t) => t.name),
+      ['ok'],
+    );
   });
 
   it('capabilityName：symbol 方法名且无显式 name → 抛错文案带符号信息', () => {
@@ -251,6 +270,9 @@ describe('collect*（装饰器能力收集）', () => {
       }
     }
     const tools = collectTools(new Named());
-    assert.deepEqual(tools.map((t) => t.name), ['hidden_tool']);
+    assert.deepEqual(
+      tools.map((t) => t.name),
+      ['hidden_tool'],
+    );
   });
 });

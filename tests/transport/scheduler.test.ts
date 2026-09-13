@@ -32,8 +32,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
  * 取任务记录快照。`AsyncRunner.list` 的返回类型是 MaybePromise（异步 store 下是 Promise）；
  * 本套用例用缺省 InMemoryTaskStore（同步），断言成同步数组以便直接 `.length` / `.map`。
  */
-const listOf = (runner: AsyncRunner): TaskRecord[] =>
-  runner.list() as TaskRecord[]; // 同步 store：断言掉 MaybePromise 的 Promise 分支
+const listOf = (runner: AsyncRunner): TaskRecord[] => runner.list() as TaskRecord[]; // 同步 store：断言掉 MaybePromise 的 Promise 分支
 
 describe('Scheduler', () => {
   it('at：定时器 unref（与 every 一致，不阻止宿主进程退出）', () => {
@@ -154,7 +153,10 @@ describe('Scheduler', () => {
       async run() {
         calls++;
         await gate;
-        return { run: { runId: `r-${calls}`, status: 'succeeded' as const }, result: {} as AgentRunResult };
+        return {
+          run: { runId: `r-${calls}`, status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
       },
     };
     const runner = new AsyncRunner(slow);
@@ -184,7 +186,10 @@ describe('Scheduler', () => {
       async run() {
         calls++;
         await gate;
-        return { run: { runId: `r-${calls}`, status: 'succeeded' as const }, result: {} as AgentRunResult };
+        return {
+          run: { runId: `r-${calls}`, status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
       },
     };
     const runner = new AsyncRunner(slow);

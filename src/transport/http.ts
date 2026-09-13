@@ -301,10 +301,7 @@ function sendShuttingDown(req: IncomingMessage, res: ServerResponse): void {
   sendJson(res, 503, { error: '服务正在优雅停机，不再接受新任务' });
 }
 
-export function createHttpHandler(
-  app: AppCallable,
-  opts: HttpHandlerOptions = {},
-): HttpHandler {
+export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {}): HttpHandler {
   const runner = opts.runner ?? new AsyncRunner(app);
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxConcurrentRuns = opts.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
@@ -332,8 +329,7 @@ export function createHttpHandler(
   const drain = async (drainOpts: { timeoutMs?: number } = {}): Promise<boolean> => {
     draining = true; // 先拒新单，再等存量
     const timeoutMs = drainOpts.timeoutMs ?? 0;
-    const deadline =
-      timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
+    const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
     const remaining = (): number =>
       deadline === Number.POSITIVE_INFINITY ? 0 : Math.max(0, deadline - Date.now());
 
@@ -342,8 +338,7 @@ export function createHttpHandler(
       deadline === Number.POSITIVE_INFINITY ? {} : { timeoutMs: remaining() },
     );
     // 同步 /run（含 SSE 流）也在 inFlightRuns 里计数 —— 同样给到 deadline
-    const runsDrained =
-      inFlightRuns === 0 || (await waitUntil(() => inFlightRuns === 0, deadline));
+    const runsDrained = inFlightRuns === 0 || (await waitUntil(() => inFlightRuns === 0, deadline));
     // 收口：超时仍挂着的 SSE 流强制关闭（其 run 因 res 'close' 中止，stopReason='aborted'）
     for (const close of [...openSse]) close();
     return tasksDrained && runsDrained;
@@ -403,7 +398,7 @@ export function createHttpHandler(
         }
         const input = await parseJsonBody(req, res, maxBodyBytes);
         if (input === PARSE_FAILED) return;
-        let messages;
+        let messages: ReturnType<typeof normalizeMessages>;
         try {
           messages = normalizeMessages(input);
         } catch (e) {

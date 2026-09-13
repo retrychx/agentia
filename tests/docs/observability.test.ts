@@ -7,7 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { SqliteTaskStore } from '../../src/index.js';
 import type { Span, Trace, TraceSink } from '../../src/index.js';
-import { jsonLogSink, redactSink, sampleSink, sqliteTraceSink } from '../../examples/observability/src/index.js';
+import {
+  jsonLogSink,
+  redactSink,
+  sampleSink,
+  sqliteTraceSink,
+} from '../../examples/observability/src/index.js';
 
 /**
  * 生产可观测栈配方的校验：`docs/observability.md` 与 `examples/observability/`（本地小包）。
@@ -131,10 +136,7 @@ describe('可观测配方：文档与示例互相覆盖', () => {
 
   it('spec §9.3 不再把「同库存储」说成内建', () => {
     const spec = readFileSync(join(repoRoot, 'docs', 'spec.md'), 'utf8');
-    assert.ok(
-      spec.includes('不是框架内建'),
-      'spec §9.3 应明确「同库存储」是 sink 配方而非内建',
-    );
+    assert.ok(spec.includes('不是框架内建'), 'spec §9.3 应明确「同库存储」是 sink 配方而非内建');
   });
 });
 
@@ -285,7 +287,9 @@ describe('配方 ① sampleSink：采样', () => {
     const seen: boolean[] = [];
     for (let i = 0; i < 2; i++) {
       const r = recorder();
-      sampleSink({ rate: 0.5, sinks: [r] }).export(makeTrace({ traceId: 'stable-run', status: 'ok' }));
+      sampleSink({ rate: 0.5, sinks: [r] }).export(
+        makeTrace({ traceId: 'stable-run', status: 'ok' }),
+      );
       seen.push(r.seen.length === 1);
     }
     assert.equal(seen[0], seen[1], '同一 runId 的采样判定必须稳定');
@@ -341,7 +345,10 @@ describe('组装（文档 §2.5 那段）与稳健性', () => {
     });
     await sink.export(makeTrace()); // 组合链是 async（框架 await 每个 sink）
 
-    assert.equal(store.getTrace('run-1')!.spans.find((s) => s.spanId === 'turn-1')!.attributes.authorization, '[REDACTED]');
+    assert.equal(
+      store.getTrace('run-1')!.spans.find((s) => s.spanId === 'turn-1')!.attributes.authorization,
+      '[REDACTED]',
+    );
     assert.equal((JSON.parse(lines[0]!) as { runId: string }).runId, 'run-1');
     db.close();
   });

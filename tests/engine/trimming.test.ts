@@ -36,8 +36,14 @@ describe('长上下文策略', () => {
   it('trimToolPairs：丢旧工具对、保留最近 keepToolPairs 对', () => {
     const msgs: Anthropic.MessageParam[] = [];
     for (let i = 0; i < 5; i++) {
-      msgs.push({ role: 'assistant', content: [{ type: 'tool_use', id: `t${i}`, name: 'x', input: {} }] });
-      msgs.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'r' }] });
+      msgs.push({
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: `t${i}`, name: 'x', input: {} }],
+      });
+      msgs.push({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'r' }],
+      });
     }
     const trimmed = trimToolPairs(msgs, { keepToolPairs: 2 });
     assert.equal(trimmed.length, 4); // 5 对丢 3 对留 2 对
@@ -52,7 +58,10 @@ describe('长上下文策略', () => {
       role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant',
       content: `m${i}`,
     }));
-    const out = await compactMessages(msgs, { keepRecent: 2, summarize: (h) => `SUM(${h.length})` });
+    const out = await compactMessages(msgs, {
+      keepRecent: 2,
+      summarize: (h) => `SUM(${h.length})`,
+    });
     assert.equal(out.length, 2); // 摘要并入尾段首条普通 user + 末尾 assistant
     assert.ok(JSON.stringify(out[0]).includes('SUM('));
     assert.ok(JSON.stringify(out[1]).includes('m9'));
@@ -60,7 +69,12 @@ describe('长上下文策略', () => {
 
   it('createBudgetPolicy：预算内原样放行；超预算先裁剪；滞回防连续压缩', async () => {
     const small: Anthropic.MessageParam[] = [{ role: 'user', content: 'hi' }];
-    const policy = createBudgetPolicy({ budgetTokens: 100, summarize: () => 'S', keepRecent: 1, compactEvery: 2 });
+    const policy = createBudgetPolicy({
+      budgetTokens: 100,
+      summarize: () => 'S',
+      keepRecent: 1,
+      compactEvery: 2,
+    });
     assert.equal(await policy.beforeTurn(small, { iteration: 0, model: 'm' }), small);
 
     const big: Anthropic.MessageParam[] = Array.from({ length: 20 }, (_, i) => ({
@@ -115,7 +129,11 @@ describe('长上下文策略', () => {
       });
     }
     // 无摘要器 → 只做 context editing，不会压缩；budgetTokens 故意极小
-    const policy = createBudgetPolicy({ budgetTokens: 10, editBeforeCompact: true, keepToolPairs: 2 });
+    const policy = createBudgetPolicy({
+      budgetTokens: 10,
+      editBeforeCompact: true,
+      keepToolPairs: 2,
+    });
     const out = await policy.beforeTurn(msgs, { iteration: 0, model: 'm' });
     assert.ok(JSON.stringify(out).includes('t3'), '保留最近 2 对');
     assert.ok(!JSON.stringify(out).includes('t0'), '丢掉更旧的对');
@@ -156,7 +174,10 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
   const sample = (): Anthropic.MessageParam[] => [
     { role: 'user', content: '请处理' },
     { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'x', input: { a: 1 } }] },
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'r'.repeat(200) }] },
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 't0', content: 'r'.repeat(200) }],
+    },
     { role: 'assistant', content: [{ type: 'text', text: '结果' }] },
   ];
 
@@ -212,7 +233,10 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
     await policy.beforeTurn(msgs, { iteration: 2, model: 'm' });
     const second = calls - first;
     // 全量重算会是整段历史（8 条）→ 调用数远超新增 4 条
-    assert.ok(second <= 8, `追加 4 条只该估这 4 条（≤8 次调用），实际 ${second} 次 —— 退化成全量重算了`);
+    assert.ok(
+      second <= 8,
+      `追加 4 条只该估这 4 条（≤8 次调用），实际 ${second} 次 —— 退化成全量重算了`,
+    );
   });
 
   it('同数组、长度不减、但内容被原地换掉 → 必须重算（只有长度判据会漏）', () => {

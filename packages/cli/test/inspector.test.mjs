@@ -17,9 +17,23 @@ const sample = (id) => ({
   status: 'ok',
   totalUsage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
   spans: [
-    { spanId: 'r', parentSpanId: null, kind: 'run', name: 'demo', startedAt: 0, endedAt: 100, status: 'ok' },
     {
-      spanId: 't', parentSpanId: 'r', kind: 'llm.turn', name: 'm', startedAt: 5, endedAt: 50, status: 'ok',
+      spanId: 'r',
+      parentSpanId: null,
+      kind: 'run',
+      name: 'demo',
+      startedAt: 0,
+      endedAt: 100,
+      status: 'ok',
+    },
+    {
+      spanId: 't',
+      parentSpanId: 'r',
+      kind: 'llm.turn',
+      name: 'm',
+      startedAt: 5,
+      endedAt: 50,
+      status: 'ok',
       usage: { inputTokens: 10, outputTokens: 5 },
       events: [{ time: 6, name: 'tool.input', body: { tool: 'echo', input: { a: 1 } } }],
     },
@@ -27,7 +41,11 @@ const sample = (id) => ({
 });
 
 const post = (base, path, body) =>
-  fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  fetch(base + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 
 describe('inspector 服务', () => {
   it('ingest → 列表 → 单条；面板与静态资源可访问', async (t) => {

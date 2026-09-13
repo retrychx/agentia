@@ -5,11 +5,9 @@ import { createOpenAIClient } from '../../src/integrations/openai.js';
 
 /** 把事件数组编成 SSE 报文（`[DONE]` 原样写） */
 function sseBody(events: Array<Record<string, unknown> | '[DONE]'>, eol = '\n'): string {
-  return (
-    events
-      .map((e) => `data: ${e === '[DONE]' ? '[DONE]' : JSON.stringify(e)}${eol}${eol}`)
-      .join('')
-  );
+  return events
+    .map((e) => `data: ${e === '[DONE]' ? '[DONE]' : JSON.stringify(e)}${eol}${eol}`)
+    .join('');
 }
 
 /** 返回 SSE 报文的 fetchImpl；也可指定 content-type 与 status */
@@ -57,9 +55,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
 
   it('请求带 stream:true 与 stream_options.include_usage', async () => {
     const { fetchImpl, requests } = sseFetch(sseBody(['[DONE]']));
-    await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.equal(requests[0].json.stream, true);
     assert.deepEqual(requests[0].json.stream_options, { include_usage: true });
   });
@@ -72,9 +68,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       '[DONE]',
     ]);
     const { fetchImpl } = sseFetch(body);
-    const msg = await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.equal(msg.usage.input_tokens, 11);
     assert.equal(msg.usage.output_tokens, 7);
     assert.equal(msg.usage.cache_read_input_tokens, 0);
@@ -87,7 +81,9 @@ describe('OpenAI 适配器：真流式（C3）', () => {
         choices: [
           {
             delta: {
-              tool_calls: [{ index: 0, id: 'call_a', function: { name: 'get_weather', arguments: '' } }],
+              tool_calls: [
+                { index: 0, id: 'call_a', function: { name: 'get_weather', arguments: '' } },
+              ],
             },
           },
         ],
@@ -99,9 +95,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       '[DONE]',
     ]);
     const { fetchImpl } = sseFetch(body);
-    const msg = await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.deepEqual(msg.content, [
       { type: 'tool_use', id: 'call_a', name: 'get_weather', input: { city: '北京' } },
     ]);
@@ -129,9 +123,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       '[DONE]',
     ]);
     const { fetchImpl } = sseFetch(body);
-    const msg = await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.deepEqual(msg.content, [
       { type: 'tool_use', id: 'call_a', name: 'f_a', input: { a: 1 } },
       { type: 'tool_use', id: 'call_b', name: 'f_b', input: { b: 2 } },
@@ -163,22 +155,22 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       '[DONE]',
     ]);
     const { fetchImpl } = sseFetch(body);
-    const msg = await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.deepEqual(msg.content, [{ type: 'tool_use', id: 'call_a', name: 'f_a', input: {} }]);
   });
 
   it('端点没给 tool_call id → 补一个（空 id 会让 tool_result 配对失败）', async () => {
     const body = sseBody([
-      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'f', arguments: '{}' } }] } }] },
+      {
+        choices: [
+          { delta: { tool_calls: [{ index: 0, function: { name: 'f', arguments: '{}' } }] } },
+        ],
+      },
       { choices: [{ finish_reason: 'tool_calls', delta: {} }] },
       '[DONE]',
     ]);
     const { fetchImpl } = sseFetch(body);
-    const msg = await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.equal((msg.content[0] as Anthropic.ToolUseBlock).id, 'call_1');
   });
 
@@ -192,9 +184,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       '\r\n',
     );
     const { fetchImpl } = sseFetch(body);
-    const msg = await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.deepEqual(msg.content, [{ type: 'text', text: 'A' }]);
   });
 
@@ -205,9 +195,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       'data: {"choices":[{"delta":{"content":"的"}}]}\n\n' +
       'data: [DONE]\n\n';
     const { fetchImpl } = sseFetch(body);
-    const msg = await createOpenAIClient({ fetchImpl })
-      .messages.stream(BASE)
-      .finalMessage();
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.deepEqual(msg.content, [{ type: 'text', text: '好的' }]);
   });
 
@@ -227,9 +215,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       usage: { prompt_tokens: 1, completion_tokens: 1 },
     });
     const { fetchImpl, requests } = sseFetch(json, { contentType: 'application/json' });
-    await createOpenAIClient({ fetchImpl, stream: false })
-      .messages.stream(BASE)
-      .finalMessage();
+    await createOpenAIClient({ fetchImpl, stream: false }).messages.stream(BASE).finalMessage();
     assert.equal('stream' in requests[0].json, false);
     assert.equal('stream_options' in requests[0].json, false);
   });
@@ -286,9 +272,7 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
         messages: [
           {
             role: 'user',
-            content: [
-              { type: 'image', source: { type: 'url', url: 'https://x.test/a.png' } },
-            ],
+            content: [{ type: 'image', source: { type: 'url', url: 'https://x.test/a.png' } }],
           } as Anthropic.MessageParam,
         ],
       })
@@ -304,7 +288,9 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
       .messages.stream({
         model: 'gpt-x',
         max_tokens: 8,
-        messages: [{ role: 'user', content: [{ type: 'text', text: '只有文本' }] } as Anthropic.MessageParam],
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: '只有文本' }] } as Anthropic.MessageParam,
+        ],
       })
       .finalMessage();
     assert.equal(requests[0].json.messages[0].content, '只有文本');

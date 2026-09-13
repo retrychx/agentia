@@ -251,7 +251,8 @@ describe('B1 鉴权缝（authenticate）', () => {
         assert.equal((await fetch(`${base}/tasks/whatever`)).status, 401);
         assert.equal((await fetch(`${base}/nope`)).status, 401, '不暴露路径是否存在');
         assert.equal(
-          (await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'a' }) })).status,
+          (await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'a' }) }))
+            .status,
           401,
         );
       });
@@ -453,7 +454,10 @@ describe('B2 优雅停机（drain）', () => {
       assert.equal(drained, undefined, 'drain 必须等在飞任务，不能立刻返回');
 
       // 先验「已进停机」：新单立刻 503（drain 里 draining=true 在最前）
-      const rejected = await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'b' }) });
+      const rejected = await fetch(`${base}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify({ input: 'b' }),
+      });
       assert.equal(rejected.status, 503);
       assert.equal(rejected.headers.get('retry-after'), '1');
       assert.equal(
@@ -516,7 +520,9 @@ describe('B2 优雅停机（drain）', () => {
         opts?.onText?.('片段');
         started();
         // 挂住：只有被 abort（res close）才返回
-        await new Promise<void>((resolve) => opts?.signal?.addEventListener('abort', () => resolve()));
+        await new Promise<void>((resolve) =>
+          opts?.signal?.addEventListener('abort', () => resolve()),
+        );
         return { run: { runId: 'r-sse', status: 'failed' }, result: fakeResult('片段') };
       },
     };

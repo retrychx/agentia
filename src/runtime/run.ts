@@ -176,7 +176,8 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       }
       await flushSinks(options.sinks, run.result!.trace);
       // 失败路径：run.fail() 造的结果没有 typed（恒为 undefined），断言只为对齐返回类型
-      if (options.rethrow === false) return { run, result: run.result! as AgentRunResult<SchemaType<S>> };
+      if (options.rethrow === false)
+        return { run, result: run.result! as AgentRunResult<SchemaType<S>> };
       throw e;
     }
   });

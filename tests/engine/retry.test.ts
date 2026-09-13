@@ -28,14 +28,24 @@ describe('RetryOptions 归一（resolveRetry）', () => {
 
   it('缺省 isRetryable 走 classifyError：429 可重试、普通错误不可', () => {
     const r = resolveRetry(undefined)!;
-    assert.equal(r.isRetryable(Object.assign(new Error('x'), { status: 429 })), false, '普通 Error 不是 SDK 错误');
+    assert.equal(
+      r.isRetryable(Object.assign(new Error('x'), { status: 429 })),
+      false,
+      '普通 Error 不是 SDK 错误',
+    );
     assert.equal(r.isRetryable(new Error('boom')), false);
     assert.equal(classifyError(new Error('boom')).retryable, false);
   });
 });
 
 describe('backoffDelay（指数 + 上限 + 抖动）', () => {
-  const base = { ...DEFAULT_RETRY, maxAttempts: 5, jitter: 0, isRetryable: () => true, onRetry: () => {} };
+  const base = {
+    ...DEFAULT_RETRY,
+    maxAttempts: 5,
+    jitter: 0,
+    isRetryable: () => true,
+    onRetry: () => {},
+  };
 
   it('无抖动时按指数增长', () => {
     assert.equal(backoffDelay(1, base), 500);
@@ -73,6 +83,9 @@ describe('sleep（可中断）', () => {
   it('已中止的 signal → 立即 reject，不等待', async () => {
     const ac = new AbortController();
     ac.abort();
-    await assert.rejects(sleep(5000, ac.signal), (e: unknown) => (e as Error).name === 'AbortError');
+    await assert.rejects(
+      sleep(5000, ac.signal),
+      (e: unknown) => (e as Error).name === 'AbortError',
+    );
   });
 });

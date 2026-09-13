@@ -69,6 +69,14 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   一旦进了公共导出面，`tests/docs/api-page.test.ts` 的反向全覆盖就会要求官网 API 页同步，
   而那些是纯内部实现细节。
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
+- **lint / format**：Biome 单工具二合一（`biome.jsonc`）。`npm run lint` 检查、`npm run lint:fix` 写回；
+  CI 有独立 `lint` job。规则基线刻意关掉三条与既有风格冲突的（理由写在 `biome.jsonc` 注释里）；
+  `.astro` 与独立 `.svg` **不在 lint 面**（Biome 对 Astro 语法支持不全，会误报）。
+  ⚠️ **`src/core/blackboard.ts` 的空 `interface Blackboard {}` 是声明合并锚点，绝不可改成 `type` 别名** ——
+  Biome 的 `noEmptyInterface` 自动修复会这么干，已用 `biome-ignore` 注释钉住（改了就废掉「扩展黑板键获得补全」）。
+- **Node 下限靠延迟加载守护**：`node:sqlite`（≥22.5）等内置模块**不可顶层静态 import** ——
+  `src/index.ts` 的导出是 eager 的，静态 import 会让**整包**在旧 Node 上加载即崩（而 `engines` 写着 `>=18`）。
+  一律延迟加载 + 可读报错，并由 CI 的 `import-floor` job 在 Node 18/20 上实跑验证。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
 - **验证顺序**：`npm run typecheck && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完。
@@ -80,8 +88,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
   - 另有 `npm run e2e:mcp`（真接第三方 MCP server，需要网络 / uv；离线自动回落
     `scripts/mcp-fixture-server.py`）。它**不并入**上面 8 步，但动了 `integrations/mcp.ts` 就要跑。
-  - **CI**：`.github/workflows/ci.yml` —— push / PR 时跑 `bash scripts/verify-all.sh`（与本地**同一条链**，
-    不新增检查项），另有一个独立 job 跑 `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，同时当回落守卫）。
+  - **CI**：`.github/workflows/ci.yml` —— 四个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
+    不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
+    守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，
+    同时当回落守卫）。**`verify` 的 job name 是分支保护的必需状态检查，改名 = PR 永远等不到该检查 → 卡死**；
+    同理**不要给 `verify` 加 matrix**（matrix 会给检查名加后缀）。要挡更低 Node 版本请另开 job。
     `verify-all.sh` 用 `cd "$(dirname "$0")/.."` 自推仓库根 —— **别再往里写绝对路径**（本地能跑、CI 必挂）。
   - 文档改完记得重建派生产物：`npm run build`（→ 框架包 `dist/AGENTS.md`）、
     `npm run build:cli`（→ CLI `dist/AGENTS.md`）与 `npm run build:website`

@@ -42,11 +42,15 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "typecheck:types": "tsc --noEmit -p tsconfig.types.json",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" && node --test \"packages/cli/test/*.test.mjs\" && node --test \"packages/trace-view/test/*.test.js\"",
     "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts",
     "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.2",
