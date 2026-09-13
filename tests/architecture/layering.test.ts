@@ -33,7 +33,7 @@ const SRC = join(repoRoot, 'src');
  */
 const ALLOWED: Record<string, readonly string[]> = {
   core: [],
-  engine: ['core'],
+  engine: ['core', 'integrations'],
   runtime: ['core', 'engine'],
   store: ['core', 'engine'],
   transport: ['core', 'engine', 'store'],

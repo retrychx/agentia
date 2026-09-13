@@ -518,6 +518,21 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   改 dashboard。`src/index.ts` 的公共导出**数量不变**（仅改名），官网 api.html 的反向全覆盖计数不受影响。
   设计文档：`docs/plans/2026-09-13-typed-unit-dirs.md`（6 个分叉，F1=A · F4=B · 其余 A · F6=A+B）。
 
+- 2026-09-13：**厂商 SDK 收敛到单一实例化点；依赖形态定为「纯依赖」**。缘起是对标业界后自问
+  「`@anthropic-ai/sdk` 是否该做成 peer/optional、让用户不必感知」。三条实测事实锁死了结论：
+  ① 公共类型面**直接使用** `Anthropic.MessageParam`（12 个 `.d.ts`、出现 32 次）→ 用户哪怕只走 OpenAI
+  兼容端点**也必须**有它，否则类型编译不过、或（`skipLibCheck` 下）静默退化成 `any`；
+  ② 既然如此，「可选」不成立，而「让用户单独再装一次」才是真正的奇怪 —— 故**依赖形态 = `dependencies`**
+  （纯依赖，npm 自动装，用户零感知），**不做 peer/optional**；
+  ③ 但框架内部**不再 `new Anthropic()`**：新增 `integrations/anthropic.ts` 的 `createAnthropicClient()`
+  作为唯一实例化点，引擎经它取默认 client。使用者自定义只传 `apiKey` / `baseURL`，**不必直接依赖该 SDK**。
+  分层随之调整：`engine` 新增对 `integrations` 的依赖（唯一用途就是取默认 client），`ALLOWED` 与 AGENTS.md 同步。
+  **不做鸭子类型**：实测该 SDK 的错误类 `name` 恒为 `'Error'`、`type` 为 null，鸭子类型只能靠
+  `constructor.name`（压缩即失效）—— 保留 `errors.ts` 的 `instanceof`（只做类身份判定、不做实例化），
+  并把「双副本 → 分类退化为 unknown」记为已知边界。
+  **未做（记入 roadmap）**：默认 client 换自研 fetch 实现 + 公共类型自有化 —— 那才是让 SDK 真正可选的正道，
+  前置条件是先有「真 API 集成测试」（当前单测与 e2e 全用 mock）。
+
 ## 11. 开放项
 
 - npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。

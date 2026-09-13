@@ -139,6 +139,8 @@ export type {
 export { SqliteTaskStore } from './store/sqliteStore.js';
 export { createOtlpExporter } from './integrations/otlp.js';
 export { createOpenAIClient } from './integrations/openai.js';
+export { createAnthropicClient } from './integrations/anthropic.js';
+export type { AnthropicClientOptions } from './integrations/anthropic.js';
 export { InMemoryMemoryStore } from './runtime/memory.js';
 export type { MemoryStore } from './runtime/memory.js';
 export { InMemorySessionStore } from './runtime/session.js';

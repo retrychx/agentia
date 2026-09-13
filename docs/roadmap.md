@@ -169,6 +169,11 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
 - **HITL 跨进程挂起 / 续跑**（`awaiting_approval` 状态机 + 循环位置落库）—— 闸门配方已覆盖同步审批，
   此条仅当「审批跨重启」是硬需求时立项（见 spec §10 与 usage-guide §6）；
+- **默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）—— 前者 = 用 fetch 重实现
+  Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），后者 = 在 `core`
+  定义 agentia 自己的 `Message` / `ContentBlock`，只在 `integrations` 边界适配成厂商形状。
+  **前置条件：先补「真 API 集成测试」** —— 当前单测与 e2e 全用 mock，直接换主路径 = 让最关键的一条路
+  失去与真实服务的对照（见 spec §10「厂商 SDK 收敛到单一实例化点」）；
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
 - canCall 能力级能力边（当前 tools 引用粒度为 provider）。

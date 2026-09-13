@@ -21,7 +21,7 @@
           可选能力（zod / Redis / MCP）一律 duck-typed。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>173</b> 个导出</span>
+          <span class="api-chip"><b>175</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -195,6 +195,8 @@
             <tr><td>registerDefaultTraceSink</td><td><code>(sink: TraceSink) → void</code></td><td>注册全局默认 sink（createApp 构造期快照合并，已建应用不受后续注册影响）。</td></tr>
             <tr><td>createOtlpExporter</td><td><code>({ endpoint, headers?, serviceName? }) → { export(trace) → Promise&lt;void&gt; }</code></td><td>trace 导出到任意 OTLP/HTTP 收集器（缺省 service.name 为 'agentia'）；节点 span 展开成 attributes + events，零依赖。</td></tr>
             <tr><td>createOpenAIClient</td><td><code>(opts?: { apiKey?; baseURL?; fetchImpl?; stream? }) → ModelClient</code></td><td>OpenAI 兼容端点（含 DeepSeek 等）适配成 ModelClient：<strong>真流式</strong>、图片块转 image_url、转发 signal。<code>stream: false</code> 退回一次性。</td></tr>
+            <tr><td>createAnthropicClient</td><td><code>(opts?: { apiKey?; baseURL?; … }) → ModelClient</code></td><td>默认 ModelClient（Anthropic Messages API）。自定义只传 <code>apiKey</code> / <code>baseURL</code>（缺省走环境变量），<strong>不需要直接依赖厂商 SDK</strong>。</td></tr>
+            <tr><td>AnthropicClientOptions</td><td><code>{ apiKey?; baseURL?; … }</code></td><td>createAnthropicClient 的可配置项（其余参数原样透传 SDK）。</td></tr>
             <tr><td>MemoryStore</td><td><code>interface：load(keys) / save(entries)</code></td><td>跨 run 记忆存储面（可同步或异步实现）。</td></tr>
             <tr><td>InMemoryMemoryStore</td><td><code>class（MemoryStore）</code></td><td>Map 实现：进程内，无持久化。</td></tr>
           </tbody>
