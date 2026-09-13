@@ -4,10 +4,10 @@ import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
 import { AsyncRunner } from './async.js';
 import type { AppCallable } from './async.js';
 import { sseWriter } from './sse.js';
-import { normalizeMessages } from '../runtime/spec.js';
-import type { RunInvocationOptions } from '../runtime/spec.js';
+import { normalizeMessages } from '../engine/spec.js';
+import type { RunInvocationOptions } from '../engine/spec.js';
 import type { TaskRecord } from '../store/store.js';
-import type { RunStatus } from '../runtime/types.js';
+import type { RunStatus } from '../core/run.js';
 
 /**
  * Agentia —— HTTP 宿主（spec §6.6：换宿主不换语义，roadmap R3）。

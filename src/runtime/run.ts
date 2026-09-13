@@ -6,7 +6,7 @@ import { isSuccessStopReason } from '../engine/types.js';
 import { runAgent } from '../engine/loop.js';
 import { TraceRecorder } from '../engine/tracer.js';
 import { classifyError } from '../engine/errors.js';
-import type { RunMeta, RunStatus } from './types.js';
+import type { RunMeta, RunStatus } from '../core/run.js';
 import { RunContext, withRunContext } from './context.js';
 import type { MemoryStore } from './memory.js';
 import type { SessionStore } from './session.js';

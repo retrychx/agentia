@@ -61,11 +61,11 @@ export type { RetryOptions } from './engine/retry.js';
 // run：run 生命周期
 export { Run, executeRun } from './runtime/run.js';
 export { RunContext, withRunContext } from './runtime/context.js';
-export type { Blackboard, BlackboardKey, BlackboardSeed, BlackboardValue } from './runtime/context.js';
+export type { Blackboard, BlackboardKey, BlackboardSeed, BlackboardValue } from './core/blackboard.js';
 export { SystemPrompt } from './runtime/systemPrompt.js';
 export type { SystemPromptOptions, SystemSection } from './runtime/systemPrompt.js';
 export type { ExecuteRunOptions } from './runtime/run.js';
-export type { RunMeta, RunStatus } from './runtime/types.js';
+export type { RunMeta, RunStatus } from './core/run.js';
 
 // container：显式 DI
 export { Container } from './container/container.js';
@@ -103,8 +103,8 @@ export type { AgentModule } from './toolkit/module.js';
 export { fromZod } from './toolkit/zod.js';
 
 // run：触发传输 + run 存储
-export { normalizeMessages } from './runtime/spec.js';
-export type { RunInput, RunSpec, RunInvocationOptions } from './runtime/spec.js';
+export { normalizeMessages } from './engine/spec.js';
+export type { RunInput, RunSpec, RunInvocationOptions } from './engine/spec.js';
 export { InMemoryTaskStore } from './store/store.js';
 export type { TaskRecord, TaskStore } from './store/store.js';
 export { FileTaskStore } from './store/fsStore.js';

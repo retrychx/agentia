@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
 import type { SpanError } from '../core/trace.js';
-import type { RunStatus } from '../runtime/types.js';
-import type { RunSpec } from '../runtime/spec.js';
+import type { RunStatus } from '../core/run.js';
+import type { RunSpec } from '../engine/spec.js';
 
 /**
  * Agentia —— run 存储（spec §6.6：异步耐久 = 换宿主不换语义）。

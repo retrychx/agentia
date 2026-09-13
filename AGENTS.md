@@ -5,11 +5,13 @@
 ```
 agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── src/
-│   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验），零依赖
+│   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验、
+│   │                        #   RunStatus/RunMeta、Blackboard 类型族），零依赖
 │   ├── engine/              # 运行时内核：agent loop、trace 记账、长上下文裁剪(trimming)、
-│   │                        # 预算策略(policy)、错误分类、replay
-│   ├── runtime/             # run 生命周期与调用契约：run 状态机、上下文(ALS)、RunSpec/RunInput、
-│   │                        # SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
+│   │                        #   预算策略(policy)、错误分类、replay、run 调用契约
+│   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)
+│   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
+│   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
@@ -24,6 +26,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── helpers.ts           # 共用 mock client（**忽略 on('text')**；要「真吐字」用 src/eval 的
 │   │                        #   scriptedClient —— 两者定位不同，改 helpers 影响全部套件，谨慎）
 │   ├── fixtures/            # discover/asset 测试夹具
+│   ├── architecture/        # 分层守卫：解析 src 的 import 图，断言「允许边集合 + 无环 +
+│   │                        #   src 不引 src 之外」—— AGENTS.md「分层单向」的可执行版本
 │   ├── types/               # **类型断言测试**（*.types.ts，只被 typecheck:types 编译、不被 node:test 收）
 │   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核；api.html 的导出表
 │                            #   正向核 + **反向全覆盖**：导出面的每个导出都必须在页面上出现；
@@ -46,9 +50,15 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 
 ## 硬约定
 
-- **分层单向**：core ← engine ← runtime/store ← transport ← toolkit；`integrations` 只依赖 core
-  （模型/trace 适配器）；`container` 是叶子（不 import 任何东西），仅被 toolkit 依赖。core 不依赖任何上层。
+- **分层单向**（`tests/architecture/layering.test.ts` 强制；改依赖方向必须同步改该测试的 ALLOWED）：
+  core ← engine ← { runtime, store }；store ← transport；runtime ← toolkit；
+  `integrations` 只依赖 core（模型/trace 适配器）；`container` 与 core 是叶子
+  （不 import 任何东西），container 仅被 toolkit 依赖。core 不依赖任何上层。
+  `index.ts` 是公共唯一出口，允许引用全部层。
   `eval/` 是**叶子消费模块**（依赖 toolkit 与公共面）：它 import 别人，别人不 import 它。
+  - `RunStatus`/`RunMeta` 落在 `core/`、run 调用契约落在 `engine/`：它们本是 store/transport
+    与 runtime **共用**的类型，早先放在 runtime 逼出了 `store → runtime` 这条未声明的兄弟层
+    依赖 —— 已按「纯数据去 core、共用入参契约去 engine」下沉（类型导入也计入分层，虽运行期擦除）。
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。

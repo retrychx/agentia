@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AsyncRunner } from './async.js';
-import type { RunInvocationOptions } from '../runtime/spec.js';
+import type { RunInvocationOptions } from '../engine/spec.js';
 import { isThenable } from '../store/store.js';
 
 /**

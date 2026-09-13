@@ -1,14 +1,18 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentTool } from '../core/tool.js';
-import type { ContextPolicy } from '../engine/types.js';
-import type { RetryOptions } from '../engine/retry.js';
-import type { BlackboardSeed } from './context.js';
+import type { BlackboardSeed } from '../core/blackboard.js';
+import type { ContextPolicy } from './types.js';
+import type { RetryOptions } from './retry.js';
 
 /**
  * Agentia —— run 调用契约（spec §6.3 三类触发共用同一份入参形态）。
  * transport 层（同步 RPC / 异步任务 / 定时）只谈 RunInput / RunSpec，
  * 与具体 agent 装配解耦 —— 换宿主（HTTP/队列/DB）不换语义（spec §6.6）。
+ *
+ * 放在 engine 的理由：这是 transport 与 runtime **共用**的入参契约，而 engine
+ * 在两者之下。此前它在 runtime，导致 store 为了 `TaskRecord.spec` 反向依赖
+ * runtime（兄弟层）—— 移到 engine 后 store/toolkit/transport 都能合法引用。
  */
 
 /** 单次 run 透传给引擎/应用的可选调用参数（与 toolkit/module 的 RunAppOptions 子集对齐） */
