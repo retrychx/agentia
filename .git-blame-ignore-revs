@@ -1,0 +1,8 @@
+# 纯机械改动的提交哈希：git blame / GitHub 默认忽略这些，避免「全仓格式化」把每一行
+# 的归属都盖成格式化提交。
+#
+# 本地启用：git config blame.ignoreRevsFile .git-blame-ignore-revs
+# （GitHub 网页端会自动读取本文件，无需配置）
+
+# chore(lint): 引入 Biome（全仓一次性格式化 + 安全修复）
+f91f69d
