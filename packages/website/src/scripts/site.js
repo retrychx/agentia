@@ -180,7 +180,15 @@ import Lenis from 'lenis';
     .to('.hero h1 .line', { opacity: 1, y: 0, duration: 0.9, stagger: 0.12 }, 0.3)
     .to('.hero-sub', { opacity: 1, y: 0, duration: 0.8 }, 0.65)
     .to('.hero-actions', { opacity: 1, y: 0, duration: 0.7 }, 0.85)
-    .to('.hero-install', { opacity: 1, y: 0, duration: 0.7 }, 1.0);
+    .to('.hero-install', { opacity: 1, y: 0, duration: 0.7 }, 1.0)
+    // hero 统计行此前漏在 timeline 之外：[data-intro] 被统设为 opacity:0 后没人点亮它，
+    // 线上一直是不可见的（视觉上「少了」一行）。补进 timeline，并让各项错开弹入。
+    .to('.hero-stats', { opacity: 1, y: 0, duration: 0.6 }, 1.1)
+    .from(
+      '.hero-stats > span, .hero-stats > i',
+      { opacity: 0, scale: 0.85, duration: 0.4, stagger: 0.07, ease: 'back.out(2)' },
+      1.22,
+    );
 
   /* ---------- 区块标题 reveal ---------- */
   document.querySelectorAll('[data-reveal]').forEach((el) => {

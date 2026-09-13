@@ -1048,6 +1048,53 @@ pre code { background: none; padding: 0; color: #f8f8f2; }  /* Dracula 前景 */
   .docs-nav .dn-title { width: 100%; padding-left: 0; }
 }
 
+/* ================= 动效（滚动进度 / 终端光标 / 微反馈） =================
+   刻意放在「API 参考页」标记之前：tests/docs/website-css.test.ts 把标记**之后**
+   整段当作 API 页 CSS 校验，动效规则不属那一节。
+   全部动效由既有的 @media (prefers-reduced-motion: reduce) 全局规则关掉。 */
+
+/* 顶部滚动进度条（元素在 Base.astro，取值由 nav-collapse.js 写） */
+.scroll-progress {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 2px;
+  z-index: 60;
+  pointer-events: none;
+}
+.scroll-progress span {
+  display: block;
+  height: 100%;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, var(--ice), rgba(52, 203, 224, 0.3));
+}
+
+/* hero 安装命令末尾的终端光标 */
+.hero-install .caret {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  margin-left: 4px;
+  vertical-align: -2px;
+  background: var(--ice);
+  animation: caret-blink 1.15s steps(1, end) infinite;
+}
+@keyframes caret-blink {
+  0%, 55% { opacity: 1; }
+  56%, 100% { opacity: 0; }
+}
+
+/* 卡片悬停：在既有位移之上补一层冰蓝辉光 */
+.card:hover, .feature:hover { box-shadow: 0 14px 44px rgba(52, 203, 224, 0.07); }
+
+/* 复制按钮：按下缩放 +「已复制」态 */
+.copy { transition: color 0.2s, border-color 0.2s, background 0.2s, transform 0.12s; }
+.copy:active { transform: scale(0.95); }
+.copy.copied { color: var(--ice); border-color: var(--ice); background: var(--ice-dim); }
+
+/* 文档 / API 侧栏 active 指示条平滑过渡（.docs-nav a.active 已设 border-left-color） */
+.docs-nav a { transition: color 0.22s, border-color 0.22s; }
+
 /* ================= API 参考页 =================
    同一套 token，把「一堵表格墙」整理成能扫读的版面：页头 → 层次索引卡 →
    分区表格（斑马纹 / 悬停 / 签名代码片）→ 页尾引导。

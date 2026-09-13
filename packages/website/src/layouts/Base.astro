@@ -27,6 +27,7 @@ const { title, description, page = 'home', footerLinks = [] } = Astro.props;
   <body class={`page-${page}`}>
     <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
     <div class="grain" aria-hidden="true"></div>
+    <div class="scroll-progress" aria-hidden="true"><span id="scroll-progress"></span></div>
 
     <Nav page={page} />
 
