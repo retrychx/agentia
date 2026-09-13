@@ -1,3 +1,48 @@
+/* ---------- 字体：自己声明 @font-face（不用 @fontsource 的 CSS）----------
+ * 为什么不直接用 `@fontsource/*\/latin-400.css`：它的 font-display 固定为 `swap`，
+ * 即「先用系统字体画一遍、字体到了再换一遍」—— 换字本身就是那次可见的二次渲染。
+ * 这里改为 `optional`：浏览器只在极短窗口内等字体，等不到就用系统字体、**本次不再换字**
+ * （字体照常进缓存，下次导航命中后用上）。配合 Base.astro 的 preload，正常网络下
+ * 字体与 CSS 并行抵达，走到的就是自定义字体。
+ *
+ * 只声明 400/500/700（600 已并入 700）；只留 woff2 —— 目标浏览器全部支持，
+ * 少发一半字体文件。 */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: optional;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: optional;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: optional;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: optional;
+  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: optional;
+  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
+
 /* Agentia — design tokens：近黑 + 钛银金属色，发丝线，方角工程感 */
 :root {
   --bg: #0a0a0b;

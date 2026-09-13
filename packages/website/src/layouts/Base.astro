@@ -4,27 +4,24 @@
 //
 // 注意：frontmatter 里的 import 在构建期（Node）执行；
 // 客户端脚本一律走 <script> 标签（Astro 会打包并注入为 module）。
-import '@fontsource/space-grotesk/latin-400.css';
-import '@fontsource/space-grotesk/latin-500.css';
-import '@fontsource/space-grotesk/latin-700.css';
-import '@fontsource/jetbrains-mono/latin-400.css';
-import '@fontsource/jetbrains-mono/latin-500.css';
-import '../styles/global.css';
-import Nav from '../components/Nav.astro';
-import Footer from '../components/Footer.astro';
-
-// 首屏字体 preload（修「换字抖动」）：@fontsource 的 CSS 让字体变成**依赖式请求**
-// —— 必须先下完并解析 CSS，浏览器才知道要下字体，于是字体总晚首屏一步。配上
-// `font-display: swap`，就会在首屏之后**换一次字**（可见的二次渲染）。
-// 这里用 `?url` 取 Vite 处理后的哈希地址，在样式表之前显式 preload，把字体并进首屏那一趟。
-// `crossorigin` 必须有：字体按 CORS 模式取，同源也要带，否则 preload 命中不了、反而下两遍。
-// 只 preload 首屏用得到的 4 个（正文 400 / 导航按钮 500 / 大标题 700 / 代码 400）；
-// JetBrains Mono 500 只用于下方 mono 小标题，按需加载即可。
+// 字体 @font-face 声明在 global.css 里（自己写、font-display: optional）——
+// 不用 @fontsource 的 CSS，因为它的 font-display 固定 swap，会「先画系统字体再换一遍」。
+// 这里只保留字体文件的 ?url 引用，供 head 里的 preload 使用（顺序须在 global.css 之前导入，
+// 以便 Vite 把同一份字体文件哈希复用到 preload 的 href 上）。
 import sg400 from '@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2?url';
 import sg500 from '@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2?url';
 import sg700 from '@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2?url';
 import jbm400 from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2?url';
+import '../styles/global.css';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
 
+// 首屏字体 preload（修「换字抖动」）：字体只靠 CSS 引用就是**依赖式请求** ——
+// 必须先下完并解析 CSS，浏览器才知道要下字体，于是字体总晚首屏一步。
+// 这里用 `?url` 取 Vite 处理后的哈希地址，在样式表之前显式 preload，把字体并进首屏那一趟。
+// `crossorigin` 必须有：字体按 CORS 模式取，同源也要带，否则 preload 命中不了、反而下两遍。
+// 只 preload 首屏用得到的 4 个（正文 400 / 导航按钮 500 / 大标题 700 / 代码 400）；
+// JetBrains Mono 500 只用于下方 mono 小标题，按需加载即可。
 const preloadFonts = [sg400, sg500, sg700, jbm400];
 
 const { title, description, page = 'home', footerLinks = [] } = Astro.props;
