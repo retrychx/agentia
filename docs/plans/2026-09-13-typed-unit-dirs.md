@@ -9,6 +9,13 @@
 > ③ **新增回归守卫 `tests/docs/no-legacy-terms.test.ts`** —— 本轮人工 grep 挖出三处文档残留旧术语
 >    （`readonly unit:` / `labelMode?='unit'` / playground fixture 的 `kind:'unit'`），类型系统与既有单测都看不见，
 >    故把「面向使用者的表面不得出现旧术语」钉成测试，并做变异自证（注入即报 `文件:行号`）。
+> ④ **复查补齐（同日复盘）** —— ③ 的**扫描面一开始定得太窄**：只扫了 README / usage-guide / 官网
+>    `fragments`+`scripts` / examples，漏掉**四类发布面** —— npm 包的 `README.md` 与 `package.json`
+>    的 `description`（都随包发布）、官网 `pages` + `components` + `layouts` 与静态资源（`.astro` / `.svg`
+>    不在扫描扩展名内，Nav 标签与四页 meta description 全在盲区）、CLI 的 `--help` 用法串与报错文本。
+>    后果：中文旧词「单元」在发布面残留 12 处，另有一处错字「悬空单板」（应为「悬空能力」）。
+>    已全部修正；守卫扫描面补齐上述全部，并加**显式豁免标记**（`<!-- no-legacy-terms: allow -->`，
+>    仅限「必须点名旧名才讲得清」的段落）+ 全仓豁免行数上限（防豁免变成关掉守卫的开关）。
 > **日期**：2026-09-13
 > **缘起**：`agentia create` 产出的 `units/` 目录被指出「命名不太好」。核实后发现问题不止是名字 —— 仓库里**同时跑着两套目录约定**，而且没有任何一步验证能发现（§1）。
 > **前置**：本文是**设计**，不是逐步实现计划。拍板后另起 `docs/plans/2026-09-13-typed-unit-dirs-*.md` 列任务。

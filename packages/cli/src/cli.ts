@@ -16,7 +16,7 @@ const USAGE = `agentia —— Agentia 框架命令行工具
   agentia g <type> <name>                  在当前目录生成能力（别名：generate）
                                            type: ${CAPABILITY_TYPES.join(' | ')}
   agentia dev                              启动开发模式（tsx watch 热重载 + 本地 inspector 面板）
-  agentia doctor                           装配体检（未登记/悬空单板/命名规范/重复条目）
+  agentia doctor                           装配体检（未登记/悬空能力/命名规范/重复条目）
   agentia report <trace.jsonl>             从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
   agentia add <pkg>                        安装第三方能力包并登记到 src/registry.ts
   agentia --help                           显示本帮助

@@ -31,7 +31,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── types/               # **类型断言测试**（*.types.ts，只被 typecheck:types 编译、不被 node:test 收）
 │   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核；api.html 的导出表
 │                            #   正向核 + **反向全覆盖**：导出面的每个导出都必须在页面上出现；
-│                            #   website-css.test.ts 钉官网表格版式不变量，见 packages/website 段）
+│                            #   website-css.test.ts 钉官网表格版式不变量，见 packages/website 段；
+│                            #   no-legacy-terms.test.ts 钉「面向使用者的表面不得出现旧伞形术语」——
+│                            #   覆盖文档 / 官网 / npm 包 README 与 description / CLI 的 --help 与报错文本；
+│                            #   仅 `<!-- no-legacy-terms: allow -->` 标记块内可豁免，且有行数上限）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
