@@ -590,9 +590,7 @@ code {
   position: relative;
   grid-column: span 2;
   border-color: var(--ice-border);
-  background:
-    linear-gradient(180deg, rgba(52, 203, 224, 0.07), transparent 58%),
-    var(--card);
+  background: linear-gradient(180deg, rgba(52, 203, 224, 0.07), transparent 58%), var(--card);
 }
 .feature--key h3 {
   color: var(--ice);
