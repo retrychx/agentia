@@ -76,6 +76,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
   - 另有 `npm run e2e:mcp`（真接第三方 MCP server，需要网络 / uv；离线自动回落
     `scripts/mcp-fixture-server.py`）。它**不并入**上面 8 步，但动了 `integrations/mcp.ts` 就要跑。
+  - **CI**：`.github/workflows/ci.yml` —— push / PR 时跑 `bash scripts/verify-all.sh`（与本地**同一条链**，
+    不新增检查项），另有一个独立 job 跑 `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，同时当回落守卫）。
+    `verify-all.sh` 用 `cd "$(dirname "$0")/.."` 自推仓库根 —— **别再往里写绝对路径**（本地能跑、CI 必挂）。
   - 文档改完记得重建派生产物：`npm run build`（→ 框架包 `dist/AGENTS.md`）、
     `npm run build:cli`（→ CLI `dist/AGENTS.md`）与 `npm run build:website`
     （→ `llms.txt` / `llms-full.txt`），否则线上与实际说明漂移。

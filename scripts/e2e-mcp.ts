@@ -34,6 +34,17 @@ function stdioMcpClient(cmd: string[]): { client: McpClientLike; close(): void; 
   let buf = '';
   let nextId = 1;
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  /**
+   * spawn 本身失败（最典型：命令不存在 → `ENOENT`）时 Node 会发 `'error'` 事件；**没有监听器
+   * 就会抛未捕获异常把整个进程带崩**，而 `pickServer` 的 try/catch 接不住 —— 错误在 promise 链
+   * 之外异步到达。下面记下致命错误并拒绝所有在途请求，AGENTS.md 承诺的「离线自动回落夹具」才真成立。
+   */
+  let fatal: Error | null = null;
+  proc.on('error', (err: unknown) => {
+    fatal = err instanceof Error ? err : new Error(String(err));
+    for (const p of pending.values()) p.reject(fatal);
+    pending.clear();
+  });
 
   proc.stdout!.setEncoding('utf8');
   proc.stdout!.on('data', (chunk: string) => {
@@ -62,6 +73,7 @@ function stdioMcpClient(cmd: string[]): { client: McpClientLike; close(): void; 
   const raw = (method: string, params: unknown): Promise<unknown> => {
     const id = nextId++;
     return new Promise((resolve, reject) => {
+      if (fatal) return reject(fatal); // 进程已死：别再写 stdin（EPIPE），也别让请求挂死
       pending.set(id, { resolve, reject });
       proc.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
     });

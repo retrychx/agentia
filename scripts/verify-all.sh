@@ -1,7 +1,8 @@
 #!/bin/bash
 # Agentia 全链验证：逐步骤检查退出码（不用 `cmd && echo` —— 那样会吞掉失败）
 set -uo pipefail
-cd /Users/migor/Documents/development/agentia
+# 从脚本位置推仓库根 —— 不要硬编码绝对路径（CI / 他人机器上必挂）
+cd "$(dirname "$0")/.."
 
 steps=(
   "npm run typecheck"

@@ -1,0 +1,62 @@
+name: CI
+
+# 为什么有这个文件：本仓此前**没有任何 CI**（见 docs/plans/2026-09-13-typed-unit-dirs.md §1③），
+# `scripts/verify-all.sh` 再全，也得靠人记得在提交前手动敲。结果就是「改名改了 ~1100 处，
+# 却在 npm 包 README、官网 meta、CLI --help 里漏了 12 处旧术语」这类漂移能一路合进 main。
+# 这里把本地那条链原样搬进 CI —— 不新增检查项，只保证它真的会被跑。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支来了新推送时取消上一轮（省额度，结论也只关心最新）
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 全链验证（verify-all 8 步）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 与本地**逐字同一条链**（脚本自己推仓库根，不依赖 cwd）：
+      # typecheck → build → typecheck:types → typecheck:tests → build:cli → test → e2e → build:website
+      # 脚本按每步的**显式退出码**判定，失败会打印该步尾部输出。
+      - name: verify-all
+        run: bash scripts/verify-all.sh
+
+  e2e-mcp:
+    name: MCP 端到端（真第三方 server，缺失时回落夹具）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # runner 上默认没有 uvx ⇒ 脚本的「离线回落本地夹具」分支**必定被走到**。
+      # 一举两得：
+      #   ① 确定性覆盖整条 MCP 协议面（夹具 server 与真 server 同一套协议，纯 stdlib，不联网）；
+      #   ② 正好当「回落不许再崩」的回归守卫 —— 此前 spawn `uvx` 不存在时抛未捕获 'error'
+      #      事件把进程带崩、根本走不到回落（已修：scripts/e2e-mcp.ts 的 proc.on('error')）。
+      # 想覆盖真第三方 server（`uvx mcp-server-time`）在本机跑即可，
+      # 或给本 job 加 astral-sh/setup-uv —— 但那样就不再覆盖回落分支了。
+      - name: e2e:mcp
+        run: npm run e2e:mcp

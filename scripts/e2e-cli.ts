@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 // 注意：从 dist 而非 src 导入 —— 生成项目 import '@migor/agentia' 解析到 dist/index.js，
 // 装饰器注册表（WeakMap）必须在同一模块实例里，否则 collect* 收不到 spec。
 import { createApp, discoverProviders, SystemPrompt } from '../dist/index.js';
+// 共用 mock 走 tests/helpers（AGENTS.md：那是**共用** mock client）—— 别在本脚本里手搓一份
+import { mockClient, toolUseMsg, endTurnMsg } from '../tests/helpers.js';
 
 const assert = (cond: boolean, msg: string): void => {
   if (!cond) throw new Error(`SMOKE FAIL: ${msg}`);
@@ -102,32 +104,18 @@ try {
   );
 
   // —— 6) createApp({ discover }) + mock 模型：装配五能力并真跑一个工具 ——
+  // 复用 tests/helpers.ts 的共用 mock：手搓那份的类型不完整，是给 scripts/ 接上类型检查时才暴露的
+  // （共用版在 helpers 里以 `as never` 收口，且被全部单测覆盖）。onParams 用来抓第二次往返的入参。
   let secondParams: unknown = null;
-  let i = 0;
-  const script = [
-    () => ({
-      id: 'm1',
-      model: 'claude-opus-5',
-      stop_reason: 'tool_use' as const,
-      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-      content: [{ type: 'tool_use', id: 'tu1', name: 'echo_back', input: { text: 'smoke' } }],
-    }),
-    (params: unknown) => {
-      secondParams = params;
-      return {
-        id: 'm2',
-        model: 'claude-opus-5',
-        stop_reason: 'end_turn' as const,
-        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-        content: [{ type: 'text', text: 'done' }],
-      };
+  const { client } = mockClient([
+    toolUseMsg('echo_back', { text: 'smoke' }),
+    {
+      onParams: (p) => {
+        secondParams = p;
+      },
+      message: endTurnMsg('done'),
     },
-  ];
-  const client = {
-    messages: {
-      stream: (params: unknown) => ({ on() {}, finalMessage: async () => script[i++](params) }),
-    },
-  };
+  ]);
 
   const app = await createApp({
     name: 'cli-app',
