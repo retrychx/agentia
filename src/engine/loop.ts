@@ -183,7 +183,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
             model,
           });
         }
-        messages.splice(0, messages.length, ...next);
+        replaceMessages(messages, next);
       }
     }
 
@@ -550,6 +550,22 @@ function textOf(message: Anthropic.Message): string {
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)
     .join('\n');
+}
+
+/**
+ * 用 `next` 原地替换 `target` 的全部内容（保持数组引用不变 —— 循环各处持同一数组）。
+ *
+ * **不要**写回 `target.splice(0, target.length, ...next)`：展开传参受 V8 实参个数上限
+ * 约束，`next` 超过约 12 万项即抛 `RangeError: Maximum call stack size exceeded`
+ * （实测 12 万 ok、30 万抛）。`next` 来自调用方注入的 `contextPolicy`，长度不受框架
+ * 控制，所以用循环逐项写，彻底没有这个上限。
+ */
+export function replaceMessages(
+  target: Anthropic.MessageParam[],
+  next: readonly Anthropic.MessageParam[],
+): void {
+  target.length = 0;
+  for (const m of next) target.push(m);
 }
 
 /** 截断到上限字符，超长加省略标记（格式由 core/json.ts 的 truncateWithMark 单一提供） */

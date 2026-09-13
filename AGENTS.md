@@ -59,6 +59,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   - `RunStatus`/`RunMeta` 落在 `core/`、run 调用契约落在 `engine/`：它们本是 store/transport
     与 runtime **共用**的类型，早先放在 runtime 逼出了 `store → runtime` 这条未声明的兄弟层
     依赖 —— 已按「纯数据去 core、共用入参契约去 engine」下沉（类型导入也计入分层，虽运行期擦除）。
+- **内部工具不进公共面**：跨模块/测试要用的 helper 可以做 **module 级 export**（如 `engine/trimming.ts` 的
+  `createTokenCounter`、`engine/loop.ts` 的 `replaceMessages`），但**不要**加进 `src/index.ts` ——
+  一旦进了公共导出面，`tests/docs/api-page.test.ts` 的反向全覆盖就会要求官网 API 页同步，
+  而那些是纯内部实现细节。
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。

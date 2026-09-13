@@ -77,6 +77,14 @@ export interface HttpHandlerOptions {
    */
   exposeErrors?: boolean;
   /**
+   * SSE 下游积压上限（字节）：`res.writableLength` 超过它即收口该 SSE 流（见 `sseWriter`）。
+   * 缺省 8 MiB —— 正常客户端远达不到，实际只拦「连得上但不读」的消费者。
+   *
+   * **收口会连带中止对应的 run**：客户端已经不消费了，继续逐 token 生成只是白花模型钱，
+   * 同时把内存堆高。要高限额传更大的值；要记录/告警请自行在 `sseWriter` 之上包一层 sink。
+   */
+  sseMaxBufferedBytes?: number;
+  /**
    * 入口鉴权钩子。请求进入时调用，**除 /healthz 外所有路径**都过它，且**在读 body 之前**
    * （未通过就不接收 body，省资源）。
    * - 正常返回（任意值）→ 视为通过。返回值框架不转交：要 per-request 上下文请在钩子自己的
@@ -281,6 +289,7 @@ export function createHttpHandler(
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxConcurrentRuns = opts.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
   const exposeErrors = opts.exposeErrors ?? false;
+  const sseMaxBufferedBytes = opts.sseMaxBufferedBytes;
   const authenticate = opts.authenticate;
   const startedAt = Date.now();
   let inFlightRuns = 0;
@@ -387,7 +396,11 @@ export function createHttpHandler(
         const wantsSse = String(req.headers.accept ?? '').includes('text/event-stream');
         try {
           if (wantsSse) {
-            const sse = sseWriter(res);
+            const sse = sseWriter(res, {
+              maxBufferedBytes: sseMaxBufferedBytes,
+              // 下游积压超限 → 收口并中止本次 run（见 sseWriter 的背压说明）
+              onBackpressure: () => runAc.abort(),
+            });
             const heartbeat = setInterval(() => sse.comment('ping'), 15_000);
             heartbeat.unref?.();
             // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）

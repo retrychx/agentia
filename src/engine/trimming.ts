@@ -94,6 +94,39 @@ export function estimateMessages(
   return n;
 }
 
+/**
+ * 增量 token 计数器（预算策略专用；**不属公共导出面**，故不进 index.ts）。
+ *
+ * 为什么需要：`estimateMessages` 是 O(消息数 × 块大小)（每个块还要 stringify），
+ * 而预算策略的 `beforeTurn` **每回合都要估一次**。历史只追加，若每回合从零重算，
+ * 就是 O(回合 × 上下文)。实测：160 回合时估算吃掉 run 全部框架 CPU 的约 88%、
+ * 累计 467ms（10→160 回合之间增长 ×103，明显超线性）。
+ *
+ * 这里缓存「已计过的前缀」，只对**新增消息**计数 —— 追加场景降为 O(上下文)。
+ * 数组引用变了、或长度变短（策略裁剪过 / 换了新数组）→ 自动从零重算，所以
+ * 在 `messages.splice(...)` 原地替换后也不会读到脏缓存。
+ */
+export function createTokenCounter(
+  estimate: (text: string) => number = defaultEstimateTokens,
+): (messages: Anthropic.MessageParam[]) => number {
+  let ref: Anthropic.MessageParam[] | null = null;
+  let counted = 0;
+  let tokens = 0;
+  return function count(messages: Anthropic.MessageParam[]): number {
+    if (messages !== ref || messages.length < counted) {
+      ref = messages;
+      counted = 0;
+      tokens = 0;
+    }
+    for (let i = counted; i < messages.length; i++) {
+      tokens += estimate(messages[i].role);
+      tokens += contentTokens(messages[i].content, estimate);
+    }
+    counted = messages.length;
+    return tokens;
+  };
+}
+
 /** 把消息渲染成可喂给摘要器的纯文本（role: content）。 */
 export function renderMessages(messages: Anthropic.MessageParam[]): string {
   return messages.map((m) => `${m.role}: ${contentToText(m.content)}`).join('\n\n');

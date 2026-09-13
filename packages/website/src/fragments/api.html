@@ -126,13 +126,13 @@
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
-            <tr><td>createBudgetPolicy</td><td><code>(opts?: BudgetPolicyOptions) → ContextPolicy</code></td><td>上述三段降级的开箱实现；框架不替你造 token，可注入按 /count_tokens 的 estimate。</td></tr>
+            <tr><td>createBudgetPolicy</td><td><code>(opts?: BudgetPolicyOptions) → ContextPolicy</code></td><td>上述三段降级的开箱实现；框架不替你造 token，可注入按 /count_tokens 的 estimate。跨回合只对<strong>新增消息</strong>计 token（历史只追加时不重算前缀）。</td></tr>
             <tr><td>BudgetPolicyOptions</td><td><code>{ budgetTokens?=60000; keepToolPairs?=1; keepRecent?=20; estimateTokens?; editBeforeCompact?=true; summarize?; compactEvery?=1 }</code></td><td>keepToolPairs 管 context editing（按<strong>对数</strong>），keepRecent 管 compaction（按<strong>条数</strong>）；summarize 提供才允许 compaction。</td></tr>
             <tr><td>trimToolPairs</td><td><code>(messages, opts?: TrimOptions) → messages</code></td><td>context editing：丢弃超出 <code>keepToolPairs</code>（缺省 1 <strong>对</strong>）的旧 tool_use→tool_result 对；非严格交替历史整体放弃裁剪。</td></tr>
             <tr><td>traceToMessages</td><td><code>(trace, opts?: ReplayOptions) → MessageParam[]</code></td><td>trace 重放基底：把完成的 run 还原成可喂回模型的对话（角色交替合法、tool 对配对、末条为 user、可截断）。</td></tr>
             <tr><td>compactMessages</td><td><code>(messages, opts: CompactOptions) → Promise&lt;messages&gt;</code></td><td>compaction：旧前缀经 summarize 摘要，只留最近 <code>keepRecent</code>（缺省 20 条）。</td></tr>
             <tr><td>defaultEstimateTokens</td><td><code>(text: string) → number</code></td><td>CJK 感知的 token 启发式估算（预算决策用，非精确记账）。</td></tr>
-            <tr><td>estimateMessages</td><td><code>(messages, estimate?) → number</code></td><td>整组消息 token 估算。</td></tr>
+            <tr><td>estimateMessages</td><td><code>(messages, estimate?) → number</code></td><td>整组消息 token 估算。<strong>每次调用都全量计算</strong> —— 需要每回合反复估同一段历史时，用预算策略（内部走增量计数）而不是直接调它。</td></tr>
             <tr><td>renderMessages</td><td><code>(messages) → string</code></td><td>消息渲染成纯文本，作摘要器输入。</td></tr>
             <tr><td>TrimOptions / CompactOptions / ReplayOptions</td><td><code>{ keepToolPairs? }</code> / <code>{ keepRecent?; summarize }</code> / <code>{ includeToolIO?; maxEventChars? }</code></td><td>上述函数的选项类型（注意单位不同：keepToolPairs 是<strong>对数</strong>，keepRecent 是<strong>条数</strong>）。</td></tr>
           </tbody>
@@ -182,8 +182,8 @@
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
-            <tr><td>createHttpHandler</td><td><code>(app: AppCallable, opts?: HttpHandlerOptions) → HttpHandler</code></td><td>node:http 接入：<code>POST /run</code>（同步 / SSE）、<code>POST /tasks</code>（异步）、<code>GET /tasks/:id</code>（轮询）、<code>GET /healthz</code>。返回值可直接传给 <code>http.createServer</code>，另挂 <code>drain()</code> 与 <code>runner</code>。</td></tr>
-            <tr><td>HttpHandlerOptions</td><td><code>{ runner?; authenticate?; maxConcurrentRuns?=32; maxBodyBytes?=1MiB; exposeErrors?=false }</code></td><td>authenticate 拦在入口、读 body 之前（除 /healthz 外的所有路径）；超并发回 503 + Retry-After；exposeErrors 关时 500 只回通用文案。</td></tr>
+            <tr><td>createHttpHandler</td><td><code>(app: AppCallable, opts?: HttpHandlerOptions) → HttpHandler</code></td><td>node:http 接入：<code>POST /run</code>（同步 / SSE）、<code>POST /tasks</code>（异步）、<code>GET /tasks/:id</code>（轮询）、<code>GET /healthz</code>。返回值可直接传给 <code>http.createServer</code>，另挂 <code>drain()</code> 与 <code>runner</code>。SSE 侧带背压保护：下游积压超过 <code>sseMaxBufferedBytes</code> 即收口该流并中止对应 run。</td></tr>
+            <tr><td>HttpHandlerOptions</td><td><code>{ runner?; authenticate?; maxConcurrentRuns?=32; maxBodyBytes?=1MiB; exposeErrors?=false; sseMaxBufferedBytes?=8MiB }</code></td><td>authenticate 拦在入口、读 body 之前（除 /healthz 外的所有路径）；超并发回 503 + Retry-After；exposeErrors 关时 500 只回通用文案；sseMaxBufferedBytes 是 SSE 下游积压上限，超限即收口并中止对应 run（防「连得上但不读」的客户端吃光内存）。</td></tr>
             <tr><td>HttpHandler</td><td><code>((req, res) =&gt; Promise&lt;void&gt;) &amp; { drain(opts?) → Promise&lt;boolean&gt;; runner }</code></td><td>停机：<code>drain()</code> 拒新单 → 等在飞收尾 → 超时强制收口 SSE 流；未完成任务留在 store 里。</td></tr>
             <tr><td>HttpException</td><td><code>new HttpException(status, body)</code></td><td>鉴权钩子里抛它即按其 status / body 回（想回 403 就抛 403）；抛其它错误回 401 且原文只进服务端日志。</td></tr>
             <tr><td>HealthResponse</td><td><code>{ ok; inFlight; uptimeMs; draining }</code></td><td><code>GET /healthz</code> 的返回：不鉴权、停机中也回 200；ok 恒 true（能回响应即进程活着），就绪与否看 draining。</td></tr>

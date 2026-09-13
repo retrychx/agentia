@@ -2,8 +2,8 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { ContextPolicy } from './types.js';
 import {
   compactMessages,
+  createTokenCounter,
   defaultEstimateTokens,
-  estimateMessages,
   trimToolPairs,
 } from './trimming.js';
 
@@ -53,11 +53,13 @@ export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolic
   const summarize = opts.summarize;
   const compactEvery = Math.max(1, opts.compactEvery ?? 1);
   let lastCompactAt = Number.NEGATIVE_INFINITY;
+  // 增量计数：历史只追加时只估新增部分，把 O(回合 × 上下文) 压成 O(上下文)
+  const countTokens = createTokenCounter(estimate);
 
   return {
     budgetTokens,
     async beforeTurn(messages, info) {
-      if (estimateMessages(messages, estimate) <= budgetTokens) return messages;
+      if (countTokens(messages) <= budgetTokens) return messages;
 
       // 1) context editing：先丢旧工具对（按「对数」计，见 keepToolPairs）
       let current = messages;
@@ -65,7 +67,7 @@ export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolic
         const trimmed = trimToolPairs(current, { keepToolPairs });
         if (trimmed.length < current.length) {
           current = trimmed;
-          if (estimateMessages(current, estimate) <= budgetTokens) return current;
+          if (countTokens(current) <= budgetTokens) return current;
         }
       }
 

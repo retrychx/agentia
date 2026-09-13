@@ -7,6 +7,8 @@ import {
   compactMessages,
   createBudgetPolicy,
 } from '../../src/index.js';
+// 内部工具（刻意不进公共导出面，故不走 index.js）
+import { createTokenCounter } from '../../src/engine/trimming.js';
 import type Anthropic from '@anthropic-ai/sdk';
 
 describe('长上下文策略', () => {
@@ -139,5 +141,76 @@ describe('长上下文策略', () => {
     assert.ok(JSON.stringify(out[0]).includes('SUM'), '旧前缀进摘要');
     assert.ok(!JSON.stringify(out).includes('u0'), 'u0 已被摘要替换');
     assert.ok(JSON.stringify(out).includes('t9'), '工具对整对保留、未被切散');
+  });
+});
+
+describe('增量 token 计数（createTokenCounter，预算策略的快路径）', () => {
+  const sample = (): Anthropic.MessageParam[] => [
+    { role: 'user', content: '请处理' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'x', input: { a: 1 } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'r'.repeat(200) }] },
+    { role: 'assistant', content: [{ type: 'text', text: '结果' }] },
+  ];
+
+  it('与 estimateMessages 全量估算结果一致', () => {
+    const msgs = sample();
+    assert.equal(createTokenCounter()(msgs), estimateMessages(msgs));
+  });
+
+  it('追加消息时只计新增部分，不重算前缀（这正是 O(回合×上下文) → O(上下文) 的落点）', () => {
+    let calls = 0;
+    const counting = (t: string): number => {
+      calls++;
+      return defaultEstimateTokens(t);
+    };
+    const count = createTokenCounter(counting);
+    const msgs = sample();
+    count(msgs);
+    const afterFirst = calls;
+    msgs.push({ role: 'user', content: '再加一条' });
+    count(msgs);
+    const delta = calls - afterFirst;
+    // 新增 1 条消息 → 只该估它自己（role 1 次 + 内容 1 次）；全量重算会是 5 条 × 2 次
+    assert.ok(delta <= 2, `追加 1 条只该触发 ≤2 次 estimate，实际 ${delta} 次`);
+  });
+
+  it('长度变短（被策略裁剪过）时从零重算，不读脏缓存', () => {
+    const count = createTokenCounter();
+    const msgs = sample();
+    count(msgs);
+    msgs.length = 2; // 模拟 contextPolicy 原地裁剪后
+    assert.equal(count(msgs), estimateMessages(msgs));
+  });
+
+  it('createBudgetPolicy 真的用上了它：跨回合估算调用次数不随回合数平方增长', async () => {
+    let calls = 0;
+    const policy = createBudgetPolicy({
+      budgetTokens: 10_000_000, // 预算给满 → 只走快路径，不进裁剪分支
+      estimateTokens: (t: string): number => {
+        calls++;
+        return defaultEstimateTokens(t);
+      },
+    });
+    const msgs = sample();
+    await policy.beforeTurn(msgs, { iteration: 1, model: 'm' });
+    const first = calls;
+    // 再追加 4 条（两回合的量）后重估
+    msgs.push(
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'x', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r' }] },
+      { role: 'assistant', content: '再一轮' },
+      { role: 'user', content: '继续' },
+    );
+    await policy.beforeTurn(msgs, { iteration: 2, model: 'm' });
+    const second = calls - first;
+    // 全量重算会是整段历史（8 条）→ 调用数远超新增 4 条
+    assert.ok(second <= 8, `追加 4 条只该估这 4 条（≤8 次调用），实际 ${second} 次 —— 退化成全量重算了`);
+  });
+
+  it('换成另一个数组（新 run / 策略返回新数组）时不复用旧缓存', () => {
+    const count = createTokenCounter();
+    count(sample());
+    const other = [{ role: 'user', content: '完全不同的历史' }] as Anthropic.MessageParam[];
+    assert.equal(count(other), estimateMessages(other));
   });
 });

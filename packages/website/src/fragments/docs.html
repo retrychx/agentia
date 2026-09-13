@@ -253,6 +253,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
           <li>超预算先 <strong>context editing</strong>：丢旧工具对，不额外调模型；</li>
           <li>仍超预算且有 <code>summarize</code> → <strong>compaction</strong>：旧前缀做成摘要，只留最近 <code>keepRecent</code> 条；距上次压缩不足 <code>compactEvery</code> 个回合则跳过（防抖）；</li>
           <li>框架不替你造 token：缺省 token 估算是 CJK 感知启发式，真机可注入按 <code>/count_tokens</code> 的 estimate。</li>
+          <li>估算只算<strong>新增消息</strong>：历史只追加，前缀的估算值被复用，所以每回合的估算开销与「本轮新增」成正比，而不是与整段历史成正比。</li>
         </ul>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>policy</em></div>
@@ -319,7 +320,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         <ul>
           <li><strong>取消传播</strong>：<code>signal</code> 一路传到 <code>ModelClient.messages.stream</code>（内置 Anthropic / OpenAI 适配器都转发）；中断不冒泡异常，run 以 <code>stopReason='aborted'</code> 收尾。HTTP 宿主内置「客户端断开即中止」，<code>AsyncRunner.runTimeoutMs</code> 到点会<strong>中止在飞 run</strong>。</li>
           <li><strong>重试与退避</strong>：缺省开启（<code>maxAttempts=3</code>、指数退避 + 抖动），只重试「本次尝试<strong>尚未产出任何文本</strong>」的失败 —— 已流出的字无法撤回。每次尝试开独立的 <code>llm.turn</code> span。</li>
-          <li><strong>SSE 流式</strong>：<code>POST /run</code> 带 <code>Accept: text/event-stream</code> → <code>text.delta</code> / <code>run.end</code> / <code>error</code> 逐帧下发；不带该头仍回一元 JSON。</li>
+          <li><strong>SSE 流式</strong>：<code>POST /run</code> 带 <code>Accept: text/event-stream</code> → <code>text.delta</code> / <code>run.end</code> / <code>error</code> 逐帧下发；不带该头仍回一元 JSON。<strong>带背压保护</strong>：下游积压（<code>res.writableLength</code>）超过 <code>sseMaxBufferedBytes</code>（缺省 8 MiB）即收口该流并中止对应 run —— 否则一个连得上但不读的客户端会把内存吃光。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>run.ts</em></div>
         <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
