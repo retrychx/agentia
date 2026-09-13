@@ -7,6 +7,11 @@
 > ③ **G2** 的排行**无法**复用 `buildRunReport`（trace-view 零依赖、要在浏览器里跑；CLI 又零运行时依赖），故落成两条口径：`trace-view.summarizeTrace`（展示层，CLI `agentia report` 与 dev 面板同源）与 `buildRunReport`（库层，含未定价/成本语义与跨 run 合并）；
 > ④ **指标 `_count` 语义变更** —— `run_duration_ms_count` 从「窗口内样本数」改为**累积观测数**（Prometheus 直方图语义，可跨实例聚合），窗口只再约束分位 gauge；旧断言已按新语义同步。
 > 另**顺带修一处 doc-vs-code 漂移**：`core/trace.ts` 声明已久的「`unit.usage` = 子孙 `llm.turn` 聚合」此前从未写入 —— 已在 `TraceRecorder.end()` 补上（只累加 `llm.turn`，嵌套不双算）。
+> ⑤ **命名统一（同日稍晚，伞形术语 → `capability`）** —— 见 `2026-09-13-typed-unit-dirs.md` 与 spec §10。
+>    **本文正文与样例按历史快照保留不改**；其中旧的观测面命名请自行替换后使用：
+>   `agentia_unit_*` → `agentia_capability_*` · `unit="…"` → `capability="…"` · `maxUnits` → `maxCapabilities` ·
+>   `droppedUnits` → `droppedCapabilities` · `labelMode:'unit'` → `'capability'` · `unit.usage` → `capability.usage`。
+>   指标真实名称与用法以 `docs/observability.md` 与 `docs/usage-guide.md` 为准。
 > **日期**：2026-09-13
 > **前置**：本文是**设计**，不是逐步实现计划。分期任务计划落地时另起 `docs/plans/2026-09-13-observability-tunability-*.md`。
 > **缘起**：框架定位是「要长期使用、要能被观测、要能被调优的 agent 框架」。当前观测只到 **run 级**（看不到「哪个单元慢/贵/爱失败」），调优旋钮虽齐但**有两处"看着有、实际不生效"**（成本护栏会静默失效）。这块不做透，框架相对"自己拼 SDK"的优势就不成立。
