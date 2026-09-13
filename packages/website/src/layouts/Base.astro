@@ -13,6 +13,20 @@ import '../styles/global.css';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 
+// 首屏字体 preload（修「换字抖动」）：@fontsource 的 CSS 让字体变成**依赖式请求**
+// —— 必须先下完并解析 CSS，浏览器才知道要下字体，于是字体总晚首屏一步。配上
+// `font-display: swap`，就会在首屏之后**换一次字**（可见的二次渲染）。
+// 这里用 `?url` 取 Vite 处理后的哈希地址，在样式表之前显式 preload，把字体并进首屏那一趟。
+// `crossorigin` 必须有：字体按 CORS 模式取，同源也要带，否则 preload 命中不了、反而下两遍。
+// 只 preload 首屏用得到的 4 个（正文 400 / 导航按钮 500 / 大标题 700 / 代码 400）；
+// JetBrains Mono 500 只用于下方 mono 小标题，按需加载即可。
+import sg400 from '@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2?url';
+import sg500 from '@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2?url';
+import sg700 from '@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2?url';
+import jbm400 from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2?url';
+
+const preloadFonts = [sg400, sg500, sg700, jbm400];
+
 const { title, description, page = 'home', footerLinks = [] } = Astro.props;
 ---
 <!DOCTYPE html>
@@ -23,6 +37,9 @@ const { title, description, page = 'home', footerLinks = [] } = Astro.props;
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    {preloadFonts.map((href) => (
+      <link rel="preload" as="font" type="font/woff2" href={href} crossorigin="anonymous" />
+    ))}
   </head>
   <body class={`page-${page}`}>
     <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>

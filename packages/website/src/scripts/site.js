@@ -172,10 +172,29 @@ import Lenis from 'lenis';
   gsap.registerPlugin(ScrollTrigger);
   document.documentElement.classList.add('gsap-on');
 
-  /* ---------- Hero 入场 ---------- */
+  /* ---------- 字体就绪后再落布局 ----------
+   * 自定义字体是 latin 子集、页面以中文为主，`font-display: swap` 落地时会把**拉丁字符**
+   * 换一次字（中文回退 PingFang，不动）。而 Lenis 的滚动上限与 ScrollTrigger 的元素位置
+   * 都是**测量时缓存**的 —— 不在字体落定后 refresh，缓存就是过期的，滚动会抖/跳。
+   * （当前换字引起的位移很小，但这是必须堵上的缝。）
+   * 上限 1.5s：字体万一取不到（离线/被拦截）也要让入场照常开始，不能把首屏吊死。 */
+  const fontsReady =
+    document.fonts && document.fonts.ready
+      ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))])
+      : Promise.resolve();
+  const syncScrollMetrics = () => {
+    if (lenis) lenis.resize();
+    ScrollTrigger.refresh();
+  };
+  fontsReady.then(syncScrollMetrics);
+  window.addEventListener('load', syncScrollMetrics, { once: true });
+
+  /* ---------- Hero 入场 ----------
+   * `paused` 起手、等字体就绪再播：否则入场动画会和「换字」叠在同一段时间里，
+   * 观感就是那一下卡顿。 */
   gsap.set('[data-intro]', { opacity: 0, y: 26 });
-  gsap
-    .timeline({ defaults: { ease: 'power3.out' } })
+  const introTl = gsap
+    .timeline({ defaults: { ease: 'power3.out' }, paused: true })
     .to('.hero-kicker', { opacity: 1, y: 0, duration: 0.7 }, 0.15)
     .to('.hero h1 .line', { opacity: 1, y: 0, duration: 0.9, stagger: 0.12 }, 0.3)
     .to('.hero-sub', { opacity: 1, y: 0, duration: 0.8 }, 0.65)
@@ -189,6 +208,7 @@ import Lenis from 'lenis';
       { opacity: 0, scale: 0.85, duration: 0.4, stagger: 0.07, ease: 'back.out(2)' },
       1.22,
     );
+  fontsReady.then(() => introTl.play());
 
   /* ---------- 区块标题 reveal ---------- */
   document.querySelectorAll('[data-reveal]').forEach((el) => {
