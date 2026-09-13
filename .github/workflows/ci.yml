@@ -17,6 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ⚠️ 本 job 的 name 是分支保护的**必需状态检查**（repos/.../branches/main/protection）。
+  # 改名 = 保护里那条检查永远等不到 → PR 卡死。要改必须同时更新保护配置。
   verify:
     name: 全链验证（verify-all 8 步）
     runs-on: ubuntu-latest
@@ -36,6 +38,52 @@ jobs:
       # 脚本按每步的**显式退出码**判定，失败会打印该步尾部输出。
       - name: verify-all
         run: bash scripts/verify-all.sh
+
+  # 静态检查单独一个 job：不跑测试、失败快、反馈早（几秒 vs 几分钟）
+  lint:
+    name: Lint + 格式（Biome）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # `biome ci` 在 CI 下只报告、不写盘（--write 是本地用的）
+      - name: biome ci
+        run: npx biome ci .
+
+  # 守住 package.json 的 engines 声明（>=18）—— 见 scripts/check-import-floor.mjs 的说明。
+  # 为什么不在 verify 里加矩阵：matrix 会给 job name 加后缀、进而改掉分支保护依赖的
+  # 检查名（PR 会被卡死），所以这里用**独立 job**覆盖最低支持版本。
+  import-floor:
+    name: 导入下限（Node ${{ matrix.node }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20']
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建
+        run: npm run build
+
+      - name: 验证包可导入 + SqliteTaskStore 行为
+        run: node scripts/check-import-floor.mjs
 
   e2e-mcp:
     name: MCP 端到端（真第三方 server，缺失时回落夹具）
