@@ -8,6 +8,7 @@
       <a href="#triggers">触发方式</a>
       <a href="#context">长上下文策略</a>
       <a href="#typed">结构化结果</a>
+      <a href="#observability">可观测</a>
       <a href="#hosting">宿主与导出</a>
       <a href="#models">多模型与记忆</a>
       <a href="#stability">稳定性与流式</a>
@@ -286,6 +287,31 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
 });
 <span class="fn">console</span>.log(result.typed); <span class="cm">// { pass: true, reason: '…' }</span></code></pre></div>
         <p>schema 也可以来自 zod（peer 可选）：<code>fromZod(z.toJSONSchema(S), S)</code>，校验走 zod，错误路径原样回给模型自我修正。</p>
+      </section>
+
+      <!-- 可观测：核心卖点 -->
+      <section id="observability">
+        <h2>可观测：trace 一等公民</h2>
+        <p>一次 run == 一条 trace（<code>traceId === runId</code>），<strong>Turn 0 起内建</strong> —— 不是外挂的第三方追踪 SDK 集成。这是 Agentia 与「能跑通就交差」的 agent demo 的分界线：<strong>四类能力决定它能做什么，trace 决定你敢不敢上线</strong>。</p>
+        <ul>
+          <li><strong>每步记账</strong>：每个 span 带 model、input / output / cache tokens、成本估计、状态与错误类型。口径明确 —— <code>totalUsage</code> 只累加 <code>llm.turn</code>，能力 span 的 usage 是子孙聚合，不重复计数。</li>
+          <li><strong>出口是一条缝</strong>：<code>TraceSink { export(trace) }</code> —— run 收尾的<strong>成功与失败两条路径都投递</strong>，且 sink 抛错不影响 run。落库检索 / 采样 / 脱敏都在缝外用 sink 组合，框架不替你做策略（实码见 <code>examples/observability/</code>，说明见 <code>docs/observability.md</code>）。</li>
+          <li><strong>成本可管</strong>：<code>priceOverrides</code> 给价目表打补丁；模型不在表里时<strong>显式发 <code>usage.unpriced</code> 事件</strong>（不静默按 0 算）；硬管控见下面「成本硬管控」。</li>
+          <li><strong>可回放</strong>：<code>traceToMessages(trace)</code> 把已完成的 trace 线性化喂回模型，作为调试与「改完 prompt 再跑一遍」的基底。</li>
+          <li><strong>可导出</strong>：<code>createOtlpExporter({ endpoint })</code> 推 OTLP；<code>metricsSink()</code> 让指标也走同一条缝（Prometheus 文本或 OTLP metrics），<strong>全程零依赖</strong>。</li>
+          <li><strong>本地就能看</strong>：<code>agentia dev</code> 起本地 inspector 面板，与 <code>@migor/trace-view</code> 共用同一份渲染器 —— 官网 Playground 用的也是同一份，三处一套代码，不漂移。</li>
+        </ul>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>observe.ts</em></div>
+        <pre><code><span class="kw">import</span> { createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages);
+
+result.trace.spans;       <span class="cm">// 调用树：llm.turn / 能力 span / 事件</span>
+result.trace.totalUsage;  <span class="cm">// token 汇总（只累加 llm.turn）</span>
+
+<span class="cm">// 出口是一条缝：落库 / 采样 / 脱敏 / 指标都在缝外组合，框架不内建策略</span>
+<span class="kw">await</span> <span class="fn">createOtlpExporter</span>({ endpoint: <span class="str">'http://localhost:4318'</span> }).<span class="fn">export</span>(result.trace);</code></pre></div>
+        <p>指标与调优报告（「哪个能力慢 / 贵 / 爱失败」）见下面「<a href="#ecosystem">生态与观测</a>」。</p>
       </section>
 
       <section id="hosting">

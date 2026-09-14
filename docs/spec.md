@@ -423,6 +423,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `#execute` 的统一出口唤醒）；`intervalMs` 降级为缺省 250ms 的**兜底轮询**，只服务「终态由他进程写入的异步 store」。
   四条均带守卫测试并逐个做**变异自证**（回退修复即失败）。**`AGENTIA_VERSION` 保持 0.2.1 不变** ——
   该常量反映**已发布**版本，0.2.2 发布时再同步（官网 API 页的描述也已写明这条规则）。
+  ⇒ **已于 2026-09-14 发布 v0.2.2 时同步为 `'0.2.2'`**（`check-release.mjs` 四处一致通过）。
 
 - 2026-09-13：**官网正式化 + 动效补齐**。官网是对外产品页，清理四类「开发过程」内容：开发指标（hero 的「380+ 例单测」
   → 产品属性）、版本对比语言（「旧行为逐字不变」）、内部结构描述（「分层单向」「只依赖 core」「`src/index.ts` 是唯一出口」
@@ -534,9 +535,223 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **未做（记入 roadmap）**：默认 client 换自研 fetch 实现 + 公共类型自有化 —— 那才是让 SDK 真正可选的正道，
   前置条件是先有「真 API 集成测试」（当前单测与 e2e 全用 mock）。
 
+- 2026-09-14：**示例真跑纳入门禁 + 抖动可疑构造普查**。两件事的共同起因都是「文档指着说可跑/没人看清」。
+
+  **① `examples/complete` 从「类型检查覆盖」升级为「真跑」**。此前 `examples/` 下 **0 个测试**、全仓没有一条脚本
+  执行过它，而 usage-guide 与项目 README 都写着「完整可跑写法见 `examples/complete/`」。新增
+  `scripts/e2e-examples.ts`（并入 `npm run e2e`，另留 `npm run e2e:examples` 单跑）：按示例**自己的构建脚本**
+  真构建 → 真起服务 → 按它 README 逐条打端点（`/healthz` · 无凭据 401 · 同步 `/run` · SSE · 异步 `/tasks` +
+  幂等键去重 · `/metrics` · SIGTERM 优雅停机）。模型侧是脚本内置的假 OpenAI 兼容端点（真 SSE，且把
+  `tool_calls` 的 `arguments` **拆两片**下发），**不联网**、不需要任何 key。最有价值的一条断言不是响应文本，
+  而是**假端点真的收到了 `echo: ping` 这条 tool_result** —— 即「四类能力真装配上、能力真被执行过」。
+  过程中修掉两个会骗人的坑：(a) 用 `tsx src/main.ts` 起进程时 **SIGTERM 打在 tsx 的包装进程上**（应用收不到，
+  以 143 退出）→ 改跑 `node dist/main.js`（也是部署形态，顺带把「示例能否构建」纳入门禁）；(b) 本地
+  `file:../..` 被 npm 装成**快照拷贝**（实测是拷贝而非软链）→ 示例跑的是安装那天的框架，改了 dist 不生效；
+  脚本把它换成指向仓库根的链接，本地与 CI 行为一致。
+
+  **② CI 抖动：找到了，是「工具超时」那条 —— 而且根因在引擎，不在测试**。
+  先纠正我自己的判断错误：一开始按 roadmap 的三个嫌疑做机制核查，认定它们**都不成立**
+  （`SqliteTaskStore` 的 `busy_timeout` 是 5000ms 而测试只持锁 200ms；drain 几条的闸门由测试自己释放，
+  超时不可能先到）—— 对这两个成立，但**把 `toolTiming` 一起划掉是错的**：我只看了两条 `>=` 断言
+  （`Date.now()` 差值的下界，确实单调只增），漏了这条用例真正的主张是
+  「20ms 超时**必须赢过** 60ms 的工具」—— 那是一场**只有 3 倍余量的计时器赛跑**。
+
+  **复现（可重复，不是偶遇）**：8 倍 CPU 超订（64 个忙等 worker 压 8 核）下，
+  `tests/engine/toolTiming.test.ts` 单文件 **29 次挂 1 次**（断言 `body.ok === false` 实际为 `true`）；
+  PR #19 的 CI（Node 22、2 核 runner）也红了同一条。
+  **判定实验**：绕过测试框架、单进程直接用引擎跑该场景 **1200 次 → 翻转 1 次**，样本
+  `{ wallMs: 99, durationMs: 99, content: 'late' }` —— 工具那 60ms 的 sleep 实际花了 99ms，
+  而 20ms 的超时**没先触发**。
+  ⇒ **`withTimeout` 的超时不是硬保证**：事件循环被饿住时，它的计时器可能输给工具，
+  于是**一个超出预算的工具被记成成功**（`ok: true`），超时护栏静默失效。
+  （对照实验：把 `withTimeout` 单独拎出来跑同样两条 `setTimeout` 赛跑 3000 次 → **0 翻转**，
+  说明裸赛跑本身在常规条件下是稳的，翻转需要引擎+验证路径的饥饿叠加。）
+
+  **本 PR 做了什么**：把该用例改成**确定性**形态 —— 工具挂在一个只由测试释放的闸门上，
+  断言前它**不可能** settle ⇒ 超时必然先生效，与调度无关（同负载下 **60/60 通过**）。
+  原形态是「靠两条计时器定输赢」，改成「靠一个不可能满足的前提」，这是必要的：一个 3% 失败率的
+  用例会让每次 CI 红都无从判断。
+
+  **本 PR 没做什么（当日已补，见下条）**：**引擎那层没动**。修法方向是给 `withTimeout` 加**实测耗时兜底**
+  （await 之后用 `Date.now() - startedAt >= timeoutMs` 再判一次，超时就记超时），但那是一次
+  **语义收紧**——「21ms 完成的工具在 20ms 预算下会被记成超时」与当天的「记成功」不同，
+  属于核心路径语义变更，要单独拍板 + 单独决策记录。⇒ **同日单独一单落地，见「2026-09-14 ②」**。
+
+  **顺带**：同一个 PR 把四处「等到某状态」的墙钟预算等待收进 `tests/helpers.ts` 一份
+  `waitFor(cond, what, budgetMs = 10_000)`（`host-hardening` 有 4 处默认 1000ms、比出过事的 scheduler
+  那个还紧；四处各写各的：两份手搓 `waitFor`、两份「100×5ms 裸轮询再 assert」），超时抛
+  **带条件描述 + 实测耗时**的错误，返回 `Promise<void>`（不是 boolean）。预算给足不是「加大余量」——
+  这类等待验的是顺序/一致性，没有一处验延迟指标。反向验证：`tests/waitFor.test.ts` 证明条件永不满足时
+  它仍会抛错自陈。
+
+### 2026-09-14 ②：`withTimeout` 收紧为**硬保证**（工具级超时不再靠竞速定输赢）
+
+**决定**：超时判定**不看竞速结果，只看实测耗时**。工具 settle 之后若
+`settledAt - startedAt >= timeoutMs`，即便 `Promise.race` 已经把工具的返回值交回来了，也记 `TIMED_OUT`。
+（`settledAt` 记在**工具 settle 的那个微任务里**，不是 `await` 恢复之后 —— 理由见下。）
+
+**为什么必须改**：`Promise.race` **不是硬保证**。上一单已实测：8 倍 CPU 超订下，单进程直接用引擎跑
+「60ms 工具 + 20ms 预算」1200 次 → **翻转 1 次**（样本 `wallMs/durationMs = 99`、`content: 'late'`），
+即**一个超出预算的工具被记成 `ok: true`**，超时护栏静默失效。
+护栏静默失效比没有护栏更危险 —— 使用者以为设了上限，实际上限会被调度运气吃掉。
+
+**机制层面如实交代**：翻转的**单一起因尚未完全钉死**（「工具与截止计时器在同一毫秒内创建、又同批到期，
+由计时器列表顺序决定谁先执行」是**尚未验证的假设**）。本单钉死的是**可能性本身**，且用**确定性**构造，
+不靠调度运气：
+
+> 让工具在**自己的回调里 `resolve` 之后同步阻塞**越过截止。微任务虽已排入，但要等本轮回调跑完才执行
+> ⇒ 工具先被 `race` 看见，而已到期的截止计时器只能等下一轮 timers 阶段。
+> 实测同一构造：**旧实现返回 `'late'`（⇒ `ok: true`）、硬化后返回 `TIMED_OUT`**。
+
+即：竞速可以交回一个**观察时刻已越过预算**的值 —— 这一点是确定的，与成因无关。修法针对的正是这一点。
+
+**为什么在「工具 settle 的微任务」里记时间**：若在 `await` 恢复之后再测 `Date.now() - startedAt`，
+宿主在「工具完成 → 恢复」之间被饿住，会把**按时完成**的工具误判成超时（新增假阳性）。
+微任务紧跟在 resolve 它那次回调之后跑，`settledAt` 最贴近工具真正完成的时刻 —— 这条差异有专门用例守着。
+
+**代价（如实记）**：**语义收紧** —— `21ms 完成 / 20ms 预算` 由「成功」变「超时」。
+判断为可接受且更正确：「预算」是对**实际耗时**的承诺，不是对调度运气的承诺。
+**既有用例一条没改**（`verify-all` 8/8 全绿）⇒ 说明此前没人依赖那个边界。
+
+**门禁（此前这条性质没有门禁，本单补上）**：
+
+- `tests/engine/concurrency.test.ts` → `describe('withTimeout：超时是硬保证')`：超预算赢竞速必记超时 /
+  预算内不误判（防假阳性）/ 截止计时器先赢 / `reject` 原样抛出 / 非正预算透传。
+- `tests/engine/toolTiming.test.ts` → 「超预算才 settle 的工具必须记 timeout」：走引擎 + trace 记账全链。
+- **承重性反向验证**：临时把实现回退到旧版 ⇒ **恰好这 2 条挂（18/20）**，恢复后 20/20。
+  没有这一步，「新用例通过」可能只是因为它在旧实现上也过。
+
+**顺带**：`concurrency.test.ts` 首次**直接**单测 `withTimeout` 与 `TIMED_OUT` 哨兵
+（此前只有经引擎的间接覆盖）；该哨兵的表意（区分「超时」与「工具恰好返回 `undefined`」）由此有了直接门禁。
+
+**测试写法教训（沉淀）**：`setTimeout` 有两层语义 ——「回调被排入」与「微任务被 drain」。
+**靠两个计时器先后定输赢的断言都是概率门禁**（余量再大也会翻，只是概率低）。
+要确定性，就让「不可能满足的前提」（闸门）或「同步阻塞越过截止」参与构造，而不是加大余量。
+
+### 2026-09-14 ③：真 API 集成验证落地 —— 当场挖出「默认 client 从不转发 signal」
+
+**背景**：全仓测试都走 `tests/helpers.ts` 的 `mockClient`，而 mock 只实现我们**以为** SDK 该有的形状。
+于是「SDK 真可选」这件事从没被真端点验过：SDK 的真实行为若与假设不同（SSE 分片形状、`tool_use.input`
+的解析、`usage` 字段名、`signal` 中转），**现有门禁全绿也发现不了**。这是「让 SDK 真可选」的前置条件。
+
+**新增**：`scripts/e2e-live.ts`（`npm run e2e:live`）。与仓里其他 e2e 的三点不同，刻意不混：
+① **会真花 token** ⇒ 不并入 `npm run e2e`、不进 verify-all、不进 CI；② 无凭据时**跳过并 exit 0**，
+但打醒目横幅（静默跳过等于假装验过）；③ 断言只针对**协议契约**，厂商支持度差异**只报告不判失败**。
+端点走 `ANTHROPIC_BASE_URL` —— 用 DeepSeek 的 Anthropic 协议兼容端点即可验完主路径，
+**不需要 Anthropic key**（这是选择它而非 Anthropic 官方端点做本地验证的原因）。
+
+**六个步骤 + 真端点实测结果**（`deepseek-v4-flash` @ `api.deepseek.com/anthropic`）：
+
+- ① SSE 流式：`on('text')` 分片拼接 == `finalMessage()` 文本，`usage` 有值 ✓
+- ② `tool_use`：`id` / `name` / `input`（含 schema 字段）都真解析出来 ✓
+- ③ `tool_result` 回灌：模型接着收尾，`stop_reason=end_turn` ✓
+- ④ `system` 用 `TextBlockParam[]` 带 `cache_control`：端点接受，且**真回报了缓存计量**
+  （`cache_read_input_tokens=384`）—— 兼容端点支持度比预期好 ✓
+- ⑤ **signal 转发**：见下 ✓（修好后）
+- ⑥ 引擎全链：`runAgent` + 真工具 ⇒ `tool.output.ok=true`、`llm.turn` ≥2、`totalUsage` 有值 ✓
+
+**⑤ 挖出的真 bug（这是本单最重要的产出）**：步骤 ⑤ 一开始**红了**，而且红得有信息量 ——
+在飞请求 `abort()` 后**仍跑完了**（收到 599 个分片、跑满 7.6s）。
+
+判定过程（不猜，逐层收窄）：
+
+1. 先排除框架：`createAnthropicClient()` 返回的就是 SDK 实例本身，`signal` 是**直接**进
+   `sdk.messages.stream()` 的，框架没有中转层 ⇒ 不像框架吞了它。
+2. 再怀疑自己的测试构造：**预中止**的 signal 在 SDK 挂监听器之前就 abort 了，事件不会再触发 ——
+   实测预中止的请求确实照常跑完。这一版构造选错了靶子（契约要的是「中止**在飞** run」），
+   改成**首个分片到达后**再 abort（用分片事件当触发点，不用墙钟猜）。
+3. 改完仍红 ⇒ 查 SDK 类型：`stream(body, options?)`，**`signal` 只在 `RequestOptions` 里认**
+   （`internal/request-options.d.ts`），而 `MessageCreateParams` 里**没有** `signal` 字段。
+4. 最小对照实验（同一请求，只改 signal 的位置）：
+
+   | signal 位置 | 实测结果 |
+   |---|---|
+   | **body 内**（= `ModelClient` 契约的形状） | 分片 **599** 个，abort 被吞，请求跑完 |
+   | **RequestOptions**（= SDK 0.124 真实入参） | 分片 **2** 个，**1ms** 内 `Request was aborted.` |
+
+**根因**：框架的 `ModelClient` 契约把 `signal` 放在 **params 内部**，而默认实现 `createAnthropicClient`
+只是 `return new Anthropic(...)` ⇒ signal 进了 body，被 SDK **静默丢弃**（不报错、不警告）。
+即：接口注释白纸黑字写着「实现须转发给底层请求，否则调用方无法中止在飞 run」，而**框架自己的默认实现
+就没做到**。`integrations/openai.ts` 是手写 fetch，本来就透传 —— 只有 Anthropic 这条（**恰好是默认路径**）坏着。
+
+**影响面（不是「少个功能」）**：`transport/async.ts` 对 `runTimeoutMs` 的承诺是
+「到点真中止、**token 不再继续烧**」，靠的就是这个 signal。旧实现下超时的 run 会在后台
+**继续烧 token** 直到模型自己说完 —— 承诺与实际相反。
+
+**修复**：`createAnthropicClient` 包一层，把契约里的 `signal` 搬到 `RequestOptions`
+（拆分逻辑抽成 `splitSignal()`，单独导出只为可测）。文件头注释里留了上面那张实测对照表 —— 
+这个坑不看数据很难相信。
+
+**门禁（两处，一处在 CI、一处不用 key 也能跑）**：
+
+- `tests/integrations/anthropic.test.ts`：`splitSignal` 的 3 条形态断言 +
+  **本地假端点**测「abort 后必须断开」（零 key、零外网）。假端点**故意不响应**把请求挂在飞，
+  触发点用「端点真收到请求」而非 sleep。**承重性已反向验证**：临时绕过 signal 搬运 ⇒ 该条挂 3s 后失败。
+  这一条的价值在于：把「signal 有没有真到传输层」从「只有真端点能验」变成了 **CI 可跑的零成本门禁**。
+- `scripts/e2e-live.ts` 步骤 ⑤（真端点确认，需凭据）。
+
+**顺带**：`core/tool.ts` 的 `signal` 字段注释补了「自定义 client 的常见坑」与参考实现 ——
+自定义 client 的同样会撞上这个坑，而它的表现是**完全静默**的。
+
+### 2026-09-14 ④：截止计时器**不得 `unref()`** —— 「超时」是等待的终点，不是兜底 tick
+
+**起因（`# fail 0` 却红了 CI）**：发布 PR 的 `verify` 红了，但红的形状很怪 ——
+`# tests 485 / # pass 481 / # fail 0 / # cancelled 4`：**没有断言失败**，是 4 条测试被 runner
+**cancel** 了，全在 `tests/engine/toolTiming.test.ts` 的 E1 套件里（第 1–3 条过，4–7 条被取消）。
+日志里 runner 自己给了原因（而我们当时的失败抽取把它丢掉了，见下）：
+
+```
+failureType: 'cancelledByParent'
+error: 'Promise resolution is still pending but the event loop has already resolved'
+```
+
+**复现（不是偶发，也不靠负载）**：Node 22（与 CI 同 major）跑该文件 15 轮 → **14 轮 cancel**；
+同机 Node 26 跑 15 轮 → 0 轮。定向复现是唯一有效手段：**单文件 + 指定 Node，比多跑几轮全量强**。
+
+**判定实验（剥掉所有框架代码）**：空事件循环里 await 一个「永不 settle 的 promise + 截止计时器」：
+
+| 计时器 | Node 22.23.2 | Node 26.5.0 |
+|---|---|---|
+| `unref()` | **进程直接退出**（exit 13，顶层 await 未 settle） | 同左 |
+| 不 unref | `settled: TIMED_OUT`，exit 0 | 同左 |
+
+⇒ **与 Node 版本无关**，Node 22 只是让 node:test 把它报成 `cancelledByParent` 而已。
+
+**根因**：该计时器的**触发本身就是「被 await 的 promise 得以 settle」的条件**。一旦 `unref`，
+当它是事件循环里唯一的把手时，进程在它触发前就退出 —— 调用方**什么都拿不到**（不是超时值，
+是整段 await 静默消失）。旧注释「兜底计时器不该让宿主为它续命」把两类计时器混为一谈：
+
+- **兜底 tick**（scheduler 的下一拍、SSE 心跳、metrics 刷盘）：**没人 await 它们**，
+  unref 是对的 —— 保留了（`transport/scheduler.ts`、`transport/http.ts`、`integrations/metrics.ts`）。
+- **等待的终点**（工具级超时、MCP 调用超时、停机 `drain`、`runTimeoutMs`）：**调用方正在等它**，
+  unref 等于让「等待」永远不结束。四处的 unref 全部去掉
+  （`engine/concurrency.ts`、`integrations/mcp.ts`、`transport/async.ts` ×2）。
+
+**影响面（不止测试）**：`await runAgent({ tools:[挂死的工具], toolTimeoutMs: 20 })` 在普通脚本里
+**不会返回超时，而是进程静默退出**。对一个把「工具级超时」当护栏卖给使用者的框架来说，
+这比「超时不硬」更严重：护栏连触发机会都没有。
+
+**门禁**：`tests/timeoutLiveness.test.ts` + `tests/fixtures/timeoutLivenessProbe.ts` ——
+拿**干净子进程**（`node --import tsx`）在空事件循环下验三个往返：工具级超时回到 `end_turn`、
+MCP 调用抛出「调用超时」、`drain` 预算耗尽返回 `false`。
+**必须子进程**：本性质的前提就是「进程里没有别的把手」，而同进程跑测试时**测试跑器自己持有把手**，
+会把缺陷藏起来（这正是它此前只被 CI 抓到、本地永远绿的原因）。
+**承重性反向验证**：把三处 `unref` 加回去 ⇒ 门禁 **3/3 全红**。
+`transport/async.ts` 的 `runTimeoutMs` 一并去掉 unref，但**未进门禁**：如实说，它的活性被
+`awaitTask` 的兜底轮询（另有 ref'd 计时器）掩盖，探针验不出差别 —— 不假装它被覆盖了。
+
+**顺带补的诊断缺口**：`scripts/verify-all.sh` 的失败抽取只抓 `not ok` / `AssertionError`，
+而 cancel 类失败的**原因行**（`failureType` / `event loop has already resolved` / `# cancelled`）
+一条都没抓 —— 这就是为什么 CI 上只看到一个 exit 1。已把它们加进抽取清单（沿用 PR #9 的同款修法）。
+
+**这条与 ② 的关系**：同一条用例（`toolTiming` 的「工具超时」）暴露出**两个独立缺陷** ——
+② 是「竞速不是硬保证」（超预算被记成功），④ 是「计时器被 unref」（等待干脆结束不了）。
+两者都在这个文件里以不同形状现形，也各自有了门禁。
+
 ## 11. 开放项
 
-- npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。
+- npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立成包（workspaces），框架本体仍单包。
+  ⇒ **2026-09-14 已发布 v0.2.2**（框架包 + CLI 包，scope 为 `@migor/*`）；上句的「包拆分」仍待做。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖），thinking 用 adaptive，流式优先。
 - CLI 后续：`add`（接第三方能力包）、注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板）。

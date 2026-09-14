@@ -24,7 +24,11 @@ for s in "${steps[@]}"; do
     # 失败定位：这里把整段输出捕获进了 $out，若只 tail 尾部，恰好会把
     # 「哪条测试挂了」的标记行冲掉 —— CI 上就只剩一个 exit 1，谁也查不出是谁。
     # 先按 node:test / tsc / 常见错误标记抽出关键行，再补尾部上下文。
-    echo "$out" | grep -aE '✖|✗|not ok|# fail|AssertionError|error TS[0-9]+|Error:|✘' |
+    # ⚠️ 除了**断言失败**，还有一类非断言的失败：测试被 runner **cancel**
+    #    （`failureType: cancelledByParent` + `Promise resolution is still pending but the
+    #    event loop has already resolved`，统计里表现为 `# cancelled N` 而 `# fail 0`）。
+    #    只抓 `not ok` / `AssertionError` 会把**原因**丢掉 —— 2026-09-14 那次就是这么丢的。
+    echo "$out" | grep -aE '✖|✗|not ok|# fail|# cancelled|AssertionError|error TS[0-9]+|Error:|✘|failureType|cancelledByParent|event loop has already resolved' |
       head -20 | sed 's/^/    ➜ /'
     echo "$out" | tail -30 | sed 's/^/       /'
     fail=1

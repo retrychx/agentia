@@ -63,3 +63,27 @@ export function endTurnMsg(text: string) {
     content: [{ type: 'text', text }],
   };
 }
+
+/**
+ * 等到条件成立 —— 跨进程/带宿主的测试要等「异步侧真的推进了」时用它，别手搓循环。
+ *
+ * 三条约定，都是踩过的坑：
+ * - **断言的是「最终会」，不是「多快会」**：这类等待验的是顺序/一致性，没有一处验延迟指标。
+ *   所以预算给足（默认 10s）是**刻意的** —— 1 秒级的墙钟预算等于顺手断言了一个不存在的性能
+ *   SLA，在满载 runner 上会把「慢」误判成「坏」，是 CI 上最难查的那类红。
+ * - **超时要能自陈**：抛出带 `what`（条件描述）+ 实测耗时的错误。否则满载下只剩一行 assert
+ *   失败，没人知道等的是什么、等了多久（`verify-all.sh` 抽标记行也救不了这种情况）。
+ * - **返回 Promise<void> 而不是 boolean**：调用方不该「拿到 false 再自己 assert」—— 那样错误
+ *   信息就退化成 `expected false to be true` 了。
+ */
+export async function waitFor(cond: () => boolean, what: string, budgetMs = 10_000): Promise<void> {
+  const t0 = Date.now();
+  for (;;) {
+    if (cond()) return;
+    const elapsed = Date.now() - t0;
+    if (elapsed >= budgetMs) {
+      throw new Error(`waitFor 超时：等了 ${elapsed}ms（预算 ${budgetMs}ms）仍未满足 —— ${what}`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}

@@ -1,5 +1,12 @@
 # AGENTS.md —— 仓库结构与协作约定
 
+> **定位**：面向应用开发的声明式 agent 服务开发框架 —— 装饰器 + DI 声明四类能力，主 agent 编排执行；
+> 每次 run 产出结构化结果与**可观测调用树**（trace、成本、指标），交付可直接上线的服务。
+>
+> **可观测是一等公民、与能力声明同级**，「四类能力决定它能做什么，trace 决定它敢不敢上线」（`docs/spec.md` §1）。
+> 改这个仓库时**不要把 trace 当可选外挂**：它是本框架的核心卖点与对外承诺 ——
+> 新增能力/宿主/集成的 PR，若绕开了 trace 记账或 `TraceSink` 出口，就是倒退。
+
 ## 布局
 
 ```
@@ -35,8 +42,15 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   no-legacy-terms.test.ts 钉「面向使用者的表面不得出现旧伞形术语」——
 │                            #   覆盖文档 / 官网 / npm 包 README 与 description / CLI 的 --help 与报错文本；
 │                            #   仅 `<!-- no-legacy-terms: allow -->` 标记块内可豁免，且有行数上限）
-├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
+├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e 第一步：脚手架→生成→装配→mock run）
+├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第二步：examples/complete 真构建、真起服务，
+│                            #   按它 README 跑完 /healthz · 鉴权 401 · 同步 /run · SSE · 异步 /tasks ·
+│                            #   /metrics · 优雅停机；模型侧是内置假 OpenAI 兼容端点，不联网）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
+├── scripts/e2e-live.ts      # 真 API 集成验证（npm run e2e:live：真实厂商端点跑框架主路径 ——
+│                            #   SSE 分片 / tool_use / tool_result 回灌 / cache_control / signal 中止 /
+│                            #   runAgent 全链。走 ANTHROPIC_BASE_URL，用 DeepSeek 的 Anthropic 兼容端点
+│                            #   即可，**不需要 Anthropic key**。⚠️ 会真花 token ⇒ 不进 verify-all / CI）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── packages/
@@ -97,6 +111,12 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
   - 另有 `npm run e2e:mcp`（真接第三方 MCP server，需要网络 / uv；离线自动回落
     `scripts/mcp-fixture-server.py`）。它**不并入**上面 8 步，但动了 `integrations/mcp.ts` 就要跑。
+  - 另有 `npm run e2e:live`（真 API 集成验证）。**不并入**上面 8 步、**不进 CI**（会真花 token），
+    无凭据时跳过并打横幅（静默跳过 = 假装验过）。动了 `integrations/anthropic.ts` 或
+    `core/tool.ts` 的 `ModelClient` 契约就要跑它 —— **mock 全绿发现不了「SDK 真实行为与我们的假设不符」**：
+    2026-09-14 靠它挖出「默认 client 从不转发 `signal`」（中止在飞 run 失效，见 spec §10）。
+    那次也留下一条更省的教训：这类「契约有没有真落到传输层」的断言，**本地假端点**就能在 CI 里零成本守住
+    （`tests/integrations/anthropic.test.ts` 就是这么做的），不必依赖真端点。
   - **CI**：`.github/workflows/ci.yml` —— 五个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
     不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
     守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，

@@ -77,7 +77,7 @@
 
   const COPY_SIM = {
     badge: '模拟演示：本地预置脚本，非真实模型调用',
-    sub: '选一个任务，看主 agent 如何思考、从菜单选中能力、发起 llm.turn、调用能力并汇总产出。右侧 trace 调用树与 token 用量随回放同步生长。',
+    sub: '选一个任务，看主 agent 如何思考、从菜单选中能力、发起 llm.turn、调用能力并汇总产出。右侧就是 Agentia 的可观测面本体：trace 调用树与 token / 成本随回放同步生长 —— 一次 run == 一条 trace，Turn 0 起内建，不是另配的追踪 SDK。',
     note: '按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。',
   };
   function copyReal(p) {
@@ -88,7 +88,7 @@
         p.label +
         '（' +
         p.host +
-        '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，trace 与 token 用量均为真实值。',
+        '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，trace 与 token 用量均为真实值 —— 这棵调用树就是框架那套可观测面的原样产物，不是演示造的假数据。',
       note: p.priceNote,
     };
   }

@@ -70,7 +70,17 @@ export interface ModelClient {
       system?: string | Anthropic.TextBlockParam[];
       tools?: Anthropic.Tool[];
       messages: Anthropic.MessageParam[];
-      /** 中断信号（可选）：实现须转发给底层请求，否则调用方无法中止在飞 run */
+      /**
+       * 中断信号（可选）：实现须转发给底层请求，否则调用方无法中止在飞 run。
+       *
+       * ⚠️ **自定义 client 的常见坑**：`signal` 在**本契约里是 params 的一个字段**，但多数厂商
+       * SDK 把「传输层的 signal」放在**请求选项**里（如 `@anthropic-ai/sdk` 的
+       * `stream(body, options?)` —— `signal` 只在 `RequestOptions` 里认）。若把本 params 原样
+       * 交给 SDK，signal 会被**静默丢弃**，中止失效且**没有任何报错**。
+       * 参考实现：`integrations/anthropic.ts` 的 `splitSignal()`（把 signal 摘出来搬到 options），
+       * 以及 `integrations/openai.ts`（手写 fetch，直接透传）。
+       * 门禁：`tests/integrations/anthropic.test.ts`（零 key 本地假端点，abort 后必须断开）。
+       */
       signal?: AbortSignal;
     }): {
       on(event: 'text', cb: (delta: string) => void): void;

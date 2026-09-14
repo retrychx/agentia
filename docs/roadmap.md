@@ -1,6 +1,6 @@
 # Agentia —— Roadmap
 
-状态：v0.2.1 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）（v0.2.2 待发布）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
+状态：v0.2.2 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
 与 `docs/spec.md`（已锁定决策）互补：spec 记录"已经怎么定的"，本文记录"接下来往哪走"。
 
 ## R1 —— 中间件（拦截器链）✅
@@ -164,6 +164,22 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - 测试：框架 462 → **468**（+6：`discover` 数组 / 跨目录重名 3 条 + 术语守卫 `no-legacy-terms` 3 条），
   CLI 13 → **20**（+7：跨目录同名体检 + 目录约定守卫 + 老布局迁移提示），trace-view 10（仅改名，无新增）。
 
+## 示例真跑纳入门禁 ✅ 落地（2026-09-14）
+
+起因：`examples/complete` 被 usage-guide 与项目 README 指着说「完整可跑写法见这里」，但它此前只被
+`typecheck:tests` 覆盖 —— **全仓没有一条脚本执行过它**（`examples/` 下 0 个测试）。
+
+- **`scripts/e2e-examples.ts`** ✅ 并入 `npm run e2e`（第二步），另有 `npm run e2e:examples` 单跑。
+  按示例**自己的构建脚本**真构建 → `node dist/main.js` 真起服务 → 按它 README 逐条打端点：
+  `/healthz` · 无凭据 401（鉴权缝）· 同步 `/run` · SSE 流式 · 异步 `/tasks` + 幂等键去重 + 轮询终态 ·
+  `/metrics`（含能力级非零样本）· SIGTERM 优雅停机（断言 exit 0 + 排空日志）。
+- **不联网、不需要 key**：模型侧是脚本内置的假 OpenAI 兼容端点（真 SSE；`tool_calls` 的 `arguments`
+  **拆两片**下发，顺带把框架的分片累积逻辑放进真实链路跑一遍）。
+- **断言的关键不在响应文本**：假端点必须**真的收到 `echo: ping` 这条 tool_result** —— 证明四类能力
+  （`echo` / `house_style` / `outline_writer` / `researcher`）真装配进菜单且能力真被执行过。
+- 顺带修掉两个会骗人的坑（详见 spec §10）：`tsx` 起进程时 SIGTERM 打在包装进程上（应用收不到）→ 改跑 dist；
+  本地 `file:../..` 被 npm 装成**快照拷贝** → 示例跑的是安装那天的框架，脚本改为指向仓库根的链接。
+
 ## R7 候选（下一轮）
 
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
@@ -172,16 +188,59 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - **默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）—— 前者 = 用 fetch 重实现
   Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），后者 = 在 `core`
   定义 agentia 自己的 `Message` / `ContentBlock`，只在 `integrations` 边界适配成厂商形状。
-  **前置条件：先补「真 API 集成测试」** —— 当前单测与 e2e 全用 mock，直接换主路径 = 让最关键的一条路
-  失去与真实服务的对照（见 spec §10「厂商 SDK 收敛到单一实例化点」）；
+  **前置条件：真 API 集成测试 —— 已补（`npm run e2e:live`，见下面末条与 spec §10 2026-09-14 ③）**；
+  补上它的第一轮就挖出「默认 client 从不转发 `signal`」（中止在飞 run 失效、超时的 run 继续烧 token）。
+  这条前置并没有白设：mock 全绿也发现不了那个 bug；
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
 - canCall 能力级能力边（当前 tools 引用粒度为 provider）。
-- **维护：CI 抖动待定位** —— v0.2.2 窗口内 main 曾红一次（PR #8 那棵树），同树**重跑即绿** ⇒ 抖动而非回归。
+- **维护：CI 抖动 —— 已定位并修掉（`toolTiming` 的「工具超时」，见 spec §10 2026-09-14）**。
+  v0.2.2 窗口内 main 曾红一次（PR #8 那棵树），同树**重跑即绿** ⇒ 抖动而非回归。
   具体用例当时**无法定位**：`verify-all.sh` 把步骤输出捕获后只 `tail -30`，恰好冲掉 node:test 的 `✖ <名字>` 标记行，
-  CI 上只剩一个 exit 1。已修诊断可达性（PR #9：失败分支先 grep 标记行再补尾部上下文）。
-  下次抖动应能从日志直接读出用例名；本地连跑 3 次全绿，疑似真时钟敏感用例
-  （`store/sqliteStore` 多进程抢锁 / `engine/toolTiming` 工具超时 / `transport` drain 超时）。
+  CI 上只剩一个 exit 1。已修诊断可达性（PR #9：失败分支先 grep 标记行再补尾部上下文）——**这次就是靠它一眼定位的**。
+  **本轮结论**：真凶是 `tests/engine/toolTiming.test.ts` 的「工具超时」用例（原形态靠「60ms 工具 vs 20ms 超时」
+  的计时器赛跑定输赢，只有 3 倍余量）：8 倍 CPU 超订下单文件 **29 次挂 1 次**，PR #19 的 CI 也红了同一条。
+  已改成确定性形态（工具挂在只由测试释放的闸门上，断言前不可能 settle）。
+  原记的三个嫌疑里 `sqliteStore` 抢锁与 `transport` drain 经核查确实不成立。
+- **已做：`withTimeout` 收紧为硬保证**（同一条用例暴露的引擎级问题，见 spec §10 2026-09-14 ②）。
+  判定改为**只看实测耗时**：工具 settle 之后若 `settledAt - startedAt >= timeoutMs`，即便竞速把工具的
+  返回值交回来了也记 `TIMED_OUT`。**确定性复现**（不靠调度运气）：工具在自己的回调里 `resolve` 之后
+  同步阻塞越过截止 ⇒ 旧实现返回 `'late'`（`ok: true`）、硬化后返回 `TIMED_OUT`。
+  代价是**语义收紧**（「21ms 完成 / 20ms 预算」由成功变超时），既有用例一条没改。
+  门禁：`concurrency.test.ts` 直测 5 条 + `toolTiming.test.ts` 引擎级 1 条；
+  **承重性已反向验证**（回退实现 ⇒ 恰好这 2 条挂）。
+- **已做：真 API 集成验证（`npm run e2e:live`）+ 修掉它挖出的 signal bug**（spec §10 2026-09-14 ③）。
+  新增 `scripts/e2e-live.ts`：拿真实端点跑框架主路径六个步骤（SSE 分片 / `tool_use` / `tool_result` 回灌 /
+  `cache_control` / signal 中止 / `runAgent` 全链）。**不进 verify-all、不进 CI**（会花 token），
+  无凭据时跳过并打横幅。走 `ANTHROPIC_BASE_URL`，用 DeepSeek 的 Anthropic 兼容端点即可，
+  **不需要 Anthropic key**。
+  **第一轮就红在 step ⑤**：在飞请求 `abort()` 后仍跑完（599 个分片 / 7.6s）。根因是
+  `ModelClient` 契约把 `signal` 放在 **params 内部**，而默认实现 `createAnthropicClient` 只是
+  `return new Anthropic(...)` ⇒ signal 进 body、被 SDK **静默丢弃**（SDK 只认 `RequestOptions`）。
+  最小对照：body 内 **599 分片跑完** vs options 里 **2 分片 / 1ms 断**。
+  影响面：`transport/async.ts` 承诺 `runTimeoutMs` 到点「真中止、token 不再继续烧」——
+  旧实现下**继续烧**。已修（`splitSignal()` 把 signal 搬到 options），
+  门禁是 `tests/integrations/anthropic.test.ts` 的**本地假端点**（零 key 零外网，CI 可跑），
+  承重性同样反向验证过。
+- **已发布 v0.2.2**（2026-09-14）：`@migor/agentia` + `@migor/cli` 同步发到 npm，
+  `AGENTIA_VERSION` 同步为 `'0.2.2'`（`check-release.mjs` 四处一致）。
+  **决策：`examples/` 的 `file:../..` 保持不变**（不去追 npm 版本）—— 示例与 `e2e-examples`
+  要验的是**工作区里刚构建的那份框架**，换成 `^0.2.2` 会让「改框架 → 必须发版 → 才能验它」，
+  把最该守住的一条链变成发布依赖。几条 README 里「因为没发布所以用 file:」的旧叙事已改写为
+  「刻意跑工作区代码」，并保留「想用发布版就换 `^0.2.2`」的一句话。
+  另：`packages/trace-view` 的 `private: true` 是**有意**的（产物随 CLI `create` 拷进用户项目，
+  不进 npm），不是待修项。
+- **已修：截止计时器不得 `unref()`**（发布 PR 的 CI 红法逼出来的，见 spec §10 2026-09-14 ④）。
+  CI 红得没有断言失败：`# fail 0 / # cancelled 4`，runner 自陈 `cancelledByParent` +
+  `Promise resolution is still pending but the event loop has already resolved`。
+  根因：`toolTimeoutMs` 的截止计时器 `unref` 过 —— 它的**触发就是「那个 await 得以结束」的条件**，
+  作为唯一把手时进程先退出，调用方什么都拿不到。判定实验：unref → 进程退出（exit 13）；
+  不 unref → `TIMED_OUT`（Node 22/26 一个样，与版本无关）。
+  四处「等待的终点」全部去掉 unref（工具级超时 / MCP 调用超时 / 停机 `drain` / `runTimeoutMs`）；
+  scheduler 下一拍、SSE 心跳、metrics 刷盘三处 unref **保留**（没人 await 它们）。
+  门禁 `tests/timeoutLiveness.test.ts`：**干净子进程**+空事件循环验三个往返（承重性反向验证 3/3 红）；
+  `runTimeoutMs` 那处如实标为未覆盖（`awaitTask` 的兜底轮询掩盖了活性差异）。
+  顺带把 verify-all 的失败抽取补上 cancel 类标记行（原因行此前一条都没抓）。
 
 ## 原则（约束所有 R）
 

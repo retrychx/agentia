@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { executeRun, mapWithConcurrency } from '../../src/index.js';
+import { TIMED_OUT, withTimeout } from '../../src/engine/concurrency.js';
 import { mockClient, endTurnMsg } from '../helpers.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
@@ -159,5 +160,66 @@ describe('工具级超时 / 并发闸门接进主循环（C2）', () => {
     const turn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;
     const out = turn.events.find((e) => e.name === 'tool.output')!;
     assert.equal((out.body as { ok: boolean }).ok, false);
+  });
+});
+
+/**
+ * `withTimeout` 的**硬保证**（2026-09-14 语义收紧，见 `docs/spec.md` §10 / roadmap 同日记）。
+ *
+ * 背景：旧实现只认 `Promise.race` 的结果，而竞速**不是硬保证** —— 工具与截止计时器
+ * 在同一毫秒内建、又因事件循环被饿住而同批到期时，列表顺序决定谁先 resolve。
+ * 实测「60ms 工具 vs 20ms 预算」在 8 倍 CPU 超订下单进程 1200 次翻转 1 次：
+ * 超预算的工具被记成 `ok: true`，超时护栏**静默失效**。
+ */
+describe('withTimeout：超时是硬保证（语义收紧后的回归门禁）', () => {
+  /**
+   * 造「计时器输给工具」的竞速：工具在自己的回调里 resolve 之后**同步阻塞**越过截止。
+   * 微任务虽已排入，但要等本轮回调跑完 —— 于是工具先被 `race` 看见，
+   * 而截止计时器（已到期）只能等下一轮 timers 阶段。
+   *
+   * 这是**确定性**复现，不靠调度运气：实测旧实现返回 `'late'`、硬化后返回 `TIMED_OUT`。
+   */
+  const resolveThenBlock = (value: string, innerMs: number, blockMs: number): Promise<string> =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        resolve(value);
+        const until = Date.now() + blockMs;
+        while (Date.now() < until) {}
+      }, innerMs);
+    });
+
+  it('工具超预算才 settle：即便赢了竞速也必须记超时（旧实现会放行）', async () => {
+    const out = await withTimeout(resolveThenBlock('late', 10, 60), 20);
+    assert.equal(out, TIMED_OUT, '超预算的工具不得因竞速结果被记成成功');
+  });
+
+  it('预算内完成则照常返回（硬化不得把「完成得早、观察得晚」误判成超时）', async () => {
+    // 同一形态，但预算远大于实测耗时：工具实测 ~70ms，预算 5000ms ⇒ 必须成功。
+    const out = await withTimeout(resolveThenBlock('done', 10, 60), 5000);
+    assert.equal(out, 'done');
+  });
+
+  it('工具不自行结束：截止计时器先赢 ⇒ TIMED_OUT', async () => {
+    let release!: (value: string) => void;
+    const gate = new Promise<string>((r) => {
+      release = r;
+    });
+    // 本用例**故意不加**心跳保活：截止计时器不得 `unref`（否则它作为唯一把手时进程会先退出、
+    // 这个 await 永不 settle）。同一条性质有专门门禁跑在干净子进程里：
+    // `tests/timeoutLiveness.test.ts`（同进程测不出来 —— 测试跑器自己持有把手）。
+    try {
+      assert.equal(await withTimeout(gate, 20), TIMED_OUT);
+    } finally {
+      release('late');
+    }
+  });
+
+  it('工具 reject 原样抛出（不得被兜底判定吞成超时）', async () => {
+    await assert.rejects(() => withTimeout(Promise.reject(new Error('boom')), 5000), /boom/);
+  });
+
+  it('timeoutMs 非正数 = 不设超时，原样透传', async () => {
+    assert.equal(await withTimeout(Promise.resolve('x'), 0), 'x');
+    assert.equal(await withTimeout(resolveThenBlock('y', 1, 0), -1), 'y');
   });
 });

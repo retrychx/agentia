@@ -26,8 +26,9 @@ export ANTHROPIC_API_KEY=sk-...      # 或 ANTHROPIC_AUTH_TOKEN
 # 可选：ANTHROPIC_BASE_URL（兼容端点）、AGENTIA_MODEL（缺省 claude-opus-5）
 ```
 
-> **版本**：npm 上当前最新为 `0.2.1`，仓库为 `0.2.2`。要从本仓库源码使用（例如跑 `examples/`），
-> 见 [`examples/README.md`](examples/README.md) 的「依赖说明」。
+> **版本**：`0.2.2`（`@migor/agentia` 与 `@migor/cli` 均已发布到 npm）。`examples/` **刻意**用
+> `file:../..` 指向本仓库而不是 npm 版本 —— 跑的是**工作区代码**，理由见
+> [`examples/README.md`](examples/README.md) 的「依赖说明」。
 
 > **运行时**：Node ≥ 18（`engines` 唯一要求，CI 在 18/20/22 上守）。按 Node 设计并测试，
 > **未对 Deno / edge 做验证**。唯一碰内置模块的 store 是 `SqliteTaskStore`（需 Node ≥ 22.5 的
@@ -334,7 +335,7 @@ npm run build        # 编译框架（dist/）
 npm run typecheck    # 类型检查
 npm run lint         # lint + 格式检查（Biome）
 npm test             # 单元测试（node:test）
-npm run e2e          # 端到端：CLI 脚手架 → 目录发现/注册表装配 → mock run
+npm run e2e          # 端到端：CLI 脚手架 → 装配 mock run；再真跑 examples/complete 的完整服务
 ```
 
 > 注：本仓库的 `npm run dev`（tsx）前需先 `npm approve-scripts` 批准 esbuild/tsx 的 postinstall；
