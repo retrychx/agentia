@@ -230,6 +230,17 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   「刻意跑工作区代码」，并保留「想用发布版就换 `^0.2.2`」的一句话。
   另：`packages/trace-view` 的 `private: true` 是**有意**的（产物随 CLI `create` 拷进用户项目，
   不进 npm），不是待修项。
+- **已修：截止计时器不得 `unref()`**（发布 PR 的 CI 红法逼出来的，见 spec §10 2026-09-14 ④）。
+  CI 红得没有断言失败：`# fail 0 / # cancelled 4`，runner 自陈 `cancelledByParent` +
+  `Promise resolution is still pending but the event loop has already resolved`。
+  根因：`toolTimeoutMs` 的截止计时器 `unref` 过 —— 它的**触发就是「那个 await 得以结束」的条件**，
+  作为唯一把手时进程先退出，调用方什么都拿不到。判定实验：unref → 进程退出（exit 13）；
+  不 unref → `TIMED_OUT`（Node 22/26 一个样，与版本无关）。
+  四处「等待的终点」全部去掉 unref（工具级超时 / MCP 调用超时 / 停机 `drain` / `runTimeoutMs`）；
+  scheduler 下一拍、SSE 心跳、metrics 刷盘三处 unref **保留**（没人 await 它们）。
+  门禁 `tests/timeoutLiveness.test.ts`：**干净子进程**+空事件循环验三个往返（承重性反向验证 3/3 红）；
+  `runTimeoutMs` 那处如实标为未覆盖（`awaitTask` 的兜底轮询掩盖了活性差异）。
+  顺带把 verify-all 的失败抽取补上 cancel 类标记行（原因行此前一条都没抓）。
 
 ## 原则（约束所有 R）
 
