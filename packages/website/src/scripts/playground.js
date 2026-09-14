@@ -2,7 +2,7 @@
  * 全部数据为本地预置脚本（字段参照真实 trace：span 树 + usage），不发起任何真实模型调用。
  * 节奏用 setTimeout/Promise 编排；回放区为终端式面板，trace 树随 span start/end 同步生长。
  */
-import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
+import { createTraceView, fmtArg, rawArg, fmtNum, fmtMs } from '@migor/trace-view';
 
 (() => {
   /* ========== 预置场景脚本 ==========
@@ -532,8 +532,10 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
     view.start(s);
   }
 
-  function traceEvent(id, type, tool, text, ok) {
-    view.event(id, type, tool, text, ok);
+  /* text = 折叠态摘要，full = 展开态全文。入参两个都要传：只传摘要时点开还是那 62 个字符
+     （「假展开」）—— 渲染器无法从摘要反推原文，这个信息只有调用方有。 */
+  function traceEvent(id, type, tool, text, ok, full) {
+    view.event(id, type, tool, text, ok, full);
   }
 
   /* 第二参 usageAcc 由 view 内部维护（旧签名保留，兼容 playground-real.js） */
@@ -594,7 +596,16 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
       if (ev.stream) await panelStream(ev.stream, gen);
       if (ev.tool) {
         panelTool(ev.tool.name, ev.tool.input, ev.tool.nested);
-        if (lastTurnId) traceEvent(lastTurnId, 'tool.input', ev.tool.name, fmtArg(ev.tool.input));
+        if (lastTurnId) {
+          traceEvent(
+            lastTurnId,
+            'tool.input',
+            ev.tool.name,
+            fmtArg(ev.tool.input),
+            true,
+            rawArg(ev.tool.input),
+          );
+        }
         pending.push({ name: ev.tool.name, turnId: lastTurnId });
       }
       if (ev.result) {
@@ -638,6 +649,7 @@ import { createTraceView, fmtArg, fmtNum, fmtMs } from '@migor/trace-view';
     fmtNum,
     fmtMs,
     fmtArg,
+    rawArg,
     el,
     addBlock,
     panelThink,

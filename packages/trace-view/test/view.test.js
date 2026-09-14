@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTraceView, fmtArg } from '../src/view.js';
+import { createTraceView, fmtArg, rawArg } from '../src/view.js';
 import { playTrace } from '../src/fromTrace.js';
 
 /**
@@ -213,5 +213,30 @@ describe('trace 行展开（.tr-open）', () => {
     assert.equal(blank.dataset.expandable, undefined, '空正文不该标可展开');
     assert.equal(caretOf(blank), undefined, '空正文不该有 caret');
     assert.equal(blank.clickable, false, '空正文不该挂 click');
+  });
+});
+
+describe('入参的一对函数：fmtArg（折叠态摘要）与 rawArg（展开态原文）', () => {
+  it('摘要被砍到 62 字符，原文是完整 JSON —— 两者不能是同一个东西', () => {
+    const obj = {
+      task: 'x'.repeat(30),
+      focus: 'y'.repeat(30),
+      area: 'z'.repeat(30),
+      note: 'w'.repeat(30),
+      extra: 1,
+    };
+    assert.equal(fmtArg(obj).length, 62, '（前提）摘要是被砍过的');
+    assert.equal(rawArg(obj), JSON.stringify(obj), '原文 = JSON 完整序列化');
+    assert.ok(rawArg(obj).length > 62);
+    assert.notEqual(rawArg(obj), fmtArg(obj), '原文不能等于摘要，否则点开什么都没多出来');
+  });
+
+  it('边界口径：null/undefined → 空串，字符串原样，不可序列化回落 String()', () => {
+    assert.equal(rawArg(null), '');
+    assert.equal(rawArg(undefined), '');
+    assert.equal(rawArg('本来就是一段文本'), '本来就是一段文本');
+    const circular = {};
+    circular.self = circular;
+    assert.equal(rawArg(circular), '[object Object]');
   });
 });

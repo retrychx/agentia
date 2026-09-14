@@ -51,6 +51,19 @@ export function fmtArg(v) {
   return s.length > 62 ? s.slice(0, 61) + '…' : s;
 }
 
+/* span 入参**原文** —— fmtArg 的对偶：摘要给折叠态，原文给展开态。
+ * 两者必须定义在同一处：哪个宿主自己搓一个「原文」，「展开」就会在那里退回摘要
+ * （点开什么都没多出来），而两个宿主共用这一份渲染器，正是为了不让这种漂移发生。 */
+export function rawArg(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    return String(v);
+  }
+}
+
 function el(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
