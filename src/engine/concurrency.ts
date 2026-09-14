@@ -41,6 +41,13 @@ export const TIMED_OUT = Symbol('agentia.timed-out');
  * 想真停下来的工具请自行读 `ToolRunContext.signal`（框架传了，但**不强制**工具中断
  * —— 见 core/tool.ts 的说明：工具副作用无法回滚）。
  *
+ * **超时是硬的**（2026-09-14 收紧，见 `docs/spec.md` §10）：判定不看竞速结果，而看**实测耗时**。
+ * 原因：`Promise.race` 不是硬保证 —— 两个计时器在同一毫秒内建、又因事件循环被饿住而同批到期时，
+ * 列表顺序决定谁先 resolve，**超预算的工具能赢过截止计时器**（实测 `60ms 工具 vs 20ms 预算`
+ * 在 8 倍 CPU 超订下 1200 次翻转 1 次，记成 `ok: true`，护栏静默失效）。
+ * 代价是语义收紧：`21ms 完成 / 20ms 预算` 由「成功」变「超时」—— 这正确，
+ * 「预算」本来就是对**实际耗时**的承诺，不是对调度运气的承诺。
+ *
  * `timeoutMs` 非正数 = 不设超时（直接返回原 promise）。
  */
 export async function withTimeout<T>(
@@ -48,15 +55,33 @@ export async function withTimeout<T>(
   timeoutMs: number,
 ): Promise<T | typeof TIMED_OUT> {
   if (!(timeoutMs > 0)) return p;
+  const startedAt = Date.now();
+  // 在**工具 settle 的那个微任务里**记时间，而不是 `await` 恢复之后再记：
+  // 微任务紧跟在 resolve 它的那次回调之后跑，所以这个时刻最贴近「工具真正完成」。
+  // 若改成 await 恢复后再测，宿主在「工具完成 → 恢复」之间被饿住会把按时完成的工具误判成超时。
+  let settledAt = 0;
+  const tracked = p.then(
+    (v) => {
+      settledAt = Date.now();
+      return v;
+    },
+    (e) => {
+      settledAt = Date.now();
+      throw e;
+    },
+  );
   let timer: NodeJS.Timeout | undefined;
   try {
-    return await Promise.race([
-      p,
+    const out = await Promise.race([
+      tracked,
       new Promise<typeof TIMED_OUT>((resolve) => {
         timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
         timer.unref?.(); // 兜底计时器不该让宿主为它续命
       }),
     ]);
+    // 竞速只当快路径；最终以实测耗时兜底判定（见上面注释里的翻转样本）。
+    if (out === TIMED_OUT) return TIMED_OUT;
+    return settledAt - startedAt >= timeoutMs ? TIMED_OUT : out;
   } finally {
     if (timer) clearTimeout(timer);
   }

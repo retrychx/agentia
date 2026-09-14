@@ -188,8 +188,9 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - **默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）—— 前者 = 用 fetch 重实现
   Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），后者 = 在 `core`
   定义 agentia 自己的 `Message` / `ContentBlock`，只在 `integrations` 边界适配成厂商形状。
-  **前置条件：先补「真 API 集成测试」** —— 当前单测与 e2e 全用 mock，直接换主路径 = 让最关键的一条路
-  失去与真实服务的对照（见 spec §10「厂商 SDK 收敛到单一实例化点」）；
+  **前置条件：真 API 集成测试 —— 已补（`npm run e2e:live`，见下面末条与 spec §10 2026-09-14 ③）**；
+  补上它的第一轮就挖出「默认 client 从不转发 `signal`」（中止在飞 run 失效、超时的 run 继续烧 token）。
+  这条前置并没有白设：mock 全绿也发现不了那个 bug；
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
 - canCall 能力级能力边（当前 tools 引用粒度为 provider）。
@@ -201,11 +202,26 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   的计时器赛跑定输赢，只有 3 倍余量）：8 倍 CPU 超订下单文件 **29 次挂 1 次**，PR #19 的 CI 也红了同一条。
   已改成确定性形态（工具挂在只由测试释放的闸门上，断言前不可能 settle）。
   原记的三个嫌疑里 `sqliteStore` 抢锁与 `transport` drain 经核查确实不成立。
-- **待决：`withTimeout` 的超时不是硬保证**（同一条用例暴露的引擎级问题）。判定实验：单进程直接用引擎跑
-  「60ms 工具 + 20ms 预算」1200 次 → **翻转 1 次**（样本 `wallMs/durationMs = 99`，超时计时器没先触发），
-  即事件循环被饿住时**超出预算的工具会被记成 `ok: true`**，超时护栏静默失效。
-  修法方向：`await` 之后用**实测耗时**再判一次（`Date.now() - startedAt >= timeoutMs` → 记超时）。
-  属**语义收紧**（「21ms 完成的工具在 20ms 预算下」由「成功」变「超时」），需单独拍板 + 决策记录。
+- **已做：`withTimeout` 收紧为硬保证**（同一条用例暴露的引擎级问题，见 spec §10 2026-09-14 ②）。
+  判定改为**只看实测耗时**：工具 settle 之后若 `settledAt - startedAt >= timeoutMs`，即便竞速把工具的
+  返回值交回来了也记 `TIMED_OUT`。**确定性复现**（不靠调度运气）：工具在自己的回调里 `resolve` 之后
+  同步阻塞越过截止 ⇒ 旧实现返回 `'late'`（`ok: true`）、硬化后返回 `TIMED_OUT`。
+  代价是**语义收紧**（「21ms 完成 / 20ms 预算」由成功变超时），既有用例一条没改。
+  门禁：`concurrency.test.ts` 直测 5 条 + `toolTiming.test.ts` 引擎级 1 条；
+  **承重性已反向验证**（回退实现 ⇒ 恰好这 2 条挂）。
+- **已做：真 API 集成验证（`npm run e2e:live`）+ 修掉它挖出的 signal bug**（spec §10 2026-09-14 ③）。
+  新增 `scripts/e2e-live.ts`：拿真实端点跑框架主路径六个步骤（SSE 分片 / `tool_use` / `tool_result` 回灌 /
+  `cache_control` / signal 中止 / `runAgent` 全链）。**不进 verify-all、不进 CI**（会花 token），
+  无凭据时跳过并打横幅。走 `ANTHROPIC_BASE_URL`，用 DeepSeek 的 Anthropic 兼容端点即可，
+  **不需要 Anthropic key**。
+  **第一轮就红在 step ⑤**：在飞请求 `abort()` 后仍跑完（599 个分片 / 7.6s）。根因是
+  `ModelClient` 契约把 `signal` 放在 **params 内部**，而默认实现 `createAnthropicClient` 只是
+  `return new Anthropic(...)` ⇒ signal 进 body、被 SDK **静默丢弃**（SDK 只认 `RequestOptions`）。
+  最小对照：body 内 **599 分片跑完** vs options 里 **2 分片 / 1ms 断**。
+  影响面：`transport/async.ts` 承诺 `runTimeoutMs` 到点「真中止、token 不再继续烧」——
+  旧实现下**继续烧**。已修（`splitSignal()` 把 signal 搬到 options），
+  门禁是 `tests/integrations/anthropic.test.ts` 的**本地假端点**（零 key 零外网，CI 可跑），
+  承重性同样反向验证过。
 
 ## 原则（约束所有 R）
 
