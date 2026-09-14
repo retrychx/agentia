@@ -59,10 +59,12 @@ describe('E1 工具级时序（tool.output 事件带 durationMs / ok / errorKind
     assert.equal(body.ok, true);
     assert.equal('errorKind' in body, false, '成功路径不带 errorKind');
     assert.equal(typeof body.durationMs, 'number');
-    assert.ok(
-      (body.durationMs as number) >= 5,
-      `durationMs 应覆盖工具内部 5ms 等待，实际 ${body.durationMs}`,
-    );
+    // ⚠️ 别写成 `>= 5`：Node 的 setTimeout 允许**提前不到 1ms** 触发，阈值不是运行时承诺的下限。
+    // 实测探针（2× CPU 超订，各 20000 轮）：5ms 提前触发 90 次，最小实测 4ms；
+    // 20ms 提前触发 133 次，最小实测 19ms。上下界一起给，既容忍那一毫秒，
+    // 又不让它退化成「只要 ≥ 阈值就过」。
+    const dur = body.durationMs as number;
+    assert.ok(dur >= 4 && dur <= 500, `durationMs 应覆盖工具内部 5ms 等待，实际 ${dur}`);
   });
 
   it('工具抛错：ok=false + errorKind=threw，且 run 不失败（is_error 回模型）', async () => {
@@ -130,7 +132,14 @@ describe('E1 工具级时序（tool.output 事件带 durationMs / ok / errorKind
       const body = toolOutputEvent(result.trace);
       assert.equal(body.ok, false);
       assert.equal(body.errorKind, 'timeout');
-      assert.ok((body.durationMs as number) >= 20, `超时路径也要记耗时，实际 ${body.durationMs}`);
+      // 同上：容忍 setTimeout 提前不到 1ms —— CI 的红就是这么来的。
+      // 实测该延迟下 20000 轮提前触发 133 次（最小 19ms vs 预算 20），
+      // 且同一超订条件下这条断言修前 90 次挂 1 次、修后 0 次。
+      const timedOutDur = body.durationMs as number;
+      assert.ok(
+        timedOutDur >= 19 && timedOutDur <= 2000,
+        `超时路径也要记耗时，实际 ${timedOutDur}`,
+      );
       assert.equal(result.stopReason, 'end_turn');
     } finally {
       release(); // 放掉挂起的工具（超时语义是「放弃等待」，工具内部可能还在跑 —— 正是本用例的前提）
