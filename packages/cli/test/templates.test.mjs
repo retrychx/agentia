@@ -48,4 +48,34 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     assert.ok(main.includes('result.stopReason'), 'main.ts 应打印 stopReason');
     assert.ok(main.includes('process.exitCode = 1'), 'main.ts 失败时应置非零退出码');
   });
+
+  it('.env 三件套：生成 .env / .env.example，且 .gitignore 必须挡住 .env', () => {
+    // 这三行是一组契约，少一行就是事故：生成 .env 却不 ignore = 把 key 送进用户的第一个 commit；
+    // ignore 了 .env 却没有 main.ts 的 loadEnvFile() = 文件形同废纸（用户只会看到「没配 key」）。
+    const ignore = T.projectGitignore();
+    assert.ok(
+      ignore.split('\n').includes('.env'),
+      `.gitignore 模板必须含独立的 .env 行，实际：${JSON.stringify(ignore)}`,
+    );
+    assert.ok(ignore.split('\n').includes('.env.local'), '.gitignore 模板应含 .env.local');
+
+    const env = T.projectDotEnv();
+    assert.ok(env.includes('ANTHROPIC_API_KEY='), '.env 模板应给出 key 的空位');
+    assert.ok(
+      !env.includes('sk-ant-'),
+      '.env 模板不得预填假 key（会让首次运行变成 401 而不是「没配」）',
+    );
+
+    const example = T.projectDotEnvExample();
+    assert.ok(example.includes('ANTHROPIC_API_KEY='), '.env.example 应列 key');
+    assert.ok(example.includes('.env'), '.env.example 应说明「复制成 .env」的用法');
+
+    // 接线：main.ts 模板里必须有一句独立调用（框架不自动读 .env）
+    const main = T.mainTs('demo');
+    assert.ok(/^loadEnvFile\(\);$/m.test(main), 'main.ts 模板应有独立的 loadEnvFile(); 调用');
+    assert.ok(
+      /import \{[^}]*\bloadEnvFile\b[^}]*\} from/.test(main),
+      'main.ts 模板应从框架导入 loadEnvFile（否则生成的项目编译不过）',
+    );
+  });
 });

@@ -25,7 +25,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   MCP 桥(duck-typed，不含传输)、指标(metricsSink，满足 TraceSink)
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
-│   │                        #   中间件、目录发现(discover)、文本资产(asset)、zod 桥
+│   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥
 │   ├── eval/                # evals（D2）：scriptedClient + defineEval —— **叶子消费模块**，
 │   │                        #   只依赖公共面、零反向依赖（谁都不 import 它）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）

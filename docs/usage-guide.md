@@ -70,9 +70,9 @@ console.log(result.finalText, result.stopReason, result.trace.totalUsage);
 ## 2. 项目结构（CLI 约定）
 
 ```bash
-npx @migor/cli create my-app     # 脚手架
+npx @migor/cli create my-app     # 脚手架（含 .env / .env.example）
 cd my-app && npm install
-export ANTHROPIC_API_KEY=sk-ant-...
+$EDITOR .env                     # 填 ANTHROPIC_API_KEY（脚手架已生成，且已被 .gitignore 挡住）
 npx @migor/cli dev               # tsx watch + 本地 inspector 面板
 npx @migor/cli g tool fetch-weather   # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
 npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复）
@@ -282,6 +282,31 @@ result.typed;   // { answer: string } | undefined
 | `classifyError` | 异常 → `{ type, message, retryable }` |
 | `isSuccessStopReason` | `end_turn` / `stop_sequence` 都算正常收尾 |
 | `resolveDefaultModel` | 显式 > `AGENTIA_MODEL` > `claude-opus-5` |
+
+### 环境变量与 `.env`（`loadEnvFile`）
+
+| API | 说明 |
+|---|---|
+| `loadEnvFile` | 读一份 `.env` 进 `process.env`，返回**本次真正生效**的键；选项 `LoadEnvOptions`：`{ path?, override? }` |
+
+```ts
+import { createApp, loadEnvFile } from '@migor/agentia';
+
+loadEnvFile(); // 缺省 cwd/.env；文件不存在 = 静默返回 {}（首次 clone、CI 的正常路径）
+const app = await createApp({ ... });
+```
+
+三条语义（都刻意，别当成实现细节）：
+
+- **框架不自动读 `.env`** —— 读哪个文件、什么时候读是宿主的启动决策。塞进 `createApp` 里自动做，会让「同一份代码换个目录跑结果不同」变成要花时间排查的悬案；而放 CLI 里只有 `agentia dev` 生效。写在**你的** `main.ts` 里，`node dist/main.js`、docker、别的宿主都一样读得到。
+- **真实环境变量优先**（缺省不覆盖）：`process.env` 里已定义（哪怕空串）的键保持不动 —— CI / docker / `FOO=bar npm start` 永远赢过文件。要让文件里的值压过环境变量就 `loadEnvFile({ override: true })`。
+- **想知道「生效没」看返回值**，别去看文件：被挡下的键不在返回对象里。
+
+`agentia create` 生成的脚手架把 `.env`、`.env.example` 与 `main.ts` 首行的 `loadEnvFile();` 都备好了，并在 `.gitignore` 里挡住 `.env` —— 生成 `.env` 却不 ignore，等于把 key 送进用户的第一个 commit。
+
+> ⚠️ **本机 export 过 `ANTHROPIC_API_KEY` 的人**（比如同时用 Claude Code）：按上面的优先级，脚手架 `.env` 里的 key 会被**静默压住**。改了 `.env` 却「没生效」时，先 `echo $ANTHROPIC_API_KEY` 看看环境里是不是已经有一份。
+
+解析规则（刻意窄，够用就好）：`KEY=VALUE`，允许 `export ` 前缀与 `=` 两侧空白；`#` 整行注释；单引号内原样、双引号内认 `\n \r \t \" \\`；未加引号的值里 ` #` 起为行内注释。**不做变量展开、不合并续行**（需要就上专门的库）；既不像 `KEY=VALUE` 又不是注释的行**直接报错并指出行号** —— 静默跳过等于让你以为「配上了其实没配上」。
 
 ### 宿主（换宿主不换语义）
 
@@ -757,10 +782,10 @@ const callable = {
 | 能力引用是 provider 粒度 | 子 agent / skill 的 `tools` 写的是 **provider token**，不是单个工具名 |
 | 取消要传进客户端才有效 | 传 `signal` 后框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发）；不转发 `signal` 的自定义 `ModelClient` 只能「放弃等待」（请求在后台跑完、产物丢弃） |
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
-| 框架不读 env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外不读环境变量；不含 dev 逻辑 |
+| 框架不自动读 .env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外，框架自己不去翻环境变量，也不读 `.env`；要读就在启动代码里调 `loadEnvFile()`（脚手架已内置那行），**真实环境变量优先**于文件 |
 | 鉴权只是缝 | 框架**不实现** token / JWT / 签名策略，也不碰凭据 env —— `authenticate` 只承诺「拦在入口、读 body 之前」；策略是宿主或反代的事 |
 | 运行时是 Node | 按 Node ≥ 18 设计与测试（`engines` 写明，CI 在 18/20/22 上守）；**未对 Deno / edge 做验证**。`SqliteTaskStore` 需 Node ≥ 22.5（`node:sqlite`），未提供时构造期抛可读报错 |
-| 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不读 env、不做进程级决策）；信号处理是宿主的 |
+| 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不做进程级决策）；信号处理是宿主的 |
 | 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
 | 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |

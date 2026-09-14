@@ -87,6 +87,8 @@ export type {
 
 // toolkit：声明式能力 + 应用装配
 export { asset } from './toolkit/asset.js';
+export { loadEnvFile } from './toolkit/env.js';
+export type { LoadEnvOptions } from './toolkit/env.js';
 export { discoverProviders } from './toolkit/discover.js';
 export { applyMiddleware } from './toolkit/middleware.js';
 export type { CapabilityCall, CapabilityMiddleware, CapabilityNext } from './toolkit/middleware.js';

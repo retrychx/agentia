@@ -3,7 +3,15 @@
 // discoverProviders/createApp({discover}) 装配 → mock 模型跑通一次 run。
 // 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +49,24 @@ try {
   for (const d of ['src/tools', 'src/skills', 'src/prompts', 'src/subagents']) {
     assert(existsSync(join(proj, d, '.gitkeep')), `create 应建出 ${d}/（含 .gitkeep）`);
   }
+  // .env 三件套必须同时到位 —— 生成 .env 却不把它写进 .gitignore，等于把 key 送进用户的第一个 commit
+  for (const f of ['.env', '.env.example', '.gitignore']) {
+    assert(existsSync(join(proj, f)), `create 缺文件: ${f}`);
+  }
+  const ignoreLines = readFileSync(join(proj, '.gitignore'), 'utf8').split('\n');
+  assert(
+    ignoreLines.includes('.env'),
+    `.gitignore 必须忽略 .env（否则脚手架生成的 .env 会被提交），实际：${ignoreLines.join(' | ')}`,
+  );
+  // 接线：生成的 main.ts 真的调了 loadEnvFile —— 框架**不自动**读 .env，全靠这一行。
+  // 必须锚到**独立语句行**（`^loadEnvFile();$`）：先写成「文本里含 loadEnvFile()」，
+  // 结果被同文件注释里的那句说明满足了 —— 把调用删掉门禁照样绿（反向验证抓到的假绿）。
+  // 这一条是语法层面的（要知道它真能被读到，见下面 4b 的行为验证）。
+  const mainSrc = readFileSync(join(proj, 'src/main.ts'), 'utf8');
+  assert(
+    /^loadEnvFile\(\);$/m.test(mainSrc),
+    'src/main.ts 里应有独立的 `loadEnvFile();` 调用（否则生成的 .env 形同废纸）',
+  );
   // tsconfig 必须只 include 'src' —— 能力目录/注册表全在 src 下，一个 include 全覆盖。
   // 曾经是 ['src', 'capabilities.ts'] 却漏掉能力目录本身 → 未登记的能力静默不参与类型检查。
   const tsconfig = JSON.parse(readFileSync(join(proj, 'tsconfig.json'), 'utf8'));
@@ -109,6 +135,34 @@ try {
   // —— 4) 让生成项目的 `import '@migor/agentia'` 可解析（symlink 回仓库根，框架已 build 到 dist）——
   mkdirSync(join(proj, 'node_modules', '@migor'), { recursive: true });
   symlinkSync(repoRoot, join(proj, 'node_modules', '@migor', 'agentia'), 'dir');
+
+  // —— 4b) .env 真的会被读到（跑一遍脚手架入口的同一句，而不是只看文件在不在）——
+  // 这里最危险的是**静默失败**：文件生成得漂漂亮亮、key 却没进 process.env，用户只会看到
+  // 「没配 key」的报错，然后去怀疑框架。所以按行为验，不按存在性验。
+  writeFileSync(
+    join(proj, '.env'),
+    `${readFileSync(join(proj, '.env'), 'utf8')}AGENTIA_E2E_DOTENV=ok\n`,
+  );
+  writeFileSync(
+    join(proj, 'env-probe.mjs'),
+    "import { loadEnvFile } from '@migor/agentia';\nprocess.stdout.write(JSON.stringify(loadEnvFile()));\n",
+  );
+  // 先清掉环境里可能同名的键：**真实环境变量优先**是刻意语义（单测里钉着），
+  // 不清就分不清「文件被读了」和「环境里本来就有」—— 本机 export 过 key 的人最容易踩
+  const probeEnv = { ...process.env };
+  delete probeEnv.AGENTIA_E2E_DOTENV;
+  const applied = JSON.parse(
+    execFileSync(process.execPath, ['env-probe.mjs'], {
+      cwd: proj,
+      encoding: 'utf8',
+      env: probeEnv,
+    }),
+  ) as Record<string, string>;
+  assert(
+    applied.AGENTIA_E2E_DOTENV === 'ok',
+    `.env 没被 loadEnvFile 读到：${JSON.stringify(applied)}`,
+  );
+  rmSync(join(proj, 'env-probe.mjs'), { force: true });
 
   // —— 5) 发现机制：discoverProviders（四分类目录数组，顺序即装配顺序）——
   const capabilityDirs = ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'].map((d) =>

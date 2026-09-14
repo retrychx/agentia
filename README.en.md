@@ -24,8 +24,15 @@ Node.js **≥ 18** (the only `engines` requirement; CI runs 18 / 20 / 22). Deno 
 ```bash
 npm i @migor/agentia          # the framework
 npm i -g @migor/cli           # CLI: scaffold / generate / dev inspector
-export ANTHROPIC_API_KEY=sk-...   # or ANTHROPIC_AUTH_TOKEN; ANTHROPIC_BASE_URL for compatible gateways
+
+agentia create my-app         # scaffold ships .env / .env.example
+$EDITOR my-app/.env           # put ANTHROPIC_API_KEY here (export works too — real env wins)
+# optional: ANTHROPIC_BASE_URL (compatible gateways), AGENTIA_MODEL (default claude-opus-5)
 ```
+
+> The framework does **not** read `.env` on its own: the scaffolded `src/main.ts` calls
+> `loadEnvFile()` on its first line. Real environment variables always win over the file
+> (CI / docker / command line), unless you pass `loadEnvFile({ override: true })`.
 
 ## Quick start
 
