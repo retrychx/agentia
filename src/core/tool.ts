@@ -121,6 +121,15 @@ export interface ToolRunContext {
    * 模型在子循环里会退化成"未定价"（成本恒 0，`maxCostUsd` 静默失效）。
    */
   priceOverrides?: Record<string, ModelPricing>;
+  /**
+   * trace 事件正文的截断上限（见 `RunAgentOptions.maxEventChars`）。嵌套能力
+   * （@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去，否则**同一棵调用树
+   * 上会出现两种截断口径** —— 主 agent 的工具结果看得见全文、子 agent 的却被截断，
+   * 而「子 agent 里的工具为什么失败」恰恰是最需要看全文的地方。
+   *
+   * 不设（undefined）= 子循环用各自缺省（不是"不截断"）。
+   */
+  maxEventChars?: number | false;
 }
 
 export interface AgentTool<I = unknown, O = unknown> {

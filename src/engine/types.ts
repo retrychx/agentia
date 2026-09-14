@@ -153,6 +153,22 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    */
   maxToolConcurrency?: number;
   /**
+   * trace 事件正文（`tool.input` 的入参、`tool.output` 的 content）的最大字符数。
+   *
+   * 缺省按事件类型分别收敛：入参 2000、成功出参 2000、失败出参 1000 ——
+   * 调用树里一行看个大概即可，不必把整份工具结果搬进 trace（sink 落库 / OTLP
+   * 导出同样按这个体积走）。传**数字**则三类统一用该上限；传 **`false`** 表示
+   * **不截断**：完整正文进 trace，供 `agentia dev` 面板 / playground 展开查看
+   * （折叠态仍是一行摘要，展开是**客户端**行为，不影响 trace 体积口径）。
+   *
+   * 同样**透传给嵌套能力**（@SubAgent / @Skill 的子循环）—— 否则调试期开了全文，
+   * 子 agent 里的工具事件还是被截断的，「开没开」在同一棵树上会出现两种口径。
+   *
+   * ⚠️ `false` 不设上限：工具返回多大就记多大，trace 会随之膨胀。调试期开、生产期关。
+   * 截断只在**记账**时发生，不影响回给模型的 tool_result（那条永远完整）。
+   */
+  maxEventChars?: number | false;
+  /**
    * 提示词版本号（D4）：写进 run 根 span 的 `system.version` attribute，
    * trace 里据此可查「哪个版本的提示词产出的结果」。
    *

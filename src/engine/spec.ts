@@ -45,6 +45,15 @@ export interface RunInvocationOptions {
   toolTimeoutMs?: number;
   /** 同回合并行工具上限；缺省不限 */
   maxToolConcurrency?: number;
+  /**
+   * trace 事件正文的截断上限（字符）。缺省按事件类型分别收敛（入参/成功出参 2000、
+   * 失败出参 1000）；传数字则三类统一；**`false` = 不截断**，完整工具结果进 trace，
+   * 可在 `agentia dev` 面板 / playground 里展开查看。
+   *
+   * ⚠️ `false` 会让 trace 体积随工具返回值增长，调试期开、生产期关。
+   * 截断只影响记账，回给模型的 tool_result 永远完整。见 `RunAgentOptions.maxEventChars`。
+   */
+  maxEventChars?: number | false;
 }
 
 /** 一次任务的规范化入参：messages（已由 normalizeMessages 规整） */

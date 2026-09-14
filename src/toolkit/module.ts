@@ -87,6 +87,12 @@ export interface AppOptions {
   toolTimeoutMs?: number;
   /** 缺省同回合并行工具上限（可被单次 run 覆盖）；不设 = 不限 */
   maxToolConcurrency?: number;
+  /**
+   * 缺省 trace 事件正文截断上限（可被单次 run 覆盖）；不设 = 框架缺省
+   * （入参/成功出参 2000、失败出参 1000），`false` = 不截断。
+   * 调试期在应用级开一次 `false`，不必每个调用点重复传。见 `RunAgentOptions.maxEventChars`。
+   */
+  maxEventChars?: number | false;
   /** 只扫这些 token 的 provider 上的 @Tool；缺省扫全部 providers */
   toolSources?: Token[];
   /**
@@ -160,6 +166,7 @@ export class AgentApp {
     onUnpricedModel?: (info: { model: string; spanId: string }) => void;
     toolTimeoutMs?: number;
     maxToolConcurrency?: number;
+    maxEventChars?: number | false;
   };
   private _tools: AgentTool[] = [];
   private readonly sinks: TraceSink[];
@@ -194,6 +201,7 @@ export class AgentApp {
       onUnpricedModel: opts.onUnpricedModel,
       toolTimeoutMs: opts.toolTimeoutMs,
       maxToolConcurrency: opts.maxToolConcurrency,
+      maxEventChars: opts.maxEventChars,
     };
 
     // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent / @Skill / @Prompt；
@@ -354,6 +362,7 @@ export class AgentApp {
       onUnpricedModel: opts.onUnpricedModel ?? this.base.onUnpricedModel,
       toolTimeoutMs: opts.toolTimeoutMs ?? this.base.toolTimeoutMs,
       maxToolConcurrency: opts.maxToolConcurrency ?? this.base.maxToolConcurrency,
+      maxEventChars: opts.maxEventChars ?? this.base.maxEventChars,
       resultSchema: opts.resultSchema,
       // 提示词版本化（D4）：system 是 SystemPrompt 实例时自动带上它的 version
       // （run 根 attribute `system.version`）；传已拼好的 SystemParam 则无版本可记。

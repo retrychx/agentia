@@ -3,6 +3,38 @@ import assert from 'node:assert/strict';
 import { playTrace } from '../src/fromTrace.js';
 import { createTraceView, capabilityTypeOf } from '../src/view.js';
 
+/** 最小 DOM stub：渲染器只用到 createElement / innerHTML / appendChild / addEventListener */
+function makeNode() {
+  const handlers = Object.create(null);
+  return {
+    className: '',
+    textContent: '',
+    title: '',
+    dataset: {},
+    children: [],
+    set innerHTML(_v) {
+      this.children = [];
+    },
+    get innerHTML() {
+      return '';
+    },
+    appendChild(c) {
+      this.children.push(c);
+      return c;
+    },
+    // 事件行的展开是挂 click 的（见 view.js）：stub 少了这个，渲染到可展开行就抛
+    addEventListener(type, fn) {
+      if (!handlers[type]) handlers[type] = [];
+      handlers[type].push(fn);
+    },
+  };
+}
+
+/** 装上 document stub（每条真渲染 DOM 的用例调用） */
+function useDom() {
+  globalThis.document = { createElement: () => makeNode() };
+}
+
 /** 记录型假视图：把调用按顺序存下来，供断言归一后的动作序列 */
 function fakeView() {
   const calls = [];
@@ -168,25 +200,8 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
   });
 
   it('usage 计数：只累加 llm.turn，capability span 的聚合 usage 不双算', () => {
-    // createTraceView 需要 DOM：最小 stub 即可（只用到 createElement / innerHTML / appendChild）
-    const makeNode = () => ({
-      className: '',
-      textContent: '',
-      title: '',
-      dataset: {},
-      children: [],
-      set innerHTML(_v) {
-        this.children = [];
-      },
-      get innerHTML() {
-        return '';
-      },
-      appendChild(c) {
-        this.children.push(c);
-        return c;
-      },
-    });
-    globalThis.document = { createElement: () => makeNode() };
+    // createTraceView 需要 DOM（见 useDom）
+    useDom();
 
     const t = docReviewTrace();
     // capability span 挂一个聚合 usage：计入就双算
@@ -207,24 +222,7 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
   });
 
   it('渲染成 DOM：事件行在所属 turn 下、能力行带 tr-ico 标识符', () => {
-    const makeNode = () => ({
-      className: '',
-      textContent: '',
-      title: '',
-      dataset: {},
-      children: [],
-      set innerHTML(_v) {
-        this.children = [];
-      },
-      get innerHTML() {
-        return '';
-      },
-      appendChild(c) {
-        this.children.push(c);
-        return c;
-      },
-    });
-    globalThis.document = { createElement: () => makeNode() };
+    useDom();
 
     const root = makeNode();
     const view = createTraceView(root);
@@ -326,24 +324,7 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
   });
 
   it('DOM：非 tool.* 事件行不渲染 tr-name 节点，tool.* 事件行照旧渲染', () => {
-    const makeNode = () => ({
-      className: '',
-      textContent: '',
-      title: '',
-      dataset: {},
-      children: [],
-      set innerHTML(_v) {
-        this.children = [];
-      },
-      get innerHTML() {
-        return '';
-      },
-      appendChild(c) {
-        this.children.push(c);
-        return c;
-      },
-    });
-    globalThis.document = { createElement: () => makeNode() };
+    useDom();
 
     const root = makeNode();
     const view = createTraceView(root);

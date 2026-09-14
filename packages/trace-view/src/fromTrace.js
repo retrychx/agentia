@@ -67,6 +67,29 @@ function eventText(ev) {
   return body == null ? '' : typeof body === 'string' ? body : JSON.stringify(body);
 }
 
+/** 任意值 → 原文（与 eventText 的取值口径一致，但不做任何摘要化） */
+function rawText(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    return String(v);
+  }
+}
+
+/**
+ * 事件全文（展开态用）。
+ *
+ * 只有 `tool.input` 需要单独取：`fmtArg` 把入参摘要**砍到 4 个键 / 每值 21 字符 / 整串 62 字符**，
+ * 直接拿摘要当全文就是「假展开」—— 点开看到的还是那 62 个字符。出参与其他事件本身就是原文
+ * （`eventText` 原样返回 content），无需二次处理。
+ */
+function eventFull(ev) {
+  if (ev.name === 'tool.input') return rawText(ev.body && ev.body.input);
+  return eventText(ev);
+}
+
 /**
  * 把真实 Trace 线性回放给视图（同步、一次性；用于 run 结束后的静态展示）。
  * 返回 false 表示 trace 空、未做任何渲染。
@@ -126,6 +149,7 @@ export function playTrace(view, trace) {
         eventToolName(it.ev.name, it.ev.body && it.ev.body.tool, typeMap),
         eventText(it.ev),
         !it.ev.body || it.ev.body.ok !== false,
+        eventFull(it.ev),
       );
     } else {
       view.end({

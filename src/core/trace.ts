@@ -32,7 +32,11 @@ export interface SpanError {
   retryable: boolean;
 }
 
-/** 结构化事件（日志）。工具入参/出参默认截断 + 脱敏，完整内容 opt-in */
+/**
+ * 结构化事件（日志）。工具入参/出参**正文默认截断**（入参/成功出参 2000 字符、失败出参 1000），
+ * 完整正文需显式开启：`RunInvocationOptions.maxEventChars: false`（缺省关）。
+ * 脱敏**不在框架内** —— 那是 sink 缝外的事（spec §9.3），框架只保证出口形状。
+ */
 export interface SpanEvent {
   time: number;
   name: string; // 例如 'tool.input' / 'tool.output' / 'compaction'
