@@ -113,7 +113,9 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
     `tool.input` / `tool.output` 事件（`engine/loop.ts`）
   - 子 agent = 一个 capability span，其内部能力递归成它的子孙
 - span 属性：model、input/output/cache tokens、成本估计、状态、错误类型。
-- 事件（logs）：工具入参/出参**默认截断 + 脱敏**，完整内容 opt-in。
+- 事件（logs）：工具入参/出参**正文默认截断**（入参/成功出参 2000 字符、失败出参 1000），
+  完整正文由 `RunInvocationOptions.maxEventChars: false` 显式开启（缺省关）。截断只在**记账**侧，
+  回给模型的 tool_result 不受影响。脱敏**不在框架内**（见 §9.3：那是 sink 缝外的事）。
 - 状态：`ok` / `error` + 错误分类（可重试 vs 不可重试）。
 
 ### 9.2 上下文传播
@@ -791,6 +793,66 @@ MCP 调用抛出「调用超时」、`drain` 预算耗尽返回 `false`。
 **影响面**：`docs/usage-guide.md` 新增「环境变量与 `.env`」一节 + 改写两条已知边界
 （原「框架不读 env」→「框架不自动读 `.env`」；停机那条去掉「不读 env」的括号理由，免得自相矛盾）；
 官网 `api.html` 补 `loadEnvFile` / `LoadEnvOptions` 并把导出计数 175 → 177（反向全覆盖门禁会拦）。
+
+### 2026-09-14 ⑥：事件正文截断开关落地 —— 顺带删掉「脱敏」这个空头承诺
+
+**起因（使用者视角的一次核对）**：核对「调试面板里工具结果能不能展开」时，先查数据侧能不能撑起展开，
+结果挖出三件事同时成立，而注释与 spec **只写了前一件**：
+
+- `src/core/trace.ts` 与 `docs/spec.md` §9.1 都写着「工具入参/出参默认截断 + 脱敏，完整内容 opt-in」；
+- **「截断」是真的**，但值**硬编码**在 `engine/loop.ts`（`limit(use.input, 2000)` /
+  `ok ? 2000 : 1000`）—— **「完整内容 opt-in」零实现**：全仓 grep `opt-in | fullBody |
+  captureFull` 只命中那两句措辞本身，没有任何开关；
+- **「脱敏」更彻底**：`stringifySafe` 只做序列化，全仓 `redact | 脱敏 | sensitive` 在 `src/` 下
+  零命中 —— 而 spec §9.3 **自己**写着脱敏是 sink 缝外的事（`usage-guide` §6「观测」同款口径）。
+  也就是说 §9.1 那句是**自相矛盾**：承诺了一件它自己在别处声明不做的事。
+
+**判定**：三件事分头处理 —— 补上缺的开关、改正错的措辞、**不实现脱敏**。
+
+1. **补开关**：新增 `RunInvocationOptions.maxEventChars?: number | false`（`AppOptions` 同款缺省）。
+   **数字** = 入参/出参统一用该上限；**`false` = 不截断**；不设 = 保持旧缺省（入参/成功出参 2000、
+   失败出参 1000）。
+   - **为什么是「数字 | false」而不是一个布尔 `traceFullBody`**：数字同时覆盖「想多看一点」
+     与「全都要」，而布尔只能表达后者；`| false` 也延续本仓既有约定（`retry?: RetryOptions | false`
+     的 `false` = 关闭）。
+   - **为什么不顺手改缺省值**：trace 体积是 sink 落库 / OTLP 导出 / 看板成本的共同分母，
+     改缺省等于**静默**改所有既有使用者的观测成本。要全文就显式开。
+   - **`false` 的代价写进文档**：工具返回多大就记多大，调试期开、生产期关。
+2. **透传给嵌套能力**（`ToolRunContext.maxEventChars` → `runAgentScoped`）。否则调试期开了全文，
+   **子 agent** 里的工具事件还是被截断的 —— 同一棵调用树上两种口径，而「子 agent 里的工具
+   为什么失败」恰恰最需要看全文。与 `priceOverrides` 的透传理由同源（那边是「否则子 agent 用同一
+   模型退化成未定价」）。
+3. **删掉「脱敏」**（而非补一个实现）：按 §9.3 的既有分工，它本就不属于框架。**删错的、不补对的** ——
+   留着会让使用者以为框架替他挡了密钥泄漏。
+
+**顺带修掉的第二个坑（真浏览器之外看不出来的那类）**：`tool.input` 的正文到得了 trace，
+却到不了眼睛 —— `packages/trace-view/src/fromTrace.js` 的 `eventText()` 把入参交给 `fmtArg()`，
+而后者**砍到 4 个键 / 每值 21 字符 / 整串 62 字符**。所以「给面板加展开」若只加 UI，展开出来的
+仍是那 62 个字符 = **假展开**。⇒ `playTrace` 现在对事件多传一个 `full`（入参取**原文**），
+渲染器的 `text` 是摘要、`full` 才是展开内容。
+
+**交互三条（都刻意，且都有测试）**：
+
+- **折叠态一字不变**：`text` 仍是摘要、出参仍由 CSS 省略号收敛；caret 用**绝对定位 + `opacity:0`**，
+  不占 flex 宽度 ⇒ 折叠态的排版与加展开之前逐字一致（事件行「比 span 行更轻」的既定语言不破）；
+- **展开态活在渲染之外**（`Set`，按事件的稳定 `key` 索引）：渲染是**每次事件全量重建 DOM**
+  （`rootEl.innerHTML = ''`），状态放进 DOM 或渲染过程里，实时 run 中刚点开的行会在下一条事件
+  到来时自己合上；`reset()` 显式清空（否则新树继承旧展开、且 Set 随 run 无限增长）；
+- **选文本时不切换**：鼠标拖选到行外松手会补一次 `click`，不判 `getSelection()` 就会「选完自己合上」。
+
+**门禁**：`tests/engine/eventChars.test.ts` 6 条（缺省逐字不变 / 数字统一三类 / `false` 不截断 /
+**回给模型的 tool_result 不受影响** / `config.maxEventChars` 记 `'off'` / 子 agent 透传对照）；
+`packages/trace-view/test/view.test.js` 7 条（折叠态一致 / 出参切换 / **入参展开是原文而非 62 字符摘要**
+/ 跨重渲染存活 / 选区保护 / reset 清理 / 空正文不可展开）。
+
+**顺带修掉的一处测试债**：`fromTrace.test.js` 里同一段 DOM stub 抄了三份，都缺 `addEventListener` ——
+渲染器一挂 click 三条用例全红。抽成一个带 `addEventListener` 的 `makeNode()` + `useDom()`，
+三处重复消失。（**是 stub 缺能力，不是渲染器的问题**：浏览器里 `addEventListener` 必然存在。）
+
+**影响面**：`docs/usage-guide.md` 两张选项表各加一行 `maxEventChars` + 新增「调用树面板」小节
+（含「展开只能展开 trace 里存着的正文」这句关键前提）+ 顺带改正「生效配置快照」那句
+（原文写「缺省值也记」，但可选项 `toolTimeoutMs` / `maxToolConcurrency` / `maxEventChars`
+其实只在设了才记）；`core/trace.ts` 的假承诺注释与 `spec.md` §9.1 同步改为如实描述。
 
 ## 11. 开放项
 

@@ -162,6 +162,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `onUnpricedModel` | 遇到价格表外的模型时回调（`{ model, spanId }`，每个循环作用域内每模型一次）；抛错被吞，**不改变 run 结局**（定价缺失是宿主配置问题）。用它接告警 |
 | `toolTimeoutMs` | 缺省单工具超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run |
 | `maxToolConcurrency` | 缺省同回合并行工具上限；不设 = 不限（全并行） |
+| `maxEventChars` | 缺省 trace 事件正文截断上限（可被单次 run 覆盖）：数字 = 入参/出参统一用该上限，`false` = **不截断**（完整正文进 trace，面板里能展开看全文）；不设 = 框架缺省 |
 
 ### `app.run(messages, opts?: RunAppOptions)`
 
@@ -185,6 +186,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `onUnpricedModel` | 单次覆盖未定价回调（**是函数，因此不在 transport 的 `RunInvocationOptions` 里** —— 异步宿主不会替你传） |
 | `toolTimeoutMs` | 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，run 继续 |
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
+| `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**，回给模型的 tool_result 永远完整 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
 
 返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`。
@@ -613,6 +615,15 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 - **内存上限** ≈ `(1 + 能力数 + 模型数) × windowSize` —— 能力数由 `maxCapabilities` 封顶，长跑宿主不会被拖住。
 - `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
 
+### 调用树面板（`agentia dev` 的本地面板 / 官网 Playground）
+
+同一份 `@migor/trace-view` 渲染器，**面板 / Playground / `report` 的能力排行三处共用**，不各写一套。
+
+- **折叠态是「一行一件事」**：事件行（`tool.input` / `tool.output`）只显示省略号收敛的摘要。
+- **点事件行展开看完整正文**（该行改为换行显示，正文可选中复制），再点收起；caret 悬停才显形，折叠态的排版不因此变重。
+- **展开只能展开 trace 里存着的正文** —— 想看到被截断掉的部分，得在**记账时**就别截：`maxEventChars: false`（见 §4）。缺省截到 2000 字符，展开了也只有那 2000 字符。
+- 入参折叠态的摘要被砍到 62 字符（4 个键 / 每值 21 字符）；**展开拿到的是原文**，不是那份摘要。
+
 ### 调优报告（**哪个能力慢 / 贵 / 爱失败**）
 
 指标回答「整体怎么样」，报告回答「**该拧哪个旋钮**」：
@@ -659,9 +670,13 @@ const app = await createApp({ /* … */ sinks: [jsonl] });
 ### 生效配置快照（「这条 run 用了哪套旋钮」）
 
 每个 run 的**根 span** 都带一组 `config.*` attributes（`config.maxTokens` / `config.maxCostUsd` /
-`config.retry.maxAttempts` / `config.contextPolicy.budgetTokens` / `config.priceOverrides` …），
-缺省值也记 —— 这样「没配」「配了缺省值」「配了别的值」三者可区分。换参数前后对比、复现线上行为都有据可查。
+`config.retry.maxAttempts` / `config.contextPolicy.budgetTokens` / `config.priceOverrides` /
+`config.maxEventChars` …）。
+带缺省值的那几项（`maxTokens` / `maxIterations` / `contextPolicy` / `retry`）**缺省值也记**——
+「没配」与「配了缺省值」因此可区分；可选项（`toolTimeoutMs` / `maxToolConcurrency` /
+`maxEventChars`）只在设了才记。换参数前后对比、复现线上行为都有据可查。
 函数型选项（`summarize` / `confirm` 之类）只记「配没配」，不记函数体。
+截断关掉时记的是 `'off'` 而不是 `false` —— 后者在日志/看板里会被读成「上限为 0」。
 
 ### 提示词版本化
 

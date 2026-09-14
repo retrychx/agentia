@@ -104,6 +104,42 @@
   color: #f7768e;
 }
 
+/* —— 行展开：折叠时「一行一个语义单元」，点开的那一行改为显示**完整正文** ——
+   caret 绝对定位在行右端、静止时透明，所以折叠态的排版与加展开之前**完全一致**
+   （不占 flex 宽度，只落在省略号旁边，hover 才淡入 —— 事件行的视觉重量不因此变重）。 */
+.tr-row[data-expandable] {
+  position: relative;
+  cursor: pointer;
+}
+.tr-caret {
+  position: absolute;
+  right: 0;
+  top: 3px; /* 对齐 .tr-row 的 padding: 3px 0 */
+  color: var(--faint);
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.tr-row[data-expandable]:hover .tr-caret,
+.tr-row.tr-open .tr-caret {
+  opacity: 1;
+}
+/* 只有点开的那一行换行；树的其余部分保持 nowrap 的列对齐 */
+.tr-row.tr-open {
+  white-space: normal;
+  align-items: flex-start;
+}
+/* 展开的正文**有高度上限**：工具出参动辄上千行（实测一条 60 行的出参就有 17878px 的
+   scrollWidth），不限高会把整个调用树推到屏幕之外，「看下一行」比「看全文」更常用。
+   超出部分在行内滚动 —— 正文仍在 DOM 里，选中复制不受影响。 */
+.tr-row.tr-open .tr-io {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow: auto;
+  text-overflow: clip;
+}
+
 @keyframes tr-blink {
   0%,
   100% {

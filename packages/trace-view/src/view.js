@@ -9,6 +9,11 @@
  *     这个先后本身就是语义，不能拍平成一类；
  *   - 四类能力标识符（⚙ tool / ◆ skill / ¶ prompt / ⊕ subagent）只靠字形区分、不上类型色。
  *
+ * 展开：折叠态**一字不变**（省略号收敛，事件行比 span 行更轻），点事件行可展开看**完整正文**。
+ * 展开状态存在渲染之外（每次事件都会全量重建 DOM），否则实时 run 里刚点开的行会在下一条事件
+ * 到来时自己合上。数据侧「行内摘要」与「展开全文」是两个字段：`text` 是摘要（入参经 fmtArg
+ * 砍到 62 字符），`full` 才是原文 —— 只有全文能撑起「调试时看工具结果」这件事。
+ *
  * 宿主需提供的 CSS 变量：--ice --faint --text（见 trace-view.css）。
  */
 
@@ -67,6 +72,25 @@ export function createTraceView(rootEl, opts = {}) {
   let traceRoot = null;
   const spanMap = new Map();
   const usageAcc = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  /* 展开态的行 key 集合 + 事件 key 发号器。两者都必须活在 renderTrace 之外：
+     渲染是【全量重建】（rootEl.innerHTML = ''），状态放进 DOM 或渲染过程里就活不过下一次事件。 */
+  const expanded = new Set();
+  let evSeq = 0;
+
+  /** 正在选文本时不要收起/展开 —— 鼠标拖选到行外松手会补一次 click，否则选完就自己合上了 */
+  function hasSelection() {
+    try {
+      return String(globalThis.getSelection?.() ?? '') !== '';
+    } catch {
+      return false;
+    }
+  }
+
+  function toggleExpand(key) {
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    renderTrace();
+  }
 
   function renderTrace() {
     rootEl.innerHTML = '';
@@ -89,6 +113,7 @@ export function createTraceView(rootEl, opts = {}) {
 
       /* 事件行：没有 status 圈、没有耗时、不参与 usage 计数，只带入参/出参摘要 */
       if (ev) {
+        const open = expanded.has(ev.key);
         const row = el('div', 'tr-row tr-ev' + (ev.ok === false ? ' error' : ''));
         row.dataset.ev = ev.type;
         row.dataset.capability = capabilityTypeOf(ev.tool);
@@ -98,9 +123,19 @@ export function createTraceView(rootEl, opts = {}) {
         // 非 tool.* 事件（usage.unpriced / llm.retry / budget.* / context.budget）没有工具名 ——
         // 这一格整个不渲染，别把「无工具」显示成假工具名（.tr-name 是 flex:none，.tr-io 自然占满）
         if (ev.tool) row.appendChild(el('span', 'tr-name', ev.tool));
-        const io = el('span', 'tr-io', ev.text || '');
-        io.title = ev.text || '';
+        // 展开态用全文（ev.full），折叠态用摘要（ev.text）—— 折叠态因此与加展开之前逐字一致
+        const io = el('span', 'tr-io', (open ? ev.full : ev.text) || '');
+        // 展开后正文已在行里，再挂一个占满整行的原生 tooltip 只会挡视线
+        io.title = open ? '' : ev.text || '';
         row.appendChild(io);
+        if (ev.full) {
+          row.dataset.expandable = '1'; // 可展开标记：CSS 靠它出 caret / cursor，测试靠它找行
+          row.appendChild(el('span', 'tr-caret', open ? '▾' : '▸'));
+          if (open) row.className += ' tr-open';
+          row.addEventListener('click', () => {
+            if (!hasSelection()) toggleExpand(ev.key);
+          });
+        }
         rootEl.appendChild(row);
         return;
       }
@@ -175,6 +210,7 @@ export function createTraceView(rootEl, opts = {}) {
     };
     spanMap.clear();
     spanMap.set('root', traceRoot);
+    expanded.clear(); // 展开态属于上一棵树：reset 开新树时一并清掉
     usageAcc.input = 0;
     usageAcc.output = 0;
     usageAcc.cacheRead = 0;
@@ -206,11 +242,22 @@ export function createTraceView(rootEl, opts = {}) {
 
   /* span 事件：框架把普通工具 / @Prompt 调用记成【turn 上的事件】，不给它们建 capability span
      （只有 skill / subagent 会 recorder.begin('capability', …)，见 engine/loop.ts）。
-     events 与 order 并存：events 是数据、order 负责与子 span 的先后顺序。 */
-  function event(id, type, tool, text, ok) {
+     events 与 order 并存：events 是数据、order 负责与子 span 的先后顺序。
+
+     `text` = 行内摘要，`full` = 展开看的原文（省略时同 text —— 出参与多数事件本来就是原文，
+     只有 tool.input 的摘要被 fmtArg 砍过，调用方需要显式给 full）。
+     `key` 是展开状态的稳定标识：事件对象跨全量重建存活，所以键也稳定。 */
+  function event(id, type, tool, text, ok, full) {
     const node = spanMap.get(id);
     if (!node) return;
-    const e = { type, tool, text, ok: ok !== false };
+    const e = {
+      type,
+      tool,
+      text,
+      ok: ok !== false,
+      full: full === undefined ? text : full,
+      key: 'ev' + ++evSeq,
+    };
     node.events.push(e);
     node.order.push({ t: 'ev', e });
     renderTrace();

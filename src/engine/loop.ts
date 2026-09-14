@@ -43,6 +43,17 @@ const DEFAULT_MAX_TOKENS = 64_000;
 const DEFAULT_MAX_ITERATIONS = 40;
 
 /**
+ * 事件正文（tool.input / tool.output 的 body）缺省截断上限（字符）。
+ *
+ * 与「入参」/「成功出参」/「失败出参」三类一一对应：失败出参减半是为了让
+ * 「哪个工具老超时」这类判断在**一行**里看得完（正文本身多为一句错误摘要，
+ * 1000 已远超常见长度，只有工具把异常里的长上下文一起吐回来时才会触发）。
+ * `RunAgentOptions.maxEventChars` 一经给出，三类统一改用该值（见 `limit`）。
+ */
+const DEFAULT_EVENT_CHARS = 2000;
+const DEFAULT_ERROR_EVENT_CHARS = 1000;
+
+/**
  * Agentia —— 主循环（manual loop，流式）—— spec §5。
  *
  * 结构：核心是 `agentLoop` —— 不自开 run 根，所有 llm.turn 挂在给定的
@@ -88,6 +99,8 @@ interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   toolTimeoutMs?: number;
   /** 同回合并行工具上限；缺省 Infinity（= 全部并行） */
   maxToolConcurrency?: number;
+  /** 事件正文截断上限；同 RunAgentOptions.maxEventChars（三类事件共用同一个值） */
+  maxEventChars?: number | false;
   /** 价格表覆盖（F1）：覆盖内置单价或给其他 provider 的模型定价 */
   priceOverrides?: Record<string, ModelPricing>;
   /** 未定价模型回调（F2）：本循环作用域内每模型一次 */
@@ -382,7 +395,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
         recorder.event(turnId, 'tool.input', {
           tool: use.name,
           tool_use_id: use.id,
-          input: limit(use.input, 2000),
+          input: limit(use.input, args.maxEventChars ?? DEFAULT_EVENT_CHARS),
         });
 
         const ctx: ToolRunContext = {
@@ -392,6 +405,8 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           ...(signal ? { signal } : {}),
           // 价格覆盖透传给嵌套能力（F1）：否则子 agent 用同一模型会退化成"未定价"
           ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
+          // 事件截断口径同样透传：调试期开了全文，子 agent 的工具事件不该还是被截断的
+          ...(args.maxEventChars != null ? { maxEventChars: args.maxEventChars } : {}),
         };
         let ok = true;
         let content: unknown = '';
@@ -465,7 +480,10 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           // 耗时（毫秒）：成功/失败/超时/入参被拒四条路径都记（E1）
           durationMs: Math.max(0, Date.now() - toolStartedAt),
           ...(errorKind ? { errorKind } : {}),
-          content: ok ? limit(content, 2000) : limit(content, 1000),
+          content: limit(
+            content,
+            args.maxEventChars ?? (ok ? DEFAULT_EVENT_CHARS : DEFAULT_ERROR_EVENT_CHARS),
+          ),
         });
 
         return {
@@ -534,6 +552,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       maxCostUsd: options.maxCostUsd,
       toolTimeoutMs: options.toolTimeoutMs,
       maxToolConcurrency: options.maxToolConcurrency,
+      maxEventChars: options.maxEventChars,
       priceOverrides: options.priceOverrides,
       onUnpricedModel: options.onUnpricedModel,
     });
@@ -588,6 +607,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   toolTimeoutMs?: number;
   /** 同回合并行工具上限；同 RunAgentOptions.maxToolConcurrency */
   maxToolConcurrency?: number;
+  /** 事件正文截断上限；同 RunAgentOptions.maxEventChars */
+  maxEventChars?: number | false;
   /** 价格表覆盖（F1）：由发起它的能力从 ToolRunContext.priceOverrides 透传 */
   priceOverrides?: Record<string, ModelPricing>;
   /** 未定价模型回调（F2）：由发起它的能力透传 */
@@ -610,6 +631,7 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     resultSchema: opts.resultSchema,
     toolTimeoutMs: opts.toolTimeoutMs,
     maxToolConcurrency: opts.maxToolConcurrency,
+    maxEventChars: opts.maxEventChars,
     priceOverrides: opts.priceOverrides,
     onUnpricedModel: opts.onUnpricedModel,
   });
@@ -642,6 +664,10 @@ function runConfigSnapshot(
   if (options.toolTimeoutMs != null) out['config.toolTimeoutMs'] = options.toolTimeoutMs;
   if (options.maxToolConcurrency != null)
     out['config.maxToolConcurrency'] = options.maxToolConcurrency;
+  // 事件截断关掉时记 'off' 而不是 false：`maxEventChars: false` 在日志/看板里
+  // 容易被读成「上限为 0」，'off' 一句话说清是**没有上限**
+  if (options.maxEventChars != null)
+    out['config.maxEventChars'] = options.maxEventChars === false ? 'off' : options.maxEventChars;
   // 重试：记生效的 maxAttempts（0 = 关闭）—— 比记 "custom/default" 更有信息量
   const retryCfg = resolveRetry(options.retry);
   out['config.retry.maxAttempts'] = retryCfg ? retryCfg.maxAttempts : 0;
@@ -682,7 +708,12 @@ export function replaceMessages(
   for (const m of next) target.push(m);
 }
 
-/** 截断到上限字符，超长加省略标记（格式由 core/json.ts 的 truncateWithMark 单一提供） */
-function limit(x: unknown, n: number): string {
-  return truncateWithMark(stringifySafe(x), n);
+/**
+ * 截断到上限字符，超长加省略标记（格式由 core/json.ts 的 truncateWithMark 单一提供）。
+ * `n === false` 表示**不截断**（`RunAgentOptions.maxEventChars: false`）——
+ * 传数字时三类事件共用同一个上限，缺省值由调用点给出。
+ */
+function limit(x: unknown, n: number | false): string {
+  const s = stringifySafe(x);
+  return n === false ? s : truncateWithMark(s, n);
 }

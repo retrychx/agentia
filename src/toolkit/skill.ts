@@ -158,6 +158,8 @@ export function skillToTool(
             signal: ctx.signal,
             // 价格覆盖透传（F1）：子循环用同一模型也要能算成本
             priceOverrides: ctx.priceOverrides,
+            // 事件截断口径透传：同一棵树上主/子 agent 的正文可见性必须一致
+            maxEventChars: ctx.maxEventChars,
           });
           if (!isSuccessStopReason(loop.stopReason)) {
             const report = `skill "${name}".llm ${loop.stopReason}: ${(

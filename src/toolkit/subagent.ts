@@ -145,6 +145,8 @@ export function subagentToTool(
           resultSchema: spec.resultSchema,
           // 价格覆盖透传（F1）：子 agent 用同一模型也要能算成本
           priceOverrides: ctx.priceOverrides,
+          // 事件截断口径透传：子 agent 里的工具结果同样要能看全文
+          maxEventChars: ctx.maxEventChars,
         });
         recorder.setAttribute(capabilityId, 'stop_reason', loop.stopReason);
 
