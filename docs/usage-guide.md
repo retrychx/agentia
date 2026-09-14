@@ -320,14 +320,16 @@ const callable = { name: app.name, run: (msgs, opts) => app.run(msgs, { ...opts,
 const handler = createHttpHandler(callable, { runner });
 ```
 
-异步侧更直接：`AsyncRunner` 的构造选项就有 `client`。完整可跑写法见仓库 `examples/complete/`。
+异步侧更直接：`AsyncRunner` 的构造选项就有 `client`。完整可跑写法见仓库 `examples/complete/`
+（**不随 npm 包发布** —— 包里只有 `dist/`、README、LICENSE 与本说明）：
+<https://github.com/retrychx/agentia/tree/main/examples/complete>
 
 ### `createHttpHandler(app, opts?: HttpHandlerOptions)`
 
 | 选项 | 说明 |
 |---|---|
 | `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
-| `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404 |
+| `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404。⚠️ 这只管**渲染** —— 数字要真的累计，必须把**同一个** sink 注册进 `createApp({ sinks: [metrics] })`（它靠 run 收尾投递，不自己埋点），否则 `/metrics` 恒为 0 **且不报错** |
 | `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB |
 | `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限） |
 | `exposeErrors` | 是否把内部异常原文回给调用方；缺省 `false`（细节只进服务端日志） |
@@ -612,6 +614,22 @@ CLI 侧有薄壳：`agentia report <trace.jsonl>` —— 每行一个 JSON（裸
 > ⚠️ **单条 run 内样本常 < 5，分位没有意义** —— 所以报告以 `total` / `max` 为主；
 > 要看分位请用 `mergeRunReports` 汇总多条，或用 `metricsSink` 的直方图。
 > CLI 报告的聚合口径与 `agentia dev` 面板的能力排行同源（同一份 `@migor/trace-view` 实现）。
+
+那个 jsonl 从哪来 —— 框架不替你落盘（观测出口是缝），自己接一个 sink 就行，零依赖：
+
+```ts
+import { appendFileSync } from 'node:fs';
+import { createApp, type TraceSink } from '@migor/agentia';
+
+const jsonl: TraceSink = {
+  export: (trace) => appendFileSync('trace.jsonl', `${JSON.stringify(trace)}\n`, 'utf8'),
+};
+const app = await createApp({ /* … */ sinks: [jsonl] });
+// 之后：agentia report trace.jsonl
+```
+
+异步宿主更省事：把 `FileTaskStore` 的落盘文件直接喂给它 —— `TaskRecord` 里带 `result.trace`，
+`report` 认这种形态，不用另写 sink。
 
 ### 生效配置快照（「这条 run 用了哪套旋钮」）
 
