@@ -5,7 +5,7 @@
 services:
   agent:
     build:
-      # 构建上下文是**仓库根** —— 框架未发布，镜像里先从源码构建（见 Dockerfile 头部说明）
+      # 构建上下文是**仓库根** —— 示例跑仓库里的框架源码，镜像里先从源码构建（见 Dockerfile 头部说明）
       context: ../..
       dockerfile: examples/complete/Dockerfile
     image: agentia-complete-example

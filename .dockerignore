@@ -1,5 +1,5 @@
 # Docker 构建忽略清单 —— examples/ 下的示例 Dockerfile 都以**仓库根**为构建上下文
-# （框架当前版本未发布到 npm，镜像里先从源码构建框架，见 examples/complete/Dockerfile）。
+# （示例刻意跑仓库里的框架源码，镜像里先从源码构建框架，见 examples/complete/Dockerfile）。
 # 注意：Docker 只认构建上下文根上的 .dockerignore，放在示例目录里不会生效。
 .git
 .gitignore
