@@ -13,18 +13,17 @@
 
 ## 依赖说明（重要）
 
-框架当前版本**尚未发布到 npm** —— registry 上最新是 `0.2.1`，而仓库是 `0.2.2`，
-且 `0.2.1` **缺** `metricsSink` / `mcpTools` / `defineEval` / `createBudgetGuard` /
-`registerDefaultTraceSink` / `createApp({ sinks })` 等本目录示例用到的能力。
-
-所以两个应用示例的依赖都写成 `"@migor/agentia": "file:../.."`（指向本仓库）：
+两个应用示例的依赖都写成 `"@migor/agentia": "file:../.."`（指向本仓库）—— 这是**刻意的**：
+示例要跑的是**工作区里刚构建的那份框架**，而不是 npm 上的发布版。仓库的端到端门禁
+（`scripts/e2e-examples.ts`）也靠这一点：换掉依赖，示例就不再验证本仓库的构建产物。
 
 ```bash
 cd <仓库根> && npm install && npm run build    # 先把框架构建到 dist/
 cd examples/complete && npm install            # 再装示例
 ```
 
-框架发布（版本对齐）后，把它换成 `"^0.2.2"`，两个 Dockerfile 也能退回常规单包写法
+要用 **npm 上的发布版**（`0.2.2` 起，本目录示例用到的能力都已包含），把那一行换成
+`"@migor/agentia": "^0.2.2"` 即可；两个 Dockerfile 也能相应退回常规单包写法
 （各自的 README 里都标注了改动点）。
 
 ## Docker

@@ -423,6 +423,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `#execute` 的统一出口唤醒）；`intervalMs` 降级为缺省 250ms 的**兜底轮询**，只服务「终态由他进程写入的异步 store」。
   四条均带守卫测试并逐个做**变异自证**（回退修复即失败）。**`AGENTIA_VERSION` 保持 0.2.1 不变** ——
   该常量反映**已发布**版本，0.2.2 发布时再同步（官网 API 页的描述也已写明这条规则）。
+  ⇒ **已于 2026-09-14 发布 v0.2.2 时同步为 `'0.2.2'`**（`check-release.mjs` 四处一致通过）。
 
 - 2026-09-13：**官网正式化 + 动效补齐**。官网是对外产品页，清理四类「开发过程」内容：开发指标（hero 的「380+ 例单测」
   → 产品属性）、版本对比语言（「旧行为逐字不变」）、内部结构描述（「分层单向」「只依赖 core」「`src/index.ts` 是唯一出口」
@@ -694,7 +695,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 
 ## 11. 开放项
 
-- npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。
+- npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立成包（workspaces），框架本体仍单包。
+  ⇒ **2026-09-14 已发布 v0.2.2**（框架包 + CLI 包，scope 为 `@migor/*`）；上句的「包拆分」仍待做。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖），thinking 用 adaptive，流式优先。
 - CLI 后续：`add`（接第三方能力包）、注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板）。
