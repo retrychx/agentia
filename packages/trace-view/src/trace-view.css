@@ -106,8 +106,11 @@
 
 /* —— 行展开：折叠时「一行一个语义单元」，点开的那一行改为显示**完整正文** ——
    caret 绝对定位在行右端，不占 flex 宽度，所以行内其它元素的排版不受它影响。
-   **常显**（静止 0.75、悬停/展开 1）：这一行能不能展开是随时可见的信息 —— 藏到 hover 后面，
-   等于只有已经知道这件事的人才发现得了。 */
+   **常显，并且是满不透明度的 `--faint`**：它是个**交互指示器**，不是装饰 ——
+   caret 用 0.75 的透明度试过，量出来是缺陷而非口味：WCAG 1.4.11 对非文本 UI 组件
+   要求 ≥3:1，而 0.75 的 `--faint`(#71717a) 在官网 #0c0c0e 面板上实际绘制成 #58585f，
+   只有 **2.77:1**（满不透明度 4.04:1）。
+   所以没有「hover 才变亮」这一档：静止时它已经是最亮的那一档了。 */
 .tr-row[data-expandable] {
   position: relative;
   cursor: pointer;
@@ -118,12 +121,6 @@
   top: 3px; /* 对齐 .tr-row 的 padding: 3px 0 */
   color: var(--faint);
   font-size: 10px;
-  opacity: 0.75;
-  transition: opacity 0.12s;
-}
-.tr-row[data-expandable]:hover .tr-caret,
-.tr-row.tr-open .tr-caret {
-  opacity: 1;
 }
 /* caret 常显 ⇒ 右端要给它留一条窄槽。不留的话，被截断的正文省略号「…」正好落在 caret 底下，
    ▸ 与 … 糊成一个字形。给正文加右内边距 = 内容盒右缘左移，省略号自行退到槽的左边。 */

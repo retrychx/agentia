@@ -62,6 +62,11 @@ if [ $fail -eq 0 ]; then
   # 计数**算出来**而不是写死：写死的那个数字在加步骤后会变成假话（而这个数字与 CI 的 job 名
   # 是同一个约定，尤其不能各说各话）。
   echo "${#steps[@]}/${#steps[@]} 全绿"
+  # 本地绿 ≠ CI 绿。这三个必需检查只跑在 CI，且**本地无法等价复现**（理由见 CONTRIBUTING 的坑表）：
+  # e2e:mcp 优先接真第三方 server（需要网络/uv），导入下限只能跑在 Node 18/20 上 ——
+  # scripts/check-import-floor.mjs 按运行中的 Node 分支，本地跑它验不到 18/20 那条路。
+  # 不静默：全绿时明确说清「还有三个没在这里跑」。
+  echo "ℹ 另有 3 个 CI 独有必需检查不在本链：e2e:mcp · 导入下限（Node 18 / 20）"
 else
   echo "有步骤失败"
 fi

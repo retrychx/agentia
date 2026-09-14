@@ -70,18 +70,22 @@ describe('trace-view 版式不变量', () => {
     );
   });
 
-  it('.tr-caret 静止时可见（常显）', () => {
+  it('.tr-caret 静止时是**满不透明度**的 --faint（常显且达 3:1）', () => {
     const blocks = caret();
     assert.ok(blocks.length > 0, '找不到 .tr-caret 规则');
 
-    const values = blocks.map((p) => p.opacity).filter((v) => v !== undefined);
-    assert.ok(values.length > 0, '.tr-caret 必须显式声明 opacity');
-    for (const v of values) {
-      assert.ok(
-        Number(v) > 0,
-        `caret 静止 opacity=${v} —— 回到 0 就等于把「这一行能展开」重新藏进 hover，只有已知者可见`,
-      );
-    }
+    // 不写 opacity（默认 1）是允许的；写小了不行 —— 这条不是口味，是门槛：
+    // caret 是交互指示器，WCAG 1.4.11 要求非文本 UI 组件 ≥3:1，而 0.75 的 --faint
+    // 在官网 #0c0c0e 面板上实测只有 2.77:1（满不透明度 4.04:1）。
+    const dimmed = blocks
+      .flatMap((p) => (p.opacity === undefined ? [] : [p.opacity]))
+      .filter((v) => Number(v) < 1);
+    assert.equal(
+      dimmed.length,
+      0,
+      `caret 静止 opacity=${dimmed.join('/')} —— 调暗或归零都等于「只有已经知道的人` +
+        '才看得见这一行能展开」，且跌破非文本 UI 的 3:1 门槛（实测 2.77:1）。',
+    );
   });
 
   it('caret 常显 ⇒ 正文右端留了窄槽，省略号不会被 ▸ 压住', () => {
