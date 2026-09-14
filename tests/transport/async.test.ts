@@ -4,6 +4,7 @@ import { AsyncRunner, InMemoryTaskStore } from '../../src/index.js';
 import type { AppCallable } from '../../src/index.js';
 import type { AgentRunResult } from '../../src/index.js';
 import type { TaskRecord, TaskStore } from '../../src/index.js';
+import { waitFor } from '../helpers.js';
 
 /** 模拟 fsStore/sqliteStore 这类**同步** store：终态落库时同步抛错（磁盘满、库锁） */
 class SyncThrowOnTerminalStore extends InMemoryTaskStore {
@@ -140,9 +141,10 @@ describe('AsyncRunner', () => {
     const hang = fakeApp(() => gate); // 进程 A：认领后卡住（模拟中断）
     const a = new AsyncRunner(hang, { store, concurrency: 1 });
     const t = a.submit('a');
-    for (let i = 0; i < 100 && store.get(t.taskId)?.status !== 'running'; i++) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await waitFor(
+      () => store.get(t.taskId)?.status === 'running',
+      'submit 后任务应进入 running（并登记 ownerId）',
+    );
     assert.equal(store.get(t.taskId)!.ownerId, a.ownerId);
 
     // 同一进程 resumePending：自己的记录还在内存里跑，重派就是跑两遍

@@ -334,7 +334,7 @@ npm run build        # 编译框架（dist/）
 npm run typecheck    # 类型检查
 npm run lint         # lint + 格式检查（Biome）
 npm test             # 单元测试（node:test）
-npm run e2e          # 端到端：CLI 脚手架 → 目录发现/注册表装配 → mock run
+npm run e2e          # 端到端：CLI 脚手架 → 装配 mock run；再真跑 examples/complete 的完整服务
 ```
 
 > 注：本仓库的 `npm run dev`（tsx）前需先 `npm approve-scripts` 批准 esbuild/tsx 的 postinstall；

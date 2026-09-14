@@ -9,6 +9,7 @@ import { createHttpHandler } from '../../src/transport/http.js';
 import { AsyncRunner } from '../../src/transport/async.js';
 import type { AppCallable } from '../../src/transport/async.js';
 import type { AgentRunResult } from '../../src/engine/types.js';
+import { waitFor } from '../helpers.js';
 
 function fakeResult(text: string): AgentRunResult {
   return {
@@ -265,8 +266,7 @@ describe('createHttpHandler', () => {
     const post = () => fetch(`${base}/run`, { method: 'POST', body: JSON.stringify('go') });
     try {
       const first = post(); // 占住唯一槽位（不 await）
-      for (let i = 0; i < 100 && started === 0; i++) await new Promise((r) => setTimeout(r, 5));
-      assert.equal(started, 1);
+      await waitFor(() => started === 1, '第一个 /run 应已进入 run（占住唯一槽位）');
 
       const second = await post();
       assert.equal(second.status, 503);
@@ -308,8 +308,7 @@ describe('createHttpHandler', () => {
         fetch(`${base}/run`, { method: 'POST', body: JSON.stringify('a') }),
         fetch(`${base}/run`, { method: 'POST', body: JSON.stringify('b') }),
       ]);
-      for (let i = 0; i < 100 && started < 2; i++) await new Promise((r) => setTimeout(r, 5));
-      assert.equal(started, 2, '不限并发时两个请求同时跑');
+      await waitFor(() => started >= 2, '不限并发时两个请求应同时在跑');
       release();
       assert.deepEqual(
         (await both).map((r) => r.status),
@@ -416,9 +415,7 @@ describe('createHttpHandler', () => {
       await started;
       ac.abort();
       await p;
-      for (let i = 0; i < 100 && !received?.aborted; i++)
-        await new Promise((r) => setTimeout(r, 10));
-      assert.equal(received?.aborted, true, '客户端断开应 abort 在飞 run');
+      await waitFor(() => received?.aborted === true, '客户端断开应 abort 在飞 run');
     } finally {
       await close(server);
     }
