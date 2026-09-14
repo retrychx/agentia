@@ -6,6 +6,8 @@ import {
   CAPABILITY_DIR_LIST,
   emptyRegistryTemplate,
   mainTs,
+  projectDotEnv,
+  projectDotEnvExample,
   projectGitignore,
   projectPackageJson,
   projectReadme,
@@ -67,11 +69,16 @@ export function createProject(name: string, parent: string | undefined): number 
   write(dir, REGISTRY_PATH, emptyRegistryTemplate());
   write(dir, 'README.md', projectReadme(name));
   write(dir, '.gitignore', projectGitignore());
-  // 把四个分类目录都建出来：目录名自解释，用户一眼知道「新能力往哪放」
+  // 四个分类目录都建出来：目录名自解释，用户一看就知道新能力往哪放
   // （.gitkeep 让空目录能进版本库；discover 只认目录，会忽略它）
   for (const relDir of CAPABILITY_DIR_LIST) {
     write(dir, `${relDir}/.gitkeep`, '');
   }
+  // .env 是「填上就能跑」的入口（main.ts 首行 loadEnvFile() 读它）；
+  // .env.example 进版本库当变量清单。**两者必须与 gitignore 的 .env 同时存在** ——
+  // 生成 .env 却不忽略它，等于把 key 直接送进用户的第一个 commit。
+  write(dir, '.env', projectDotEnv());
+  write(dir, '.env.example', projectDotEnvExample());
   // AI 使用说明：让 Claude Code / Cursor / Copilot 等一进项目就拿到权威 API 速查
   write(dir, 'AGENTS.md', guide);
 
@@ -82,7 +89,7 @@ export function createProject(name: string, parent: string | undefined): number 
 后续步骤：
   cd ${dir}
   npm install
-  export ANTHROPIC_API_KEY=sk-ant-...
+  把 API key 填进 .env（已生成，且已被 .gitignore 忽略）
   npm run dev
 
 目录约定：src/tools/ · src/skills/ · src/prompts/ · src/subagents/（一能力一文件夹）

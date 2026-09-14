@@ -22,9 +22,13 @@
 npm i @migor/agentia                 # 框架（项目依赖）
 npm i -g @migor/cli                  # 命令行工具（脚手架 / 生成 / 调试）
 
-export ANTHROPIC_API_KEY=sk-...      # 或 ANTHROPIC_AUTH_TOKEN
+agentia create my-app                # 脚手架（含 .env / .env.example）
+$EDITOR my-app/.env                  # 填 ANTHROPIC_API_KEY（也可直接 export，真实环境变量优先）
 # 可选：ANTHROPIC_BASE_URL（兼容端点）、AGENTIA_MODEL（缺省 claude-opus-5）
 ```
+
+> 框架**不自动**读 `.env`：脚手架 `src/main.ts` 首行的 `loadEnvFile()` 负责把它读进 `process.env`。
+> 真实环境变量优先（CI / docker / 命令行永远赢过文件），`loadEnvFile({ override: true })` 才反过来。
 
 > **版本**：`0.2.2`（`@migor/agentia` 与 `@migor/cli` 均已发布到 npm）。`examples/` **刻意**用
 > `file:../..` 指向本仓库而不是 npm 版本 —— 跑的是**工作区代码**，理由见

@@ -28,10 +28,10 @@
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
           <pre><code><span class="cmd">npm</span> i -g @migor/cli
-<span class="cmd">agentia</span> create my-app        <span class="cm"># 脚手架：四分类目录 + src/registry.ts 注册表</span>
+<span class="cmd">agentia</span> create my-app        <span class="cm"># 脚手架：四分类目录 + src/registry.ts + .env</span>
 <span class="cmd">cd</span> my-app && npm install
 <span class="cmd">agentia</span> g subagent doc-reviewer  <span class="cm"># 生成能力并自动登记</span>
-<span class="cmd">export</span> ANTHROPIC_API_KEY=sk-ant-...
+<span class="cm"># 把 ANTHROPIC_API_KEY 填进脚手架生成的 .env（.gitignore 已挡住它）</span>
 <span class="cmd">npm</span> run dev -- <span class="str">"帮我审查 docs/report.md"</span></code></pre>
         </div>
         <p>入口 <code>src/main.ts</code> 只有一件事：装配应用，然后触发 run。</p>
@@ -488,6 +488,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
           </thead>
           <tbody>
             <tr><td>ANTHROPIC_API_KEY</td><td>必填。Anthropic API 密钥（亦支持 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL 兼容端点）。</td></tr>
+            <tr><td>.env（<code>loadEnvFile()</code>）</td><td>框架<strong>不自动</strong>读 <code>.env</code>：脚手架 <code>src/main.ts</code> 首行的 <code>loadEnvFile()</code> 把它读进 <code>process.env</code>。<strong>真实环境变量优先</strong> —— 已定义（含空串）的键不被文件覆盖，除非显式 <code>{ override: true }</code>。</td></tr>
             <tr><td>AGENTIA_MODEL</td><td>可选。全局缺省模型覆盖，无则回落 <code>claude-opus-5</code>；显式传参优先级最高。</td></tr>
             <tr><td>OPENAI_API_KEY</td><td>可选。OpenAI 兼容 provider 的密钥，多 provider 场景使用。</td></tr>
           </tbody>

@@ -23,7 +23,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>175</b> 个导出</span>
+          <span class="api-chip"><b>177</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -293,6 +293,8 @@
             <tr><td>PromptSpec</td><td><code>{ name?; description; schema? }</code></td><td>description 写清何时该拉取，模型据此决定调用；schema 缺省空对象（无参资产）。</td></tr>
             <tr><td>collectPrompts</td><td><code>(instance: object) → AgentTool[]</code></td><td>扫描 @Prompt 方法（static 方法亦可）。</td></tr>
             <tr><td>asset</td><td><code>(base: string | URL, rel: string) → string</code></td><td><code>asset(import.meta.url, './system.md')</code> 相对能力目录读文本资产；每次调用现读不缓存。</td></tr>
+            <tr><td>loadEnvFile</td><td><code>(options?: LoadEnvOptions) → Record&lt;string, string&gt;</code></td><td>读一份 <code>.env</code> 进 <code>process.env</code>，返回<strong>本次真正生效</strong>的键。框架<strong>不自动</strong>读 .env —— 读哪个文件、什么时候读由宿主的启动代码决定（脚手架 <code>main.ts</code> 首行已内置）。文件不存在静默返回 <code>{}</code>；<strong>真实环境变量优先</strong>，已定义的键不被覆盖（含空串）。</td></tr>
+            <tr><td>LoadEnvOptions</td><td><code>{ path?; override? }</code></td><td>path 缺省 <code>.env</code>（相对 cwd）；override 缺省 false（让文件压过环境变量时置 true）。</td></tr>
             <tr><td>discoverProviders</td><td><code>(dir: string | string[]) → Promise&lt;Provider[]&gt;</code></td><td>给一个目录或一组目录（<strong>数组顺序即装配顺序</strong>），扫各目录下的 <code>&lt;name&gt;/index.ts</code>：default export 为类 / Provider / Provider[]，类以文件夹名为 token 注册；数组里任一目录不存在即报错，跨目录重名 token 留告警（装配期后者覆盖）。</td></tr>
             <tr><td>applyMiddleware</td><td><code>(tools: AgentTool[], middleware: CapabilityMiddleware[]) → AgentTool[]</code></td><td>洋葱模型包裹整个菜单（链序 = 注册顺序，先注册最外层）；链为空原样返回，零开销。</td></tr>
             <tr><td>CapabilityMiddleware</td><td><code>(call: CapabilityCall, next: CapabilityNext) =&gt; unknown</code></td><td>能力调用前后横切（鉴权 / 限流 / 缓存 / 审计 / 配额）；不调 next 即短路，抛错按能力失败处理。</td></tr>

@@ -112,7 +112,12 @@ export function projectTsconfig(): string {
 }
 
 export function mainTs(name: string): string {
-  return `import { createApp, SystemPrompt } from '@migor/agentia';
+  return `import { createApp, loadEnvFile, SystemPrompt } from '@migor/agentia';
+
+// 读同目录的 .env（key 写文件里即可，不必每次 export）。框架**不自动**读 .env ——
+// 读哪个文件、什么时候读由这里决定；已存在的真实环境变量优先，不会被文件覆盖。
+// 想换路径/顺序：loadEnvFile({ path: '.env.local' }) 或直接删掉这一行改用自己的加载器。
+loadEnvFile();
 
 const app = await createApp({
   name: '${name}',
@@ -128,7 +133,8 @@ const { result } = await app.run(
 // 「打印一行空白 + 退出 0」，让首次运行（比如忘了配 ANTHROPIC_API_KEY）看起来像成功。
 if (result.error) {
   console.error(\`run 失败（stopReason=\${result.stopReason}）：\${result.error.message}\`);
-  console.error('提示：模型调用默认读 ANTHROPIC_API_KEY；换端点或注入 client 见项目内 AGENTS.md。');
+  console.error('提示：模型调用读 ANTHROPIC_API_KEY —— 填进 .env（首行 loadEnvFile() 会读）或 export 均可；');
+  console.error('      换端点 / 注入自定义 client 见项目内 AGENTS.md。');
   process.exitCode = 1;
 }
 if (result.finalText) console.log(result.finalText);
@@ -171,18 +177,55 @@ agentia g subagent my-agent   # → src/subagents/my-agent/（含 system.md）
 
 ## 运行
 
-需要 Anthropic API key：
+需要 Anthropic API key —— 填进脚手架已生成的 \`.env\` 即可（本文件在 \`.gitignore\` 里）：
+
+\`\`\`bash
+# .env
+ANTHROPIC_API_KEY=sk-ant-...
+\`\`\`
+
+\`\`\`bash
+npm run dev -- "你的问题"
+\`\`\`
+
+也可以用环境变量（适合 CI / 容器）——**真实环境变量优先，不会被 \`.env\` 覆盖**：
 
 \`\`\`bash
 export ANTHROPIC_API_KEY=sk-ant-...
 npm run dev -- "你的问题"
 \`\`\`
+
+\`.env\` 由 \`src/main.ts\` 首行的 \`loadEnvFile()\` 读取。框架**不会自动读**它 ——
+读哪个文件、什么时候读由你的启动代码决定（这样「换目录跑」不会悄悄改变行为）。
 `;
 }
 
 export function projectGitignore(): string {
   return `node_modules
 dist
+
+# 本地环境变量（可能含 key）—— 绝不提交
+.env
+.env.local
+`;
+}
+
+/** 脚手架生成的 .env：填上就能跑，已进 .gitignore */
+export function projectDotEnv(): string {
+  return `# 模型 API key —— 填上后 npm run dev / npm start 直接可用
+# 本文件已被 .gitignore 忽略：不要提交，也不要把 key 写进 README / AGENTS.md
+ANTHROPIC_API_KEY=
+`;
+}
+
+/** 随脚手架提交的 .env.example：进版本库的变量清单，值一律留空 */
+export function projectDotEnvExample(): string {
+  return `# 复制成 .env 再填值（.env 已 gitignore，不要提交）
+ANTHROPIC_API_KEY=
+
+# 可选
+# ANTHROPIC_BASE_URL=https://api.anthropic.com
+# AGENTIA_MODEL=claude-opus-5
 `;
 }
 
