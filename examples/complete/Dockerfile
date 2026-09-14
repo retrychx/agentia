@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Agentia 完整示例 —— 多阶段构建。
 #
-# ⚠️ 构建上下文 = **仓库根**（不是本目录）：框架当前版本尚未发布到 npm，
+# ⚠️ 构建上下文 = **仓库根**（不是本目录）：示例刻意跑仓库里的框架源码，
 #    所以镜像里先从源码构建框架，再构建应用。
 #
 #   docker build -f examples/complete/Dockerfile -t agentia-complete .
