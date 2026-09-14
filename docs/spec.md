@@ -891,11 +891,18 @@ MCP 调用抛出「调用超时」、`drain` 预算耗尽返回 `false`。
 
 三处都 `ioW ≥ 100px`、面板与文档零横向溢出、零 JS 错误。`min-width` 不可省 —— 省了就回到 16px 窄缝。
 
-**b. caret 常显 + 右端窄槽**
+**b. caret 常显 + 右端窄槽（并且：0.75 是缺陷，不是口味）**
 
-caret 原本 hover 才淡入，「这一行能展开」只有已经知道的人发现得了。改为**常显**（静止 `opacity: .75`、
-悬停/展开 `1`）。随之必须给右端留一条 12px 内边距的窄槽：不留的话，被截断正文的省略号「…」正好落在
-caret 底下，两个字形糊在一起。判据 `caret.left ≥ io.contentRight`（两种宿主、常显与展开态都不重叠）。
+caret 原本 hover 才淡入，「这一行能展开」只有已经知道的人发现得了。改为**常显**。
+最初写成静止 `opacity: .75`、悬停 `1`，随后**量出这不能留**：caret 是交互指示器，
+WCAG 1.4.11 对非文本 UI 组件要求 ≥3:1 —— 而 0.75 的 `--faint`(`#71717a`) 在官网 `#0c0c0e`
+面板上实际绘制成 `#58585f`，只有 **2.77:1**（满不透明度 4.04:1）。⇒ 去掉那一档：静止即满不透明度，
+hover 不再改变它（两宿主 `--faint` 同值，不是巧合地只在一个宿主上达标）。
+
+随之必须给右端留一条 12px 内边距的窄槽：不留的话，被截断正文的省略号「…」正好落在 caret 底下，
+两个字形糊在一起。判据 `caret.left ≥ io.contentRight`（两种宿主、常显与展开态都不重叠）。
+**12px 没有再收紧 —— 这一格是纯取舍，与上一条不同**：caret 字形本身约 6px（10px 等宽字体），
+再窄就贴住省略号，省下的 3–4px 在 600–1200px 的行宽上不值得为此冒一次回归风险。
 
 **c. 第二个宿主只喂了摘要（「假展开」）**
 
@@ -921,11 +928,19 @@ caret 底下，两个字形糊在一起。判据 `caret.left ≥ io.contentRight
 且**能报出出问题的文件名** —— 这需要一处修正：biome 的诊断首行带 ANSI 颜色码（路径与 `format`
 之间夹着 `\033[0m`），锚定「路径 format ━━」会失配，所以抽标记行前先剥色。
 
+**为什么 `import-floor` 与 `e2e:mcp` 仍然不进本地链**（试过，结论是**不该进**，不是漏了）：
+`scripts/check-import-floor.mjs` 按**运行中的 Node** 分支 —— ≥22.5 才验 SqliteTaskStore 可用，
+否则验「可读报错而非崩溃」。本地（Node 26）跑它只会走「新 Node 可用」那条，对 Node 18/20 的
+地板**一个字都没验到**，折进来等于**看起来有覆盖**（比没有更坏）。`e2e:mcp` 默认优先接真第三方
+server（需要网络 / uv），而本地链必须离线可跑。⇒ 二者保持 CI 独有，改成在链尾**明确打一行提示**
+（「本地绿 ≠ CI 绿：另有 3 个 CI 独有必需检查不在本链」），并留在 `CONTRIBUTING.md` 的坑表里 ——
+静默的全绿正是这一整条 d 段要治的东西。
+
 **门禁**（都是**源码级**就能看见的，比开浏览器便宜）：
 
 - `packages/trace-view/test/style.test.js` 4 条：`.tr-open .tr-io` 必须有非零 `min-width`、
-  `.tr-row.tr-open` 必须有 `flex-wrap: wrap`、`.tr-caret` 静止 `opacity > 0`、可展开行的正文有
-  `padding-right`。**逐条反向验证**（把对应那条改坏 ⇒ 各挂 1 条）。
+  `.tr-row.tr-open` 必须有 `flex-wrap: wrap`、`.tr-caret` **静止必须是满不透明度**（不许调暗，
+  理由即 b 段的 2.77:1）、可展开行的正文有 `padding-right`。**逐条反向验证**（把对应那条改坏 ⇒ 各挂 1 条）。
 - `tests/docs/website-playground-expand.test.ts` 2 条：两个宿主的 `tool.input` 记录点必须含
   `rawArg(...)`；`traceEvent` 包装器必须把实参**全部**转发给 `view.event`。三种改坏各挂 1 条。
 - `packages/trace-view/test/view.test.js` 加 2 条：`fmtArg` 砍到 62 / `rawArg` 给完整 JSON 且两者不等；
