@@ -105,8 +105,9 @@
 }
 
 /* —— 行展开：折叠时「一行一个语义单元」，点开的那一行改为显示**完整正文** ——
-   caret 绝对定位在行右端、静止时透明，所以折叠态的排版与加展开之前**完全一致**
-   （不占 flex 宽度，只落在省略号旁边，hover 才淡入 —— 事件行的视觉重量不因此变重）。 */
+   caret 绝对定位在行右端，不占 flex 宽度，所以行内其它元素的排版不受它影响。
+   **常显**（静止 0.75、悬停/展开 1）：这一行能不能展开是随时可见的信息 —— 藏到 hover 后面，
+   等于只有已经知道这件事的人才发现得了。 */
 .tr-row[data-expandable] {
   position: relative;
   cursor: pointer;
@@ -117,28 +118,39 @@
   top: 3px; /* 对齐 .tr-row 的 padding: 3px 0 */
   color: var(--faint);
   font-size: 10px;
-  opacity: 0;
+  opacity: 0.75;
   transition: opacity 0.12s;
 }
 .tr-row[data-expandable]:hover .tr-caret,
 .tr-row.tr-open .tr-caret {
   opacity: 1;
 }
+/* caret 常显 ⇒ 右端要给它留一条窄槽。不留的话，被截断的正文省略号「…」正好落在 caret 底下，
+   ▸ 与 … 糊成一个字形。给正文加右内边距 = 内容盒右缘左移，省略号自行退到槽的左边。 */
+.tr-row[data-expandable] .tr-io {
+  padding-right: 12px;
+}
 /* 只有点开的那一行换行；树的其余部分保持 nowrap 的列对齐 */
 .tr-row.tr-open {
   white-space: normal;
   align-items: flex-start;
-  /* 正文**换到独立整行**（不挤在标签行里）。为什么必须换行：窄面板下那行的固定项
-     （树前缀 + 事件类型 + 工具名）本身就要 ~280px —— 官网 Playground 的面板只有 296px，
-     正文只能分到 16px，59 个字符被压成 34 行、行高顶到上限。「挤死」不是溢出检查能发现的：
-     页面 scrollWidth === clientWidth，一切"干净」，只是读不了。 */
+  /* 允许正文换到下一行 —— 但**只在它真的放不下时**（判据是下面那条 min-width，不是无条件换行） */
   flex-wrap: wrap;
 }
 /* 展开的正文**有高度上限**：工具出参动辄上千行（实测一条 60 行的出参就有 17878px 的
    scrollWidth），不限高会把整个调用树推到屏幕之外，「看下一行」比「看全文」更常用。
    超出部分在行内滚动 —— 正文仍在 DOM 里，选中复制不受影响。 */
 .tr-row.tr-open .tr-io {
-  flex-basis: 100%; /* 换行后的那一行：占满整行宽度 */
+  /* 正文与标签**同一行**（既定的阅读节奏：一行一个语义单元）。换行只发生在**放不下时**，
+     而这条线由 min-width 划 —— 所以 flex-basis 必须是 0：
+       · basis: auto ⇒ 换行判据是 max-content（正文动辄上百字符 ⇒ 几乎必然换行，等于无条件换行）；
+       · basis: 0    ⇒ 判据回到 min-width，放得下就同排、放不下才整段换行。
+     为什么 min-width 不能省：正文用 overflow-wrap: anywhere，min-content 只有 1 个字符宽 ——
+     没有它时 flex 会心安理得地把正文压成一条 16px 的窄缝（59 个字符挤成 34 行、行高顶到上限），
+     而页面 scrollWidth === clientWidth 一切「干净」，只是读不了。
+     窄面板（官网 Playground 296px）里那行固定项本身就要 ~246px，所以那里它会如实地换行。 */
+  flex-basis: 0;
+  min-width: 22ch;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 60vh;

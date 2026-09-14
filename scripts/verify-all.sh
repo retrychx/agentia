@@ -4,8 +4,17 @@ set -uo pipefail
 # 从脚本位置推仓库根 —— 不要硬编码绝对路径（CI / 他人机器上必挂）
 cd "$(dirname "$0")/.."
 
+# ⚠️ 本脚本的**步骤数**写在 CI 的 job 名里 —— 而那个名字就是分支保护里的必需状态检查
+#    「全链验证（verify-all 8 步）」。加/减一步都得同时改 workflow 的 job name **和** 分支保护，
+#    否则 PR 会卡死等一个永不出现的检查。所以新增的检查一律**折进已有步骤**，不加步骤。
+#
+#    这次就是照这条规矩做的：lint 折进第 1 步，而不是变成第 9 步。
 steps=(
-  "npm run typecheck"
+  # 第 1 步 = 类型检查 + lint。lint 此前只活在 CI 的独立 job 里，本地这条链不跑它 ——
+  # 于是「本地 8/8 全绿、CI 挂 Biome」**真的发生过**（2026-09-14：本地全绿，CI 的 lint job
+  # 在新写的源码与测试上挂了 4 条格式 error）。折进已有步骤有两个好处：job 名不必改，
+  # 且 lint 从此落在**必需检查**里面 —— 新开一个非必需 job 反而是更弱的保证。
+  "npm run typecheck && npx biome ci ."
   "npm run build"
   "npm run typecheck:types"
   "npm run typecheck:tests"
@@ -17,18 +26,31 @@ steps=(
 
 fail=0
 for s in "${steps[@]}"; do
-  if out=$($s 2>&1); then
+  # ⚠️ 步骤经 `bash -c` 执行，**不要**写成 `if out=$($s 2>&1)`：$s 是词展开，
+  #    里面的 shell 运算符（`&&`）不会生效，而是原样变成**命令的实参** ——
+  #    第 1 步挤 `npm run typecheck && npx biome ci .` 时就成了
+  #    `tsc --noEmit -p tsconfig.json "&&" "npx" "biome" "ci" "."` ⇒ TS5042。
+  #    走 `bash -c` 后每个步骤就是一条完整的命令行，可以带 `&&`。
+  if out=$(bash -c "$s" 2>&1); then
     echo "  OK   $s"
   else
     echo "  FAIL $s"
     # 失败定位：这里把整段输出捕获进了 $out，若只 tail 尾部，恰好会把
     # 「哪条测试挂了」的标记行冲掉 —— CI 上就只剩一个 exit 1，谁也查不出是谁。
-    # 先按 node:test / tsc / 常见错误标记抽出关键行，再补尾部上下文。
-    # ⚠️ 除了**断言失败**，还有一类非断言的失败：测试被 runner **cancel**
-    #    （`failureType: cancelledByParent` + `Promise resolution is still pending but the
-    #    event loop has already resolved`，统计里表现为 `# cancelled N` 而 `# fail 0`）。
-    #    只抓 `not ok` / `AssertionError` 会把**原因**丢掉 —— 2026-09-14 那次就是这么丢的。
-    echo "$out" | grep -aE '✖|✗|not ok|# fail|# cancelled|AssertionError|error TS[0-9]+|Error:|✘|failureType|cancelledByParent|event loop has already resolved' |
+    # 先按 node:test / tsc / biome 的标记抽出关键行，再补尾部上下文。
+    # ⚠️ 除了**断言失败**，还有两类非断言的失败，只抓 `not ok` / `AssertionError` 会丢原因：
+    #   ① 测试被 runner **cancel**（`failureType: cancelledByParent` + `Promise resolution is
+    #      still pending but the event loop has already resolved`，统计里是 `# cancelled N`
+    #      而 `# fail 0`）—— 2026-09-14 那次就是这么丢的；
+    #   ② biome 的诊断（本地链现在也跑它）首行是
+    #      `路径:行:列 lint/分类/规则  FIXABLE  ━━` 或 `路径 format ━━`，**不带 `✖`**
+    #      （`✖ File content differs…` 在下一行）—— 只比对 `✖` 等于又丢一次文件名。
+    echo "$out" |
+      # biome 的诊断首行**带 ANSI 颜色码**（路径与 `format` 之间夹着 `\033[0m`），
+      # 直接锚定「路径 format ━━」会失配 —— 先剥色再抽标记行。
+      # 尾部上下文保持原样（CI 日志照样有颜色，只是我们匹配时不看它）。
+      sed $'s/\033\\[[0-9;]*m//g' |
+      grep -aE '✖|✗|not ok|# fail|# cancelled|AssertionError|error TS[0-9]+|Error:|✘|failureType|cancelledByParent|event loop has already resolved|Found [0-9]+ errors?|Some errors were emitted|^[^ ]+ +(format|lint|syntax|assist).*━' |
       head -20 | sed 's/^/    ➜ /'
     echo "$out" | tail -30 | sed 's/^/       /'
     fail=1
@@ -37,7 +59,9 @@ done
 
 echo "------------------------------"
 if [ $fail -eq 0 ]; then
-  echo "8/8 全绿"
+  # 计数**算出来**而不是写死：写死的那个数字在加步骤后会变成假话（而这个数字与 CI 的 job 名
+  # 是同一个约定，尤其不能各说各话）。
+  echo "${#steps[@]}/${#steps[@]} 全绿"
 else
   echo "有步骤失败"
 fi

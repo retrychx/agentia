@@ -345,7 +345,14 @@
             // 框架里普通工具【不建 capability span】，只记 turn 上的两个事件
             // （engine/loop.ts: recorder.event(turnId, 'tool.input' | 'tool.output', …)）——
             // 所以入参与出参都挂到【发起它的那个 llm.turn】上，而不是给工具建行。
-            pg.traceEvent(spanId, 'tool.input', 'tool:' + tu.name, pg.fmtArg(tu.input));
+            pg.traceEvent(
+              spanId,
+              'tool.input',
+              'tool:' + tu.name,
+              pg.fmtArg(tu.input),
+              true,
+              pg.rawArg(tu.input),
+            );
             pg.panelTool(tu.name, tu.input);
             const out = execTool(tu.name, tu.input);
             pg.panelResult(out.text);

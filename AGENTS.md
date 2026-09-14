@@ -93,7 +93,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   `constructor.name`（压缩即失效）—— 故保留 `instanceof`；若使用者自装一份**不兼容版本**
   的 SDK 会形成双副本，届时分类退化为 unknown（该重试的不再重试）。
 - **lint / format**：Biome 单工具二合一（`biome.jsonc`）。`npm run lint` 检查、`npm run lint:fix` 写回；
-  CI 有独立 `lint` job。规则基线刻意关掉三条与既有风格冲突的（理由写在 `biome.jsonc` 注释里）；
+  CI 有独立 `lint` job，**并且已折进 `scripts/verify-all.sh` 的第 1 步**（本地这条链与 CI 是同一条，
+  「本地全绿、CI 挂 Biome」曾经真的发生过 —— 加检查要折进已有步骤，理由见「验证顺序」）。规则基线刻意关掉三条与既有风格冲突的（理由写在 `biome.jsonc` 注释里）；
   `.astro` 与独立 `.svg` **不在 lint 面**（Biome 对 Astro 语法支持不全，会误报）。
   ⚠️ **`src/core/blackboard.ts` 的空 `interface Blackboard {}` 是声明合并锚点，绝不可改成 `type` 别名** ——
   Biome 的 `noEmptyInterface` 自动修复会这么干，已用 `biome-ignore` 注释钉住（改了就废掉「扩展黑板键获得补全」）。
@@ -102,7 +103,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   一律延迟加载 + 可读报错，并由 CI 的 `import-floor` job 在 Node 18/20 上实跑验证。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
-- **验证顺序**：`npm run typecheck && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完。
+- **验证顺序**：`npm run typecheck && npx biome ci . && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完
+  （在仓库里就是 `bash scripts/verify-all.sh`，8 步 —— 第 1 步同时管类型检查与 lint）。
+  - **要加检查，折进已有步骤，不要加第 9 步**：`verify` job 的 name 是分支保护的必需状态检查，
+    而它写死了步数（「全链验证（verify-all 8 步）」）。加一步这名就成了假话；改名则 PR 会卡死
+    等一个永不出现的检查。折进已有步骤还有个好处 —— 新检查直接落进**必需**检查里。
+    lint 就是这么进来的：它原本只在 CI 的独立 job 里，本地链不跑它，于是「本地 8/8 全绿、
+    CI 挂 Biome」是可能的（2026-09-14 真发生了一次）。
   - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）**+ `examples/` 三份示例的 `src`**
     —— 示例此前被 tsconfig 排除在外，等于「文档指着它说『完整可跑写法』、却没有任何门禁守着」；
     靠 `paths` 映射指到框架 `src` 与 `examples/observability` 源码，因此**无需在示例目录里 install** 即可检查；

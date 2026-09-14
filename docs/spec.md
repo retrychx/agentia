@@ -846,6 +846,9 @@ MCP 调用抛出「调用超时」、`drain` 预算耗尽返回 `false`。
 34 行、行高顶到 60vh 上限（386px）。⇒ 展开态改为 **`flex-wrap: wrap` + 正文 `flex-basis: 100%`**，
 正文换到**独立整行**（实测窄面板 16px → 296px、行高 386 → 72）。两处已各自数值复验（窄 9 项 / 宽 9 项）。
 
+> ⚠️ 上面这段的**后半句**（`flex-basis: 100%` = **无条件**换行）已被**下一条**决策取代：现在默认与
+> 标签同一行，只在放不下时才换行（`flex-wrap: wrap` 保留）。原文照旧留着当当时的判断记录，不改写。
+
 ⚠️ **这一类缺陷任何「溢出检查」都查不出来**：两处都是 `scrollWidth === clientWidth`、
 页面无横向滚动、「部署成功」也全绿 —— 只是**读不了**。判定依据必须是**几何**（正文宽度、
 行高、`scrollHeight` vs `clientHeight`），不是「有没有溢出」。首轮只验了宽面板就下结论，
@@ -864,6 +867,73 @@ MCP 调用抛出「调用超时」、`drain` 预算耗尽返回 `false`。
 （含「展开只能展开 trace 里存着的正文」这句关键前提）+ 顺带改正「生效配置快照」那句
 （原文写「缺省值也记」，但可选项 `toolTimeoutMs` / `maxToolConcurrency` / `maxEventChars`
 其实只在设了才记）；`core/trace.ts` 的假承诺注释与 `spec.md` §9.1 同步改为如实描述。
+
+### 2026-09-14 ②「展开」收尾：版式回摆 + 第二宿主补齐原文 + lint 折进本地链
+
+上一节的数字复验（只验了宽面板、窄面板漏验）之后又量出四件事。四条都是**实测**出来的，不是猜的。
+
+**a. 版式回摆：无条件换行 → 「放不下才换行」**
+
+上一节把展开正文改成**无条件**换到独立整行（`flex-basis: 100%`）。窄面板里这是对的，但它把宽宿主
+（CLI inspector 874 / 1223px）「一行一个语义单元」的阅读节奏也一起改掉了 —— 正文明明放得下。
+现在的规则：**默认与标签同一行，放不下才整段换行**。判据落在 `flex-basis: 0` + `min-width: 22ch`：
+
+- `flex-basis: auto` ⇒ 换行判据是 **max-content**（正文动辄上百字符）⇒ 等于无条件换行；
+- `flex-basis: 0` ⇒ 判据回到 `min-width` ⇒ 放得下就同排、放不下才换行。
+
+实测（构建产物 `dist/`，`content-box` 与 `border-box` 两种宿主都覆盖）：
+
+| 宿主容器 | 行宽 | 固定项（前缀+类型+工具名） | 展开正文宽 | 表现 |
+|---|---|---|---|---|
+| CLI inspector | 1223px | 246.5px | 976.5px（79.8%） | 与标签**同一行** |
+| CLI inspector | 874px | 246.5px | 627.5px（71.8%） | 与标签**同一行** |
+| 官网 Playground | 296px | 246.5px | 296px（100%） | **整段换行**（非窄缝） |
+
+三处都 `ioW ≥ 100px`、面板与文档零横向溢出、零 JS 错误。`min-width` 不可省 —— 省了就回到 16px 窄缝。
+
+**b. caret 常显 + 右端窄槽**
+
+caret 原本 hover 才淡入，「这一行能展开」只有已经知道的人发现得了。改为**常显**（静止 `opacity: .75`、
+悬停/展开 `1`）。随之必须给右端留一条 12px 内边距的窄槽：不留的话，被截断正文的省略号「…」正好落在
+caret 底下，两个字形糊在一起。判据 `caret.left ≥ io.contentRight`（两种宿主、常显与展开态都不重叠）。
+
+**c. 第二个宿主只喂了摘要（「假展开」）**
+
+`playTrace`（CLI inspector）这条路上「展开给原文」是对的；但**官网 Playground 自己组 trace** 时，
+`traceEvent(id, type, tool, text, ok)` 只传了 `fmtArg(...)` 摘要、没传 `full`。渲染器从 62 字符的摘要
+反推不出原文 —— 于是**同一个渲染器在一个宿主里真展开、在另一个宿主里点开什么都没多出来**，
+而两处共用一份渲染器的全部意义就是不让这种漂移发生。
+⇒ 原文口径收进 `view.js` 的 `rawArg`（`fmtArg` 的对偶，两个宿主都调它），
+`playground.js` / `playground-real.js` 的 `tool.input` 记录点补上第 6 参。
+实测（官网真实运行）：折叠态 59 字符摘要（含 `…`）→ 展开态 73 字符**完整 JSON** 且可 `JSON.parse`，
+`differs / longer / parsesAsJson` 三项全 true。
+
+**d. 门禁自身：lint 折进本地链**
+
+`verify-all.sh` 此前**不跑 lint**（lint 只在 CI 的独立 job 里），于是「本地 8/8 全绿、CI 挂 Biome」
+是可能的。这次就撞上了：本地全绿，CI 的 `lint` job 在新写的源码/测试上挂了 **3 条格式 error**
+（`biome ci` 里「内容与格式化输出不一致」算 error）。
+⇒ `npx biome ci .` **折进第 1 步**，不加第 9 步：`verify` job 的 name 就是分支保护的必需状态检查、
+写死了「8 步」，加步骤这名成假话、改名又会让 PR 卡死等一个永不出现的检查；折进去还让 lint 落进
+**必需**检查里（比另开一个非必需 job 更硬）。结尾写死的「8/8」一并改成算出来的 `${#steps[@]}/${#steps[@]}`。
+
+失败分支**实测**（没跑过的分支就是坏的分支）：注入「真 biome 失败 + 真测试失败」，两类标记都命中，
+且**能报出出问题的文件名** —— 这需要一处修正：biome 的诊断首行带 ANSI 颜色码（路径与 `format`
+之间夹着 `\033[0m`），锚定「路径 format ━━」会失配，所以抽标记行前先剥色。
+
+**门禁**（都是**源码级**就能看见的，比开浏览器便宜）：
+
+- `packages/trace-view/test/style.test.js` 4 条：`.tr-open .tr-io` 必须有非零 `min-width`、
+  `.tr-row.tr-open` 必须有 `flex-wrap: wrap`、`.tr-caret` 静止 `opacity > 0`、可展开行的正文有
+  `padding-right`。**逐条反向验证**（把对应那条改坏 ⇒ 各挂 1 条）。
+- `tests/docs/website-playground-expand.test.ts` 2 条：两个宿主的 `tool.input` 记录点必须含
+  `rawArg(...)`；`traceEvent` 包装器必须把实参**全部**转发给 `view.event`。三种改坏各挂 1 条。
+- `packages/trace-view/test/view.test.js` 加 2 条：`fmtArg` 砍到 62 / `rawArg` 给完整 JSON 且两者不等；
+  `rawArg` 边界（`null` → 空串、字符串原样、循环引用回落 `String()`）。
+
+**影响面**：`docs/usage-guide.md` 面板小节两句（「该行改为换行显示」「caret 悬停才显形」）改为如实描述；
+`AGENTS.md` 的验证顺序与 lint 条目；`CONTRIBUTING.md` 的「提交前必须跑」与坑表。
+**已有决策记录保留原样**（上一条里 `flex-basis: 100%` 那半句已被本条 a 段取代，标注而不改写）。
 
 ## 11. 开放项
 
