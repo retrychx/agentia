@@ -128,11 +128,17 @@
 .tr-row.tr-open {
   white-space: normal;
   align-items: flex-start;
+  /* 正文**换到独立整行**（不挤在标签行里）。为什么必须换行：窄面板下那行的固定项
+     （树前缀 + 事件类型 + 工具名）本身就要 ~280px —— 官网 Playground 的面板只有 296px，
+     正文只能分到 16px，59 个字符被压成 34 行、行高顶到上限。「挤死」不是溢出检查能发现的：
+     页面 scrollWidth === clientWidth，一切"干净」，只是读不了。 */
+  flex-wrap: wrap;
 }
 /* 展开的正文**有高度上限**：工具出参动辄上千行（实测一条 60 行的出参就有 17878px 的
    scrollWidth），不限高会把整个调用树推到屏幕之外，「看下一行」比「看全文」更常用。
    超出部分在行内滚动 —— 正文仍在 DOM 里，选中复制不受影响。 */
 .tr-row.tr-open .tr-io {
+  flex-basis: 100%; /* 换行后的那一行：占满整行宽度 */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 60vh;
