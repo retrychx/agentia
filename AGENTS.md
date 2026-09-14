@@ -42,7 +42,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   no-legacy-terms.test.ts 钉「面向使用者的表面不得出现旧伞形术语」——
 │                            #   覆盖文档 / 官网 / npm 包 README 与 description / CLI 的 --help 与报错文本；
 │                            #   仅 `<!-- no-legacy-terms: allow -->` 标记块内可豁免，且有行数上限）
-├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e：脚手架→生成→装配→mock run）
+├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e 第一步：脚手架→生成→装配→mock run）
+├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第二步：examples/complete 真构建、真起服务，
+│                            #   按它 README 跑完 /healthz · 鉴权 401 · 同步 /run · SSE · 异步 /tasks ·
+│                            #   /metrics · 优雅停机；模型侧是内置假 OpenAI 兼容端点，不联网）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）

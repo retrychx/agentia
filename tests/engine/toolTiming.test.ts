@@ -107,21 +107,33 @@ describe('E1 工具级时序（tool.output 事件带 durationMs / ok / errorKind
   });
 
   it('工具超时：ok=false + errorKind=timeout，durationMs ≥ 超时阈值（且 run 不失败）', async () => {
+    // ⚠️ 用**永不自行结束**的工具断言超时路径 —— 别写成「工具 sleep 60ms vs 超时 20ms」的赛跑。
+    // 那种写法靠两条 setTimeout 的先后定输赢，3 倍余量在满载 runner 上会翻：实测 8 倍 CPU 超订下
+    // **29 次挂 1 次**（工具赢了超时，ok=true 而不是 timeout）。
+    // 这里的闸门只由本测试释放，所以工具在断言前**不可能** settle ⇒ 超时必然先生效，与调度无关。
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
     const tool: AgentTool = {
       name: 'echo',
       description: 'slow',
       inputSchema: SCHEMA,
       run: async () => {
-        await new Promise((r) => setTimeout(r, 60));
+        await gate;
         return 'late';
       },
     };
-    const result = await runWith(tool, 20);
-    const body = toolOutputEvent(result.trace);
-    assert.equal(body.ok, false);
-    assert.equal(body.errorKind, 'timeout');
-    assert.ok((body.durationMs as number) >= 20, `超时路径也要记耗时，实际 ${body.durationMs}`);
-    assert.equal(result.stopReason, 'end_turn');
+    try {
+      const result = await runWith(tool, 20);
+      const body = toolOutputEvent(result.trace);
+      assert.equal(body.ok, false);
+      assert.equal(body.errorKind, 'timeout');
+      assert.ok((body.durationMs as number) >= 20, `超时路径也要记耗时，实际 ${body.durationMs}`);
+      assert.equal(result.stopReason, 'end_turn');
+    } finally {
+      release(); // 放掉挂起的工具（超时语义是「放弃等待」，工具内部可能还在跑 —— 正是本用例的前提）
+    }
   });
 
   it('每个工具各记一条 tool.output（并行工具不串）', async () => {

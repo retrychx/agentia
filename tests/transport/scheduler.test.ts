@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { AsyncRunner, Scheduler } from '../../src/index.js';
 import type { AppCallable, AgentRunResult, TaskRecord } from '../../src/index.js';
+import { waitFor } from '../helpers.js';
 
 function fakeApp(): AppCallable & { calls: number } {
   const app = {
@@ -19,14 +20,6 @@ function fakeApp(): AppCallable & { calls: number } {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) throw new Error('waitFor 超时');
-    await sleep(5);
-  }
-}
 
 /**
  * 取任务记录快照。`AsyncRunner.list` 的返回类型是 MaybePromise（异步 store 下是 Promise）；
@@ -64,7 +57,7 @@ describe('Scheduler', () => {
     try {
       const h = scheduler.every(20, 'tick');
       assert.equal(scheduler.active, 1);
-      await waitFor(() => app.calls >= 2);
+      await waitFor(() => app.calls >= 2, 'every 应周期触发到第 2 次（cancel 之前）');
 
       h.cancel();
       assert.equal(scheduler.active, 0);
@@ -88,7 +81,10 @@ describe('Scheduler', () => {
     const scheduler = new Scheduler(runner);
     try {
       scheduler.every(20, 'tick', { idempotencyPrefix: 'p' });
-      await waitFor(() => listOf(runner).length >= 2);
+      await waitFor(
+        () => listOf(runner).length >= 2,
+        '每个 interval 窗口应各派发一次（记录 >= 2）',
+      );
       scheduler.stop();
 
       const keys = listOf(runner).map((r) => r.idempotencyKey ?? '');
@@ -110,7 +106,7 @@ describe('Scheduler', () => {
         source: 'custom-src',
       });
       assert.equal(scheduler.active, 1);
-      await waitFor(() => app.calls === 1);
+      await waitFor(() => app.calls === 1, 'at 到点应触发一次');
       await sleep(60);
       assert.equal(app.calls, 1, '单发任务不重复触发');
       assert.equal(scheduler.active, 0);
@@ -136,7 +132,7 @@ describe('Scheduler', () => {
 
       // when 在过去：delay 截断为 0，尽快触发一次
       scheduler.at(new Date(Date.now() - 1000), 'past');
-      await waitFor(() => app.calls === 1);
+      await waitFor(() => app.calls === 1, 'at 到点应触发一次');
     } finally {
       scheduler.stop();
     }
@@ -169,7 +165,10 @@ describe('Scheduler', () => {
 
       // 上一片终态后恢复派发（闸门不会永久关闭）
       release();
-      await waitFor(() => listOf(runner).length >= 2);
+      await waitFor(
+        () => listOf(runner).length >= 2,
+        '每个 interval 窗口应各派发一次（记录 >= 2）',
+      );
     } finally {
       scheduler.stop();
     }
@@ -196,7 +195,7 @@ describe('Scheduler', () => {
     const scheduler = new Scheduler(runner);
     try {
       scheduler.every(10, 'tick', { maxInFlight: Number.POSITIVE_INFINITY });
-      await waitFor(() => calls >= 3, 3000);
+      await waitFor(() => calls >= 3, 'maxInFlight=Infinity 时每 tick 都派发（>= 3 次）');
     } finally {
       scheduler.stop();
       release();
@@ -214,7 +213,7 @@ describe('Scheduler', () => {
     };
     try {
       scheduler.every(10, 123); // normalizeMessages 无法识别 → dispatch 内捕获
-      await waitFor(() => logged.length >= 1);
+      await waitFor(() => logged.length >= 1, '触发入参非法应经 console.error 暴露，而非崩宿主');
       assert.match(String(logged[0][0]), /\[agentia:scheduler\].*触发失败/);
       assert.match(String(logged[0][1]), /无法识别为任务输入/);
       assert.equal(app.calls, 0);

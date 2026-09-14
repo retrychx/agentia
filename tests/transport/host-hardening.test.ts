@@ -8,6 +8,7 @@ import { createHttpHandler, HttpException } from '../../src/index.js';
 import { AsyncRunner } from '../../src/index.js';
 import type { AppCallable, HttpHandler } from '../../src/index.js';
 import type { AgentRunResult } from '../../src/index.js';
+import { waitFor } from '../helpers.js';
 
 /**
  * Phase B（宿主硬化）：B1 鉴权缝 + B2 优雅停机 / 健康检查。
@@ -65,15 +66,6 @@ function close(server: Server): Promise<void> {
 
 async function readJson(res: Response): Promise<any> {
   return res.json();
-}
-
-async function waitFor(cond: () => boolean, ms = 1000): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (!cond()) {
-    if (Date.now() > deadline) return false;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  return true;
 }
 
 /** 跑一段代码并吞掉 console.error（鉴权钩子抛错会按设计打日志，测试里不需要看） */
@@ -361,11 +353,11 @@ describe('B2 健康检查（GET /healthz）', () => {
     try {
       await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'a' }) });
       await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'b' }) });
-      assert.ok(await waitFor(() => handler.runner.inFlight >= 1));
+      await waitFor(() => handler.runner.inFlight >= 1, '在飞任务应被登记（inFlight >= 1）');
       const body = await readJson(await fetch(`${base}/healthz`));
       assert.equal(body.inFlight, 2, 'runner 的在飞数应由 /healthz 反映（一个在跑、一个排队）');
       release();
-      assert.ok(await waitFor(() => handler.runner.inFlight === 0));
+      await waitFor(() => handler.runner.inFlight === 0, '在飞任务应已收尾（inFlight === 0）');
       assert.equal((await readJson(await fetch(`${base}/healthz`))).inFlight, 0);
     } finally {
       release();
@@ -443,7 +435,10 @@ describe('B2 优雅停机（drain）', () => {
         body: JSON.stringify({ input: 'a' }),
       });
       const rec = await readJson(submit);
-      assert.ok(await waitFor(() => handler.runner.inFlight === 1));
+      await waitFor(
+        () => handler.runner.inFlight === 1,
+        'submit 的任务应已受理并在飞（inFlight === 1）',
+      );
 
       // drain 未完成前不该 resolve
       let drained: boolean | undefined;
@@ -498,7 +493,10 @@ describe('B2 优雅停机（drain）', () => {
     const { server, base, handler } = await listen(app);
     try {
       await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'a' }) });
-      assert.ok(await waitFor(() => handler.runner.inFlight === 1));
+      await waitFor(
+        () => handler.runner.inFlight === 1,
+        'submit 的任务应已受理并在飞（inFlight === 1）',
+      );
       assert.equal(await handler.drain({ timeoutMs: 30 }), false, '超时应返回 false');
       const recs = await handler.runner.list();
       assert.equal(recs.length, 1, '未完成的任务仍在 store 里（不是丢弃）');

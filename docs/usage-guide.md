@@ -806,5 +806,6 @@ npm run typecheck:tests  # 测试目录类型（含类型断言测试）
 npm run test             # 单测（node:test）
 ```
 
-框架仓库另有三道：`npm run typecheck:types`（针对构建产物的类型测试）、`npm run e2e`（CLI 端到端）、
+框架仓库另有四道：`npm run typecheck:types`（针对构建产物的类型测试）、`npm run e2e`（CLI 端到端 +
+`examples/complete` 真起服务跑三种触发）、`npm run e2e:examples`（只跑后者）、
 `npm run e2e:mcp`（真接一个 MCP server 走完「映射 → 菜单 → run」；无网时自动回落本地夹具 server）。
