@@ -423,6 +423,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `#execute` 的统一出口唤醒）；`intervalMs` 降级为缺省 250ms 的**兜底轮询**，只服务「终态由他进程写入的异步 store」。
   四条均带守卫测试并逐个做**变异自证**（回退修复即失败）。**`AGENTIA_VERSION` 保持 0.2.1 不变** ——
   该常量反映**已发布**版本，0.2.2 发布时再同步（官网 API 页的描述也已写明这条规则）。
+  ⇒ **已于 2026-09-14 发布 v0.2.2 时同步为 `'0.2.2'`**（`check-release.mjs` 四处一致通过）。
 
 - 2026-09-13：**官网正式化 + 动效补齐**。官网是对外产品页，清理四类「开发过程」内容：开发指标（hero 的「380+ 例单测」
   → 产品属性）、版本对比语言（「旧行为逐字不变」）、内部结构描述（「分层单向」「只依赖 core」「`src/index.ts` 是唯一出口」
@@ -692,9 +693,65 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 **顺带**：`core/tool.ts` 的 `signal` 字段注释补了「自定义 client 的常见坑」与参考实现 ——
 自定义 client 的同样会撞上这个坑，而它的表现是**完全静默**的。
 
+### 2026-09-14 ④：截止计时器**不得 `unref()`** —— 「超时」是等待的终点，不是兜底 tick
+
+**起因（`# fail 0` 却红了 CI）**：发布 PR 的 `verify` 红了，但红的形状很怪 ——
+`# tests 485 / # pass 481 / # fail 0 / # cancelled 4`：**没有断言失败**，是 4 条测试被 runner
+**cancel** 了，全在 `tests/engine/toolTiming.test.ts` 的 E1 套件里（第 1–3 条过，4–7 条被取消）。
+日志里 runner 自己给了原因（而我们当时的失败抽取把它丢掉了，见下）：
+
+```
+failureType: 'cancelledByParent'
+error: 'Promise resolution is still pending but the event loop has already resolved'
+```
+
+**复现（不是偶发，也不靠负载）**：Node 22（与 CI 同 major）跑该文件 15 轮 → **14 轮 cancel**；
+同机 Node 26 跑 15 轮 → 0 轮。定向复现是唯一有效手段：**单文件 + 指定 Node，比多跑几轮全量强**。
+
+**判定实验（剥掉所有框架代码）**：空事件循环里 await 一个「永不 settle 的 promise + 截止计时器」：
+
+| 计时器 | Node 22.23.2 | Node 26.5.0 |
+|---|---|---|
+| `unref()` | **进程直接退出**（exit 13，顶层 await 未 settle） | 同左 |
+| 不 unref | `settled: TIMED_OUT`，exit 0 | 同左 |
+
+⇒ **与 Node 版本无关**，Node 22 只是让 node:test 把它报成 `cancelledByParent` 而已。
+
+**根因**：该计时器的**触发本身就是「被 await 的 promise 得以 settle」的条件**。一旦 `unref`，
+当它是事件循环里唯一的把手时，进程在它触发前就退出 —— 调用方**什么都拿不到**（不是超时值，
+是整段 await 静默消失）。旧注释「兜底计时器不该让宿主为它续命」把两类计时器混为一谈：
+
+- **兜底 tick**（scheduler 的下一拍、SSE 心跳、metrics 刷盘）：**没人 await 它们**，
+  unref 是对的 —— 保留了（`transport/scheduler.ts`、`transport/http.ts`、`integrations/metrics.ts`）。
+- **等待的终点**（工具级超时、MCP 调用超时、停机 `drain`、`runTimeoutMs`）：**调用方正在等它**，
+  unref 等于让「等待」永远不结束。四处的 unref 全部去掉
+  （`engine/concurrency.ts`、`integrations/mcp.ts`、`transport/async.ts` ×2）。
+
+**影响面（不止测试）**：`await runAgent({ tools:[挂死的工具], toolTimeoutMs: 20 })` 在普通脚本里
+**不会返回超时，而是进程静默退出**。对一个把「工具级超时」当护栏卖给使用者的框架来说，
+这比「超时不硬」更严重：护栏连触发机会都没有。
+
+**门禁**：`tests/timeoutLiveness.test.ts` + `tests/fixtures/timeoutLivenessProbe.ts` ——
+拿**干净子进程**（`node --import tsx`）在空事件循环下验三个往返：工具级超时回到 `end_turn`、
+MCP 调用抛出「调用超时」、`drain` 预算耗尽返回 `false`。
+**必须子进程**：本性质的前提就是「进程里没有别的把手」，而同进程跑测试时**测试跑器自己持有把手**，
+会把缺陷藏起来（这正是它此前只被 CI 抓到、本地永远绿的原因）。
+**承重性反向验证**：把三处 `unref` 加回去 ⇒ 门禁 **3/3 全红**。
+`transport/async.ts` 的 `runTimeoutMs` 一并去掉 unref，但**未进门禁**：如实说，它的活性被
+`awaitTask` 的兜底轮询（另有 ref'd 计时器）掩盖，探针验不出差别 —— 不假装它被覆盖了。
+
+**顺带补的诊断缺口**：`scripts/verify-all.sh` 的失败抽取只抓 `not ok` / `AssertionError`，
+而 cancel 类失败的**原因行**（`failureType` / `event loop has already resolved` / `# cancelled`）
+一条都没抓 —— 这就是为什么 CI 上只看到一个 exit 1。已把它们加进抽取清单（沿用 PR #9 的同款修法）。
+
+**这条与 ② 的关系**：同一条用例（`toolTiming` 的「工具超时」）暴露出**两个独立缺陷** ——
+② 是「竞速不是硬保证」（超预算被记成功），④ 是「计时器被 unref」（等待干脆结束不了）。
+两者都在这个文件里以不同形状现形，也各自有了门禁。
+
 ## 11. 开放项
 
-- npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立为 `@agentia/cli`（workspaces），框架本体仍单包，均未发布。
+- npm 包拆分/发布（core / runtime / transport）在发布阶段做；CLI 已独立成包（workspaces），框架本体仍单包。
+  ⇒ **2026-09-14 已发布 v0.2.2**（框架包 + CLI 包，scope 为 `@migor/*`）；上句的「包拆分」仍待做。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖），thinking 用 adaptive，流式优先。
 - CLI 后续：`add`（接第三方能力包）、注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板）。

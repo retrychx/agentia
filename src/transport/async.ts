@@ -206,7 +206,9 @@ export class AsyncRunner {
         drained,
         new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(false), timeoutMs);
-          timer.unref?.(); // 兜底计时器不该让宿主为它续命
+          // ⚠️ 不 unref：`drain()` 返回的正是这个 false —— 计时器的触发就是「调用方的 await 得以结束」
+          // 的条件。unref 过它 ⇒ 空事件循环下进程先退出，停机等待没有任何结论
+          // （见 `tests/timeoutLiveness.test.ts` 与 spec §10 ④）。
         }),
       ]);
     } finally {
@@ -455,7 +457,8 @@ export class AsyncRunner {
             onTimeout?.();
             reject(new Error(`task ${taskId} 执行超时（${this.runTimeoutMs}ms）`));
           }, this.runTimeoutMs);
-          timer.unref?.(); // 兜底计时器不该让宿主为它续命
+          // ⚠️ 不 unref：这个 reject 是 `awaitTask` / 调用方 await 的终点（spec §10 ④）。
+          // 见 `tests/timeoutLiveness.test.ts`。
         }),
       ]);
     } finally {

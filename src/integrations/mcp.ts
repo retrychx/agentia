@@ -82,8 +82,11 @@ const TIMED_OUT = Symbol('agentia.mcp.timed-out');
 /**
  * 给一次 MCP 调用套超时。⚠️ 与 engine 的 `withTimeout` 同样是**放弃等待**而非取消 ——
  * MCP 的 `notifications/cancelled` 属于连接器职责，桥这一层拿不到取消句柄。
+ *
+ * 转导导出（module 级，**不进公共面**）只为可测：`tests/timeoutLiveness.test.ts` 拿它验
+ * 「截止计时器不得 unref」—— 那是「被 await 的超时到底会不会触发」的唯一分界点。
  */
-async function withDeadline<T>(p: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+export async function withDeadline<T>(p: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   if (!(timeoutMs > 0)) return p;
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -91,7 +94,8 @@ async function withDeadline<T>(p: Promise<T>, timeoutMs: number, label: string):
       p,
       new Promise<typeof TIMED_OUT>((resolve) => {
         timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
-        timer.unref?.(); // 兜底计时器不该让宿主为它续命
+        // ⚠️ 不 unref：同 engine 的 `withTimeout` —— 它的触发是「这个 await 得以结束」的条件。
+        // unref 过它 ⇒ 空事件循环下进程先退出，挂起的 MCP 调用让整段代码静默消失。
       }),
     ]);
     if (raced === TIMED_OUT) {

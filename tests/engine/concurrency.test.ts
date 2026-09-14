@@ -204,13 +204,12 @@ describe('withTimeout：超时是硬保证（语义收紧后的回归门禁）',
     const gate = new Promise<string>((r) => {
       release = r;
     });
-    // 截止计时器是 unref 的（有意：不该为宿主续命），所以裸跑时事件循环可能直接空掉。
-    // 这里用非 unref 的心跳把循环托住，模拟真实宿主（HTTP server / scheduler）。
-    const beat = setInterval(() => {}, 25);
+    // 本用例**故意不加**心跳保活：截止计时器不得 `unref`（否则它作为唯一把手时进程会先退出、
+    // 这个 await 永不 settle）。同一条性质有专门门禁跑在干净子进程里：
+    // `tests/timeoutLiveness.test.ts`（同进程测不出来 —— 测试跑器自己持有把手）。
     try {
       assert.equal(await withTimeout(gate, 20), TIMED_OUT);
     } finally {
-      clearInterval(beat);
       release('late');
     }
   });

@@ -49,6 +49,19 @@ export const TIMED_OUT = Symbol('agentia.timed-out');
  * 「预算」本来就是对**实际耗时**的承诺，不是对调度运气的承诺。
  *
  * `timeoutMs` 非正数 = 不设超时（直接返回原 promise）。
+ *
+ * ⚠️ **截止计时器绝不可 `unref()`**（2026-09-14 修正，见 `docs/spec.md` §10 ④）：
+ * 这个计时器的**触发本身就是「被 await 的 promise 得以 settle」的条件**。一旦 unref，
+ * 当它是事件循环里唯一的把手时，进程会在它触发前直接退出 —— `await` **永不 settle**。
+ * 实测（空事件循环、挂死的 promise，Node 22 与 26 一个样）：
+ *
+ * | 计时器 | 结果 |
+ * |---|---|
+ * | `unref()` | 进程退出（顶层 await 未 settle），**什么都没返回** |
+ * | 不 unref | `settled: TIMED_OUT`，exit 0 |
+ *
+ * 「兜底计时器不该让宿主为它续命」这条理由对**没人 await 的兜底 tick**（scheduler 的下一拍、
+ * SSE 心跳、metrics 刷盘）成立，对**「等待的终点」**不成立：那正是调用方在等的东西。
  */
 export async function withTimeout<T>(
   p: Promise<T>,
@@ -76,7 +89,8 @@ export async function withTimeout<T>(
       tracked,
       new Promise<typeof TIMED_OUT>((resolve) => {
         timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
-        timer.unref?.(); // 兜底计时器不该让宿主为它续命
+        // ⚠️ 不 unref：它的触发是「这个 await 得以结束」的条件（详见函数头注释的实测表）。
+        // unref 过它 ⇒ 空事件循环下进程先退出，await 永不 settle。
       }),
     ]);
     // 竞速只当快路径；最终以实测耗时兜底判定（见上面注释里的翻转样本）。

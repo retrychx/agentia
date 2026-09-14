@@ -33,8 +33,8 @@ scripts/copy-assets.mjs   # 把 .md 资产拷进 dist（asset() 按文件位置�
 
 ## 跑起来
 
-框架当前版本**未发布到 npm**（registry 上最新是 0.2.1，缺 `metricsSink` / `mcpTools` /
-`createApp({sinks})` 等本示例用到的能力），所以依赖走 `file:../..` 指向本仓库：
+依赖走 `file:../..` 指向本仓库 —— **刻意的**：跑的就是工作区里刚构建的那份框架，而不是 npm
+发布版（想用发布版就把这一行换成 `^0.2.2`）：
 
 ```bash
 cd ..                      # 仓库根
