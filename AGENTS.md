@@ -117,11 +117,16 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     2026-09-14 靠它挖出「默认 client 从不转发 `signal`」（中止在飞 run 失效，见 spec §10）。
     那次也留下一条更省的教训：这类「契约有没有真落到传输层」的断言，**本地假端点**就能在 CI 里零成本守住
     （`tests/integrations/anthropic.test.ts` 就是这么做的），不必依赖真端点。
-  - **CI**：`.github/workflows/ci.yml` —— 四个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
+  - **CI**：`.github/workflows/ci.yml` —— 五个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
     不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
     守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，
-    同时当回落守卫）。**`verify` 的 job name 是分支保护的必需状态检查，改名 = PR 永远等不到该检查 → 卡死**；
+    同时当回落守卫）；⑤ `deploy-website`（**发布**，只在 `main` 上跑：`needs: [verify, lint]` + `npm run deploy:website`
+    推 Cloudflare Pages。PR 上 skip。**它不是必需状态检查，不要加进分支保护** —— 同下面 `verify` 的坑）。
+    **`verify` 的 job name 是分支保护的必需状态检查，改名 = PR 永远等不到该检查 → 卡死**；
     同理**不要给 `verify` 加 matrix**（matrix 会给检查名加后缀）。要挡更低 Node 版本请另开 job。
+    发布 job 需要仓库 secret `CLOUDFLARE_API_TOKEN`（Account → Cloudflare Pages → Edit）与
+    `CLOUDFLARE_ACCOUNT_ID`；**缺 secret 时它响亮失败，不静默跳过** —— 静默跳过正是「以为部署了、
+    其实没有」的病根（2026-09-13 官网合并了却仍跑旧版，就是这么来的）。
     `verify-all.sh` 用 `cd "$(dirname "$0")/.."` 自推仓库根 —— **别再往里写绝对路径**（本地能跑、CI 必挂）。
     失败分支**必须先用 `grep` 抽失败标记行**（`✖` / `not ok` / `AssertionError` / `error TS`）再 `tail` ——
     整段输出被捕获进 `$out`，只 `tail -30` 恰好会把「哪条测试挂了」冲掉，CI 上就只剩一个 exit 1，谁也查不出是谁。
