@@ -1,6 +1,6 @@
 # Agentia —— Roadmap
 
-状态：v0.2.2 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
+状态：v0.3.0 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）+ **`.env` 一等配置入口**（`loadEnvFile`，脚手架生成 `.env`）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
 与 `docs/spec.md`（已锁定决策）互补：spec 记录"已经怎么定的"，本文记录"接下来往哪走"。
 
 ## R1 —— 中间件（拦截器链）✅
@@ -230,6 +230,9 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   「刻意跑工作区代码」，并保留「想用发布版就换 `^0.2.2`」的一句话。
   另：`packages/trace-view` 的 `private: true` 是**有意**的（产物随 CLI `create` 拷进用户项目，
   不进 npm），不是待修项。
+- **已发布 v0.3.0**（2026-09-14）：`.env` 成为一等配置入口 —— 框架不**自动**读，改为显式
+  `loadEnvFile()`（脚手架 `main.ts` 首行调用），零依赖手写解析，真实环境变量优先。
+  决策与假绿记录见 `spec.md` §10 ⑤；`examples/` 的 `file:../..` 决策不变（同上）。
 - **已修：截止计时器不得 `unref()`**（发布 PR 的 CI 红法逼出来的，见 spec §10 2026-09-14 ④）。
   CI 红得没有断言失败：`# fail 0 / # cancelled 4`，runner 自陈 `cancelledByParent` +
   `Promise resolution is still pending but the event loop has already resolved`。

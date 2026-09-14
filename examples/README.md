@@ -22,8 +22,8 @@ cd <仓库根> && npm install && npm run build    # 先把框架构建到 dist/
 cd examples/complete && npm install            # 再装示例
 ```
 
-要用 **npm 上的发布版**（`0.2.2` 起，本目录示例用到的能力都已包含），把那一行换成
-`"@migor/agentia": "^0.2.2"` 即可；两个 Dockerfile 也能相应退回常规单包写法
+要用 **npm 上的发布版**（`0.3.0` 起，本目录示例用到的能力都已包含），把那一行换成
+`"@migor/agentia": "^0.3.0"` 即可；两个 Dockerfile 也能相应退回常规单包写法
 （各自的 README 里都标注了改动点）。
 
 ## Docker
