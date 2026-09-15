@@ -136,7 +136,17 @@ export async function mcpTools(
     if (typeof original !== 'string' || original.trim() === '') {
       throw new Error(`MCP server 返回了空工具名：${JSON.stringify(info.name)}`);
     }
-    const name = `${prefix}${normalizeToolName(original)}`;
+    const cleaned = normalizeToolName(original);
+    if (cleaned === '') {
+      // 原名不含任何 ASCII 字母/数字/下划线（如 "🔥🔥"、"获取时间"）时归一化产物为空串 ——
+      // 不拦下的话最终名只剩前缀也能注册成功，与「空名直接抛错」的承诺相反。
+      // 必须在撞名检查之前抛出（裸前缀名还可能与下一个空名工具撞出误导性报错）。
+      throw new Error(
+        `MCP 工具名 ${JSON.stringify(original)} 归一化后为空（原名不含任何 ASCII 字母/数字/下划线）—— ` +
+          '请在 server 侧改用可辨识的工具名，或检查其 tools/list 实现',
+      );
+    }
+    const name = `${prefix}${cleaned}`;
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
       throw new Error(
         `MCP 工具名 "${original}" 归一化后为 "${name}"，不满足 ^[A-Za-z0-9_-]{1,64}$` +

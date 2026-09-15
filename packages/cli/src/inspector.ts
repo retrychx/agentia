@@ -50,6 +50,36 @@ export interface InspectorServer {
   close(): Promise<void>;
 }
 
+/** 入站校验：结构不符的 trace 直接拒（400），不让 NaN 之类的坏数据流进面板与 SSE 广播 */
+function validateTrace(t: unknown): string | null {
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return 'trace 必须是对象';
+  const trace = t as TraceLike;
+  if (typeof trace.traceId !== 'string' || trace.traceId.length === 0) return 'traceId 缺失';
+  if (trace.spans !== undefined && !Array.isArray(trace.spans)) return 'spans 必须是数组';
+  for (const s of trace.spans ?? []) {
+    if (!s || typeof s !== 'object') return 'span 必须是对象';
+    if (typeof s.spanId !== 'string' || s.spanId.length === 0) return 'span.spanId 缺失';
+    if (typeof s.name !== 'string') return `span ${s.spanId} 缺 name`;
+    if (typeof s.startedAt !== 'number' || !Number.isFinite(s.startedAt)) {
+      return `span ${s.spanId} 缺 startedAt（必须是有穷 number）`;
+    }
+    if (s.endedAt !== undefined && (typeof s.endedAt !== 'number' || !Number.isFinite(s.endedAt))) {
+      return `span ${s.spanId} 的 endedAt 非法`;
+    }
+  }
+  return null;
+}
+
+/** 防 DNS rebinding：面板只服务本机，Host 不是 localhost/127.0.0.1/[::1] 的一律拒 */
+function isLocalHostHeader(host: string | undefined): boolean {
+  if (!host) return false;
+  const name = host
+    .replace(/:\d+$/, '')
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase();
+  return name === 'localhost' || name === '127.0.0.1' || name === '::1';
+}
+
 /** 环形缓冲上限：面板只保证「回看最近 N 条」，不做历史归档 */
 const MAX_RUNS = 50;
 /** 静态资源目录（构建期由 scripts/copy-assets.mjs 就位） */
@@ -130,18 +160,31 @@ export function startInspector(
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = new URL(req.url || '/', `http://${host}`).pathname;
     try {
+      if (!isLocalHostHeader(req.headers.host)) {
+        json(res, 403, { error: '仅允许本机访问（Host 须为 localhost / 127.0.0.1 / [::1]）' });
+        return;
+      }
       if (req.method === 'POST' && path === '/ingest') {
-        const trace = JSON.parse(await readBody(req)) as TraceLike;
-        if (!trace || typeof trace.traceId !== 'string') {
-          json(res, 400, { error: 'traceId 缺失' });
+        const body = await readBody(req); // 超 413 走外层 catch
+        let trace: unknown;
+        try {
+          trace = JSON.parse(body);
+        } catch {
+          json(res, 400, { error: 'body 不是合法 JSON' });
           return;
         }
-        if (!runs.has(trace.traceId)) {
-          order.push(trace.traceId);
+        const problem = validateTrace(trace);
+        if (problem) {
+          json(res, 400, { error: problem });
+          return;
+        }
+        const valid = trace as TraceLike;
+        if (!runs.has(valid.traceId)) {
+          order.push(valid.traceId);
           if (order.length > MAX_RUNS) runs.delete(order.shift() as string);
         }
-        runs.set(trace.traceId, trace);
-        broadcast(summarize(trace));
+        runs.set(valid.traceId, valid);
+        broadcast(summarize(valid));
         json(res, 200, { ok: true });
         return;
       }

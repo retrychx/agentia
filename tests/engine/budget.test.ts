@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createBudgetGuard, executeRun } from '../../src/index.js';
+import { createBudgetGuard, executeRun, runAgent } from '../../src/index.js';
 import type { BudgetSnapshot, Trace, Usage } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg, U } from '../helpers.js';
 
@@ -154,6 +154,96 @@ describe('成本硬管控接进主循环（C1）', () => {
     assert.equal(result.stopReason, 'end_turn');
     assert.equal(run.status, 'succeeded');
     assert.equal(seen.length, 2);
+  });
+
+  it('工具执行期间（嵌套能力记账）把用量推过上限 → 回合入口再判拦住，不发新请求', async () => {
+    // 模拟子 agent 循环：工具在自己的执行过程中往**同一 recorder** 记了 100 token 的账
+    // （子循环的真实记账方式）。回合末那次判断当时还没超（15 ≤ 50），
+    // 超支发生在工具执行期间 —— 下一回合入口必须拦住，不得再发模型请求。
+    const { client, seen } = mockClient([toolUseMsg('spend', {}), endTurnMsg('不该被请求')]);
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      maxTotalTokens: 50,
+      tools: [
+        {
+          name: 'spend',
+          description: 'x',
+          inputSchema: OBJ,
+          run: (_input, ctx) => {
+            const turn = ctx!.recorder.begin('llm.turn', 'claude-opus-5', ctx!.parentSpanId);
+            ctx!.recorder.end(turn, {
+              usage: {
+                inputTokens: 60,
+                outputTokens: 40,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+              },
+            });
+            return 'spent';
+          },
+        },
+      ],
+    });
+    assert.equal(result.stopReason, 'budget_exceeded');
+    assert.equal(result.error?.type, 'budget_exceeded');
+    assert.equal(run.status, 'failed');
+    assert.equal(seen.length, 1, '超支后不得再发模型请求');
+  });
+
+  it('超预算的同回合：submit_result 仍被处理（纯内部提交不丢），其余工具跳过', async () => {
+    let sideEffects = 0;
+    const { client, seen } = mockClient([
+      // 回合 1：普通工具（15 token，预算内）
+      toolUseMsg('work', {}, 'tu1'),
+      // 回合 2：同回合并行「有副作用的工具 + submit_result」，记账后累计 30 > 20
+      {
+        ...toolUseMsg('work', {}, 'tu2'),
+        content: [
+          { type: 'tool_use', id: 'tu2', name: 'work', input: {} },
+          {
+            type: 'tool_use',
+            id: 'tu3',
+            name: 'submit_result',
+            input: { answer: '42' },
+          },
+        ],
+      },
+    ]);
+    const result = await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      maxTotalTokens: 20,
+      tools: [
+        {
+          name: 'work',
+          description: 'x',
+          inputSchema: OBJ,
+          run: () => {
+            sideEffects++;
+            return 'ok';
+          },
+        },
+      ],
+      resultSchema: {
+        type: 'object',
+        properties: { answer: { type: 'string' } },
+        required: ['answer'],
+      },
+    });
+    assert.equal(
+      result.stopReason,
+      'end_turn',
+      '结果已交出 → 按正常收尾（与自然收尾不改判同口径）',
+    );
+    assert.deepEqual(result.typed, { answer: '42' }, '超预算不该把已到手的结构化结果丢掉');
+    assert.equal(sideEffects, 1, '超预算回合里的其他工具仍然跳过（不产生副作用）');
+    assert.equal(seen.length, 2, '落定结果后不再发新请求');
+    const root = result.trace.spans.find((s) => s.kind === 'run')!;
+    assert.ok(
+      root.events.some((e) => e.name === 'budget.exceeded'),
+      '超限痕迹仍要留下（可观测），只是不改判已交付结果的 run',
+    );
   });
 });
 

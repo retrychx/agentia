@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   truncateSync,
   writeFileSync,
@@ -30,6 +31,9 @@ export class FileTaskStore implements TaskStore {
   private readonly byKey = new Map<string, string>(); // idempotencyKey → taskId
 
   constructor(private readonly file: string) {
+    // 目录在构造期建一次（原在每次 append 时 mkdirSync recursive —— save 是高频路径，
+    // 每次都做一次递归 mkdir 是无谓的系统调用）
+    mkdirSync(dirname(this.file), { recursive: true });
     this.load();
   }
 
@@ -82,7 +86,6 @@ export class FileTaskStore implements TaskStore {
   }
 
   private append(rec: TaskRecord): void {
-    mkdirSync(dirname(this.file), { recursive: true });
     writeFileSync(this.file, `${JSON.stringify(rec)}\n`, { flag: 'a' });
   }
 
@@ -116,11 +119,16 @@ export class FileTaskStore implements TaskStore {
    *
    * append-only 的 JSONL 每 save 一次就追加一行，**容量随 save 次数线性增长**（构造期
    * load 也全量读回）——长期运行的宿主迟早要压。本方法是 TaskStore 接口之外的能力，
-   * 由宿主按需周期性调用（如低频 cron）；压实时文件短暂不含历史行，但内存态不受影响。
+   * 由宿主按需周期性调用（如低频 cron）；压实经临时文件 + rename 原子替换（写崩了
+   * 旧文件也完整），内存态不受影响。
    */
   compact(): void {
-    mkdirSync(dirname(this.file), { recursive: true });
     const body = [...this.byTask.values()].map((r) => `${JSON.stringify(r)}\n`).join('');
-    writeFileSync(this.file, body);
+    // 原子重写：先写临时文件再 rename。直接 writeFileSync 截断重写，中途被杀会留下
+    // 半截文件、丢掉全部记录；同目录 rename 是原子的，旧文件在新文件就位前保持完整。
+    // 临时文件名固定（单写者前提，见头注释）—— 上次被杀留下的残临时文件会被本次覆写。
+    const tmp = `${this.file}.compact.tmp`;
+    writeFileSync(tmp, body);
+    renameSync(tmp, this.file);
   }
 }

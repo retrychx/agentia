@@ -62,4 +62,47 @@ describe('TraceRecorder', () => {
     // 但 capability span 自身的 usage 仍保留在 span 上（供展示）
     assert.equal(trace.spans.find((s) => s.spanId === capability)?.usage?.inputTokens, 100);
   });
+
+  it('totalUsage.costEstimate 按 1e-6 取整（与 capability 聚合同口径，浮点尾差不进 trace）', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    for (const costEstimate of [0.1, 0.2]) {
+      const turn = r.begin('llm.turn', 'model-x', root);
+      r.end(turn, {
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate,
+        },
+      });
+    }
+    r.end(root, { status: 'ok' });
+    // 0.1 + 0.2 = 0.30000000000000004（IEEE754）—— 取整口径必须一致收成 0.3
+    assert.equal(r.snapshot('ok').totalUsage.costEstimate, 0.3);
+  });
+
+  it('snapshot 的 events/attributes 是拷贝：交付后迟到的记账不变异已交付的 trace', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const turn = r.begin('llm.turn', 'model-x', root);
+    r.end(turn, {
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    });
+
+    const delivered = r.snapshot('ok');
+    const snapTurn = delivered.spans.find((s) => s.spanId === turn)!;
+    assert.equal(snapTurn.events.length, 0);
+
+    // 模拟「超时工具的后台残尾」：trace 已交付，recorder 仍在向同一 span 记账
+    r.event(turn, 'tool.output', { tool: 'slow' });
+    r.setAttribute(turn, 'late_write', true);
+
+    assert.equal(snapTurn.events.length, 0, '已交付的 snapshot 不得被事后变异');
+    assert.equal(snapTurn.attributes.late_write, undefined);
+    // recorder 的内部视角不受影响：下一次 snapshot 能看到迟到的事件
+    const later = r.snapshot('ok');
+    assert.equal(later.spans.find((s) => s.spanId === turn)!.events.length, 1);
+  });
 });

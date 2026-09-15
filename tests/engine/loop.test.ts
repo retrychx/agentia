@@ -6,6 +6,8 @@ import type { JsonSchema, Span } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 // 内部工具（刻意不进公共导出面，故不走 index.js）
 import { replaceMessages } from '../../src/engine/loop.js';
+// 真吐文本的脚本化 client（eval 公共面）：onText 链路按真实路径走
+import { scriptedClient } from '../../src/eval/scripted.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 
@@ -144,22 +146,29 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal(result.trace.status, 'error');
   });
 
-  it('max_tokens：截断收尾 → stopReason=max_tokens，文本保留、无 error 对象', async () => {
+  it('max_tokens：截断收尾 → stopReason=max_tokens，文本保留 + 结构化 error', async () => {
     const { client } = mockClient([rawMsg('max_tokens', '被截断的开头')]);
     const { result } = await executeRun({ messages: [{ role: 'user', content: 'go' }], client });
     assert.equal(result.stopReason, 'max_tokens');
     assert.equal(result.finalText, '被截断的开头');
-    assert.equal(result.error, undefined, 'max_tokens 不是异常，只是没跑完');
+    // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（run 根 span 有「为什么」）
+    assert.equal(result.error?.type, 'max_tokens');
+    assert.equal(result.error?.retryable, false);
+    assert.equal(result.trace.status, 'error');
+    const root = result.trace.spans.find((s) => s.kind === 'run')!;
+    assert.equal(root.error?.type, 'max_tokens', 'run 根 span 必须带 error 对象');
   });
 
-  it('pause_turn：无 server tools 时直接停 → stopReason=pause_turn（防死循环）', async () => {
+  it('pause_turn：无 server tools 时直接停 → stopReason=pause_turn（防死循环）+ 结构化 error', async () => {
     const { client } = mockClient([rawMsg('pause_turn', '暂停片段')]);
     const { result } = await executeRun({ messages: [{ role: 'user', content: 'go' }], client });
     assert.equal(result.stopReason, 'pause_turn');
     assert.equal(result.finalText, '暂停片段');
+    assert.equal(result.error?.type, 'pause_turn');
+    assert.equal(result.error?.retryable, false);
   });
 
-  it('max_iterations：循环达上限 → stopReason=max_iterations，iterations 如实', async () => {
+  it('max_iterations：循环达上限 → stopReason=max_iterations，iterations 如实 + 结构化 error', async () => {
     // 每回合都回 tool_use、永不给终态；maxIterations=2 到底后兜底改判
     const { client } = mockClient([
       toolUseMsg('echo', {}, 't1'),
@@ -174,6 +183,10 @@ describe('agentLoop 边界与失败路径', () => {
     });
     assert.equal(result.stopReason, 'max_iterations');
     assert.equal(result.iterations, 2, '上限内的 2 次模型往返都要记');
+    assert.equal(result.error?.type, 'max_iterations');
+    assert.match(result.error?.message ?? '', /maxIterations=2/);
+    const root = result.trace.spans.find((s) => s.kind === 'run')!;
+    assert.equal(root.error?.type, 'max_iterations', 'run 根 span 必须带 error 对象');
   });
 
   it('signal 预先中止 → stopReason=aborted、run 失败，且不发起模型请求', async () => {
@@ -332,5 +345,61 @@ describe('replaceMessages：原地替换没有展开实参上限', () => {
     const target: Anthropic.MessageParam[] = [{ role: 'user', content: 'a' }];
     replaceMessages(target, []);
     assert.equal(target.length, 0);
+  });
+});
+
+describe('观测回调是辅助动作：抛错不得杀死 run', () => {
+  it('onText 抛错：run 照常完成，文本照收', async () => {
+    // scriptedClient 会真的逐块吐文本（helpers 的 mockClient 忽略 on('text')，测不到这条路径）
+    const client = scriptedClient([endTurnMsg('完整文本')]);
+    let calls = 0;
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      onText: () => {
+        calls++;
+        throw new Error('UI 渲染炸了');
+      },
+    });
+    assert.ok(calls > 0, 'onText 确实被调用过（且抛了错）');
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.finalText, '完整文本');
+    assert.equal(run.status, 'succeeded');
+  });
+
+  it('onRetry 抛错：重试照常进行并最终成功', async () => {
+    const rate = new Anthropic.RateLimitError(429, undefined, 'slow down', new Headers());
+    let n = 0;
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            n++;
+            if (n === 1) throw rate;
+            return endTurnMsg('重试后成功');
+          },
+        }),
+      },
+    } as never;
+    let calls = 0;
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        jitter: 0,
+        onRetry: () => {
+          calls++;
+          throw new Error('告警管道炸了');
+        },
+      },
+    });
+    assert.equal(calls, 1, 'onRetry 确实被调用过（且抛了错）');
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.finalText, '重试后成功');
+    assert.equal(run.status, 'succeeded');
+    assert.equal(n, 2, '重试没有被回调异常打断');
   });
 });

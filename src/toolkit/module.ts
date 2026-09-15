@@ -93,7 +93,7 @@ export interface AppOptions {
    * 调试期在应用级开一次 `false`，不必每个调用点重复传。见 `RunAgentOptions.maxEventChars`。
    */
   maxEventChars?: number | false;
-  /** 只扫这些 token 的 provider 上的 @Tool；缺省扫全部 providers */
+  /** 只收集这些 token 的 provider 上的能力（@Tool / @SubAgent / @Skill / @Prompt 四类同样收窄）；缺省扫全部 providers */
   toolSources?: Token[];
   /**
    * 直接追加到主菜单的**裸工具**（`AgentTool[]`）—— 给「构造期才知道有哪些工具」的场景
@@ -170,6 +170,8 @@ export class AgentApp {
   };
   private _tools: AgentTool[] = [];
   private readonly sinks: TraceSink[];
+  /** 装配期那条中间件链的包裹函数：主菜单构造期已包好；per-run tools 覆盖在 run() 里现包 */
+  private readonly wrapTools: (tools: AgentTool[]) => AgentTool[];
 
   constructor(opts: AppOptions) {
     this.name = opts.name ?? 'app';
@@ -223,6 +225,7 @@ export class AgentApp {
     const middleware = [...modules.flatMap((m) => m.middleware ?? []), ...(opts.middleware ?? [])];
     const wrap = (tools: AgentTool[]): AgentTool[] =>
       middleware.length ? applyMiddleware(tools, middleware) : tools;
+    this.wrapTools = wrap;
 
     /**
      * 中间件包装**之后**的每 provider 菜单。
@@ -346,7 +349,11 @@ export class AgentApp {
     return executeRun<S>({
       system,
       messages,
-      tools: opts.tools ?? this._tools,
+      // per-run tools 覆盖与 AppOptions.tools 同语义：同样过装配期那条中间件链，**不是旁路**
+      //（否则 per-run 覆盖就绕开了鉴权/限流/审计）。this._tools 构造期已包裹好（直接复用，
+      // 不二次包裹）；opts.tools 是调用方给的裸菜单，此处现包一次 —— applyMiddleware 产出
+      // 新数组新对象（不改写入参），与装配期结果无共享，不会双重包裹。
+      tools: opts.tools ? this.wrapTools(opts.tools) : this._tools,
       model: opts.model ?? this.base.model,
       maxTokens: opts.maxTokens ?? this.base.maxTokens,
       maxIterations: opts.maxIterations ?? this.base.maxIterations,

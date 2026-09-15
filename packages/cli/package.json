@@ -28,7 +28,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "test": "node --test \"test/*.test.mjs\"",
     "prepublishOnly": "node ../../scripts/check-release.mjs && npm run build"
   },

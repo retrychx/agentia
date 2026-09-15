@@ -15,7 +15,7 @@
 | 完整 trace（调用树，run == trace 1:1，含每步 usage） | ✅ 内建（`spec §9`） |
 | sink 出口（`TraceSink`）+ 投递（成功/失败两条路径） | ✅ 内建（`spec §9.3`） |
 | OTLP 导出器 / 指标累加器 | ✅ 现成（`createOtlpExporter` / `metricsSink`） |
-| **日志层**（级别 / 结构化 JSON / runId 贯穿） | ❌ 全仓库仅 6 处 `console.error/warn` 兜底 → **配方 2.2** |
+| **日志层**（级别 / 结构化 JSON / runId 贯穿） | ❌ 框架无日志层，`src/` 内仅少量 `console.error/warn` 兜底（2026-09-15 实测 9 处：5 error / 4 warn） → **配方 2.2** |
 | **采样**（量大时别压垮后端） | ❌ → **配方 2.3** |
 | **字段级脱敏**（框架只有长度截断） | ❌ → **配方 2.4** |
 | **按 runId 落库 + 检索** | ❌ → **配方 2.1** |

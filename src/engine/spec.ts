@@ -34,6 +34,7 @@ export interface RunInvocationOptions {
   idempotencyKey?: string;
   /** 硬失败是否抛出；缺省 true（异步宿主置 false 落 failed 记录） */
   rethrow?: boolean;
+  /** 覆盖整份工具菜单（裸工具同样过应用装配的中间件链 —— 不是旁路，见 toolkit/module） */
   tools?: AgentTool[];
   /** 成本硬管控：整条 run 累计 token 上限；超限以 stopReason='budget_exceeded' 收尾（算失败） */
   maxTotalTokens?: number;

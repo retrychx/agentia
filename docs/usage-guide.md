@@ -133,7 +133,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `name` | 缺省取方法名 |
 | `schema` | 模板化入参 schema；缺省空对象（无参资产） |
 
-`@Prompt` **只支持方法形态**（标准装饰器下字段拿不到值/类引用）。方法体内用 `asset(import.meta.url, './x.md')` 读同目录长文本。
+`@Prompt` **只支持方法形态**（标准装饰器下字段拿不到值/类引用）。实例方法与静态方法都**沿继承链**收集（父类的 `@Prompt` 资产子类自动带上）。方法体内用 `asset(import.meta.url, './x.md')` 读同目录长文本。
 
 ---
 
@@ -151,12 +151,13 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `model` | 缺省模型；不给则 `AGENTIA_MODEL` env，再回落 `claude-opus-5` |
 | `maxTokens` | 缺省 `max_tokens` |
 | `maxIterations` | 缺省循环上限 |
-| `contextPolicy` | 上下文预算策略（`createBudgetPolicy(...)`） |
+| `retry` | 缺省模型请求重试策略（可被单次 run 覆盖）：缺省**开启**（`DEFAULT_RETRY`：maxAttempts=3、指数退避 + 抖动）；`false` 关闭 |
+| `contextPolicy` | 上下文预算策略（`createBudgetPolicy(...)`）；带状态的策略应实现 `forRun()` 按 run 隔离（见 §长上下文） |
 | `toolSources` | 白名单：只把这些 provider 的能力放进主菜单 |
 | `tools` | 直接追加到主菜单的**裸工具**（`AgentTool[]`）：给「构造期才知道有哪些工具」的场合（典型：MCP 桥，见 §6）。与能力**同过中间件、同进重名查重**，不是旁路 |
 | `middleware` | 能力调用中间件（洋葱链，链序 = 注册顺序） |
 | `sinks` | trace 出口，run 收尾投递 |
-| `maxTotalTokens` | 缺省成本硬管控：整条 run 累计 token 上限（可被单次 run 覆盖） |
+| `maxTotalTokens` | 缺省成本硬管控：整条 run（**含子 agent / skill 子循环**，上限经 `ToolRunContext` 透传）累计 token 上限（可被单次 run 覆盖） |
 | `maxCostUsd` | 缺省成本硬管控：累计成本（美元）上限（**依赖模型在价格表内**，见 `priceOverrides`；未定价模型会留 `usage.unpriced` 事件，所以「护栏有没有真的生效」看得见） |
 | `priceOverrides` | 价格表覆盖/追加（`$/1M tokens`）：覆盖内置同名项，或给非 Anthropic 模型定价（如 `{ 'deepseek-chat': { in: 0.27, out: 1.10 } }`）。**透传给子 agent/skill 的子循环** —— 不会「主 agent 有成本、子 agent 恒 0」。非法单价在 run 开始即抛错 |
 | `onUnpricedModel` | 遇到价格表外的模型时回调（`{ model, spanId }`，每个循环作用域内每模型一次）；抛错被吞，**不改变 run 结局**（定价缺失是宿主配置问题）。用它接告警 |
@@ -174,13 +175,15 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `maxIterations` | 单次覆盖 |
 | `client` | 注入 `ModelClient`（换 OpenAI 兼容端点等） |
 | `onText` | 文本增量回调（SSE/终端） |
+| `signal` | `AbortSignal`：中止则在飞请求被取消，run 以 `stopReason='aborted'` 收尾（算失败） |
 | `blackboard` | 预置黑板种子（配 `Blackboard` 声明合并有键补全） |
 | `contextPolicy` | 单次覆盖上下文策略 |
+| `retry` | 单次覆盖重试策略：`false` 关闭，或 `{ maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参（只重试「本次尝试尚未产出文本」的可重试失败） |
 | `idempotencyKey` | 幂等键（异步宿主的 at-least-once 去重依据） |
 | `rethrow` | 硬失败是否抛出；缺省 `true`（异步宿主置 `false`，落 failed 记录而非冒泡） |
-| `tools` | 单次覆盖工具菜单 |
+| `tools` | 单次覆盖工具菜单（**同样过装配期那条中间件链**，不是旁路 —— 否则 per-run 覆盖就绕开了鉴权/限流/审计） |
 | `resultSchema` | 结构化结果 schema；配 `fromZod<T>` 可让 `result.typed` 自动是 `T` |
-| `maxTotalTokens` | 成本硬管控：整条 run 累计 token 上限；超限以 `stopReason='budget_exceeded'` 收尾（**算失败**） |
+| `maxTotalTokens` | 成本硬管控：整条 run（**含子 agent / skill 子循环**，各级共享同一 recorder 的累计账单）累计 token 上限；超限以 `stopReason='budget_exceeded'` 收尾（**算失败**） |
 | `maxCostUsd` | 成本硬管控：累计成本（美元）上限；模型不在价格表内时**不触发**（用 `priceOverrides` 定价，或用 `maxTotalTokens` 兜底） |
 | `priceOverrides` | 单次覆盖价格表（`$/1M tokens`）；语义同 `createApp` 的 `priceOverrides` |
 | `onUnpricedModel` | 单次覆盖未定价回调（**是函数，因此不在 transport 的 `RunInvocationOptions` 里** —— 异步宿主不会替你传） |
@@ -308,7 +311,7 @@ const app = await createApp({ ... });
 
 > ⚠️ **本机 export 过 `ANTHROPIC_API_KEY` 的人**（比如同时用 Claude Code）：按上面的优先级，脚手架 `.env` 里的 key 会被**静默压住**。改了 `.env` 却「没生效」时，先 `echo $ANTHROPIC_API_KEY` 看看环境里是不是已经有一份。
 
-解析规则（刻意窄，够用就好）：`KEY=VALUE`，允许 `export ` 前缀与 `=` 两侧空白；`#` 整行注释；单引号内原样、双引号内认 `\n \r \t \" \\`；未加引号的值里 ` #` 起为行内注释。**不做变量展开、不合并续行**（需要就上专门的库）；既不像 `KEY=VALUE` 又不是注释的行**直接报错并指出行号** —— 静默跳过等于让你以为「配上了其实没配上」。
+解析规则（刻意窄，够用就好）：`KEY=VALUE`，允许 `export ` 前缀与 `=` 两侧空白；`#` 整行注释；单引号内原样、双引号内认 `\n \r \t \" \\`；未加引号的值里 ` #` 起为行内注释。键名 `__proto__` **显式报错**（它会走原型 setter 被静默吞掉 —— 正是「以为配上了其实没配上」）。**不做变量展开、不合并续行**（需要就上专门的库）；既不像 `KEY=VALUE` 又不是注释的行**直接报错并指出行号** —— 静默跳过等于让你以为「配上了其实没配上」。
 
 ### 宿主（换宿主不换语义）
 
@@ -323,7 +326,7 @@ const app = await createApp({ ... });
 | `InMemoryTaskStore` | 内存任务存储（可设 `maxRecords` 做内存闸门） |
 | `FileTaskStore` | JSONL 耐久存储（`compact()` 可压实日志） |
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
-| `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`） |
+| `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；`RedisLike.set` 用**位置参数**形态 `set(key, value, 'EX', seconds)` —— ioredis 原生 / node-redis legacy 变参通吃（对象形态 `{EX}` 是 node-redis 独有，ioredis 会把它字符串化成 `"[object Object]"` 发出）；不设 TTL 时只传两参 |
 
 ### HTTP 端点速查（`createHttpHandler` 的路由）
 
@@ -358,13 +361,14 @@ const handler = createHttpHandler(callable, { runner });
 | `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
 | `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404。⚠️ 这只管**渲染** —— 数字要真的累计，必须把**同一个** sink 注册进 `createApp({ sinks: [metrics] })`（它靠 run 收尾投递，不自己埋点），否则 `/metrics` 恒为 0 **且不报错** |
 | `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB |
-| `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限） |
+| `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限）。构造期校验：必须 > 0 或 Infinity —— NaN 会让闸门静默失效、0/负数会全部 503，故直接抛错 |
+| `sseMaxBufferedBytes` | SSE 下游积压上限（字节，`res.writableLength` 超过即收口该 SSE 流并 **abort 对应 run** —— 客户端已经不消费了，继续逐 token 生成只是白烧 token）；缺省 8 MiB |
 | `exposeErrors` | 是否把内部异常原文回给调用方；缺省 `false`（细节只进服务端日志） |
 | `runner` | 注入 `AsyncRunner`（共用 store / 并发上限 / `resumePending`）；缺省内部 `new AsyncRunner(app)` |
 
 返回值另外挂着两样（不影响 `(req,res)` 的调用形状）：
 
-- **`handler.drain(opts?)`** —— 优雅停机：拒新单（`POST /run` 与 `/tasks` → 503，`GET /tasks/:id` 仍可轮询）→ 等异步任务与在飞同步 run 收尾 → 强制收口仍开着的 SSE 流。返回是否排空干净；超时返回 `false`，**未完成的任务留在 store 里**，下次启动由 `resumePending` 续跑（不是丢弃）。`timeoutMs` 缺省 0 = 一直等。
+- **`handler.drain(opts?)`** —— 优雅停机：拒新单（`POST /run` 与 `/tasks` → 503，`GET /tasks/:id` 仍可轮询）→ 等异步任务与在飞同步 run 收尾 → 强制收口仍开着的 SSE 流（**收口同时 abort 对应 run**，以 `stopReason='aborted'` 收尾 —— 只关流不中止会让 run 在后台继续烧 token）。返回是否排空干净；超时返回 `false`，**未完成的任务留在 store 里**，下次启动由 `resumePending` 续跑（不是丢弃）。`timeoutMs` 缺省 0 = 一直等。
   **框架不订阅信号** —— `process.on('SIGTERM', () => handler.drain())` 是宿主的事（同「框架不读 env」）。
 - **`handler.runner`** —— 内部 `AsyncRunner`，需要时手动控制（`resumePending` / `awaitTask` / `list`）。
 
@@ -404,7 +408,7 @@ process.on('SIGTERM', async () => {
 | `isAbortError` | 判定异常是否为中断（`name === 'AbortError'`） |
 | `mapWithConcurrency` | 有界并发 map（结果保序）；`maxToolConcurrency` 的底座，也可自用 |
 
-- **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**。
+- **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**（构造期校验：必须 ≥ 0 的**有限**数 —— NaN/Infinity 会被 `setTimeout` 钳到 1ms，等于每个任务立即超时，故直接抛错；要「不限」传 0 或不设）。
 - **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与 SDK 内置重试叠加 —— 建议二选一调（这里 `maxAttempts: 1` 或把 SDK 的 `maxRetries` 调小）。
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
 - **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。
@@ -416,7 +420,7 @@ process.on('SIGTERM', async () => {
 | `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递，抛错被吞 |
 | `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
 | `TraceRecorder` | 内存 recorder（一次 run 一个） |
-| `createOtlpExporter` | OTLP/JSON 导出，零依赖 |
+| `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项 `OtlpExporterOptions`：`endpoint` / `headers` / `serviceName` / `timeoutMs`（单次导出超时，缺省 10000，非正数 = 不限 —— 裸 fetch 无超时，collector 半开连接会让 run 收尾永久挂起；超时按导出失败处理，不击穿 run） |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
 
@@ -432,7 +436,14 @@ process.on('SIGTERM', async () => {
 | `createBudgetPolicy` | 预算策略：超预算先 `trimToolPairs` 编辑，再 `compactMessages` 压缩（带滞回） |
 | `trimToolPairs` | context editing：丢旧 tool 对（按**对数**，`keepToolPairs`） |
 | `compactMessages` | compaction：旧前缀做摘要（摘要器由你注入，框架不替你造 token） |
-| `estimateMessages` | 估算 token（预算决策用，不是精确记账） |
+| `estimateMessages` | 估算一组消息的 token（预算决策用，不是精确记账） |
+| `defaultEstimateTokens` | 缺省的单文本估算函数（CJK 感知启发式：CJK ≈ 1.5 字/token、其余 ≈ 4 字符/token） |
+| `renderMessages` | 把 messages 渲染成纯文本 —— 喂给你注入的 compaction 摘要器（`summarize`）用 |
+
+**per-run 隔离（`ContextPolicy.forRun`）**：策略可能被配成应用级单例（`createApp({ contextPolicy })`）
+被所有 run 复用。带状态的实现（滞回计数、token 缓存等）应实现可选的 `forRun(): ContextPolicy` ——
+引擎在每条 run 开始时调一次，拿**本 run 专用**的实例（`createBudgetPolicy` 已实现它）；
+不实现的自定义策略按单例复用，状态跨 run（含并发 run）共享 —— 适合无状态策略，有状态请实现 `forRun`。
 
 ### 成本硬管控（**别与上面的上下文预算混为一谈**）
 
@@ -451,8 +462,8 @@ process.on('SIGTERM', async () => {
 
 - 超限后 run 以 `stopReason='budget_exceeded'` 收尾（**算失败**），run 根记一条 `budget.exceeded` 事件（带 `{ kind, limit, actual, totalTokens, costUsd }`）。
 - **不是硬实时**：一回合跑完才判，实际用量可能超上限一个回合的量。
-- **模型自然收尾的那一回合超限不改判失败**（只留事件）—— 那次 run 的任务其实做完了，不该追认成失败。
-- 子 agent 的 token **计入**总账（口径 = 整个 trace 的 `totalUsage`）。
+- **模型自然收尾的那一回合超限不改判失败**（只留事件）—— 那次 run 的任务其实做完了，不该追认成失败。同理，超预算的回合仍照常处理 `submit_result`（纯内部的结构化提交、零副作用）—— 模型已把最终结果交出来，连同回合丢弃等于白烧这一回合。
+- 预算是**整条 run（含各级子 agent / skill 子循环）**的口径：上限经 `ToolRunContext` 透传，各级循环共享同一 recorder 的累计账单、每回合各自检查。子循环超限以 `budget_exceeded` 收尾（该次能力调用记 `is_error`，capability span 上记 `budget.exceeded` 事件），主循环在下一回合**入口**拦住、不再发出新请求，整条 run 以 `budget_exceeded` 收尾。
 
 ```ts
 const { result } = await app.run(messages, { maxTotalTokens: 200_000 });
@@ -507,7 +518,7 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 | `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
 | `MCP_DEFAULT_TIMEOUT_MS` | 桥的缺省单次调用超时（60000 ms） |
 
-- **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名 / 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
+- **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名（原名不含任何 ASCII 字母/数字/下划线时产物为空，如全 emoji 名）/ 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
 - **原名**：每次调用写进发起 turn 的 `mcp.tool` attribute —— 审计 / 回放要还原它才能回调 server。
 - **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的子集校验器在 `callTool` **之前**校验（非法入参根本不会发给 server，模型自己会改）。
 - **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了。
@@ -582,7 +593,9 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 时长同时给两种口径，**并存不冲突**：
 
 - **histogram**（`*_bucket` / `*_sum` / `*_count`，累积语义）—— 抓取端可**跨实例任意聚合**；
-- **窗口内精确分位**（`*{quantile="..."}` gauge）—— 单实例排障时更好读。
+- **窗口内精确分位**（`*_last{quantile="..."}` gauge，如 `agentia_run_duration_ms_last`）—— 单实例排障时更好读。
+  分位 gauge 与 histogram **必须不同名**（同名指标只允许一种 TYPE，混发会被 expfmt 判硬错误、整次 scrape 失败），
+  故分位家族统一带 `_last` 后缀；capability / model 维度同理（`capability_duration_ms_last` / `model_duration_ms_last`）。
 
 ### `MetricsSinkOptions`（`metricsSink` 的选项）
 
@@ -592,6 +605,7 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 | `endpoint` | OTLP 采集端基地址（如 `http://localhost:4318`）；尾部斜杠会被去掉 |
 | `intervalMs` | OTLP 导出间隔（毫秒，缺省 60000）；`0` = 每次 run 收尾立即导出。定时器已 `unref()`，不阻止进程退出 |
 | `resourceAttributes` / `serviceName` | OTLP resource 属性（`service.name` 缺省 `agentia`） |
+| `timeoutMs` | OTLP 单次导出请求超时（毫秒，缺省 10000，非正数 = 不限）——collector 半开连接时兜底，`intervalMs: 0` 模式不被挂死；超时按导出失败处理 |
 | `onExportError` | 导出失败回调（缺省吞掉 —— 观测失败不得击穿业务） |
 | `windowSize` | 时长分位保留的样本数（环形窗口，缺省 1024，**run / 能力 / 模型各自独立**）；非正数抛错 |
 | `prefix` | 指标名前缀，缺省 `agentia_` |
@@ -798,7 +812,11 @@ const callable = {
 | 历史畸形就放弃裁剪 | `trimToolPairs` 遇到非严格交替历史会整体放弃（宁可少裁，也不切出孤立 tool_use 让请求 400） |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
 | 能力引用是 provider 粒度 | 子 agent / skill 的 `tools` 写的是 **provider token**，不是单个工具名 |
+| 能力名有格式校验 | 装饰器能力名（`name` 或缺省的方法名）必须匹配 `^[A-Za-z0-9_-]{1,64}$`（与 MCP 桥同口径），非法名在 `createApp` **装配期即抛错** —— 含空格/点/中文的名字会让模型 API 400，宁可在启动期拦住 |
+| `discover` 入口会回落 | 能力目录里源码与编译产物并存（`index.ts` + `index.js`）时，首选 `.ts` 加载失败会**回落 `.js` 并 warn** —— 命中的可能是**陈旧编译产物**（刚改过源码时注意）；全部候选都失败才抛错并列出各自原因 |
+| `asset()` 的 rel 必须是相对路径 | 带 scheme（`file:` / `https:` …）的 rel 会让 `new URL(rel, base)` 整个忽略 base（「以为读了能力目录、实际读了别处」），显式抛错；`../` 越出能力目录是**有意放行**（共享资产如 `../../shared/x.md` 是合法用法） |
 | 取消要传进客户端才有效 | 传 `signal` 后框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发）；不转发 `signal` 的自定义 `ModelClient` 只能「放弃等待」（请求在后台跑完、产物丢弃） |
+| 工具阶段的 abort 有盲区 | abort 只在三处被观察：**回合边界 / 在飞模型请求 / 重试退避 sleep**。没设 `toolTimeoutMs` 且工具挂死时，abort 之后 run 也不会返回（工具的 Promise 永不 settle）—— 挂死的工具要么设超时，要么自己读 `ToolRunContext.signal` |
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
 | 框架不自动读 .env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外，框架自己不去翻环境变量，也不读 `.env`；要读就在启动代码里调 `loadEnvFile()`（脚手架已内置那行），**真实环境变量优先**于文件 |
 | 鉴权只是缝 | 框架**不实现** token / JWT / 签名策略，也不碰凭据 env —— `authenticate` 只承诺「拦在入口、读 body 之前」；策略是宿主或反代的事 |
@@ -810,13 +828,15 @@ const callable = {
 | `maxCostUsd` 依赖价格表 | 模型不在价格表内（且未用 `priceOverrides` 覆盖）时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens`。**但失效不再静默**：turn 上会记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、可回调 `onUnpricedModel` |
 | 工具超时**不取消**工具 | `AgentTool.run` 没有 signal 参数，超时只是「不等了」；副作用可能已发生。想真停请让工具自己读 `ToolRunContext.signal` |
 | 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
+| 同 session 并发 run 要自行串行化 | `SessionStore` 是 **append-only**：并发写不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 共用同一 sessionId 时，各自追加的轮次可能交错成「连续两条 user」，下一轮 load 出来撞角色交替校验（400）。同一 session 的并发 run 请调用方自行串行化（每 session 一把锁 / 一条队列） |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
+| OpenAI 流式的上游故障不再装成功 | 流中 `error` 分片（上游把故障塞进 200 的流）与「流正常结束却无文本无 tool_calls」都**抛错**按失败处理 —— 不再静默映射成「成功空回复」（与非流式空 `choices` 的守卫同口径） |
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；连接器（stdio / HTTP）不在框架内 |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
 | MCP 超时同样是「不等了」 | 桥自带的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它与 engine 的 `toolTimeoutMs` **双重计时**，谁短谁生效 |
 | MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool` attribute 里查得到） |
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用 —— 引用是 provider 粒度 |
-| 指标分位是窗口内精确值 | `*{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
+| 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
 | 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |
 | OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run） |
 | `GET /metrics` 不鉴权 | 与 `/healthz` 同档（拉取端在集群内网）。要保护请放反代之后，或不传 `metrics` 选项自行在外层挂路由 |
@@ -855,7 +875,7 @@ const callable = {
 | MCP 调用「成功」但内容是错误文本 | 连接器没把协议层 `isError: true` 转成抛错（框架只认抛错） |
 | eval 里模型调了不存在的工具 | 脚本里的工具名必须是**菜单里的名字**（MCP 工具是归一化后的 `mcp_<server>_<name>`） |
 | `metricsSink` 的数字一直是 0 | 没接进 `createApp({ sinks })`（或 `registerDefaultTraceSink`）—— 它靠 run 收尾投递，不自己埋点 |
-| 拿 `metricsSink({ export: 'otlp' })` 报错 | 这是**故意的**：OTLP metrics 导出后置，构造期响亮失败好过给你一份空指标 |
+| `metricsSink({ export: 'otlp' })` 构造期报错 | 没给 `endpoint` —— OTLP 导出必须知道往哪发，响亮失败好过静默不导出；补上 `endpoint`（如 `http://localhost:4318`）即可。`windowSize` / `maxCapabilities` 非正数、`buckets` 非严格升序同理是构造期配置校验 |
 
 ---
 
@@ -867,6 +887,4 @@ npm run typecheck:tests  # 测试目录类型（含类型断言测试）
 npm run test             # 单测（node:test）
 ```
 
-框架仓库另有四道：`npm run typecheck:types`（针对构建产物的类型测试）、`npm run e2e`（CLI 端到端 +
-`examples/complete` 真起服务跑三种触发）、`npm run e2e:examples`（只跑后者）、
-`npm run e2e:mcp`（真接一个 MCP server 走完「映射 → 菜单 → run」；无网时自动回落本地夹具 server）。
+框架仓库另有这些门禁：`npm run typecheck:types`（针对构建产物的类型测试）、`npm run e2e`（三步链：CLI 端到端 + `examples/complete` 与 `examples/deploy` 真起服务）、`npm run e2e:examples` / `npm run e2e:deploy`（单跑对应一步）、`npm run e2e:mcp`（真接一个 MCP server 走完「映射 → 菜单 → run」；无网时自动回落本地夹具 server）。

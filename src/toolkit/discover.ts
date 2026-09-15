@@ -65,24 +65,43 @@ async function discoverOne(dir: string): Promise<Provider[]> {
     .sort(); // 排序保证装配顺序稳定（菜单顺序 = 目录名序，可复现）
 
   for (const name of entries) {
-    const entry = ENTRY_CANDIDATES.map((f) => join(root, name, f)).find(existsSync);
-    if (!entry) {
+    const candidates = ENTRY_CANDIDATES.map((f) => join(root, name, f)).filter(existsSync);
+    if (candidates.length === 0) {
       // 静默跳过过一次（无入口的目录视为非能力目录，如 assets/）：
       // 但「菜单莫名少一个能力」需要留痕，否则只能靠猜
       console.warn(`[agentia:discover] 跳过 ${name}/：无 ${ENTRY_CANDIDATES.join(' / ')} 入口`);
       continue;
     }
+    // 候选按序尝试（.ts 优先 —— tsx dev 下必须能选中源码），失败后回落下一候选：
+    // 源码与 in-place 编译产物（index.ts + index.js）并存的目录，纯 node 选 .ts 会加载
+    // 失败，此时应回落 .js 而非直接报「入口加载失败」；全部失败则列出每个候选与各自原因。
     let mod: unknown;
-    try {
-      mod = await import(pathToFileURL(entry).href);
-    } catch (e) {
+    let lastError: unknown;
+    const failures: string[] = [];
+    for (const entry of candidates) {
+      try {
+        mod = await import(pathToFileURL(entry).href);
+        break;
+      } catch (e) {
+        lastError = e;
+        failures.push(`${entry}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (failures.length === candidates.length) {
       throw new Error(
-        `能力 ${name} 入口加载失败（${entry}）: ${e instanceof Error ? e.message : String(e)}`,
-        { cause: e },
+        `能力 ${name} 入口加载失败：\n${failures.map((f) => `  - ${f}`).join('\n')}`,
+        { cause: lastError },
+      );
+    }
+    if (failures.length > 0) {
+      // 回落成功不等于没事：若刚改过 .ts 源码，命中的 .js 可能是陈旧编译产物 —— 留痕
+      console.warn(
+        `[agentia:discover] 能力 ${name} 首选入口加载失败，已回落（命中的是 ${candidates[failures.length]!}；若刚改过源码，注意它可能是陈旧编译产物）:\n` +
+          failures.map((f) => `  - ${f}`).join('\n'),
       );
     }
     const exported = (mod as { default?: unknown }).default;
-    providers.push(...normalizeExport(name, exported, entry));
+    providers.push(...normalizeExport(name, exported, candidates[failures.length]!));
   }
   return providers;
 }

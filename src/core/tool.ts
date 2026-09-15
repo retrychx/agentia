@@ -130,6 +130,15 @@ export interface ToolRunContext {
    * 不设（undefined）= 子循环用各自缺省（不是"不截断"）。
    */
   maxEventChars?: number | false;
+  /**
+   * 成本硬管控（C1）透传：整条 run 累计 token 上限（见 `RunAgentOptions.maxTotalTokens`）。
+   * 嵌套能力（@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去 —— 预算是
+   * **整条 run（含各级子 agent）** 的口径，子循环不拿到它就等于护栏在子循环期间离线
+   * （最坏可超一整个子 run 的用量）。各级循环共享同一 recorder，按同一份累计账单判断。
+   */
+  maxTotalTokens?: number;
+  /** 成本硬管控（C1）透传：累计成本（美元）上限；同 maxTotalTokens 的透传语义 */
+  maxCostUsd?: number;
 }
 
 export interface AgentTool<I = unknown, O = unknown> {

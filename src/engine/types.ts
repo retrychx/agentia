@@ -54,6 +54,10 @@ export type SystemParam = string | SystemTextBlock[];
  * 上下文预算策略（spec §5/§6 —— compaction / context editing）。
  * 引擎在每个 llm 回合发送前调用 beforeTurn；返回的 messages 即本回合发送内容。
  * 实现见 engine/policy.ts 的 createBudgetPolicy，或自实现（如每次用 /count_tokens）。
+ *
+ * ⚠️ **per-run 状态**：策略可能被配置成应用级单例（`AppOptions.contextPolicy`）被所有
+ * run 复用。带状态的实现（滞回计数、token 缓存等）应实现 `forRun` 让每条 run 拿到
+ * 独立实例，否则状态跨 run 泄漏（见 forRun 说明）。
  */
 export interface ContextPolicy {
   /** 预算（估算 input tokens）；超预算的回合触发降级。供观测/文档用 */
@@ -62,6 +66,12 @@ export interface ContextPolicy {
     messages: Anthropic.MessageParam[],
     info: { iteration: number; model: string },
   ): Promise<Anthropic.MessageParam[]>;
+  /**
+   * 每条 run 开始时由引擎调用一次，返回**本 run 专用**的策略实例（隔离滞回/缓存等
+   * per-run 状态）。缺省（不实现）= 复用自身 —— 只适合无状态策略；有状态又不实现
+   * forRun 时，状态会跨 run（含并发 run）共享，行为自己负责。
+   */
+  forRun?(): ContextPolicy;
 }
 
 export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
@@ -76,7 +86,7 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   maxTokens?: number;
   /** 循环安全上限，防止无限 tool 往返 */
   maxIterations?: number;
-  /** 注入 client（默认 new Anthropic()，读 env/ant auth）；多模型见 ModelClient */
+  /** 注入 client（缺省经 createAnthropicClient() 创建，读 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL env）；多模型见 ModelClient */
   client?: ModelClient;
   /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
   recorder?: import('./tracer.js').TraceRecorder;
@@ -105,19 +115,21 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    */
   resultSchema?: S;
   /**
-   * 成本硬管控（C1）：整条 run（**含子 agent**）累计 token 上限。每回合记账后判断，
-   * 超限即停，run 以 `stopReason='budget_exceeded'` 收尾（**算失败**）。
+   * 成本硬管控（C1）：整条 run（**含子 agent**）累计 token 上限。每回合记账后判断
+   * （主循环与各级子循环各自判断 —— 预算约束经 `ToolRunContext` 透传，各级共享同一
+   * recorder 的累计账单），超限即停，run 以 `stopReason='budget_exceeded'` 收尾（**算失败**）。
    * 与 `contextPolicy`（发送前的上下文裁剪）分工不同 —— 见 `createBudgetGuard`。
    *
    * 口径：input + output + cacheRead + cacheCreation。**不是硬实时**：一回合跑完才判，
-   * 所以实际用量可能略超上限（超一次回合的量）。
+   * 所以实际用量可能略超上限（最多超一次回合的量；子循环超限后主循环最多再带出一个
+   * 回合入口判断，不会发出新请求）。
    */
   maxTotalTokens?: number;
   /**
    * 成本硬管控（C1）：累计成本（美元）上限。**依赖模型在价格表内**
    * （`engine/usage.ts` 的 DEFAULT_PRICING，或本 run 的 `priceOverrides`）——
    * 不在表里时成本恒为 0，此护栏不触发；要无条件兜底用 maxTotalTokens。
-   * 未定价模型会在 run 根记 `usage.unpriced` 事件（见 `onUnpricedModel`），
+   * 未定价模型会在该回合的 llm.turn span 记 `usage.unpriced` 事件（见 `onUnpricedModel`），
    * 所以"护栏到底有没有生效"是**看得见**的。
    */
   maxCostUsd?: number;

@@ -105,9 +105,13 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
    */
   session?: { store: SessionStore; id: string };
   /**
-   * 硬失败（请求/API 层异常）是否抛出。缺省 true；
-   * 异步宿主（AsyncRunner）置 false：失败也以 {run(status=failed), result.error} 返回，
-   * 便于把失败 run 落库而非冒泡。
+   * 到达本层 catch 的异常是否抛出。缺省 true；异步宿主（AsyncRunner）置 false：
+   * 失败也以 {run(status=failed), result.error} 返回，便于把失败 run 落库而非冒泡。
+   *
+   * 注意口径：模型 API / 请求层的失败**不走这里** —— runAgent 已把它们收成
+   * `stopReason:'error'` 的 result 正常返回（所以缺省下模型调用失败也不会抛）。
+   * 能进本层 catch 的只有 runAgent 之外的环节（contextInit 抛错、runAgent 自身
+   * 意外抛出等）；rethrow:false 时这些同样收成 result 返回。
    */
   rethrow?: boolean;
   /** trace 出口（观测）：run 收尾后逐个投递；sink 抛错被吞，不影响 run */
@@ -212,6 +216,10 @@ async function loadSession(
  * 2. 历史**以 assistant 结尾**：没有文本输出时补一条占位（`end_turn` 下极罕见）；
  * 3. 只存**对话轮次**（用户输入 + 最终回复），run 内部的 tool 往返不进历史
  *    —— 要完整过程请用 trace 重放 `traceToMessages`。
+ *
+ * 以上三条只保**单 run** 视角。并发 run 共用同一 session 时各自的 append 可能交错
+ * （连续两条 user，下轮 load 撞角色交替校验）—— 框架不串行化同 session 的 flush，
+ * 该边界见 `SessionStore.append` 的注释；需要者请在调用方按 session 串行化。
  */
 async function appendSession(
   session: { store: SessionStore; id: string } | undefined,

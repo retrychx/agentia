@@ -17,15 +17,16 @@
         <p class="api-kicker">REFERENCE · @migor/agentia</p>
         <h1>公共 API 参考</h1>
         <p class="api-lede">
-          全部导出都来自包根 <code>@migor/agentia</code>，<strong>零运行时依赖</strong> ——
-          可选能力（zod / Redis / MCP）一律 duck-typed。可观测面（<code>Trace</code> / <code>TraceSink</code> /
+          全部导出都来自包根 <code>@migor/agentia</code>，运行时依赖只有 <strong>1 个</strong>
+          （<code>@anthropic-ai/sdk</code>，厂商 SDK 的单一实例化点）——
+          可选能力（zod / Redis / MCP）一律 duck-typed，零新增依赖。可观测面（<code>Trace</code> / <code>TraceSink</code> /
           <code>metricsSink</code> / <code>createOtlpExporter</code>）与四类能力<strong>同级导出</strong>，
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
           <span class="api-chip"><b>177</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
-          <span class="api-chip"><b>0</b> 运行时依赖</span>
+          <span class="api-chip"><b>1</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
         </div>
       </header>

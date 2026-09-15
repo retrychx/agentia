@@ -275,4 +275,116 @@ describe('collect*（装饰器能力收集）', () => {
       ['hidden_tool'],
     );
   });
+
+  it('null/undefined/原始值实例 → 空收集（useValue 合法 provider 不该炸装配）', () => {
+    for (const v of [null, undefined, 42, 's', true]) {
+      assert.deepEqual(collectTools(v as never), []);
+      assert.deepEqual(collectSubAgents(v as never), []);
+      assert.deepEqual(collectSkills(v as never), []);
+      assert.deepEqual(collectPrompts(v as never), []);
+    }
+  });
+
+  it('能力名合法性校验（与 MCP 桥同口径 ^[A-Za-z0-9_-]{1,64}$）', () => {
+    // 非法显式名：引号（会让 Anthropic API 400）
+    class BadQuote {
+      @Tool({ description: 'd', schema: OBJ, name: 'a"b' })
+      x(): string {
+        return 'x';
+      }
+    }
+    assert.throws(() => collectTools(new BadQuote()), /@Tool 能力名 .* 非法/);
+
+    // 空名 / 超长名 / 含点与空格
+    for (const bad of ['', 'a'.repeat(65), 'a.b', 'a b']) {
+      class Bad {
+        @Tool({ description: 'd', schema: OBJ, name: bad })
+        x(): string {
+          return 'x';
+        }
+      }
+      assert.throws(() => collectTools(new Bad()), /@Tool 能力名 .* 非法/, `name=${bad}`);
+    }
+
+    // 非 ASCII 方法名（合法 JS 标识符、非法 API 工具名）缺省取名时同样拦截
+    class ChineseName {
+      @Tool({ description: 'd', schema: OBJ })
+      工具(): string {
+        return 'x';
+      }
+    }
+    assert.throws(() => collectTools(new ChineseName()), /@Tool 能力名 .* 非法/);
+
+    // 合法字符集：字母/数字/下划线/连字符，64 字符整
+    class Ok {
+      @Tool({ description: 'd', schema: OBJ, name: `a_B-9${'x'.repeat(58)}` })
+      x(): string {
+        return 'x';
+      }
+    }
+    assert.equal(collectTools(new Ok()).length, 1);
+  });
+
+  it('静态 @Prompt 沿构造函数原型链收集（父类静态资产在子类实例上可用）', async () => {
+    // biome-ignore lint/complexity/noStaticOnlyClass: 测试夹具 —— 纯静态能力类正是被测形态
+    class P {
+      @Prompt({ description: 'd' })
+      static brand_voice(): string {
+        return 'parent-static';
+      }
+    }
+    class C extends P {}
+    const prompts = collectPrompts(new C());
+    assert.deepEqual(
+      prompts.map((p) => p.name),
+      ['brand_voice'],
+    );
+    assert.equal(await prompts[0].run({}), 'parent-static');
+  });
+
+  it('静态 @Prompt：子类未装饰 override 继承父类 spec、调子类实现（与实例侧同语义）', async () => {
+    // biome-ignore lint/complexity/noStaticOnlyClass: 测试夹具 —— 纯静态能力类正是被测形态
+    class P {
+      @Prompt({ description: 'd' })
+      static tone(): string {
+        return 'parent';
+      }
+    }
+    class C extends P {
+      static override tone(): string {
+        return 'child';
+      }
+    }
+    const prompts = collectPrompts(new C());
+    assert.equal(prompts.length, 1, '同名静态只命中一次');
+    assert.equal(await prompts[0].run({}), 'child', '实现取最外层类上的（不绕过子类 override）');
+  });
+
+  it('symbol 键的静态 @Prompt：显式 name 正常收集（Reflect.ownKeys 覆盖 symbol）', async () => {
+    const sym = Symbol('s');
+    // biome-ignore lint/complexity/noStaticOnlyClass: 测试夹具 —— 纯静态能力类正是被测形态
+    class M {
+      @Prompt({ description: 'd', name: 'static_sym' })
+      static [sym](): string {
+        return 'sym-ok';
+      }
+    }
+    const prompts = collectPrompts(new M());
+    assert.deepEqual(
+      prompts.map((p) => p.name),
+      ['static_sym'],
+    );
+    assert.equal(await prompts[0].run({}), 'sym-ok');
+  });
+
+  it('静态 @Prompt 的非法 name 同样被校验（静态路径也走 capabilityName）', () => {
+    // biome-ignore lint/complexity/noStaticOnlyClass: 测试夹具 —— 纯静态能力类正是被测形态
+    class BadStatic {
+      @Prompt({ description: 'd', name: 'bad name' })
+      static brand(): string {
+        return 'x';
+      }
+    }
+    assert.throws(() => collectPrompts(new BadStatic()), /@Prompt 能力名 .* 非法/);
+  });
 });

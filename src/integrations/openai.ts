@@ -154,6 +154,11 @@ interface OpenAIStreamChunk {
   }>;
   /** 只有带 stream_options.include_usage 时，最后一个 chunk 才带 usage */
   usage?: OpenAIUsage;
+  /**
+   * 上游把故障塞进 200 的流里时的形态（`data: {"error":{...}}` 然后 [DONE]）——
+   * 兼容端点（DeepSeek 等）限流/内部错误常这么回，而不是非 2xx。
+   */
+  error?: { message?: string; type?: string; code?: string | null };
 }
 
 type StreamParams = {
@@ -311,7 +316,9 @@ interface StreamAccumulator {
  *   **`arguments` 按分片拼接** —— 一次调用的 JSON 参数会被拆成多片；
  * - 多个工具并行调用时**必须按 `index` 归并**，不能按到达顺序新建；
  * - `usage` 在**最后一个 chunk**（choices 为空的那条）才出现；
- * - `[DONE]` 是结束哨兵，之后不再有数据。
+ * - `[DONE]` 是结束哨兵，之后不再有数据；
+ * - 流内 `error` 分片（上游把故障塞进 200 的流）与「流空了」都**抛错** ——
+ *   与非流式 `toAnthropicMessage` 的空 choices 守卫同款，不静默映射成成功空回复。
  */
 async function readStream(
   body: ReadableStream<Uint8Array>,
@@ -330,7 +337,22 @@ async function readStream(
     } catch {
       continue; // 半截/畸形分片不该毁掉整个流（后面还有正常数据）
     }
+    if (chunk.error) {
+      // 上游故障以错误分片下发（HTTP 仍是 200）—— 不抛出就会被组装成
+      // 「stop_reason=end_turn、content=[]、usage 全 0」的假成功，run 结论与真实相反
+      throw new Error(
+        `OpenAI 流式响应携带错误分片: ${chunk.error.message ?? JSON.stringify(chunk.error)}`,
+      );
+    }
     applyChunk(acc, chunk, textCallbacks);
+  }
+  if (!acc.text && acc.toolCalls.size === 0) {
+    // 流「正常」结束却什么都没累积到：与非流式 toAnthropicMessage 的空 choices 守卫同款 ——
+    // 上游故障（网关截断、协议不兼容）不得静默映射成成功空回复，抛出交 engine 按 error 收尾
+    throw new Error(
+      `OpenAI 流式响应为空（无 content、无 tool_calls，finish=${acc.finish ?? '缺失'}）；` +
+        '响应无可用补全，按上游故障处理',
+    );
   }
   return accumulatorToMessage(acc, fallbackModel);
 }

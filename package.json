@@ -46,8 +46,9 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" && node --test \"packages/cli/test/*.test.mjs\" && node --test \"packages/trace-view/test/*.test.js\"",
-    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts && tsx scripts/e2e-examples.ts",
+    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts && tsx scripts/e2e-examples.ts && tsx scripts/e2e-deploy.ts",
     "e2e:examples": "npm run build && tsx scripts/e2e-examples.ts",
+    "e2e:deploy": "npm run build && tsx scripts/e2e-deploy.ts",
     "e2e:live": "tsx scripts/e2e-live.ts",
     "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts"
   },

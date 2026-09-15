@@ -296,9 +296,20 @@ try {
   ensureObsPkgBuilt();
   buildExample();
 
-  const port = await freePort();
+  // freePort() 先 listen(0) 拿到再放掉，并行时有窗口被抢（EADDRINUSE）—— 换个端口重试
+  let port = 0;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3 && !example; attempt++) {
+    port = await freePort();
+    try {
+      example = await startExample(port, fake.baseURL);
+    } catch (e) {
+      lastErr = e;
+      if (!String(e).includes('EADDRINUSE')) throw e; // 非端口冲突的失败不重试
+    }
+  }
+  if (!example) throw lastErr;
   const base = `http://127.0.0.1:${port}`;
-  example = await startExample(port, fake.baseURL);
   const auth = { 'x-api-key': 'e2e-secret', 'content-type': 'application/json' };
 
   // —— 1) /healthz（不鉴权）——

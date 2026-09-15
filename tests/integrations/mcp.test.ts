@@ -96,6 +96,27 @@ describe('mcpTools —— MCP 桥（D1）', () => {
     );
   });
 
+  it('原名全非 ASCII（"🔥🔥"、"获取时间"）→ 归一化产物为空串，带原名上下文抛错', async () => {
+    // 旧的校验对 prefix+cleaned 整体做：cleaned 为空时最终名只剩前缀（如 mcp_）也能通过
+    // —— 注册出一个调用不回去的名字。必须在撞名检查之前拦下。
+    await assert.rejects(
+      () => mcpTools(fakeMcp([{ name: '🔥🔥' }]).client),
+      (e: Error) => {
+        assert.match(e.message, /归一化后为空/);
+        assert.ok(e.message.includes('🔥🔥'), '错误信息要带原名上下文');
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => mcpTools(fakeMcp([{ name: '获取时间' }]).client, { server: 'time' }),
+      (e: Error) => {
+        assert.match(e.message, /归一化后为空/);
+        assert.ok(e.message.includes('获取时间'), '错误信息要带原名上下文');
+        return true;
+      },
+    );
+  });
+
   it('listTools 抛错 → 冒泡（装配期就该炸，不拖到运行时）', async () => {
     await assert.rejects(
       () =>

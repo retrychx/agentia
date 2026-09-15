@@ -1,9 +1,14 @@
+import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /* 把 @migor/trace-view 的产物与面板页面拷进 packages/cli/dist/，
- * 让 inspector 能纯静态提供、CLI 保持零运行时依赖（不 import trace-view）。 */
+ * 让 inspector 能纯静态提供、CLI 保持零运行时依赖（不 import trace-view）。
+ *
+ * 本脚本是 CLI 包 `npm run build` 的一部分（prepublishOnly 只跑 build），
+ * 必须自给自足：fresh clone 直接 npm publish 时 trace-view 还没构建，
+ * 它的构建是纯文件拷贝（零依赖），就地补跑，不因此发出缺资源的包。 */
 
 const here = dirname(fileURLToPath(import.meta.url)); // packages/cli/scripts
 const cliRoot = join(here, '..');
@@ -11,8 +16,10 @@ const tvDist = join(cliRoot, '..', 'trace-view', 'dist');
 const out = join(cliRoot, 'dist', 'inspector');
 
 if (!existsSync(tvDist)) {
-  console.error('[cli] @migor/trace-view 未构建：先跑 npm run build -w @migor/trace-view');
-  process.exit(1);
+  console.log('[cli] @migor/trace-view 未构建，就地补跑其构建（纯拷贝，零依赖）');
+  execFileSync(process.execPath, [join(cliRoot, '..', 'trace-view', 'scripts', 'build.mjs')], {
+    stdio: 'inherit',
+  });
 }
 
 mkdirSync(out, { recursive: true });

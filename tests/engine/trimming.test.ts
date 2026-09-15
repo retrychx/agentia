@@ -252,6 +252,19 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
     assert.equal(count(msgs), estimateMessages(msgs), '必须按新内容重算，不能复用旧和');
   });
 
+  it('末元素没变但**首元素**被原地换掉 → 同样重算（首尾双钉，replaceMessages 整换的兜底）', () => {
+    const count = createTokenCounter();
+    const msgs: Anthropic.MessageParam[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'c' },
+    ];
+    count(msgs);
+    // 只换首元素：数组引用、长度、末元素全都没变 —— 旧判据会读脏计数
+    msgs[0] = { role: 'user', content: 'z'.repeat(5000) };
+    assert.equal(count(msgs), estimateMessages(msgs), '首元素被换掉必须按新内容重算');
+  });
+
   it('换成另一个数组（新 run / 策略返回新数组）时不复用旧缓存', () => {
     const count = createTokenCounter();
     count(sample());

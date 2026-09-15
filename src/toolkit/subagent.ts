@@ -147,6 +147,9 @@ export function subagentToTool(
           priceOverrides: ctx.priceOverrides,
           // 事件截断口径透传：子 agent 里的工具结果同样要能看全文
           maxEventChars: ctx.maxEventChars,
+          // 成本护栏透传（C1）：预算是整条 run（含子 agent）的口径，子循环每回合也检查
+          maxTotalTokens: ctx.maxTotalTokens,
+          maxCostUsd: ctx.maxCostUsd,
         });
         recorder.setAttribute(capabilityId, 'stop_reason', loop.stopReason);
 

@@ -18,6 +18,11 @@ export interface SessionStore {
   /**
    * 追加消息（**append-only**）—— 不做 upsert：并发写不会互相覆盖，
    * 也便于事后审计「这段历史是怎么长出来的」。
+   *
+   * ⚠️ 已知边界：append-only 只保证「不互相覆盖、不丢数据」，不保证**角色交替**。
+   * 两个并发 run 共用同一 sessionId 时，各自收尾 append 的 [user, ..., assistant]
+   * 可能交错成「连续两条 user」，下一轮 load 出来会撞 Anthropic 的角色交替校验（400）。
+   * 同一 session 的并发 run 需调用方自行串行化（如每 session 一把锁 / 一条队列）。
    */
   append(sessionId: string, messages: Anthropic.MessageParam[]): void | Promise<void>;
 }

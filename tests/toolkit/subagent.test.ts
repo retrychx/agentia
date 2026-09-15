@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { TraceRecorder, subagentToTool } from '../../src/index.js';
-import type { JsonSchema, SubAgentCapability, ToolRunContext } from '../../src/index.js';
+import { TraceRecorder, runAgent, subagentToTool } from '../../src/index.js';
+import type { AgentTool, JsonSchema, SubAgentCapability, ToolRunContext } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const TASK_SCHEMA: JsonSchema = {
@@ -114,5 +114,78 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
     );
     // 子 agent 死循环工具调用、超出 maxIterations → 抛错（engine 包成 is_error 回主 agent）
     await assert.rejects(async () => tool.run({ task: 't' }, ctx), /max_iterations/);
+  });
+});
+
+describe('预算护栏透传子 agent 循环（C1：预算是整条 run 的口径）', () => {
+  it('子循环每回合同样检查：子 agent 超支即停、主循环不再发新请求', async () => {
+    let noopRan = 0;
+    const noop: AgentTool = {
+      name: 'noop',
+      description: 'd',
+      inputSchema: { type: 'object', properties: {} },
+      run: () => {
+        noopRan++;
+        return 'ok';
+      },
+    };
+    // 主 turn（15）+ 子 turn×2（累计 45 ≤ 50）→ 子第 3 回合记账后 60 > 50 → 子循环停；
+    // 修复前：子循环看不到预算，会一直跑满脚本（5 次子请求 + 主循环还会继续发请求）
+    const { seen, client } = mockClient([
+      toolUseMsg('researcher', { task: 't' }, 'tu_main'),
+      toolUseMsg('noop', {}, 's1'),
+      toolUseMsg('noop', {}, 's2'),
+      toolUseMsg('noop', {}, 's3'),
+      toolUseMsg('noop', {}, 's4'),
+      endTurnMsg('不该被请求到'),
+    ]);
+    const tool = subagentToTool(researcherCapability({ tools: ['noop'] }), () => [noop]);
+    const result = await runAgent({
+      client,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [tool],
+      maxTotalTokens: 50,
+    });
+
+    assert.equal(result.stopReason, 'budget_exceeded');
+    assert.equal(result.error?.type, 'budget_exceeded');
+    assert.equal(result.trace.status, 'error');
+    assert.equal(seen.length, 4, '主 1 次 + 子 3 次；子超支后主循环不得再发请求');
+    assert.equal(noopRan, 2, '子循环超支的那个回合不执行工具');
+
+    // 子循环的收尾语义：capability span 记 stop_reason=budget_exceeded + budget.exceeded 事件
+    const capability = result.trace.spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'error');
+    assert.equal(capability.attributes.stop_reason, 'budget_exceeded');
+    assert.equal(capability.error?.type, 'budget_exceeded');
+    assert.ok(
+      capability.events.some((e) => e.name === 'budget.exceeded'),
+      '超限事件要记在子 agent 的 capability span 上（哪一级烧穿的看得见）',
+    );
+    // 交回主 agent 的是 is_error 的 tool_result（不是正常报告）
+    const mainTurn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;
+    const toolOut = mainTurn.events.find((e) => e.name === 'tool.output')!;
+    assert.equal((toolOut.body as { ok: boolean }).ok, false);
+    // 主循环回合入口的再判也在 run 根留下痕迹
+    const root = result.trace.spans.find((s) => s.kind === 'run')!;
+    assert.ok(root.events.some((e) => e.name === 'budget.exceeded'));
+  });
+
+  it('子循环不超支时照常交回报告（透传不影响正常路径）', async () => {
+    const { client } = mockClient([
+      toolUseMsg('researcher', { task: 't' }, 'tu_main'),
+      endTurnMsg('调研报告'),
+      endTurnMsg('汇总完毕'),
+    ]);
+    const tool = subagentToTool(researcherCapability(), () => []);
+    const result = await runAgent({
+      client,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [tool],
+      maxTotalTokens: 1000,
+    });
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.finalText, '汇总完毕');
+    assert.equal(result.trace.status, 'ok');
   });
 });

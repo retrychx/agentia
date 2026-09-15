@@ -9,9 +9,9 @@ import type { Usage } from '../core/trace.js';
  * 1. 价格表是模块内常量 → 走 OpenAI 兼容端点（DeepSeek / 自建）的宿主**永远算不出成本**；
  * 2. 未定价模型返回 `undefined` → 成本恒 0 → `maxCostUsd` 这条护栏**静默失效**、且无任何提示。
  *
- * 现在：价格表可经 `priceOverrides` 覆盖/追加（`buildPricing`），未定价模型会在 run 根
- * 记 `usage.unpriced` 事件并有 `agentia_model_unpriced_turns_total` 指标 —— 护栏是否
- * 真的生效**看得见**。
+ * 现在：价格表可经 `priceOverrides` 覆盖/追加（`buildPricing`），未定价模型会在该回合的
+ * llm.turn span 记 `usage.unpriced` 事件并有 `agentia_model_unpriced_turns_total` 指标 ——
+ * 护栏是否真的生效**看得见**。
  */
 
 /** 内置价格表（$/1M tokens）。宿主用 `priceOverrides` 覆盖同名项或追加新模型。 */

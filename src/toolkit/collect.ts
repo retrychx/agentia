@@ -13,6 +13,15 @@ export interface DecoratedMethod<S> {
 }
 
 /**
+ * 能力收集的对象守卫：useValue: null/undefined/原始值 是类型上合法的 provider
+ *（容器本身支持 undefined 值），它们不可能挂装饰器能力 —— 收集侧直接给空结果，
+ * 不放任 `Object.getPrototypeOf(null)` 抛无上下文 TypeError。
+ */
+export function isScannableInstance(instance: unknown): instance is object {
+  return (typeof instance === 'object' && instance !== null) || typeof instance === 'function';
+}
+
+/**
  * 沿实例原型链扫描被装饰的方法（子类 → 父类）。
  * override 语义：只在命中装饰器时标记 key —— 子类未装饰的 override 不挡
  * 父类的 spec（spec 沿原型链继承，调用仍走实例上的子类实现）。
@@ -21,6 +30,7 @@ export function scanDecoratedMethods<S>(
   instance: object,
   registry: WeakMap<Function, S>,
 ): DecoratedMethod<S>[] {
+  if (!isScannableInstance(instance)) return [];
   const found: DecoratedMethod<S>[] = [];
   const seen = new Set<string | symbol>();
 
@@ -65,15 +75,32 @@ export function assertMethodTarget(context: CapabilityDecoratorContext, kind: st
   }
 }
 
+/**
+ * 能力名合法性：与 MCP 桥（integrations/mcp.ts）同口径 `^[A-Za-z0-9_-]{1,64}$`。
+ * 非法名（引号/空格/点/中文/超 64 字符）会让模型 API 直接 400 —— 装配期拦下，
+ * 比「首次模型调用才暴露」好查得多；也让装饰器侧与 MCP 侧的错误口径一致。
+ */
+const CAPABILITY_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 /** 能力名解析：spec.name 缺省取方法名；私有符号方法名必须显式给 name。 */
 export function capabilityName(
   spec: { name?: string },
   key: string | symbol,
   kind: string,
 ): string {
-  if (typeof spec.name === 'string') return spec.name;
-  if (typeof key !== 'string') {
+  let name: string;
+  if (typeof spec.name === 'string') {
+    name = spec.name;
+  } else if (typeof key === 'string') {
+    name = key;
+  } else {
     throw new Error(`${kind} 需要显式 name（方法名为私有符号 ${String(key)}）`);
   }
-  return key;
+  if (!CAPABILITY_NAME_RE.test(name)) {
+    throw new Error(
+      `${kind} 能力名 ${JSON.stringify(name)} 非法：须匹配 ^[A-Za-z0-9_-]{1,64}$` +
+        '（与 MCP 桥同口径；含引号/空格/点/中文或超 64 字符的名字会让模型 API 400）',
+    );
+  }
+  return name;
 }

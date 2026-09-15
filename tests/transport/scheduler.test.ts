@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { AsyncRunner, Scheduler } from '../../src/index.js';
-import type { AppCallable, AgentRunResult, TaskRecord } from '../../src/index.js';
+import type { AppCallable, AgentRunResult, TaskRecord, TaskStore } from '../../src/index.js';
 import { waitFor } from '../helpers.js';
 
 function fakeApp(): AppCallable & { calls: number } {
@@ -217,6 +217,42 @@ describe('Scheduler', () => {
       assert.match(String(logged[0][0]), /\[agentia:scheduler\].*触发失败/);
       assert.match(String(logged[0][1]), /无法识别为任务输入/);
       assert.equal(app.calls, 0);
+    } finally {
+      console.error = orig;
+      scheduler.stop();
+    }
+  });
+
+  it('pruneInFlight 同步抛错（如 store 已 close）：被捕获，不崩进程、闸门不自锁', async () => {
+    const app = fakeApp();
+    const map = new Map<string, TaskRecord>();
+    // 同步 store 的 get 同步抛错 —— 复刻「停机先 store.close() 后 scheduler.stop()」时
+    // SqliteTaskStore 的行为。修复前该异常逃出 setInterval 回调 → uncaughtException 崩进程。
+    const store: TaskStore = {
+      save: (r) => void map.set(r.taskId, { ...r }),
+      get: () => {
+        throw new Error('database is closed');
+      },
+      byIdempotency: () => undefined,
+      list: () => [...map.values()],
+      clear: () => map.clear(),
+    };
+    const runner = new AsyncRunner(app, { store });
+    const scheduler = new Scheduler(runner);
+    const logged: unknown[][] = [];
+    const orig = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      scheduler.every(10, 'tick');
+      // 首个 tick 派发并追踪；次 tick 起 pruneInFlight 撞到同步抛错的 poll ——
+      // 捕获后 forget（与异步 .catch 同口径），闸门放行、继续派发
+      await waitFor(() => app.calls >= 2, 'poll 同步抛错被吞后闸门应放行后续 tick');
+      assert.ok(
+        logged.some((a) => String(a[0]).includes('状态查询失败')),
+        '同步抛错应经 console.error 暴露（不静默、不崩进程）',
+      );
     } finally {
       console.error = orig;
       scheduler.stop();

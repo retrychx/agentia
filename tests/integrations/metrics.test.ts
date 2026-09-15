@@ -217,7 +217,7 @@ describe('metricsSink（D3 基础：run 级）', () => {
     assert.match(txt, /^agentia_tokens_total\{kind="input"\} 3$/m);
     assert.match(txt, /^agentia_tokens_total\{kind="cache_creation"\} 6$/m);
     assert.match(txt, /^agentia_cost_usd_total 0.25$/m);
-    assert.match(txt, /^agentia_run_duration_ms\{quantile="0.5"\} 7$/m);
+    assert.match(txt, /^agentia_run_duration_ms_last\{quantile="0.5"\} 7$/m);
     assert.match(txt, /^agentia_run_duration_ms_count 1$/m);
   });
 
@@ -255,6 +255,70 @@ describe('E4 histogram（可聚合的分位）', () => {
   });
 });
 
+describe('Prometheus 文本合法性（expfmt 硬约束）', () => {
+  it('每个指标名至多一条 HELP、一条 TYPE，且同名不混用类型（第二条 HELP/TYPE 会让整次 scrape 失败）', () => {
+    const m = metricsSink();
+    m.export(traceOf({ durationMs: 7, input: 3, costEstimate: 0.25 }));
+    m.export(richTrace()); // 带上能力/模型维度，让所有家族都出现
+    const txt = m.render();
+
+    const helpCount = new Map<string, number>();
+    const typeOf = new Map<string, string>();
+    for (const raw of txt.split('\n')) {
+      const help = /^# HELP (\S+) /.exec(raw);
+      if (help) helpCount.set(help[1]!, (helpCount.get(help[1]!) ?? 0) + 1);
+      const type = /^# TYPE (\S+) (\S+)$/.exec(raw);
+      if (type) {
+        const prev = typeOf.get(type[1]!);
+        assert.equal(
+          prev,
+          undefined,
+          `指标 ${type[1]} 出现第二条 TYPE（${prev} 之后又见 ${type[2]}）—— expfmt 硬错误`,
+        );
+        typeOf.set(type[1]!, type[2]!);
+      }
+    }
+    assert.ok(helpCount.size > 0, '应当至少有一个指标家族');
+    for (const [name, count] of helpCount) {
+      assert.equal(count, 1, `指标 ${name} 的 HELP 出现了 ${count} 次`);
+    }
+    for (const name of helpCount.keys()) {
+      assert.ok(typeOf.has(name), `${name} 有 HELP 无 TYPE`);
+    }
+    for (const name of typeOf.keys()) {
+      assert.ok(helpCount.has(name), `${name} 有 TYPE 无 HELP`);
+    }
+    // tokens_total 有 4 条样本但家族头只发一次
+    assert.equal(typeOf.get('agentia_tokens_total'), 'counter');
+    // 时长的两种口径拆成两个名字：histogram 与 gauge 不得同名
+    assert.equal(typeOf.get('agentia_run_duration_ms'), 'histogram');
+    assert.equal(typeOf.get('agentia_run_duration_ms_last'), 'gauge');
+    assert.equal(typeOf.get('agentia_capability_duration_ms'), 'histogram');
+    assert.equal(typeOf.get('agentia_capability_duration_ms_last'), 'gauge');
+    assert.equal(typeOf.get('agentia_model_duration_ms'), 'histogram');
+    assert.equal(typeOf.get('agentia_model_duration_ms_last'), 'gauge');
+  });
+
+  it('label 值转义：含引号/反斜杠/换行的能力名与模型名不得损坏 exposition', () => {
+    const m = metricsSink();
+    const evil = richTrace();
+    evil.spans[3]!.name = 'a"b\\c\nd'; // capability span
+    evil.spans[1]!.name = 'm"x'; // llm.turn → model label
+    m.export(evil);
+    const txt = m.render();
+    // 原始引号/换行不得原样出现在 label 里（那会把一行样本劈成两行/提前闭合引号）
+    assert.ok(!txt.includes('capability="a"b'), '未转义的引号会破坏 label');
+    assert.match(txt, /capability="subagent:a\\"b\\\\c\\nd"/);
+    assert.match(txt, /model="m\\"x"/);
+    // 转义后每个 label 仍落在单行内（剥掉 \" 转义后引号成对）
+    for (const line of txt.split('\n')) {
+      if (line.includes('capability=')) {
+        assert.equal((line.replace(/\\"/g, '').match(/"/g) ?? []).length % 2, 0);
+      }
+    }
+  });
+});
+
 describe('E2 能力级指标', () => {
   it('工具来自 tool.output 事件；skill/subagent 来自 capability span（带 token/成本）', () => {
     const m = metricsSink();
@@ -264,12 +328,12 @@ describe('E2 能力级指标', () => {
     assert.match(txt, /^agentia_capability_errors_total\{capability="tool:search"\} 1$/m);
     assert.match(
       txt,
-      /^agentia_capability_duration_ms\{capability="tool:search",quantile="0.5"\} 8$/m,
+      /^agentia_capability_duration_ms_last\{capability="tool:search",quantile="0.5"\} 8$/m,
       '窗口内 [42,8] 排序 [8,42] → ceil(0.5·2)=1 → 8',
     );
     assert.match(
       txt,
-      /^agentia_capability_duration_ms\{capability="tool:search",quantile="0.95"\} 42$/m,
+      /^agentia_capability_duration_ms_last\{capability="tool:search",quantile="0.95"\} 42$/m,
     );
     assert.match(txt, /^agentia_capability_calls_total\{capability="tool:fetch"\} 1$/m);
     assert.match(txt, /^agentia_capability_calls_total\{capability="subagent:researcher"\} 1$/m);
@@ -394,6 +458,32 @@ describe('E5 OTLP/JSON 指标导出', () => {
     assert.throws(() => metricsSink({ export: 'otlp' }), /必须给 endpoint/);
   });
 
+  it('collector 半开连接（accept 不回包）时 flush 受 timeoutMs 兜底，不挂死', async () => {
+    // 永不回包的假 collector
+    const server = createServer(() => {
+      /* 故意不响应 */
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const errors: unknown[] = [];
+      const m = metricsSink({
+        export: 'otlp',
+        endpoint: `http://127.0.0.1:${port}`,
+        intervalMs: 0,
+        timeoutMs: 100,
+        onExportError: (e) => errors.push(e),
+      });
+      await m.export(traceOf({ durationMs: 5 })); // intervalMs:0 → flush 被 await，不得卡住
+      m.stop();
+      assert.equal(errors.length, 1);
+      assert.equal((errors[0] as Error).name, 'TimeoutError');
+    } finally {
+      server.closeAllConnections?.();
+      await close(server);
+    }
+  });
+
   it('flush 真发 POST /v1/metrics，结构是合法 OTLP（resourceMetrics→scopeMetrics→metrics）', async () => {
     const { server, base, bodies } = await startCollector(200);
     try {
@@ -426,6 +516,44 @@ describe('E5 OTLP/JSON 指标导出', () => {
         (x) => x.sum.dataPoints[0].attributes[0].value.stringValue === 'tool:search',
       );
       assert.equal(capabilityCalls!.sum.dataPoints[0].asInt, '2');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('OTLP payload 结构：浮点走 asDouble、histogram 的 bucketCounts 是每桶非累积计数、纳秒时间戳不丢精度', async () => {
+    const { server, base, bodies } = await startCollector(200);
+    try {
+      const m = metricsSink({
+        export: 'otlp',
+        endpoint: base,
+        intervalMs: 0,
+        buckets: [50, 100],
+      });
+      await m.export(traceOf({ durationMs: 60, costEstimate: 0.25 }));
+      m.stop();
+      const metrics = bodies[0].body.resourceMetrics[0].scopeMetrics[0].metrics as Array<
+        Record<string, any>
+      >;
+      const byName = (n: string) => metrics.find((x) => x.name === n)!;
+
+      // 成本是浮点：OTLP 的 asInt 是 string 编码 int64，塞浮点 collector 会拒收
+      const cost = byName('agentia_cost_usd_total').sum.dataPoints[0];
+      assert.equal(cost.asDouble, 0.25);
+      assert.equal('asInt' in cost, false, '浮点指标不得走 asInt');
+      // 整型计数仍走 asInt
+      assert.equal(byName('agentia_runs_total').sum.dataPoints[0].asInt, '1');
+
+      // duration=60、buckets=[50,100]：非累积 = [0,1,0]（累积语义会是 [0,1,1]）
+      const hist = byName('agentia_run_duration_ms').histogram.dataPoints[0];
+      assert.deepEqual(hist.bucketCounts, [0, 1, 0], 'OTLP bucketCounts 是每桶非累积计数');
+      assert.equal(hist.count, 1);
+
+      // epoch 毫秒 ×1e6 超 2^53：纳秒时间戳必须是 1e6 的整数倍（BigInt 计算的结果必然满足，
+      // double 直接乘的结果几乎必然不满足 —— 低精度位被舍掉）
+      const dp = byName('agentia_runs_total').sum.dataPoints[0];
+      assert.equal(BigInt(dp.startTimeUnixNano) % 1_000_000n, 0n);
+      assert.equal(BigInt(dp.timeUnixNano) % 1_000_000n, 0n);
     } finally {
       await close(server);
     }
