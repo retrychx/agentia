@@ -1,6 +1,6 @@
 # Agentia —— Roadmap
 
-状态：v0.4.0 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）+ **`.env` 一等配置入口**（`loadEnvFile`，脚手架生成 `.env`）+ **trace 事件正文可展开**（`maxEventChars` 开关 + 两个宿主都真展开）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
+状态：v0.4.1 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）+ **`.env` 一等配置入口**（`loadEnvFile`，脚手架生成 `.env`）+ **trace 事件正文可展开**（`maxEventChars` 开关 + 两个宿主都真展开）+ **深度审查修复轮**（40+ 处：可观测出口 / 异构环境 / 预算透传子 agent / CLI inspector XSS / 部署 e2e）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
 与 `docs/spec.md`（已锁定决策）互补：spec 记录"已经怎么定的"，本文记录"接下来往哪走"。
 
 ## R1 —— 中间件（拦截器链）✅
@@ -232,6 +232,12 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   「刻意跑工作区代码」，并保留「想用发布版就换 `^0.2.2`」的一句话。
   另：`packages/trace-view` 的 `private: true` 是**有意**的（产物随 CLI `create` 拷进用户项目，
   不进 npm），不是待修项。
+- **已发布 v0.4.1**（2026-09-15）：**深度审查修复版** —— 40+ 处，**无新公开 API**，修的是既有
+  承诺没兑现的地方。要点：`metricsSink` 的 Prometheus 文本每个家族只发一次 HELP/TYPE（重复即整次
+  scrape 硬失败）；预算护栏（`maxTotalTokens` / `maxCostUsd`）经 `ToolRunContext` 真透传到子
+  agent / skill 循环；CLI inspector 的 SSE 路径 `innerHTML` → `textContent`（XSS）并加 Host 头校验；
+  `drain` 强制关 SSE 现在真 abort 对应 run；示例 Dockerfile 补 `COPY docs`（此前构建必失败）、
+  新增 `scripts/e2e-deploy.ts`（崩溃续跑）。决策与假绿记录见 `spec.md` §10 的 2026-09-15 记录。
 - **已发布 v0.4.0**（2026-09-14）：trace 事件行可**展开看完整正文**。补上框架侧缺失的
   `maxEventChars` opt-in 开关（缺省截断值逐字不变，`false` = 不截断），渲染器加展开态
   （caret 常显且满不透明度达 3:1、正文默认与标签同一行、窄面板放不下才整段换行），
