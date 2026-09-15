@@ -13,6 +13,8 @@ import type { Span, Trace, TraceSink } from '../core/trace.js';
  *   `skill` / `subagent` 来自 `capability` span（tracer 已把子孙 llm.turn 的 usage 聚合上去）；
  *   `@Prompt` 不建 span、无独立耗时，**不产出**能力指标（如实缺省，不硬凑）；
  * - **模型级**（E3）：来自 `llm.turn` span（其 `name` 即模型 id）。
+ * - **评分级**（R7 质量闭环）：来自 run 根 span 的 `score` 事件（`attachScore` 写入）——
+ *   gauge 记**最近一次**值（分数不是累加量），counter 记条数；label 为 `name` × `source`。
  *
  * 时长同时给两种口径（histogram 与分位 gauge 必须用**不同指标名**，见 `render()` 注释）：
  * - **histogram**（`*_bucket` / `*_sum` / `*_count`，累积语义）—— 抓取端可跨实例任意聚合；
@@ -50,6 +52,16 @@ export interface ModelMetrics {
   latencyP95: number;
 }
 
+/** 评分维度指标（`snapshot().scores[key]`，key 为 `name@source`，source 缺省时裸 name） */
+export interface ScoreMetrics {
+  /** 最近一次评分值（gauge 语义 —— 分数不是累加量） */
+  value: number;
+  /** 评分条数 */
+  count: number;
+  /** 评分值合计（平均 = sum / count） */
+  sum: number;
+}
+
 /** 进程内累计快照（`snapshot()` 返回） */
 export interface MetricsSnapshot {
   /** 投递过 trace 的 run 总数（= `export` 被调用次数） */
@@ -70,6 +82,8 @@ export interface MetricsSnapshot {
   capabilities: Record<string, CapabilityMetrics>;
   /** 模型维度 */
   models: Record<string, ModelMetrics>;
+  /** 评分维度（key 为 `name@source`，source 缺省时裸 name；无评分时为空对象） */
+  scores: Record<string, ScoreMetrics>;
   /** 因 `maxCapabilities` 上限被归入 `__other__` 的不同能力数（未开启上限时为 0） */
   droppedCapabilities: number;
 }
@@ -303,6 +317,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
 
   const capabilities = new Map<string, CapabilityAcc>();
   const models = new Map<string, ModelAcc>();
+  /** 评分累加器：key = `${name}\t${source}`（source 缺省 ''；\t 不会出现在正常评分名里，做天然分隔符） */
+  const scores = new Map<string, ScoreMetrics>();
   /** 已分配独立标签的能力键（超 maxCapabilities 后新键归 __other__） */
   const assignedCapabilities = new Set<string>();
   /** 被归入 __other__ 的不同能力键 */
@@ -342,6 +358,26 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
 
     const d = runDurationMs(trace);
     if (d !== undefined) runStat.add(d);
+
+    // —— 评分（R7）：只认根 span 的 score 事件（attachScore 的写入位置）；
+    // body 宽容读取 —— name 不是 string / value 不是有限 number 就跳过，观测不击穿业务
+    const rootSpan = trace.spans.find((s) => s.spanId === trace.rootSpanId);
+    if (rootSpan) {
+      for (const e of rootSpan.events) {
+        if (e.name !== 'score') continue;
+        const body = e.body as Record<string, unknown> | null;
+        if (!body || typeof body !== 'object') continue;
+        if (typeof body.name !== 'string') continue;
+        if (typeof body.value !== 'number' || !Number.isFinite(body.value)) continue;
+        const source = typeof body.source === 'string' ? body.source : '';
+        const key = `${body.name}\t${source}`;
+        const acc = scores.get(key) ?? { value: 0, count: 0, sum: 0 };
+        acc.value = body.value; // gauge 语义：覆盖为最近一次
+        acc.count++;
+        acc.sum += body.value;
+        scores.set(key, acc);
+      }
+    }
 
     for (const span of trace.spans) {
       if (span.kind === 'capability') {
@@ -430,6 +466,13 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         latencyP95: acc.stat.percentile(0.95),
       };
     }
+    const scoreOut: Record<string, ScoreMetrics> = {};
+    for (const [key, acc] of scores) {
+      const tab = key.indexOf('\t');
+      const name = key.slice(0, tab);
+      const source = key.slice(tab + 1);
+      scoreOut[source === '' ? name : `${name}@${source}`] = { ...acc };
+    }
     return {
       runs,
       failed,
@@ -439,6 +482,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       costUsd,
       capabilities: capabilityOut,
       models: modelOut,
+      scores: scoreOut,
       droppedCapabilities: dropped.size,
     };
   };
@@ -634,6 +678,23 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         ),
       );
     }
+
+    // —— 评分维度（R7）：gauge 记最近一次值、counter 记条数，label 为 name × source ——
+    if (scores.size > 0) {
+      const gaugeSamples: string[] = [];
+      const counterSamples: string[] = [];
+      for (const key of [...scores.keys()].sort()) {
+        const acc = scores.get(key)!;
+        const tab = key.indexOf('\t');
+        const l = `{name="${escLabel(key.slice(0, tab))}",source="${escLabel(key.slice(tab + 1))}"}`;
+        gaugeSamples.push(`${p}score${l} ${acc.value}`);
+        counterSamples.push(`${p}score_total${l} ${acc.count}`);
+      }
+      out.push(
+        family(`${p}score`, 'gauge', '最近一次评分（label 为评分维度与来源）', gaugeSamples),
+      );
+      out.push(family(`${p}score_total`, 'counter', '评分条数', counterSamples));
+    }
     return out.join('');
   };
 
@@ -672,6 +733,16 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       sum: {
         aggregationTemporality: 2, // CUMULATIVE
         isMonotonic: true,
+        dataPoints: [
+          { attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asDouble: value },
+        ],
+      },
+    });
+    // gauge 没有理由只收 int：评分值是浮点，统一走 asDouble
+    const gauge = (name: string, value: number, help: string, attrs: OtlpAttr[]) => ({
+      name,
+      description: help,
+      gauge: {
         dataPoints: [
           { attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asDouble: value },
         ],
@@ -738,6 +809,13 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         );
       }
       metrics.push(hist(`${p}model_duration_ms`, acc.stat, '模型往返耗时（毫秒）', attrs));
+    }
+    for (const key of [...scores.keys()].sort()) {
+      const acc = scores.get(key)!;
+      const tab = key.indexOf('\t');
+      const attrs = [strAttr('name', key.slice(0, tab)), strAttr('source', key.slice(tab + 1))];
+      metrics.push(gauge(`${p}score`, acc.value, '最近一次评分', attrs));
+      metrics.push(sum(`${p}score_total`, acc.count, '评分条数', attrs));
     }
 
     const resourceAttrs: OtlpAttr[] = [
@@ -815,6 +893,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       runStat.reset();
       capabilities.clear();
       models.clear();
+      scores.clear();
       assignedCapabilities.clear();
       dropped.clear();
     },

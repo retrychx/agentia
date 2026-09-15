@@ -188,6 +188,18 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 就自动带上（见 runtime/systemPrompt.ts）。
    */
   systemVersion?: string;
+  /**
+   * 菜单内 @Prompt 能力的版本表（`{ 能力名: 版本 }`）：写进 run 根 span 的
+   * `prompts.versions` attribute（`name@ver` 逗号拼接），回答「质量退化是不是换了
+   * 某个 prompt 资产导致的」。走 `AgentApp.run` 时自动收集（@Prompt 的 `version` 字段）。
+   */
+  promptVersions?: Record<string, string>;
+  /**
+   * 会话标识：写进 run 根 span 的 `session.id` attribute（OTLP 导出时映射
+   * `gen_ai.conversation.id`），多轮对话的 run 由此可按会话聚合（thread 维度）。
+   * 走 `AgentApp.run` / `executeRun` 时给了 `session` 就自动带上，不用手填。
+   */
+  sessionId?: string;
 }
 
 export interface AgentRunResult<T = unknown> {

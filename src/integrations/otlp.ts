@@ -11,6 +11,16 @@ import type { Span, SpanEvent, Trace } from '../core/trace.js';
  * - attributes 展平 span.attributes + usage（usage.* 前缀）；
  * - events → OTLP events（body 的原始类型字段进 attributes，其余 JSON 化）。
  *
+ * GenAI 语义约定（R7 质量闭环，**additive** —— 只追加 gen_ai.* 键，既有键一律保留）：
+ * - 对齐基准：OTel GenAI semconv **v1.37** —— 该版本里 `gen_ai.client` 侧
+ *   （chat / execute_tool / gen_ai.request.model / gen_ai.usage.*）已 stable，
+ *   agent 侧（invoke_agent / gen_ai.agent.name / gen_ai.conversation.id / evaluation 事件）
+ *   仍是 experimental；选 stable 键优先、experimental 键补齐 agent 语义，
+ *   是因为下游（Datadog / Axiom 等）已按 1.37+ 识别这批键做 GenAI 专项视图。
+ * - **全部映射集中在 `genAiAttributes` / `mapEvent` 两处**，升级基准版本时只改本模块；
+ *   键前缀冲突不存在（自有键一律 `agentia.*` 或无前缀），所以 additive 是安全的。
+ * - 保留 `usage.inputTokens` 等旧键：既有看板/告警已消费它们，双发成本极低。
+ *
  * 非 2xx 抛错（含状态码与响应前 200 字符）。导出失败不影响 run 本身 —— 调用方自行取舍。
  */
 
@@ -62,11 +72,50 @@ function nanos(ms: number): string {
   return String(BigInt(Math.round(ms)) * 1_000_000n);
 }
 
+/**
+ * GenAI semconv 追加属性（additive，见模块头注释）。
+ * 返回的键与 span.attributes 自有键不同名（gen_ai.* 前缀），直接 push 不查重。
+ */
+function genAiAttributes(span: Span): OtlpAttribute[] {
+  const attrs: OtlpAttribute[] = [];
+  const str = (key: string, v: string): OtlpAttribute => ({ key, value: { stringValue: v } });
+  if (span.kind === 'run') {
+    // 一次 run = 一次 agent 调用；span.name 即应用名，正好填 agent.name
+    attrs.push(str('gen_ai.operation.name', 'invoke_agent'), str('gen_ai.agent.name', span.name));
+    const sessionId = span.attributes['session.id'];
+    if (typeof sessionId === 'string') attrs.push(str('gen_ai.conversation.id', sessionId));
+  } else if (span.kind === 'llm.turn') {
+    // llm.turn 的 span.name 就是模型 id（core 契约）；token 口径与 usage.* 旧键一致
+    attrs.push(str('gen_ai.operation.name', 'chat'), str('gen_ai.request.model', span.name));
+    if (span.usage) {
+      attrs.push(
+        { key: 'gen_ai.usage.input_tokens', value: toValue(span.usage.inputTokens) },
+        { key: 'gen_ai.usage.output_tokens', value: toValue(span.usage.outputTokens) },
+      );
+    }
+  } else if (span.kind === 'capability') {
+    // subagent 是一次嵌套 agent 调用（invoke_agent）；skill 对外语义是「执行一件工具」（execute_tool）
+    if (span.name.startsWith('subagent:')) {
+      attrs.push(
+        str('gen_ai.operation.name', 'invoke_agent'),
+        str('gen_ai.agent.name', span.name.slice('subagent:'.length)),
+      );
+    } else if (span.name.startsWith('skill:')) {
+      attrs.push(
+        str('gen_ai.operation.name', 'execute_tool'),
+        str('gen_ai.tool.name', span.name.slice('skill:'.length)),
+      );
+    }
+  }
+  return attrs;
+}
+
 function spanAttributes(span: Span): OtlpAttribute[] {
   const attrs: OtlpAttribute[] = Object.entries(span.attributes).map(([key, v]) => ({
     key,
     value: toValue(v),
   }));
+  attrs.push(...genAiAttributes(span));
   if (span.usage) {
     const u = span.usage;
     attrs.push(
@@ -97,6 +146,33 @@ function eventAttributes(body: unknown): OtlpAttribute[] {
 }
 
 function mapEvent(e: SpanEvent) {
+  // score 事件（R7 质量闭环）→ gen_ai.evaluation.result（semconv 仍是 experimental，
+  // 故 source/comment 这类 semconv 未定义的维度走自有 agentia.* 键，不占用 gen_ai.* 命名空间）。
+  // body 宽容读取：name/value 类型不对就只发事件名，观测不击穿业务。
+  if (e.name === 'score') {
+    const body =
+      e.body && typeof e.body === 'object' && !Array.isArray(e.body)
+        ? (e.body as Record<string, unknown>)
+        : {};
+    const attributes: OtlpAttribute[] = [];
+    if (typeof body.name === 'string') {
+      attributes.push({ key: 'gen_ai.evaluation.score.name', value: { stringValue: body.name } });
+    }
+    if (typeof body.value === 'number' && Number.isFinite(body.value)) {
+      // 语义是 double：整型分也发 doubleValue，避免后端按 int64 解析丢掉「分数」类型
+      attributes.push({
+        key: 'gen_ai.evaluation.score.value',
+        value: { doubleValue: body.value },
+      });
+    }
+    if (typeof body.source === 'string') {
+      attributes.push({ key: 'agentia.score.source', value: { stringValue: body.source } });
+    }
+    if (typeof body.comment === 'string') {
+      attributes.push({ key: 'agentia.score.comment', value: { stringValue: body.comment } });
+    }
+    return { timeUnixNano: nanos(e.time), name: 'gen_ai.evaluation.result', attributes };
+  }
   return {
     timeUnixNano: nanos(e.time),
     name: e.name,

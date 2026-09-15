@@ -8,6 +8,7 @@ import { devServer } from './dev.js';
 import { doctor } from './doctor.js';
 import { addPackage } from './add.js';
 import { reportCommand } from './report.js';
+import { harvestCommand } from './harvest.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
 
@@ -18,6 +19,8 @@ const USAGE = `agentia —— Agentia 框架命令行工具
   agentia dev                              启动开发模式（tsx watch 热重载 + 本地 inspector 面板）
   agentia doctor                           装配体检（未登记/悬空能力/命名规范/重复条目）
   agentia report <trace.jsonl>             从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
+  agentia harvest <trace.jsonl>            把线上 trace 翻成 eval 用例骨架
+                                           （[--out <file.ts>] [--failed] [--limit N]）
   agentia add <pkg>                        安装第三方能力包并登记到 src/registry.ts
   agentia --help                           显示本帮助
 
@@ -95,6 +98,15 @@ function main(argv: string[]): number {
     // 异步命令（要 dynamic import 构建期拷进来的聚合实现）：自己设 exitCode，
     // 返回值仅表示「已受理」—— 挂着的 Promise 会让 Node 等到它 settle 再退出。
     void reportCommand(rest).catch((e: unknown) => {
+      console.error(`错误：${(e as Error).message}`);
+      process.exitCode = 1;
+    });
+    return 0;
+  }
+
+  if (command === 'harvest') {
+    // 异步命令（读文件/写文件）：同 report 的受理模式
+    void harvestCommand(rest).catch((e: unknown) => {
       console.error(`错误：${(e as Error).message}`);
       process.exitCode = 1;
     });

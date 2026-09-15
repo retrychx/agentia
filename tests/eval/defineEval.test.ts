@@ -8,7 +8,7 @@ import {
   scriptedClient,
   SystemPrompt,
 } from '../../src/index.js';
-import type { AgentRunResult, JsonSchema } from '../../src/index.js';
+import type { AgentRunResult, JsonSchema, Trace } from '../../src/index.js';
 import { endTurnMsg, toolUseMsg } from '../helpers.js';
 
 const OBJ: JsonSchema = { type: 'object', properties: {} };
@@ -211,5 +211,67 @@ describe('defineEval（D2）', () => {
     });
     const report = await ev.run();
     assert.equal(report.ok, true, report.cases[0].error ?? '');
+  });
+});
+
+describe('defineEval 自动 score（R7 质量闭环）', () => {
+  const makeApp = () =>
+    createApp({
+      name: 'eval-app',
+      system: new SystemPrompt().add('role', 'r'),
+      providers: [],
+    });
+
+  /** 抠出 trace 根 span 上的 score 事件体（attachScore 落点） */
+  function scoresOf(trace: Trace) {
+    const root = trace.spans.find((s) => s.spanId === trace.rootSpanId)!;
+    return root.events.filter((e) => e.name === 'score').map((e) => e.body);
+  }
+
+  it('pass / fail 两种用例的根 span 各有正确 score 事件（fail 带 comment）', async () => {
+    const ev = defineEval<unknown>({
+      name: 'scored-eval',
+      app: makeApp,
+      cases: [
+        { name: '过', input: 'a', client: scriptedClient([endTurnMsg('ok')]) },
+        { name: '挂', input: 'b', client: scriptedClient([endTurnMsg('bad')]) },
+      ],
+      expect: (r) => {
+        assert.equal(r.finalText, 'ok');
+      },
+    });
+    const report = await ev.run();
+    assert.equal(report.ok, false);
+
+    const pass = report.cases[0];
+    assert.equal(pass.ok, true);
+    assert.deepEqual(scoresOf(pass.trace!), [{ name: 'eval', value: 1, source: 'scored-eval' }]);
+
+    const fail = report.cases[1];
+    assert.equal(fail.ok, false);
+    const failScores = scoresOf(fail.trace!);
+    assert.equal(failScores.length, 1, '结论只挂一条 score 事件');
+    const body = failScores[0] as { name: string; value: number; source: string; comment: string };
+    assert.equal(body.name, 'eval');
+    assert.equal(body.value, 0);
+    assert.equal(body.source, 'scored-eval');
+    assert.match(body.comment, /expected/i, '失败原因进 comment');
+  });
+
+  it('断言失败的用例同样有 trace 可挂（score 落在失败 case 的 trace 上，下游可聚合通过率）', async () => {
+    const ev = defineEval<unknown>({
+      name: 'all-pass',
+      app: makeApp,
+      cases: [
+        { input: 'a', client: scriptedClient([endTurnMsg('ok')]) },
+        { input: 'b', client: scriptedClient([endTurnMsg('ok')]) },
+      ],
+      expect: () => {},
+    });
+    const report = await ev.run();
+    assert.equal(report.ok, true);
+    for (const c of report.cases) {
+      assert.deepEqual(scoresOf(c.trace!), [{ name: 'eval', value: 1, source: 'all-pass' }]);
+    }
   });
 });

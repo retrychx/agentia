@@ -403,3 +403,23 @@ describe('观测回调是辅助动作：抛错不得杀死 run', () => {
     assert.equal(n, 2, '重试没有被回调异常打断');
   });
 });
+
+describe('run 根 attribute：promptVersions / sessionId（R7）', () => {
+  it('promptVersions 拼成排序后的 name@ver 落 run 根 prompts.versions；空表不记', async () => {
+    const { result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client: mockClient([endTurnMsg('ok')]).client,
+      promptVersions: { zebra: '2', alpha: '1.0' },
+    });
+    const root = result.trace.spans.find((s) => s.spanId === result.trace.rootSpanId)!;
+    assert.equal(root.attributes['prompts.versions'], 'alpha@1.0,zebra@2');
+
+    const { result: r2 } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client: mockClient([endTurnMsg('ok')]).client,
+      promptVersions: {},
+    });
+    const root2 = r2.trace.spans.find((s) => s.spanId === r2.trace.rootSpanId)!;
+    assert.equal('prompts.versions' in root2.attributes, false);
+  });
+});

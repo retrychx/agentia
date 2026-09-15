@@ -591,6 +591,16 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
   // 提示词版本化（D4）：版本号落 run 根，便于按版本筛 trace
   if (options.systemVersion) recorder.setAttribute(rootId, 'system.version', options.systemVersion);
+  // @Prompt 资产版本（R7）：菜单里各 prompt 的版本表落 run 根 —— 质量回归能定位到具体资产版本
+  if (options.promptVersions) {
+    const joined = Object.entries(options.promptVersions)
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([n, v]) => `${n}@${v}`)
+      .join(',');
+    if (joined) recorder.setAttribute(rootId, 'prompts.versions', joined);
+  }
+  // 会话标识（R7 thread 维度）：多轮 run 按 session 聚合；OTLP 侧映射 gen_ai.conversation.id
+  if (options.sessionId) recorder.setAttribute(rootId, 'session.id', options.sessionId);
   // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
   // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
   // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。

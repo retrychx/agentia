@@ -27,6 +27,12 @@ export interface PromptSpec {
   description: string;
   /** 模板化入参 schema；缺省空对象（无参资产） */
   schema?: JsonSchema;
+  /**
+   * 资产版本号（git hash / 'v3' 等）。装配时随能力名收集成 { 能力名: 版本 } 表，
+   * 每次 run 落到 run 根 span 的 `prompts.versions` attribute（engine 拼成 name@ver 逗号串）——
+   * 回答「质量退化是不是换了这个 prompt 资产导致的」。缺省（无版本）则该能力不进表。
+   */
+  version?: string;
 }
 
 const promptSpecs = new WeakMap<Function, PromptSpec>();
@@ -45,14 +51,25 @@ export function Prompt(spec: PromptSpec) {
   };
 }
 
+/** collectPromptEntries 的产物：菜单工具 + 带版本能力的 name→version 表（最终菜单名口径）。 */
+export interface CollectedPrompts {
+  tools: AgentTool[];
+  /** 带 version 的 @Prompt 的 { 最终菜单名: 版本 }；无版本能力不进表 */
+  versions: Record<string, string>;
+}
+
 /**
- * 收集容器实例（+ 其类上的静态方法）里所有 @Prompt，产出 AgentTool[]。
+ * 收集容器实例（+ 其类上的静态方法）里所有 @Prompt，产出 AgentTool[] 与版本表。
  * 实例方法沿原型链（含继承）；静态方法同样沿构造函数原型链（含继承的父类静态 @Prompt）。
+ *
+ * collectPrompts 是公共面（只回 AgentTool[]，历史形状不动）；装配侧需要版本表，
+ * 故内核收两份 —— module 级 export，不进公共导出面（src/index.ts）。
  */
-export function collectPrompts(instance: object): AgentTool[] {
+export function collectPromptEntries(instance: object): CollectedPrompts {
   const tools: AgentTool[] = [];
+  const versions: Record<string, string> = {};
   // null/undefined/原始值 provider（useValue 合法形态）：无装饰器能力可收，空结果
-  if (!isScannableInstance(instance)) return tools;
+  if (!isScannableInstance(instance)) return { tools, versions };
   // 传 key 而非捕获的 fn：子类「未装饰地 override」时 spec 继承自父类，
   // 但实现必须取**实例/类上**的（否则会绕开子类实现，与 @Tool 语义不一致）。
   const pushTool = (
@@ -67,6 +84,8 @@ export function collectPrompts(instance: object): AgentTool[] {
       inputSchema: spec.schema ?? EMPTY_SCHEMA,
       run: (input: unknown) => Reflect.apply(target[key] as Function, target, [input]),
     });
+    // 版本表以最终菜单名（capabilityName 校验后的 name）为键；缺省无版本不进表
+    if (spec.version !== undefined) versions[spec.name ?? name] = spec.version;
   };
 
   // 实例方法（沿原型链）
@@ -100,5 +119,13 @@ export function collectPrompts(instance: object): AgentTool[] {
     }
     ctor = Object.getPrototypeOf(ctor);
   }
-  return tools;
+  return { tools, versions };
+}
+
+/**
+ * 收集容器实例（+ 其类上的静态方法）里所有 @Prompt，产出 AgentTool[]。
+ * 实例方法沿原型链（含继承）；静态方法同样沿构造函数原型链（含继承的父类静态 @Prompt）。
+ */
+export function collectPrompts(instance: object): AgentTool[] {
+  return collectPromptEntries(instance).tools;
 }

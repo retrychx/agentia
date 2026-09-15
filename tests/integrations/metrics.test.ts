@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createApp, metricsSink, SystemPrompt } from '../../src/index.js';
+import { attachScore, createApp, metricsSink, SystemPrompt } from '../../src/index.js';
 import type { Span, Trace } from '../../src/index.js';
 import { mockClient, endTurnMsg } from '../helpers.js';
 
@@ -583,5 +583,95 @@ describe('E5 OTLP/JSON 指标导出', () => {
     await m.flush();
     m.stop();
     assert.match(m.render(), /agentia_runs_total 0/);
+  });
+
+  it('OTLP payload 带 score gauge（asDouble）与 score_total counter（asInt）', async () => {
+    const { server, base, bodies } = await startCollector(200);
+    try {
+      const m = metricsSink({ export: 'otlp', endpoint: base, intervalMs: 0 });
+      const t = traceOf({});
+      attachScore(t, { name: 'faithfulness', value: 0.8, source: 'eval-x' });
+      attachScore(t, { name: 'faithfulness', value: 0.6, source: 'eval-x' });
+      await m.export(t);
+      m.stop();
+
+      const metrics = bodies[0].body.resourceMetrics[0].scopeMetrics[0].metrics as Array<
+        Record<string, any>
+      >;
+      const byName = (n: string) => metrics.find((x) => x.name === n)!;
+
+      const gauge = byName('agentia_score').gauge.dataPoints[0];
+      assert.equal(gauge.asDouble, 0.6);
+      assert.deepEqual(gauge.attributes, [
+        { key: 'name', value: { stringValue: 'faithfulness' } },
+        { key: 'source', value: { stringValue: 'eval-x' } },
+      ]);
+
+      const counter = byName('agentia_score_total').sum.dataPoints[0];
+      assert.equal(counter.asInt, '2');
+      assert.equal(byName('agentia_score_total').sum.aggregationTemporality, 2);
+    } finally {
+      await close(server);
+    }
+  });
+});
+
+describe('R7 评分（score 事件）聚合', () => {
+  it('gauge 记最近一次值、counter 记条数；snapshot 暴露 scores 汇总', () => {
+    const m = metricsSink();
+    const t = traceOf({ durationMs: 5 });
+    attachScore(t, { name: 'faithfulness', value: 0.8, source: 'eval-x' });
+    attachScore(t, { name: 'faithfulness', value: 0.6, source: 'eval-x' });
+    attachScore(t, { name: 'helpfulness', value: 1 });
+    m.export(t);
+
+    const txt = m.render();
+    assert.match(txt, /# TYPE agentia_score gauge/);
+    assert.match(txt, /# TYPE agentia_score_total counter/);
+    assert.match(
+      txt,
+      /^agentia_score\{name="faithfulness",source="eval-x"\} 0.6$/m,
+      'gauge = 最近一次值（0.8 被 0.6 覆盖）',
+    );
+    assert.match(txt, /^agentia_score_total\{name="faithfulness",source="eval-x"\} 2$/m);
+    assert.match(txt, /^agentia_score\{name="helpfulness",source=""\} 1$/m, 'source 缺省为空串');
+    assert.match(txt, /^agentia_score_total\{name="helpfulness",source=""\} 1$/m);
+
+    const { scores } = m.snapshot();
+    assert.deepEqual(scores['faithfulness@eval-x'], { value: 0.6, count: 2, sum: 1.4 });
+    assert.deepEqual(scores['helpfulness'], { value: 1, count: 1, sum: 1 });
+  });
+
+  it('无 score 事件的 trace 不产出 score 家族；畸形 body 跳过', () => {
+    const m = metricsSink();
+    m.export(traceOf({}));
+    m.export(richTrace());
+    let txt = m.render();
+    assert.equal(/agentia_score/.test(txt), false);
+    assert.deepEqual(m.snapshot().scores, {});
+
+    // 畸形 body：缺 value / value 非 number / body 不是对象 —— 全部跳过
+    const t = traceOf({});
+    t.spans[0]!.events.push(
+      { time: 1, name: 'score', body: { name: 'x' } },
+      { time: 2, name: 'score', body: { name: 'y', value: 'high' } },
+      { time: 3, name: 'score', body: 'junk' },
+    );
+    m.export(t);
+    txt = m.render();
+    assert.equal(/agentia_score/.test(txt), false, '三条畸形 score 都不计入');
+    assert.deepEqual(m.snapshot().scores, {});
+  });
+
+  it('评分名带引号走 escLabel 转义；reset 清空评分', () => {
+    const m = metricsSink();
+    const t = traceOf({});
+    attachScore(t, { name: 'a"b', value: 0.5, source: 'eval' });
+    m.export(t);
+    assert.match(m.render(), /agentia_score\{name="a\\"b",source="eval"\} 0.5/);
+
+    m.reset();
+    assert.deepEqual(m.snapshot().scores, {});
+    assert.equal(/agentia_score/.test(m.render()), false);
   });
 });

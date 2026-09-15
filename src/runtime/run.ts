@@ -149,6 +149,8 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         // 会话历史拼在传入 messages **之前**；读不出来就当无历史（同上：辅助动作不击穿 run）
         messages: await loadSession(session, options.messages),
         recorder: run.recorder,
+        // 会话标识落 run 根 attribute（`session.id`）—— 多轮 run 按会话聚合的锚点
+        sessionId: session?.id,
       });
       run.finish(result);
       if (memory) {
