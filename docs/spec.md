@@ -1092,6 +1092,43 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   （防解析器空转 vacuously 变绿），BARREL 豁免只认 `src/index.ts` 本身（src 根下新文件不再
   白嫖豁免），`ALLOWED.eval` 补 BARREL（与 AGENTS.md「依赖 toolkit 与公共面」对齐）。
 
+- 2026-09-16：**R7 质量闭环落地（score 一等公民 / gen_ai 对齐 / 回流 / 版本与 session 上 trace）**。
+  设计取舍**在此锁定**：
+  **① Score 契约与事件形态**：`Score { name; value; source?; comment? }`（value 约定 0–1，
+  布尔结论用 0/1）+ `attachScore(trace, score)`，两者公共导出。评分挂 run 根 span 的
+  **`score` 事件**（body 即 Score）而**不是 span 字段** —— 评分来自 run **之外**（run 跑完
+  才由 LLM-judge / 人工 / eval 产生），span 字段在收尾时已定型，事件是「事后补充事实」的
+  现成通道；多次调用即多条事件（不同维度各记各的），找不到根 span 静默忽略（观测不击穿业务）。
+  **② gen_ai 对齐钉 v1.37 基准、映射集中单模块**：OTLP 导出 **additive** 追加 `gen_ai.*` 键
+  （旧 `usage.*` 键一律保留 —— 既有看板/告警已消费它们，双发成本极低）。选 v1.37 是因为该版
+  `gen_ai.client` 侧（chat / execute_tool / request.model / usage.*）已 stable，agent 侧
+  （invoke_agent / agent.name / conversation.id / evaluation 事件）仍 experimental —— stable
+  键优先、experimental 键补齐 agent 语义，下游（Datadog / Axiom 等）已按 1.37+ 识别这批键。
+  约定仍在漂移（此前 v1.37 就把 `gen_ai.system` 改 `gen_ai.provider.name`），故**全部映射集中在
+  `otlp.ts` 的 `genAiAttributes` / `mapEvent` 两处**，升级基准版本只改本模块。`score` 事件译为
+  `gen_ai.evaluation.result`；`source` / `comment` 是 semconv 未定义的维度，走自有
+  `agentia.score.*` 键，不占用 gen_ai.* 命名空间。
+  **③ `prompts.versions` 拼接形态**：`PromptSpec.version` 声明后，装配期沿主菜单同一条收集路径
+  （`toolSources` 收窄同样生效）收集 `{ 最终菜单名: 版本 }` 表，engine 拼成 **`name@ver` 逗号串、
+  按名排序**落 run 根单个 attribute（对照先例 `system.version`；排序让同一菜单的产物字节一致、
+  可直接做等值筛选），**空表不记**（不写空串冒充实有版本，与 `system.version` 同口径）。
+  内核 `collectPromptEntries` 收「工具 + 版本表」两份，是 **module 级 export 不进公共面**；
+  `collectPrompts` 公共签名不动。
+  **④ session.id 上 trace**：`executeRun` 给了 `session` 就自动把 id 写进 run 根 `session.id`
+  attribute（OTLP 侧映射 `gen_ai.conversation.id`，thread 维度聚合），不用手填。
+  **⑤ defineEval 自动 score**：每个用例跑完把 `{ name:'eval', value:0|1, source: eval 名,
+  comment: 失败原因 }` attach 到该用例 trace —— eval → trace → 监控一次打通；`app.run` 抛错
+  （环境错误）拿不到 trace 时不挂。
+  **⑥ harvest 刻意不进公共面 + CLI 双实现对拍**：`harvestEvalCase`（trace → eval 用例 TS 骨架）
+  是 **module 级 export**（进公共面就得为「生成代码字符串」这种工具性 API 长期背书，且
+  `tests/docs/api-page.test.ts` 的反向全覆盖会逼官网同步）。CLI `agentia harvest` 侧是
+  **去类型移植副本**：CLI 零运行时依赖不能 import 框架，而构建期拷贝会让 CLI build 依赖框架
+  dist 的存在、复杂化 publish 流程 —— 双实现是有意决策，由 `packages/cli/test/harvest.test.mjs`
+  的**逐字对拍**守护（改生成格式必须两边同步）。已知边界如实写进生成物注释：trace 不记
+  assistant 文本（脚本 text 块是占位）、只重建主循环回合、预填 expect 是抄录的实际轨迹。
+  **⑦ 在线评估采样**按调研结论落为 **recipe**（usage-guide §6：sampleSink + judge + attachScore
+  + metricsSink 拼装），不进框架 —— 评什么、采样率多少是业务策略，与「护栏/配额只给缝」同口径。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

@@ -190,8 +190,8 @@ createApp({ name: 'svc', providers, sinks: [platform] });
 
 | 内置件 | 干什么 | 和上面的关系 |
 |---|---|---|
-| `createOtlpExporter({ endpoint })` | OTLP/JSON → collector（Jaeger / Tempo / Grafana） | **可以用内置的**：返回值天然满足 `TraceSink`，直进 `sinks` |
-| `metricsSink({ prefix })` | 进程内累加 + Prometheus 文本 `/metrics` | **可以用内置的**：同样满足 `TraceSink` |
+| `createOtlpExporter({ endpoint })` | OTLP/JSON → collector（Jaeger / Tempo / Grafana）；属性**对齐 OTel GenAI semconv v1.37**（additive：追加 `gen_ai.*` 键、保留旧键 —— run 根 `invoke_agent` / llm.turn `chat` / score 事件译 `gen_ai.evaluation.result`，映射集中 `otlp.ts` 单模块） | **可以用内置的**：返回值天然满足 `TraceSink`，直进 `sinks` |
+| `metricsSink({ prefix })` | 进程内累加 + Prometheus 文本 `/metrics`；除 run/能力/模型三维外还有**评分族** `agentia_score`（gauge，最近一次值）+ `agentia_score_total`（counter，条数）—— 来自 run 根 `score` 事件（`attachScore` 写入），label 为 `name` × `source` | **可以用内置的**：同样满足 `TraceSink` |
 | 本文四条配方 | 落库 / 日志 / 采样 / 脱敏 | 内置件没有的那部分，缝外自建 |
 
 OTLP 与本文配方**不互斥**：`sinks: [sampleSink({ rate: 0.1, sinks: [createOtlpExporter({...})] }), sqliteTraceSink({ db })]`

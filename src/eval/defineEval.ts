@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentRunResult } from '../engine/types.js';
-import type { Trace } from '../core/trace.js';
+import { attachScore, type Trace } from '../core/trace.js';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentApp, RunAppOptions } from '../toolkit/module.js';
 
@@ -101,6 +101,17 @@ export function defineEval<T = unknown>(
           await def.expect(typed, { trace: result.trace });
         } catch (e) {
           report = { ...report, ok: false, error: messageOf(e) };
+        }
+        // R7 质量闭环：用例结论挂成 trace 根 span 的 score 事件 —— eval 的 trace 自带
+        // 质量结论，下游 TraceSink / metrics 可直接聚合「这个 eval 的通过率」。
+        // 拿得到 trace 才挂：app.run 抛错（环境错误）时无 trace 可挂，跳过。
+        if (report.trace) {
+          attachScore(report.trace, {
+            name: 'eval',
+            value: report.ok ? 1 : 0,
+            source: def.name,
+            ...(report.error !== undefined ? { comment: report.error } : {}),
+          });
         }
         cases.push(report);
       }

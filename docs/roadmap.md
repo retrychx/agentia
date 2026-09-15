@@ -196,28 +196,24 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
 - canCall 能力级能力边（当前 tools 引用粒度为 provider）。
-- **质量闭环（score / 回流 / 标准对齐 —— 2026-09-15 对标 Langfuse / LangSmith / OTel GenAI 的调研结论）**：
-  对照后的取舍是「框架内建 trace + 零后端导出」的定位**不变**（不学它们建看板/CMS），要学的是
-  闭环与标准。各子项互相咬合、均不破零依赖底线，宜打包立项：
-  - **score 成为 trace 一等公民**：run 根 span 定义 `score` 事件（名字/数值/来源），`defineEval`
-    的结论自动落上去，metricsSink 聚合成 eval 指标 —— eval → trace → 监控一次打通
-    （对标 Langfuse `score()` / LangSmith feedback）；
-  - **线上 trace 回流 eval 数据集**：CLI 从 TaskStore 导出失败/抽样 trace 转成 `defineEval` 用例
-    （对标 LangSmith 的 add-to-dataset）—— 线上事故 → 回归测试，这是「trace 决定敢不敢上线」
-    的下一步；
-  - **OTLP 属性对齐 OTel GenAI 语义约定**（`gen_ai.*`）：让 agentia 的 trace 被
-    Langfuse / Grafana / Datadog 原生理解。注意约定仍在漂移（v1.37 `gen_ai.system` →
-    `gen_ai.provider.name`），映射必须集中在 `integrations/otlp.ts` 一个模块并钉住基准版本；
-    score 落地用 v1.38 的 `gen_ai.evaluation.result` 事件；
-  - **sessionId 提升为 trace 根属性**（thread 维度，可映射 `gen_ai.conversation.id`，近零成本）；
-  - **prompt 版本进 trace**：`@Prompt`/`asset()` 的版本或 hash 作 span 属性 —— 回答「质量退化
-    是不是换 prompt 导致的」；prompt CMS 本体不学；
-  - **在线评估采样**：生产流量按 N% 采样跑 LLM-judge 回挂 score —— 用采样 sink + judge +
-    score 事件拼，写成官方 recipe 而非框架功能；
-  - **trace diff / 分叉重放**（中期）：两条 run 的调用树 diff（哪回合开始分叉、tool 调用差异）
-    支撑 prompt/模型 A/B；replay + blackboard 可做「从第 N 回合改写消息重放」；
-  - **Grafana dashboard JSON 随仓库发布**（对着 metricsSink 指标族 —— 不建看板，但把
-    「接入即可视」的摩擦降到零）。
+- **质量闭环（score / 回流 / 标准对齐）✅ 主体已落地（2026-09-16，决策见 spec §10 当日条）**：
+  对照 Langfuse / LangSmith / OTel GenAI 后的取舍不变（框架内建 trace + 零后端导出，不学它们建看板/CMS）。
+  **已落地**：
+  - **score 一等公民**：`Score` + `attachScore`（run 根 `score` 事件，公共导出）；
+    `defineEval` 结论自动落 score（`{ name:'eval', value:0/1, source: eval 名 }`）；
+    metricsSink 聚合出 `agentia_score` / `agentia_score_total` 指标族 —— eval → trace → 监控一次打通；
+  - **OTLP 属性对齐 OTel GenAI semconv v1.37**（additive 保留旧 `usage.*` 键；映射集中
+    `integrations/otlp.ts` 单模块并钉住基准版本；score 译为 `gen_ai.evaluation.result`）；
+  - **sessionId 提升为 trace 根属性**（`session.id`，OTLP 映射 `gen_ai.conversation.id`，thread 维度）；
+  - **prompt 版本进 trace**：`PromptSpec.version` → run 根 `prompts.versions`（对照 `system.version`）；
+  - **线上 trace 回流 eval 数据集**：`agentia harvest <file.jsonl> [--failed] [--limit N] [--out]`
+    （框架侧 `harvestEvalCase` 刻意 module 级不进公共面；CLI 为去类型移植副本，逐字对拍守护）；
+  - **在线评估采样**：以 recipe 形态落地（usage-guide §6，sampleSink + LLM-judge + attachScore
+    + metricsSink 拼装）—— 是配方不是框架功能；
+  - **Grafana dashboard JSON 随仓库发布**：`examples/observability/grafana-dashboard.json`，
+    对着 metricsSink 指标族（导入方式见其 README「Grafana 看板」）。
+  **未做**：**trace diff / 分叉重放**（仍是中期候选：两条 run 的调用树 diff 支撑 prompt/模型 A/B，
+  replay + blackboard 做「从第 N 回合改写消息重放」）。
   HITL 耐用审批门由上面既有候选（`awaiting_approval` 状态机）覆盖，不重复列。
 - **维护：CI 抖动 —— 已定位并修掉（`toolTiming` 的「工具超时」，见 spec §10 2026-09-14）**。
   v0.2.2 窗口内 main 曾红一次（PR #8 那棵树），同树**重跑即绿** ⇒ 抖动而非回归。

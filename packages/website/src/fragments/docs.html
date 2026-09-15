@@ -474,6 +474,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><td>agentia dev</td><td>tsx watch 启动 src/main.ts：改能力文件自动重启。</td></tr>
             <tr><td>agentia doctor</td><td>装配体检：未登记/悬空能力、命名规范、重复条目。</td></tr>
             <tr><td>agentia report &lt;trace.jsonl&gt;</td><td>从 trace 落盘文件生成调优报告：能力耗时 / 成本 / 错误率排行（跨行按能力合并）。每行一个 JSON —— 裸 Trace，或含 <code>result.trace</code> 的 TaskRecord。<strong>文件要自己落</strong>：接一个 <code>TraceSink</code> 追加 JSON 行，或用 <code>FileTaskStore</code> 的导出文件。</td></tr>
+            <tr><td>agentia harvest &lt;trace.jsonl&gt;</td><td>把线上 trace 翻成 eval 用例脚手架（<code>--out &lt;file.ts&gt;</code> / <code>--failed</code> / <code>--limit N</code>）：scriptedClient 脚本按主循环 llm.turn 重建，expect 预填工具序列断言。<strong>脚手架不是成品</strong> —— assistant 文本是占位（trace 不记文本），人工核对后再进 CI。</td></tr>
             <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方能力包（defineModule 能力包）并登记到注册表。</td></tr>
           </tbody>
         </table></div>

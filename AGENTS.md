@@ -26,8 +26,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥
-│   ├── eval/                # evals（D2）：scriptedClient + defineEval —— **叶子消费模块**，
-│   │                        #   只依赖公共面、零反向依赖（谁都不 import 它）
+│   ├── eval/                # evals（D2）：scriptedClient + defineEval + harvest(trace → eval 用例骨架) ——
+│   │                        #   **叶子消费模块**，只依赖公共面、零反向依赖（谁都不 import 它）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）
 ├── tests/                   # node:test 单测，目录镜像 src（tests/transport/x → src/transport/x）
 │   ├── helpers.ts           # 共用 mock client（**忽略 on('text')**；要「真吐字」用 src/eval 的
@@ -59,7 +59,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── packages/
-│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/add），零运行时依赖
+│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/report/harvest/add），零运行时依赖
+│   │                        #   report = trace.jsonl → 调优报告；harvest = trace.jsonl → eval 用例骨架
+│   │                        #   （harvest 的用例生成器是框架 src/eval/harvest.ts 的去类型移植副本，
+│   │                        #   packages/cli/test 有逐字对拍守护，改生成格式必须两边同步）
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector；
 │   │                        #   inspector 有 Host 头校验，非 localhost 403）；dev/add 支持 Windows
 │   │                        #   （npmBin 的 .cmd 处理）；build 自给自足（copy-assets 在 trace-view

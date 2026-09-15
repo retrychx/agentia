@@ -184,4 +184,21 @@ describe('会话持久化接进 executeRun（C4）', () => {
     await executeRun({ messages: [user('q')], client });
     assert.deepEqual(sent[0], [user('q')]);
   });
+
+  it('session.id 落 run 根 attribute（多轮 run 按会话聚合的锚点）；不配 session 则无此键', async () => {
+    const { store } = spyStore();
+    const c1 = capturingClient([endTurnMsg('答')]);
+    const { result } = await executeRun({
+      messages: [user('问')],
+      client: c1.client,
+      session: { store, id: 's1' },
+    });
+    const root = result.trace.spans.find((s) => s.spanId === result.trace.rootSpanId)!;
+    assert.equal(root.attributes['session.id'], 's1');
+
+    const c2 = capturingClient([endTurnMsg('答')]);
+    const { result: r2 } = await executeRun({ messages: [user('问')], client: c2.client });
+    const root2 = r2.trace.spans.find((s) => s.spanId === r2.trace.rootSpanId)!;
+    assert.equal('session.id' in root2.attributes, false);
+  });
 });

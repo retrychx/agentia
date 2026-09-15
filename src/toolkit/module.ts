@@ -16,7 +16,8 @@ import { collectSubAgents, subagentToTool } from './subagent.js';
 import type { SubAgentCapability } from './subagent.js';
 import { collectSkills, skillToTool } from './skill.js';
 import type { SkillCapability } from './skill.js';
-import { collectPrompts } from './prompt.js';
+import { collectPromptEntries } from './prompt.js';
+import type { CollectedPrompts } from './prompt.js';
 import { applyMiddleware } from './middleware.js';
 import type { CapabilityMiddleware } from './middleware.js';
 import type { ContextPolicy } from '../engine/types.js';
@@ -169,6 +170,12 @@ export class AgentApp {
     maxEventChars?: number | false;
   };
   private _tools: AgentTool[] = [];
+  /**
+   * 装配期收集的 @Prompt 资产版本表（{ 最终菜单名: 版本 }，R7 质量闭环）：
+   * 与 this._tools 同一条收集路径（toolSources 收窄同样生效）；run() 固定传给
+   * engine 落 run 根 span 的 `prompts.versions`。菜单里没有任何带版本的 @Prompt 时为 undefined。
+   */
+  private readonly promptVersions: Record<string, string> | undefined;
   private readonly sinks: TraceSink[];
   /** 装配期那条中间件链的包裹函数：主菜单构造期已包好；per-run tools 覆盖在 run() 里现包 */
   private readonly wrapTools: (tools: AgentTool[]) => AgentTool[];
@@ -211,13 +218,13 @@ export class AgentApp {
     const plainByToken = new Map<Token, AgentTool[]>();
     const capabilitiesByToken = new Map<Token, SubAgentCapability[]>();
     const skillsByToken = new Map<Token, SkillCapability[]>();
-    const promptsByToken = new Map<Token, AgentTool[]>();
+    const promptsByToken = new Map<Token, CollectedPrompts>();
     for (const p of providerList) {
       const inst = this.di.resolve<object>(p.provide);
       plainByToken.set(p.provide, collectTools(inst));
       capabilitiesByToken.set(p.provide, collectSubAgents(inst));
       skillsByToken.set(p.provide, collectSkills(inst));
-      promptsByToken.set(p.provide, collectPrompts(inst));
+      promptsByToken.set(p.provide, collectPromptEntries(inst));
     }
 
     // 能力调用中间件：装配期包裹整个菜单（洋葱模型，对 engine 零侵入）；
@@ -263,7 +270,7 @@ export class AgentApp {
           resolveRefTools(`@Skill "${capability.name}"`, capability.spec.tools),
         ),
       );
-      const promptTools = promptsByToken.get(token) ?? [];
+      const promptTools = promptsByToken.get(token)?.tools ?? [];
       return [...plain, ...subTools, ...skillTools, ...promptTools];
     };
 
@@ -280,6 +287,13 @@ export class AgentApp {
     const sources = opts.toolSources
       ? [...new Set(opts.toolSources)]
       : providerList.map((p) => p.provide);
+    // @Prompt 资产版本表（R7）：沿主菜单同一条收集路径（sources 口径，toolSources
+    // 收窄同样生效）汇总各 @Prompt 的 最终菜单名→version；run() 固定传给 engine。
+    const promptVersions: Record<string, string> = {};
+    for (const token of sources) {
+      Object.assign(promptVersions, promptsByToken.get(token)?.versions);
+    }
+    this.promptVersions = Object.keys(promptVersions).length > 0 ? promptVersions : undefined;
     this._tools = [
       ...sources.flatMap((token) => {
         if (!this.di.has(token)) {
@@ -313,7 +327,7 @@ export class AgentApp {
           (plainByToken.get(p.provide)?.length ?? 0) +
           (capabilitiesByToken.get(p.provide)?.length ?? 0) +
           (skillsByToken.get(p.provide)?.length ?? 0) +
-          (promptsByToken.get(p.provide)?.length ?? 0);
+          (promptsByToken.get(p.provide)?.tools.length ?? 0);
         if (orphanCount > 0) {
           console.warn(
             `[agentia] 孤儿能力告警：provider "${p.provide}" 上的 ${orphanCount} 个能力不在 toolSources 内，` +
@@ -374,6 +388,9 @@ export class AgentApp {
       // 提示词版本化（D4）：system 是 SystemPrompt 实例时自动带上它的 version
       // （run 根 attribute `system.version`）；传已拼好的 SystemParam 则无版本可记。
       systemVersion: sys instanceof SystemPrompt ? sys.version : undefined,
+      // @Prompt 资产版本表（R7）：固定来自装配期收集（per-run opts 无此字段）；
+      // 无版本表的 app 传 undefined，engine 空表不记。
+      promptVersions: this.promptVersions,
       session: opts.session,
       rethrow: opts.rethrow,
       sinks: this.sinks,

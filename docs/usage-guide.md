@@ -132,6 +132,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `description` | 描述**何时该拉取**这段文本 |
 | `name` | 缺省取方法名 |
 | `schema` | 模板化入参 schema；缺省空对象（无参资产） |
+| `version` | 资产版本号（git hash / `'v3'` 等）；装配期随能力名收集，每次 run 落 run 根 span 的 `prompts.versions` attribute —— 见 §6「提示词版本化」。缺省（无版本）则该能力不进表 |
 
 `@Prompt` **只支持方法形态**（标准装饰器下字段拿不到值/类引用）。实例方法与静态方法都**沿继承链**收集（父类的 `@Prompt` 资产子类自动带上）。方法体内用 `asset(import.meta.url, './x.md')` 读同目录长文本。
 
@@ -423,6 +424,18 @@ process.on('SIGTERM', async () => {
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项 `OtlpExporterOptions`：`endpoint` / `headers` / `serviceName` / `timeoutMs`（单次导出超时，缺省 10000，非正数 = 不限 —— 裸 fetch 无超时，collector 半开连接会让 run 收尾永久挂起；超时按导出失败处理，不击穿 run） |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
+| `Score` | 质量评分：`{ name; value; source?; comment? }` —— LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 `value` 为 0–1（布尔结论用 0/1），`source` 记评分来源（eval 名 / `'human'` / judge 模型 id） |
+| `attachScore` | `attachScore(trace, score)`：把评分挂到 run 根 span（一条 `score` 事件，body 即 `Score`）。评分通常来自 run **之外**（跑完才评），所以走事件而非 span 字段；trace 找不到根 span 时静默忽略（观测不击穿业务） |
+
+**评分链路**（R7 质量闭环）：`attachScore` 写 run 根 `score` 事件 → OTLP 导出时译为 `gen_ai.evaluation.result`
+（`gen_ai.evaluation.score.name` / `.value`，`source` / `comment` 走自有 `agentia.score.*` 键）→
+`metricsSink` 聚合成 `agentia_score` 指标族（见 §6「指标」）。eval / 在线评估怎么用见 §6「evals」与「在线评估采样」。
+
+**OTLP 的 `gen_ai.*` 对齐**（R7，对齐 OTel GenAI semconv **v1.37**，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
+run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attributes 有 `session.id` 时另发 `gen_ai.conversation.id`）；
+`llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
+capability span 按前缀分：`subagent:*` → `invoke_agent` + `gen_ai.agent.name`，`skill:*` → `execute_tool` + `gen_ai.tool.name`；
+`score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处，下游（Langfuse / Grafana / Datadog）按 1.37+ 识别这批键做 GenAI 专项视图。
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
 > 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
@@ -552,6 +565,7 @@ const app = createApp({ system, providers: [...], tools });
 - 断言源是既有 `Trace`：「先 `search` 才 `summarize`」这类顺序断言全从 trace 读，框架不为此新增埋点。
 - `run()` **不抛**（用例失败进报告，一次跑完能看到所有回归，而不是修一个跑一次）；只有「应用建不起来」才冒泡 —— 那是环境错误，不是回归。失败 case 带 `trace`，直接看现场。
 - `scriptedClient` 的步骤**在 `finalMessage()` 成功返回后才前进**：抛错的步骤（函数步骤 `throw` 模拟 429）会在重试时**重放同一步**，想验重试就这么写。
+- **用例结论自动落 score**（R7）：每个用例跑完，结论以 `{ name: 'eval', value: 0|1, source: eval 名, comment: 失败原因 }` 自动 `attachScore` 到该用例的 trace —— eval 的 trace 自带质量结论，下游 sink / `metricsSink` 可直接聚合「这个 eval 的通过率」（`app.run` 抛错拿不到 trace 时不挂）。
 
 ```ts
 const ev = defineEval<{ summary: string }>({
@@ -571,6 +585,23 @@ const report = await ev.run();
 if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 ```
 
+### 线上 trace 回流 eval 数据集（`agentia harvest`）
+
+线上事故 → 回归用例：CLI 把 trace 落盘文件翻成 eval 用例脚手架。
+
+```bash
+agentia harvest trace.jsonl                    # 全部记录 → 脚手架打到 stdout
+agentia harvest trace.jsonl --failed --limit 5 --out evals/harvested.ts
+```
+
+- 输入同 `agentia report`：每行一个 JSON（裸 Trace，或含 `result.trace` / `trace` 的 TaskRecord，如 `FileTaskStore` 的导出）；`--failed` 只留失败记录。
+- 产物是**可粘贴进 eval 文件的用例字面量**：`client: scriptedClient([...])` 按 trace 的主循环 llm.turn 逐回合重建，`expect` 预填「主循环工具序列」的轨迹断言（文件顶部附跑法注释）。
+- ⚠️ **脚手架不是成品，人工核对后再进 CI**：
+  - **trace 不记 assistant 文本**（llm.turn 只记 usage/事件），脚本里的 text 块是占位 `'[harvest] assistant 文本未入 trace'`；
+  - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本（要覆盖子 agent 请单独写 eval）；
+  - 预填的 `expect` 是从原 trace **抄录的实际轨迹** —— 发生过 ≠ 应该发生；
+  - `EvalCase` 没有 `expect` 字段，粘贴时把断言搬进 `defineEval({ expect })`（脚手架注释会教）。
+
 ### 指标（从 trace 派生）
 
 | API | 说明 |
@@ -578,7 +609,7 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 | `metricsSink` | 进程内累加 + Prometheus 文本 / OTLP metrics；**天然满足 `TraceSink`** → `createApp({ sinks: [metricsSink()] })` 即接入，零新出口 |
 | `DEFAULT_BUCKETS` | 时长直方图的缺省桶边界（毫秒），可用 `buckets` 覆盖 |
 
-三个维度，全部从既有 trace 派生，**不需要在业务代码里埋点**：
+四个维度，全部从既有 trace 派生，**不需要在业务代码里埋点**：
 
 - **run 级** —— 总数 / 失败数 /四类 token / 成本 / 时长；
 - **能力级** —— 每个 `tool` / `skill` / `subagent` 的**调用次数、失败次数、耗时、token、成本**。
@@ -586,6 +617,10 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
   来自 `capability` span。**`@Prompt` 不建 span、无独立耗时，因此不产出能力指标**（如实缺省，不硬凑）。
 - **模型级** —— 按模型（`llm.turn` 的 span name）归因 turn 数 / token / 成本 / 耗时，并单独给出
   `model_unpriced_turns_total`（算不出成本的 turn 数 —— **成本护栏失效的显式信号**）。
+- **评分级**（R7）—— 来自 run 根 span 的 `score` 事件（`attachScore` 写入）：
+  `agentia_score{name,source}` gauge 记**最近一次**值（分数不是累加量），`agentia_score_total{name,source}` counter 记条数；
+  `snapshot().scores` 以 `name@source` 为键（source 缺省时裸 name）暴露 `{ value, count, sum }`（平均 = sum/count），
+  OTLP metrics payload 同样带这两个家族，`reset()` 一并清空。
 
 接完 `GET /metrics` 直接回 `render()` 即可 —— 交给 `createHttpHandler({ metrics })` 就是一行的事
 （见 §6 HTTP 端点速查）。
@@ -618,7 +653,7 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 | 成员 | 说明 |
 |---|---|
 | `export` | `TraceSink` 的实现（run 收尾投递）—— 也是接进 `sinks` 的形状 |
-| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, droppedCapabilities }` |
+| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, scores, droppedCapabilities }` |
 | `render` | Prometheus 文本（`/metrics` 直接回它） |
 | `flush` | 主动导出一次（`export:'otlp'` 时有意义；prometheus 模式为空操作） |
 | `stop` | 停掉定时导出（进程收尾 / 测试用） |
@@ -695,12 +730,44 @@ const app = await createApp({ /* … */ sinks: [jsonl] });
 函数型选项（`summarize` / `confirm` 之类）只记「配没配」，不记函数体。
 截断关掉时记的是 `'off'` 而不是 `false` —— 后者在日志/看板里会被读成「上限为 0」。
 
-### 提示词版本化
+### 提示词版本化与会话标记（run 根 attribute）
 
 - `new SystemPrompt({ version: 'git-abc123' })` → 自动写到 **run 根 span 的 `system.version` attribute**：trace 里能查出「这个结果是哪个版本的提示词产出的」（换 prompt 前后对比、排查回归都靠它）。
 - 版本号怎么来（git sha / 语义版本 / 手工）由你决定 —— 框架**不做**版本库与回滚平台。
 - 单次 `app.run(..., { system })` 覆盖时，版本**跟当次那个 `SystemPrompt` 走**；`system` 传已拼好的 `SystemParam` 则无版本可记（不写空串冒充实有版本）。
 - 直连 `runAgent` / `executeRun` 时可用引擎级选项 `systemVersion` 显式给。
+- **`@Prompt` 资产版本**（R7）：`@Prompt({ version })` 声明后，装配期把菜单里全部带版本的 @Prompt 收集成 `{ 能力名: 版本 }` 表（与主菜单同一条收集路径，`toolSources` 收窄同样生效），每次 run 落 run 根 span 的 `prompts.versions` attribute（`name@ver` 逗号拼接、按名排序、空表不记）—— 质量回归能定位到具体资产版本。直连 `runAgent` 时用引擎级选项 `promptVersions` 显式给。
+- **会话标识**（R7 thread 维度）：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` 时用引擎级选项 `sessionId` 显式给。
+
+### 在线评估采样（recipe，不是框架功能）
+
+生产流量按 N% 采样跑 LLM-judge、把分数回挂 trace —— 用**现有 sink 机制**拼：采样（`examples/observability` 的 `sampleSink` 配方）+ 对抽中的 run 调一次 judge（一次 `app.run` 或裸 client 调用）+ `attachScore` 回挂 + `metricsSink` 聚合。框架不提供 judge 子系统 —— 评什么、用什么模型评、采样率多少，都是你的策略：
+
+```ts
+import { attachScore, createAnthropicClient, metricsSink } from '@migor/agentia';
+import { sampleSink } from '@migor/agentia-observability'; // examples/observability
+
+const metrics = metricsSink();
+const judge = createAnthropicClient(); // judge 也可以就是同一个 app 的一次 run
+
+const onlineEval = sampleSink({
+  rate: 0.05,                      // 抽 5%（失败 run 永不采样掉，见 observability.md 配方 2.3）
+  sinks: [{
+    async export(trace) {
+      // 你的 judge：读 trace 给个 0–1 分（一次 app.run / 裸 client 调用随你）
+      const { value, comment } = await runMyJudge(judge, trace);
+      // 回挂到这条 trace 的根 span：score 事件 → OTLP gen_ai.evaluation.result / metrics agentia_score
+      attachScore(trace, { name: 'faithfulness', value, source: 'judge:claude-opus-5', comment });
+    },
+  }],
+});
+
+createApp({ /* … */ sinks: [onlineEval, metrics] }); // metrics 必须同链，才聚合得到分
+```
+
+- 顺序要紧：**judge sink 在 `metricsSink` 之前**，分数事件才进指标（sink 数组顺序即投递顺序）。
+- judge 本身的 run 也会产生 trace —— 给它单独一个 app / runName，或按 run 名在 judge sink 里跳过自己，避免「评估评估的评估」。
+- 成本自控：judge 调一次模型就是一份钱，采样率与 judge 模型档位是你的旋钮（judge 的 run 同样受 `maxCostUsd` 等护栏约束）。
 
 ### 多租户配额（组合既有缝，不是子系统）
 
@@ -844,6 +911,8 @@ const callable = {
 | `@Prompt` 没有能力指标 | 资产类能力不建 span、无独立耗时，故不出现在能力排行里（这是刻意的：硬凑一个假耗时会误导调优） |
 | 能力标签有基数上限 | `labelMode:'capability'`（缺省）+ `maxCapabilities`（缺省 200），超出的能力归入 `capability="__other__"`；`snapshot().droppedCapabilities` 给出被归并的能力个数。要完整明细请用 `buildRunReport`（不设上限） |
 | 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
+| `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
+| 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工介入只到「闸门」 | `middleware` 能 `await` 审批决策再放行；**跨进程挂起/续跑框架不做** —— `RunStatus` 无「待批准」态、循环位置不落库，`traceToMessages` 重放有损，不能拿它假装续跑（要跨重启审批请上工作流引擎）|
 | 内容护栏不给实现 | 同「配额」：只给缝（入参包 `app.run` / 工具前 `middleware` / 出参包返回值或 `sinks`），策略（正则 / 分类器 / 外部 API）是你的 |

@@ -13,7 +13,9 @@ export type {
   TraceSink,
   CapabilityType,
   Usage,
+  Score,
 } from './core/trace.js';
+export { attachScore } from './core/trace.js';
 export type {
   AgentTool,
   JsonSchema,

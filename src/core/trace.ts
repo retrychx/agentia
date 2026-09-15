@@ -73,6 +73,32 @@ export interface Trace {
 }
 
 /**
+ * 质量评分（R7 质量闭环）：LLM-judge / 人工标注 / eval 结论挂到 trace 上，
+ * 让「这条 run 好不好」与「这条 run 发生了什么」同处一份数据。
+ * 评分通常来自 run **之外**（跑完后才评），所以走事件而非 span 字段。
+ */
+export interface Score {
+  /** 评分维度名（如 'faithfulness'、'eval'）—— 指标聚合的 label */
+  name: string;
+  /** 数值分；约定 0–1（布尔结论用 0/1） */
+  value: number;
+  /** 评分来源（eval 名 / 'human' / judge 模型 id 等） */
+  source?: string;
+  /** 备注（失败原因、评语） */
+  comment?: string;
+}
+
+/**
+ * 把评分挂到 trace 根 span（一条 `score` 事件，body 即 Score）。
+ * trace 找不到根 span 时静默忽略（观测不击穿业务）；多次调用即多条事件（不同维度各记各的）。
+ * 出口映射：OTLP 导出时译为 `gen_ai.evaluation.result` 事件，metricsSink 聚合为 score 指标族。
+ */
+export function attachScore(trace: Trace, score: Score): void {
+  const root = trace.spans.find((s) => s.spanId === trace.rootSpanId);
+  root?.events.push({ time: Date.now(), name: 'score', body: score });
+}
+
+/**
  * trace 出口：run 收尾（成功或失败）后，框架把【完整 Trace】交给每个 sink。
  * sink 抛错由框架吞掉，绝不影响 run 结果（与 memory 回写同款防护）。
  * 形状与 OtlpExporter 一致 —— createOtlpExporter() 的返回值天然满足本接口。

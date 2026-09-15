@@ -30,8 +30,8 @@ interface TraceLike {
   spans?: unknown[];
 }
 
-/** 从一行 JSON 里把 trace 抠出来（裸 Trace 或包在记录里的 Trace） */
-function extractTrace(v: unknown): TraceLike | null {
+/** 从一行 JSON 里把 trace 抠出来（裸 Trace 或包在记录里的 Trace）。harvest 命令也复用它。 */
+export function extractTrace(v: unknown): TraceLike | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
   if (Array.isArray(o.spans)) return o as TraceLike;

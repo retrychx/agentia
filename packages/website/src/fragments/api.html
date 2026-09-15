@@ -24,7 +24,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>177</b> 个导出</span>
+          <span class="api-chip"><b>179</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>1</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -63,6 +63,8 @@
             <tr><td>SpanError</td><td><code>{ type; message; retryable }</code></td><td>错误分类；retryable 标记 429 / 5xx / 网络类可安全重试（重试逻辑消费它）。</td></tr>
             <tr><td>SpanStatus / SpanId / TraceId</td><td><code>'ok' | 'error'</code> / <code>string</code> / <code>string</code></td><td>基础类型别名。</td></tr>
             <tr><td>TraceSink</td><td><code>{ export(trace) → void | Promise&lt;void&gt; }</code></td><td>trace 出口：run 收尾（成功 / 失败）都投递，sink 抛错被吞、不影响 run。OTLP 导出器与 <code>metricsSink()</code> 都天然满足它。</td></tr>
+            <tr><td>Score</td><td><code>{ name; value; source?; comment? }</code></td><td>质量评分（R7 质量闭环）：LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 value 为 0–1（布尔结论用 0/1），source 记评分来源（eval 名 / 'human' / judge 模型 id）。</td></tr>
+            <tr><td>attachScore</td><td><code>(trace: Trace, score: Score) → void</code></td><td>把评分挂到 trace 根 span（一条 <code>score</code> 事件，body 即 Score）；评分通常来自 run 之外，故走事件而非 span 字段。出口映射：OTLP 译为 <code>gen_ai.evaluation.result</code>，metricsSink 聚合为 <code>agentia_score</code> 指标族。</td></tr>
             <tr><td>validateJsonSchema</td><td><code>(schema: JsonSchema, input: unknown) → string | null</code></td><td>JSON Schema 子集校验（fromZod 接入时先走 zod），返回首条错误消息或 null。</td></tr>
             <tr><td>combineSignals</td><td><code>(...signals: (AbortSignal | undefined)[]) → AbortSignal</code></td><td>合成多个中断源（调用方 / 超时 / 断连），任一触发即中止（Node 18 无 <code>AbortSignal.any</code>）。</td></tr>
             <tr><td>Blackboard / BlackboardKey / BlackboardValue / BlackboardSeed</td><td><code>interface Blackboard {}</code> 等</td><td>黑板类型链路：声明合并 <code>Blackboard</code> 后，<code>RunContext.get/set</code> 与 <code>run({ blackboard })</code> 种子获得键补全 + 拼写检查 + 值类型；不声明时键为 <code>string</code>、值为 <code>unknown</code>。</td></tr>
@@ -123,6 +125,8 @@
             <tr><td>toolTimeoutMs</td><td><code>number</code></td><td>单工具执行超时（毫秒），缺省 0 = 不限。超时<strong>不杀 run</strong>：该条 tool_result 记 is_error。⚠️ 是「放弃等待」不是取消。</td></tr>
             <tr><td>maxToolConcurrency</td><td><code>number</code></td><td>同一回合内并行工具上限；缺省 Infinity（全并行）。</td></tr>
             <tr><td>systemVersion</td><td><code>string</code></td><td>写进 run 根 attribute <code>system.version</code>；走 <code>app.run</code> 时由 <code>SystemPrompt({ version })</code> 自动带上。</td></tr>
+            <tr><td>promptVersions</td><td><code>Record&lt;string, string&gt;</code></td><td>菜单内 @Prompt 资产的版本表（<code>{ 能力名: 版本 }</code>）：写进 run 根 attribute <code>prompts.versions</code>（<code>name@ver</code> 逗号拼接、排序、空表不记）；走 <code>app.run</code> 时由装配期收集自动带上。</td></tr>
+            <tr><td>sessionId</td><td><code>string</code></td><td>写进 run 根 attribute <code>session.id</code>（OTLP 导出时映射 <code>gen_ai.conversation.id</code>），多轮 run 由此按会话聚合（thread 维度）；走 <code>app.run</code> / <code>executeRun</code> 时给了 <code>session</code> 就自动带上。</td></tr>
           </tbody>
         </table></div>
       </section>
@@ -196,7 +200,7 @@
             <tr><td>HealthResponse</td><td><code>{ ok; inFlight; uptimeMs; draining }</code></td><td><code>GET /healthz</code> 的返回：不鉴权、停机中也回 200；ok 恒 true（能回响应即进程活着），就绪与否看 draining。</td></tr>
             <tr><td>RunHttpResponse / TaskSubmitBody</td><td><code>{ runId; …result }</code> / <code>{ input; options?; idempotencyKey? }</code></td><td>HTTP 契约类型。</td></tr>
             <tr><td>registerDefaultTraceSink</td><td><code>(sink: TraceSink) → void</code></td><td>注册全局默认 sink（createApp 构造期快照合并，已建应用不受后续注册影响）。</td></tr>
-            <tr><td>createOtlpExporter</td><td><code>({ endpoint, headers?, serviceName? }) → { export(trace) → Promise&lt;void&gt; }</code></td><td>trace 导出到任意 OTLP/HTTP 收集器（缺省 service.name 为 'agentia'）；节点 span 展开成 attributes + events，零依赖。</td></tr>
+            <tr><td>createOtlpExporter</td><td><code>({ endpoint, headers?, serviceName? }) → { export(trace) → Promise&lt;void&gt; }</code></td><td>trace 导出到任意 OTLP/HTTP 收集器（缺省 service.name 为 'agentia'）；节点 span 展开成 attributes + events，零依赖。属性对齐 OTel GenAI semconv v1.37（additive：追加 <code>gen_ai.*</code> 键、保留旧键），score 事件译为 <code>gen_ai.evaluation.result</code>。</td></tr>
             <tr><td>createOpenAIClient</td><td><code>(opts?: { apiKey?; baseURL?; fetchImpl?; stream? }) → ModelClient</code></td><td>OpenAI 兼容端点（含 DeepSeek 等）适配成 ModelClient：<strong>真流式</strong>、图片块转 image_url、转发 signal。<code>stream: false</code> 退回一次性。</td></tr>
             <tr><td>createAnthropicClient</td><td><code>(opts?: { apiKey?; baseURL?; … }) → ModelClient</code></td><td>默认 ModelClient（Anthropic Messages API）。自定义只传 <code>apiKey</code> / <code>baseURL</code>（缺省走环境变量），<strong>不需要直接依赖厂商 SDK</strong>。</td></tr>
             <tr><td>AnthropicClientOptions</td><td><code>{ apiKey?; baseURL?; … }</code></td><td>createAnthropicClient 的可配置项（其余参数原样透传 SDK）。</td></tr>
@@ -217,10 +221,10 @@
             <tr><td>McpToolInfo</td><td><code>{ name; description?; inputSchema? }</code></td><td>tools/list 条目的结构面子集；inputSchema 已是 JSON Schema → 原样当 input_schema 用。</td></tr>
             <tr><td>McpToolsOptions</td><td><code>{ prefix?; server?; timeoutMs?=60000 }</code></td><td>缺省前缀 <code>mcp_&lt;server&gt;_</code>（没给 server 时 <code>mcp_</code>）；timeoutMs 是单次调用超时（放弃等待，非取消）。</td></tr>
             <tr><td>MCP_DEFAULT_TIMEOUT_MS</td><td><code>60000</code></td><td>桥的缺省单次调用超时。</td></tr>
-            <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。三个维度都从既有 trace 派生（<strong>不用埋点</strong>）：run 级、<strong>能力级</strong>（每个 tool/skill/subagent 的调用数、失败数、耗时、token、成本 —— 工具读 turn 上的 <code>tool.output</code> 事件，skill/subagent 读 capability span）、模型级（按模型归因，另出 <code>model_unpriced_turns_total</code>）。</td></tr>
+            <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。维度都从既有 trace 派生（<strong>不用埋点</strong>）：run 级、<strong>能力级</strong>（每个 tool/skill/subagent 的调用数、失败数、耗时、token、成本 —— 工具读 turn 上的 <code>tool.output</code> 事件，skill/subagent 读 capability span）、模型级（按模型归因，另出 <code>model_unpriced_turns_total</code>）、评分级（<code>agentia_score</code> gauge + <code>agentia_score_total</code> counter，来自 run 根的 score 事件）。</td></tr>
             <tr><td>MetricsSink</td><td><code>TraceSink &amp; { snapshot(); render(); flush(); stop(); reset() }</code></td><td>snapshot 给数值（含 <code>capabilities</code> / <code>models</code> / <code>droppedCapabilities</code>），render 给 Prometheus 文本（<code>/metrics</code> 直接回它），flush 主动导出一次（OTLP 模式），stop 停掉定时导出，reset 清空累计。</td></tr>
             <tr><td>MetricsSinkOptions</td><td><code>{ export?='prometheus' | 'otlp'; endpoint?; intervalMs?=60000; resourceAttributes?; serviceName?; onExportError?; windowSize?=1024; prefix?='agentia_'; labelMode?='capability' | 'kind' | 'none'; maxCapabilities?=200; buckets? }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）。时长给两种口径<strong>并存</strong>：histogram（<code>*_bucket/_sum/_count</code>，累积语义、可跨实例聚合）+ 窗口内精确分位（gauge、单实例好读）。<code>export:'otlp'</code> 零依赖手写 OTLP/JSON，<strong>必须同时给 endpoint</strong>（不给就构造期抛错）。<code>labelMode</code>/<code>maxCapabilities</code> 防能力标签爆炸（超限归入 <code>capability="__other__"</code>）。</td></tr>
-            <tr><td>MetricsSnapshot / CapabilityMetrics / ModelMetrics</td><td><code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd; capabilities; models; droppedCapabilities }</code></td><td><code>capabilities</code> 按能力 label 给 calls/errors/分位/tokens/costUsd（工具没有 token 语义，为 null）；<code>models</code> 按模型给 turns/tokens/costUsd/<strong>unpricedTurns</strong>/分位。</td></tr>
+            <tr><td>MetricsSnapshot / CapabilityMetrics / ModelMetrics</td><td><code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd; capabilities; models; scores; droppedCapabilities }</code></td><td><code>capabilities</code> 按能力 label 给 calls/errors/分位/tokens/costUsd（工具没有 token 语义，为 null）；<code>models</code> 按模型给 turns/tokens/costUsd/<strong>unpricedTurns</strong>/分位；<code>scores</code> 按评分维度（键 <code>name@source</code>）给最近一次值 / 条数 / 合计（来自 <code>attachScore</code> 的 score 事件）。</td></tr>
             <tr><td>DEFAULT_BUCKETS</td><td><code>readonly number[]</code></td><td>时长直方图的缺省桶边界（毫秒）：25 / 50 / 100 / 250 / 500 / 1k / 2.5k / 5k / 10k / 30k。可用 <code>buckets</code> 覆盖（须严格升序）。</td></tr>
             <tr><td>buildRunReport</td><td><code>(trace: Trace) → RunReport</code></td><td><strong>调优报告</strong>（纯函数）：能力按总耗时降序排行（calls / errors / total / max / tokens / cost）、模型归因、未定价模型清单 —— 回答「该拧哪个旋钮」。单条 run 样本少，故以 total / max 为主，不给分位。</td></tr>
             <tr><td>mergeRunReports</td><td><code>(reports: RunReport[]) → RunReport</code></td><td>跨 run 汇总（分位只在多条 run 上才有统计意义）：calls/errors/耗时累加，能力按新的总耗时重排，未定价模型取并集。</td></tr>
@@ -291,7 +295,7 @@
             <tr><td>collectSubAgents / subagentToTool</td><td><code>(instance) → SubAgentCapability[]</code> / <code>(capability, resolveTools) → AgentTool</code></td><td>扫描 @SubAgent 方法 / 编译成 AgentTool（子循环复用 ctx.client 与 recorder）。</td></tr>
             <tr><td>SubAgentCapability</td><td><code>{ name; description; inputSchema; spec }</code></td><td>子代理能力元数据。</td></tr>
             <tr><td>Prompt</td><td><code>@Prompt(spec: PromptSpec)</code> 方法装饰器</td><td>纯文本资产编译成无副作用的拉取型工具；每次调用重算（volatile 语义）。</td></tr>
-            <tr><td>PromptSpec</td><td><code>{ name?; description; schema? }</code></td><td>description 写清何时该拉取，模型据此决定调用；schema 缺省空对象（无参资产）。</td></tr>
+            <tr><td>PromptSpec</td><td><code>{ name?; description; schema?; version? }</code></td><td>description 写清何时该拉取，模型据此决定调用；schema 缺省空对象（无参资产）；version 是资产版本号 —— 装配期随能力名收集，每次 run 落 run 根 <code>prompts.versions</code> attribute。</td></tr>
             <tr><td>collectPrompts</td><td><code>(instance: object) → AgentTool[]</code></td><td>扫描 @Prompt 方法（static 方法亦可）。</td></tr>
             <tr><td>asset</td><td><code>(base: string | URL, rel: string) → string</code></td><td><code>asset(import.meta.url, './system.md')</code> 相对能力目录读文本资产；每次调用现读不缓存。</td></tr>
             <tr><td>loadEnvFile</td><td><code>(options?: LoadEnvOptions) → Record&lt;string, string&gt;</code></td><td>读一份 <code>.env</code> 进 <code>process.env</code>，返回<strong>本次真正生效</strong>的键。框架<strong>不自动</strong>读 .env —— 读哪个文件、什么时候读由宿主的启动代码决定（脚手架 <code>main.ts</code> 首行已内置）。文件不存在静默返回 <code>{}</code>；<strong>真实环境变量优先</strong>，已定义的键不被覆盖（含空串）。</td></tr>

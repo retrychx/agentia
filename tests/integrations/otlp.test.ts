@@ -113,7 +113,11 @@ describe('createOtlpExporter', () => {
       assert.equal(root.startTimeUnixNano, String(1000 * 1e6));
       assert.equal(root.endTimeUnixNano, String(2000 * 1e6));
       assert.deepEqual(root.status, { code: 'STATUS_CODE_OK' });
-      assert.deepEqual(root.attributes, [{ key: 'agent.name', value: { stringValue: 'fake' } }]);
+      assert.deepEqual(root.attributes, [
+        { key: 'agent.name', value: { stringValue: 'fake' } },
+        { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
+        { key: 'gen_ai.agent.name', value: { stringValue: 'run' } },
+      ]);
 
       // 子 span：parent hex、ERROR 状态带 message、usage 展平、events 映射
       const child = spans[1];
@@ -195,6 +199,141 @@ describe('createOtlpExporter', () => {
       const root = captured[0].body.resourceSpans[0].scopeSpans[0].spans[0];
       assert.equal(root.startTimeUnixNano, String(BigInt(epochMs) * 1_000_000n));
       assert.equal(root.endTimeUnixNano, String(BigInt(epochMs + 5) * 1_000_000n));
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('GenAI semconv：三类 span 追加 gen_ai.* 键（既有 usage.* 保留），score 事件译为 gen_ai.evaluation.result', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const traceId = randomUUID();
+      const rootId = randomUUID();
+      const trace: Trace = {
+        traceId,
+        rootSpanId: rootId,
+        status: 'ok',
+        totalUsage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        },
+        spans: [
+          {
+            spanId: rootId,
+            traceId,
+            parentSpanId: null,
+            kind: 'run',
+            name: 'my-app',
+            startedAt: 1000,
+            endedAt: 2000,
+            status: 'ok',
+            attributes: { 'session.id': 'sess-1' },
+            events: [
+              {
+                time: 1900,
+                name: 'score',
+                body: { name: 'faithfulness', value: 0.75, source: 'eval-x', comment: 'ok' },
+              },
+              { time: 1901, name: 'score', body: { name: 'pass', value: 1 } }, // 整型分、无 source/comment
+              { time: 1902, name: 'compaction', body: { dropped: 3 } }, // 非 score 事件原名转发
+            ],
+          },
+          {
+            spanId: randomUUID(),
+            traceId,
+            parentSpanId: rootId,
+            kind: 'llm.turn',
+            name: 'claude-opus-5',
+            startedAt: 1100,
+            endedAt: 1500,
+            status: 'ok',
+            usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
+            attributes: {},
+            events: [],
+          },
+          {
+            spanId: randomUUID(),
+            traceId,
+            parentSpanId: rootId,
+            kind: 'capability',
+            name: 'skill:search',
+            startedAt: 1500,
+            endedAt: 1600,
+            status: 'ok',
+            attributes: { skill: 'search' },
+            events: [],
+          },
+          {
+            spanId: randomUUID(),
+            traceId,
+            parentSpanId: rootId,
+            kind: 'capability',
+            name: 'subagent:researcher',
+            startedAt: 1600,
+            endedAt: 1800,
+            status: 'ok',
+            attributes: { subagent: 'researcher' },
+            events: [],
+          },
+        ],
+      };
+      await createOtlpExporter({ endpoint: base }).export(trace);
+
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      const attrByKey = (span: any) =>
+        Object.fromEntries(
+          span.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
+        );
+
+      // run 根 span：invoke_agent + agent.name + conversation.id（session.id 原样保留）
+      const root = attrByKey(spans[0]);
+      assert.deepEqual(root['gen_ai.operation.name'], { stringValue: 'invoke_agent' });
+      assert.deepEqual(root['gen_ai.agent.name'], { stringValue: 'my-app' });
+      assert.deepEqual(root['gen_ai.conversation.id'], { stringValue: 'sess-1' });
+      assert.deepEqual(root['session.id'], { stringValue: 'sess-1' });
+
+      // llm.turn：chat + request.model + usage token（int），既有 usage.* 仍在
+      const turn = attrByKey(spans[1]);
+      assert.deepEqual(turn['gen_ai.operation.name'], { stringValue: 'chat' });
+      assert.deepEqual(turn['gen_ai.request.model'], { stringValue: 'claude-opus-5' });
+      assert.deepEqual(turn['gen_ai.usage.input_tokens'], { intValue: '10' });
+      assert.deepEqual(turn['gen_ai.usage.output_tokens'], { intValue: '5' });
+      assert.deepEqual(turn['usage.inputTokens'], { intValue: '10' });
+      assert.deepEqual(turn['usage.outputTokens'], { intValue: '5' });
+
+      // capability：skill → execute_tool + tool.name；subagent → invoke_agent + agent.name
+      const skill = attrByKey(spans[2]);
+      assert.deepEqual(skill['gen_ai.operation.name'], { stringValue: 'execute_tool' });
+      assert.deepEqual(skill['gen_ai.tool.name'], { stringValue: 'search' });
+      const sub = attrByKey(spans[3]);
+      assert.deepEqual(sub['gen_ai.operation.name'], { stringValue: 'invoke_agent' });
+      assert.deepEqual(sub['gen_ai.agent.name'], { stringValue: 'researcher' });
+
+      // score 事件 → gen_ai.evaluation.result；非 score 事件名不变
+      const events = spans[0].events;
+      assert.equal(events[0].name, 'gen_ai.evaluation.result');
+      const scoreAttrs = Object.fromEntries(
+        events[0].attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
+      );
+      assert.deepEqual(scoreAttrs['gen_ai.evaluation.score.name'], {
+        stringValue: 'faithfulness',
+      });
+      assert.deepEqual(scoreAttrs['gen_ai.evaluation.score.value'], { doubleValue: 0.75 });
+      assert.deepEqual(scoreAttrs['agentia.score.source'], { stringValue: 'eval-x' });
+      assert.deepEqual(scoreAttrs['agentia.score.comment'], { stringValue: 'ok' });
+
+      // 整型分也发 doubleValue；无 source/comment 时这两个键不出现
+      assert.equal(events[1].name, 'gen_ai.evaluation.result');
+      const bare = Object.fromEntries(
+        events[1].attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
+      );
+      assert.deepEqual(bare['gen_ai.evaluation.score.value'], { doubleValue: 1 });
+      assert.equal('agentia.score.source' in bare, false);
+      assert.equal('agentia.score.comment' in bare, false);
+
+      assert.equal(events[2].name, 'compaction');
     } finally {
       await close(server);
     }
