@@ -177,7 +177,7 @@
             <tr><td>FileTaskStore</td><td><code>new FileTaskStore(file)</code></td><td>JSONL 一行一快照落盘；宿主重启后 <code>resumePending()</code> 续跑 queued/running。</td></tr>
             <tr><td>SqliteTaskStore</td><td><code>new SqliteTaskStore(path)</code></td><td>node:sqlite 落库（WAL 读写不互斥），支持 <code>':memory:'</code>。</td></tr>
             <tr><td>RedisTaskStore</td><td><code>new RedisTaskStore(client, { prefix?, ttlSeconds? })</code></td><td>duck-typed Redis 客户端（ioredis/node-redis 均可，可选 peer），TaskStore 方法支持异步。</td></tr>
-            <tr><td>RedisLike / RedisTaskStoreOptions / RedisSetOptions</td><td><code>{ get; set; del; keys | scanIterator }</code> 等</td><td>Redis 客户端的最小结构面与选项类型（框架不 import redis 包）。</td></tr>
+            <tr><td>RedisLike / RedisTaskStoreOptions / RedisSetOptions</td><td><code>{ get; set; del; expire?; keys | scanIterator }</code> 等</td><td>Redis 客户端的最小结构面与选项类型（框架不 import redis 包）。TTL 经 <code>expire(key, seconds)</code> 施加（两家客户端同名同形）；<code>set</code> 只传两参 —— 尾参的选项形状两家相反，取任何一种都会在另一家上静默失效。</td></tr>
             <tr><td>MaybePromise&lt;T&gt;</td><td><code>T | Promise&lt;T&gt;</code></td><td>同步 / 异步实现统一形态（调用方 await 兼容两种）。</td></tr>
           </tbody>
         </table></div>

@@ -966,6 +966,61 @@ server（需要网络 / uv），而本地链必须离线可跑。⇒ 二者保�
 `AGENTS.md` 的验证顺序与 lint 条目；`CONTRIBUTING.md` 的「提交前必须跑」与坑表。
 **已有决策记录保留原样**（上一条里 `flex-basis: 100%` 那半句已被本条 a 段取代，标注而不改写）。
 
+### 2026-09-15（发布后更正）：RedisTaskStore 的 TTL 改走 `EXPIRE` —— 「位置参数形态两者通吃」是错的
+
+**背景**：0.4.1 的 ⑦ 条把 `RedisLike.set` 从对象形态 `set(k, v, { EX: n })` 改成位置参数形态
+`set(k, v, 'EX', n)`，理由是「位置参数是 ioredis 与 node-redis 的公共形态」。**后半句不成立**，
+而它随 0.4.1 发布出去了。
+
+**证据（拿真包跑它的命令序列化器，不是推断）**：
+
+```
+node-redis v6.2.1  @redis/client/dist/lib/commands/SET.js 的 parseCommand
+  parseCommand(p,'k','v',{EX:60}) → ['SET','k','v','EX','60']   ✅ TTL 生效
+  parseCommand(p,'k','v','EX',60) → ['SET','k','v']             ❌ TTL 被丢
+node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样结果
+```
+
+**根因**：`SET` 的命令定义只声明 `(key, value, options)` **三个形参**，多出来的位置参数被 JS
+直接丢弃 —— **不报错、不警告**。所以对 node-redis 用户，`ttlSeconds` 此前**完全不生效**：键永不过期、
+`list()` 无锁增长，且没有任何信号。而**旧的对象形态在 node-redis 上是正常的** ⇒ 这是一次
+「修好 ioredis、静默弄坏 node-redis」的回归。
+
+**为什么没被门禁抓到（本条最值钱的一课）**：用例里那个 `NodeRedisFake` 是**照着这个信念写的**
+（注释原文「对象选项与 legacy 变参**都**接受」）—— 它断言的是作者的假设，不是库的行为，于是
+测试全绿。**fake 只能模拟实测过的形态，并注明出处与版本**；凡「A 与 B 都兼容」的结论，至少对
+一个真包执行一次它的序列化/解析路径取 argv 证据。同一课已记入 `focused-review-fix-round` 的坑表。
+
+**更正后的契约**：
+- `RedisLike.set(key, value)` —— **只两参**，是两家唯一无歧义的公共形态（尾参形状两家相反：
+  ioredis 认 `('EX', n)`、node-redis 认 `{ EX: n }`，取任何一种都会在另一家上失败）。
+- `RedisLike.expire?(key, seconds)` —— 两家**同名同形**，TTL 一律走它。
+- `RedisTaskStore`：`ttlSeconds > 0` 时 `expire` **必需**，构造期校验、缺失即抛错（静默失效比
+  启动期报错难查得多）；不设 TTL 时不要求。
+- **取舍（有意）**：`SET` + `EXPIRE` 两条命令、**非原子** —— 两步之间进程被杀会留下一个没有 TTL
+  的键（多活一条本该到期的记录），不损坏数据。TTL 只是查询窗口，用这个窗口换「两家客户端都真
+  生效」。
+- `RedisSetOptions` 保留导出（公共面 + 官网 API 页），但已无人使用 —— 注释改为如实说明历史。
+  `RedisSetArgs`（内部类型，从未进 `index.ts`）删除。
+
+**门禁**：`NodeRedisFake` 重写为**照实测**的形态（`set` 只认 options 对象、位置参数按真实行为
+丢弃，并逐条记录 argv）；新增 3 条用例（TTL 必须落在 `EXPIRE` 且 `SET` 只两参 / 无 TTL 时不发
+`EXPIRE` / 缺 `expire` 时构造期抛错）。**反向验证**：去掉 `applyTtl` 调用、去掉构造期校验
+—— 两次都精确挂掉对应用例。
+
+**影响面**：`docs/usage-guide.md` 的 `RedisTaskStore` 表行（改成如实口径）、`packages/website`
+的 API 页 `RedisLike` 行（结构面补 `expire?`）、`src/store/redisStore.ts` 的类注释与
+`RedisSetOptions` 注释。本轮不改任何行为缺省：不设 `ttlSeconds` 时依旧只 `SET`、依旧不过期。
+
+**附：同轮修掉 `e2e-deploy` 的端口 TOCTOU flake**（本轮跑全链时当场撞上）。
+`freePort()` 是「`listen(0)` 探到端口 → `close()` → 子进程再 `bind`」，两步之间那个临时端口
+可能被系统分给别的连接 —— 实测报 `EADDRINUSE: ::53174`，而症状被包成**「示例进程启动即退出」**，
+读起来像示例或实现坏了。修法：新增 `startExampleRetrying()`，**只对端口争用**换端口重试（3 次），
+其他启动失败原样抛出（不许被重试掩盖成「多试几次就好」），并在诊断里点明是端口占用。
+**证明**：占住一个端口 + 把 `freePort()` 注入成第一次返回它 → 观察到位「端口 45999 被占用
+（TOCTOU 抖动），换端口重试」→「换到端口 53242 后启动成功」→ `E2E-DEPLOY PASS`。
+⚠️ 这条**没有**仓内守卫（要有就得把「制造端口冲突」的注入器写进脚本，不值），靠 e2e 自身运行覆盖。
+
 - 2026-09-15：**全量评审修复轮（预算透传 / 策略按 run 隔离 / 装配期校验与观测面修正）**。
   本轮以「护栏要在嵌套结构里同样成立」与「启动期响亮失败」两条主线收口，语义变更**在此锁定**：
   **① 成本护栏真透传子循环**：`ToolRunContext` 新增 `maxTotalTokens` / `maxCostUsd`，
@@ -1003,6 +1058,9 @@ server（需要网络 / uv），而本地链必须离线可跑。⇒ 二者保�
   位置参数形态两者通吃（node-redis v4 保留 legacy 变参）。`RedisSetOptions` 保留导出但已
   `@deprecated`（不破坏公共面）。不设 TTL 时**只传两参**（显式 undefined 会被 ioredis 序列化
   成空串参数）。
+  ⚠️ **本条判断已被更正** —— 「位置参数形态两者通吃」是**错的**：node-redis 的 `SET` 只声明
+  三个形参，位置参数会被**静默丢弃**。更正与证据见下方 `### 2026-09-15（发布后更正）`。
+  **原判断与理由保留在此，不改写**（谁在什么时候为什么想错了，比一个干净的结论更有用）。
   **⑧ 构造期校验补齐**：`AsyncRunner` 的 `runTimeoutMs` 必须 ≥ 0 的**有限**数（NaN/Infinity
   都会被 `setTimeout` 钳到 1ms，等于每个任务立即超时）；`createHttpHandler` 的
   `maxConcurrentRuns` 必须 > 0 或 Infinity（NaN 会让并发闸门静默失效、0/负数全部 503）。
@@ -1038,7 +1096,8 @@ server（需要网络 / uv），而本地链必须离线可跑。⇒ 二者保�
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
   ⇒ 发布进度：v0.2.2（2026-09-14，框架包 + CLI 包，scope 为 `@migor/*`）→ v0.3.0（`.env` 一等入口）
-  → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）；`AGENTIA_VERSION = '0.4.1'`。
+  → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）
+  → v0.4.2（发布后更正：Redis 的 TTL 在 node-redis 上静默失效）；`AGENTIA_VERSION = '0.4.2'`。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
