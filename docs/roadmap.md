@@ -1,6 +1,6 @@
 # Agentia —— Roadmap
 
-状态：v0.4.1 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）+ **`.env` 一等配置入口**（`loadEnvFile`，脚手架生成 `.env`）+ **trace 事件正文可展开**（`maxEventChars` 开关 + 两个宿主都真展开）+ **深度审查修复轮**（40+ 处：可观测出口 / 异构环境 / 预算透传子 agent / CLI inspector XSS / 部署 e2e）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
+状态：v0.4.2 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）+ **`.env` 一等配置入口**（`loadEnvFile`，脚手架生成 `.env`）+ **trace 事件正文可展开**（`maxEventChars` 开关 + 两个宿主都真展开）+ **深度审查修复轮**（40+ 处：可观测出口 / 异构环境 / 预算透传子 agent / CLI inspector XSS / 部署 e2e）+ **发布后更正**（Redis 的 TTL 在 node-redis 上静默失效、e2e-deploy 端口 TOCTOU flake）。本文档记录规划与落地状态，后续方向见文末「R7 候选」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
 与 `docs/spec.md`（已锁定决策）互补：spec 记录"已经怎么定的"，本文记录"接下来往哪走"。
 
 ## R1 —— 中间件（拦截器链）✅
@@ -232,6 +232,14 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   「刻意跑工作区代码」，并保留「想用发布版就换 `^0.2.2`」的一句话。
   另：`packages/trace-view` 的 `private: true` 是**有意**的（产物随 CLI `create` 拷进用户项目，
   不进 npm），不是待修项。
+- **已发布 v0.4.2**（2026-09-15）：**发布后更正版** —— 0.4.1 发出后查到一处会让使用者
+  静默丢数据的缺陷并修掉。`RedisTaskStore` 的 TTL 此前在 **node-redis** 上**完全不生效**
+  （0.4.1 把 TTL 挪到 `SET` 的位置参数上，而 node-redis 的 `SET` 只声明三个形参、多出的
+  参数被 JS 静默丢弃）—— 键永不过期、`list()` 无界增长，且没有任何报错。现在 `set` 只传两参、
+  TTL 一律走 `expire(key, seconds)`（两家客户端同名同形），设了 `ttlSeconds` 却没给 `expire`
+  时**构造期抛错**。同轮修掉本轮跑全链时撞上的 `e2e-deploy` 端口 TOCTOU flake
+  （`EADDRINUSE` 曾被报成「示例进程启动即退出」）。证据与决策见 `spec.md` §10 的
+  2026-09-15（发布后更正）记录。
 - **已发布 v0.4.1**（2026-09-15）：**深度审查修复版** —— 40+ 处，**无新公开 API**，修的是既有
   承诺没兑现的地方。要点：`metricsSink` 的 Prometheus 文本每个家族只发一次 HELP/TYPE（重复即整次
   scrape 硬失败）；预算护栏（`maxTotalTokens` / `maxCostUsd`）经 `ToolRunContext` 真透传到子

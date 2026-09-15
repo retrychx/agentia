@@ -1096,7 +1096,8 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
   ⇒ 发布进度：v0.2.2（2026-09-14，框架包 + CLI 包，scope 为 `@migor/*`）→ v0.3.0（`.env` 一等入口）
-  → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）；`AGENTIA_VERSION = '0.4.1'`。
+  → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）
+  → v0.4.2（发布后更正：Redis 的 TTL 在 node-redis 上静默失效）；`AGENTIA_VERSION = '0.4.2'`。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
