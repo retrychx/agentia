@@ -1,4 +1,4 @@
-import type { Span, Trace, TraceSink, Usage } from '../core/trace.js';
+import type { Span, Trace, TraceSink } from '../core/trace.js';
 
 /**
  * Agentia —— 指标（D3 → 可观测下沉 E2/E3/E4/E5）。
@@ -14,9 +14,9 @@ import type { Span, Trace, TraceSink, Usage } from '../core/trace.js';
  *   `@Prompt` 不建 span、无独立耗时，**不产出**能力指标（如实缺省，不硬凑）；
  * - **模型级**（E3）：来自 `llm.turn` span（其 `name` 即模型 id）。
  *
- * 时长同时给两种口径，**并存不冲突**：
+ * 时长同时给两种口径（histogram 与分位 gauge 必须用**不同指标名**，见 `render()` 注释）：
  * - **histogram**（`*_bucket` / `*_sum` / `*_count`，累积语义）—— 抓取端可跨实例任意聚合；
- * - **窗口内精确分位**（`*{quantile=...}` gauge）—— 单实例排障时更好读。
+ * - **窗口内精确分位**（`*_last{quantile=...}` gauge）—— 单实例排障时更好读。
  *
  * 零依赖：Prometheus 文本与 OTLP/JSON 都手写（纯文本 / JSON，不值得为此引客户端库）。
  */
@@ -94,6 +94,12 @@ export interface MetricsSinkOptions {
   resourceAttributes?: Record<string, string>;
   /** `export:'otlp'` 的 service.name，缺省 'agentia' */
   serviceName?: string;
+  /**
+   * 单次导出请求超时（毫秒），缺省 10000；非正数 = 不限。
+   * 裸 fetch 没有超时：collector 半开连接（accept 后永不回包）会让 `intervalMs:0` 模式
+   * 的 run 收尾永久挂起。超时按导出失败处理（交 onExportError）——观测失败不击穿业务。
+   */
+  timeoutMs?: number;
   /** 导出失败回调（缺省吞掉 —— 观测失败不得击穿业务） */
   onExportError?: (err: unknown) => void;
   /**
@@ -195,7 +201,7 @@ class DurationStat {
     return sorted[Math.min(Math.max(rank, 1), sorted.length) - 1]!;
   }
 
-  /** 累积 bucket 计数（长度 = bounds+1，末位为 +Inf = count） */
+  /** 累积 bucket 计数（长度 = bounds+1，末位为 +Inf = count）—— Prometheus 文本语义 */
   cumulative(): number[] {
     const out: number[] = [];
     let running = 0;
@@ -204,6 +210,11 @@ class DurationStat {
       out.push(running);
     }
     return out;
+  }
+
+  /** 每桶**非累积**计数 —— OTLP histogram 的 bucketCounts 语义（与 cumulative() 千万别混用） */
+  perBucket(): number[] {
+    return [...this.counts];
   }
 
   get boundsList(): readonly number[] {
@@ -280,6 +291,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   }
   const p = opts.prefix ?? 'agentia_';
   const intervalMs = opts.intervalMs ?? 60_000;
+  const timeoutMs = opts.timeoutMs ?? 10_000;
   const serviceName = opts.serviceName ?? 'agentia';
   const startedAtMs = Date.now();
 
@@ -431,19 +443,28 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     };
   };
 
-  const line = (
+  /**
+   * 一个指标家族的完整块：HELP/TYPE 各**恰好一行**，后接全部样本行。
+   * expfmt 对同名指标的第二条 HELP/TYPE 是**硬错误**（整次 scrape 失败），
+   * 所以家族头必须集中在这里发一次，绝不能让每条样本自带；同名指标也只能有一种 TYPE
+   * （histogram 与分位 gauge 因此拆成 `*_duration_ms` 与 `*_duration_ms_last` 两个名字）。
+   */
+  const family = (
     name: string,
-    type: 'counter' | 'gauge',
-    value: number,
+    type: 'counter' | 'gauge' | 'histogram',
     help: string,
-    labels = '',
-  ): string => `# HELP ${name} ${help}\n# TYPE ${name} ${type}\n${name}${labels} ${value}\n`;
+    samples: string[],
+  ): string => `# HELP ${name} ${help}\n# TYPE ${name} ${type}\n${samples.join('\n')}\n`;
 
-  /** 一个 histogram 的三段输出（bucket 累积 + sum + count） */
-  const histogram = (name: string, stat: DurationStat, help: string, labels = ''): string => {
+  /** Prometheus label 值转义：\、"、换行必须转义，否则一个含引号的能力名/模型名就损坏整页 exposition */
+  const escLabel = (v: string): string =>
+    v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+
+  /** 一个 stat 的 histogram 样本（bucket 累积 + sum + count），labels 形如 `{k="v"}` */
+  const histogramSamples = (name: string, stat: DurationStat, labels = ''): string[] => {
     const inner = labels ? labels.slice(1, -1) + ',' : ''; // 去掉外层 {} 再补逗号
     const at = (extra: string): string => `{${inner}${extra}}`;
-    const out: string[] = [`# HELP ${name} ${help}`, `# TYPE ${name} histogram`];
+    const out: string[] = [];
     const cum = stat.cumulative();
     for (let i = 0; i < stat.boundsList.length; i++) {
       out.push(`${name}_bucket${at(`le="${stat.boundsList[i]}"`)} ${cum[i]}`);
@@ -451,155 +472,165 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     out.push(`${name}_bucket${at(`le="+Inf"`)} ${stat.count}`);
     out.push(`${name}_sum${labels} ${stat.sumMs}`);
     out.push(`${name}_count${labels} ${stat.count}`);
-    return out.join('\n') + '\n';
+    return out;
   };
 
   const render = (): string => {
     const out: string[] = [];
-    out.push(line(`${p}runs_total`, 'counter', runs, 'run 总数（成功 + 失败）'));
     out.push(
-      line(`${p}runs_failed_total`, 'counter', failed, '失败的 run 数（trace.status=error）'),
+      family(`${p}runs_total`, 'counter', 'run 总数（成功 + 失败）', [`${p}runs_total ${runs}`]),
     );
     out.push(
-      line(`${p}tokens_total`, 'counter', tokens.input, '输入 token 累计', '{kind="input"}'),
+      family(`${p}runs_failed_total`, 'counter', '失败的 run 数（trace.status=error）', [
+        `${p}runs_failed_total ${failed}`,
+      ]),
     );
     out.push(
-      line(`${p}tokens_total`, 'counter', tokens.output, '输出 token 累计', '{kind="output"}'),
-    );
-    out.push(
-      line(
+      family(
         `${p}tokens_total`,
         'counter',
-        tokens.cacheRead,
-        '缓存读 token 累计',
-        '{kind="cache_read"}',
+        'token 累计（kind 分项：input / output / cache_read / cache_creation）',
+        [
+          `${p}tokens_total{kind="input"} ${tokens.input}`,
+          `${p}tokens_total{kind="output"} ${tokens.output}`,
+          `${p}tokens_total{kind="cache_read"} ${tokens.cacheRead}`,
+          `${p}tokens_total{kind="cache_creation"} ${tokens.cacheCreation}`,
+        ],
       ),
     );
     out.push(
-      line(
-        `${p}tokens_total`,
-        'counter',
-        tokens.cacheCreation,
-        '缓存写 token 累计',
-        '{kind="cache_creation"}',
-      ),
+      family(`${p}cost_usd_total`, 'counter', '累计成本估算（美元）', [
+        `${p}cost_usd_total ${costUsd}`,
+      ]),
     );
-    out.push(line(`${p}cost_usd_total`, 'counter', costUsd, '累计成本估算（美元）'));
-    // 时长：histogram（可跨实例聚合）+ 窗口内精确分位（单实例好读），两种口径并存
-    out.push(histogram(`${p}run_duration_ms`, runStat, 'run 时长（毫秒）'));
+    // 时长：histogram（可跨实例聚合）+ 窗口内精确分位（单实例好读），两种口径并存。
+    // 分位 gauge 必须用另一个名字 `*_last` —— 同名指标只允许一种 TYPE，
+    // 先发 histogram 再发 gauge 会被 expfmt 判硬错误，整次 scrape 失败。
     out.push(
-      line(
-        `${p}run_duration_ms`,
-        'gauge',
-        runStat.percentile(0.5),
-        'run 时长分位（毫秒，滑动窗口内精确值）',
-        '{quantile="0.5"}',
-      ),
+      family(`${p}run_duration_ms`, 'histogram', 'run 时长（毫秒）', [
+        ...histogramSamples(`${p}run_duration_ms`, runStat),
+      ]),
     );
     out.push(
-      line(
-        `${p}run_duration_ms`,
-        'gauge',
-        runStat.percentile(0.95),
-        'run 时长分位（毫秒，滑动窗口内精确值）',
-        '{quantile="0.95"}',
-      ),
+      family(`${p}run_duration_ms_last`, 'gauge', 'run 时长分位（毫秒，滑动窗口内精确值）', [
+        `${p}run_duration_ms_last{quantile="0.5"} ${runStat.percentile(0.5)}`,
+        `${p}run_duration_ms_last{quantile="0.95"} ${runStat.percentile(0.95)}`,
+      ]),
     );
 
-    // —— 能力维度（E2）——
-    for (const label of [...capabilities.keys()].sort()) {
-      const acc = capabilities.get(label)!;
-      const l = `{capability="${label}"}`;
-      out.push(line(`${p}capability_calls_total`, 'counter', acc.calls, '能力调用次数', l));
-      out.push(line(`${p}capability_errors_total`, 'counter', acc.errors, '能力失败次数', l));
-      out.push(histogram(`${p}capability_duration_ms`, acc.stat, '能力调用耗时（毫秒）', l));
+    // —— 能力维度（E2）：同一家族的样本跨 label 聚合，家族头只发一次 ——
+    const capLabels = [...capabilities.keys()].sort();
+    if (capLabels.length > 0) {
+      const calls: string[] = [];
+      const errors: string[] = [];
+      const durations: string[] = [];
+      const durationQuantiles: string[] = [];
+      const capabilityTokens: string[] = [];
+      const capabilityCosts: string[] = [];
+      for (const label of capLabels) {
+        const acc = capabilities.get(label)!;
+        const lv = escLabel(label);
+        const l = `{capability="${lv}"}`;
+        calls.push(`${p}capability_calls_total${l} ${acc.calls}`);
+        errors.push(`${p}capability_errors_total${l} ${acc.errors}`);
+        durations.push(...histogramSamples(`${p}capability_duration_ms`, acc.stat, l));
+        durationQuantiles.push(
+          `${p}capability_duration_ms_last{capability="${lv}",quantile="0.5"} ${acc.stat.percentile(0.5)}`,
+          `${p}capability_duration_ms_last{capability="${lv}",quantile="0.95"} ${acc.stat.percentile(0.95)}`,
+        );
+        if (acc.tokens !== null)
+          capabilityTokens.push(`${p}capability_tokens_total${l} ${acc.tokens}`);
+        if (acc.costUsd !== null)
+          capabilityCosts.push(`${p}capability_cost_usd_total${l} ${acc.costUsd}`);
+      }
+      out.push(family(`${p}capability_calls_total`, 'counter', '能力调用次数', calls));
+      out.push(family(`${p}capability_errors_total`, 'counter', '能力失败次数', errors));
       out.push(
-        line(
-          `${p}capability_duration_ms`,
-          'gauge',
-          acc.stat.percentile(0.5),
-          '能力调用耗时分位（窗口内精确值）',
-          `{capability="${label}",quantile="0.5"}`,
-        ),
+        family(`${p}capability_duration_ms`, 'histogram', '能力调用耗时（毫秒）', durations),
       );
       out.push(
-        line(
-          `${p}capability_duration_ms`,
+        family(
+          `${p}capability_duration_ms_last`,
           'gauge',
-          acc.stat.percentile(0.95),
           '能力调用耗时分位（窗口内精确值）',
-          `{capability="${label}",quantile="0.95"}`,
+          durationQuantiles,
         ),
       );
-      if (acc.tokens !== null) {
+      if (capabilityTokens.length > 0) {
         out.push(
-          line(
+          family(
             `${p}capability_tokens_total`,
             'counter',
-            acc.tokens,
             'skill/subagent 的子孙 token 合计',
-            l,
+            capabilityTokens,
           ),
         );
       }
-      if (acc.costUsd !== null) {
+      if (capabilityCosts.length > 0) {
         out.push(
-          line(
+          family(
             `${p}capability_cost_usd_total`,
             'counter',
-            acc.costUsd,
             'skill/subagent 的估算成本（美元）',
-            l,
+            capabilityCosts,
           ),
         );
       }
     }
 
     // —— 模型维度（E3）——
-    for (const model of [...models.keys()].sort()) {
-      const acc = models.get(model)!;
-      const l = `{model="${model}"}`;
-      out.push(line(`${p}model_turns_total`, 'counter', acc.turns, '模型往返次数', l));
+    const modelNames = [...models.keys()].sort();
+    if (modelNames.length > 0) {
+      const turns: string[] = [];
+      const modelTokens: string[] = [];
+      const modelCosts: string[] = [];
+      const unpriced: string[] = [];
+      const durations: string[] = [];
+      const durationQuantiles: string[] = [];
+      for (const model of modelNames) {
+        const acc = models.get(model)!;
+        const mv = escLabel(model);
+        const l = `{model="${mv}"}`;
+        turns.push(`${p}model_turns_total${l} ${acc.turns}`);
+        modelTokens.push(`${p}model_tokens_total${l} ${acc.tokens}`);
+        modelCosts.push(`${p}model_cost_usd_total${l} ${acc.costUsd}`);
+        if (acc.unpricedTurns > 0)
+          unpriced.push(`${p}model_unpriced_turns_total${l} ${acc.unpricedTurns}`);
+        durations.push(...histogramSamples(`${p}model_duration_ms`, acc.stat, l));
+        durationQuantiles.push(
+          `${p}model_duration_ms_last{model="${mv}",quantile="0.5"} ${acc.stat.percentile(0.5)}`,
+          `${p}model_duration_ms_last{model="${mv}",quantile="0.95"} ${acc.stat.percentile(0.95)}`,
+        );
+      }
+      out.push(family(`${p}model_turns_total`, 'counter', '模型往返次数', turns));
       out.push(
-        line(`${p}model_tokens_total`, 'counter', acc.tokens, '模型 token 合计（四类之和）', l),
+        family(`${p}model_tokens_total`, 'counter', '模型 token 合计（四类之和）', modelTokens),
       );
       out.push(
-        line(
+        family(
           `${p}model_cost_usd_total`,
           'counter',
-          acc.costUsd,
           '模型估算成本（美元，仅已定价部分）',
-          l,
+          modelCosts,
         ),
       );
-      if (acc.unpricedTurns > 0) {
+      if (unpriced.length > 0) {
         out.push(
-          line(
+          family(
             `${p}model_unpriced_turns_total`,
             'counter',
-            acc.unpricedTurns,
             '算不出成本的 turn 数（模型不在价格表内）',
-            l,
+            unpriced,
           ),
         );
       }
-      out.push(histogram(`${p}model_duration_ms`, acc.stat, '模型往返耗时（毫秒）', l));
+      out.push(family(`${p}model_duration_ms`, 'histogram', '模型往返耗时（毫秒）', durations));
       out.push(
-        line(
-          `${p}model_duration_ms`,
+        family(
+          `${p}model_duration_ms_last`,
           'gauge',
-          acc.stat.percentile(0.5),
           '模型往返耗时分位（窗口内精确值）',
-          `{model="${model}",quantile="0.5"}`,
-        ),
-      );
-      out.push(
-        line(
-          `${p}model_duration_ms`,
-          'gauge',
-          acc.stat.percentile(0.95),
-          '模型往返耗时分位（窗口内精确值）',
-          `{model="${model}",quantile="0.95"}`,
+          durationQuantiles,
         ),
       );
     }
@@ -607,7 +638,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   };
 
   // —— OTLP/JSON 导出（E5）——
-  const nanos = (ms: number): string => String(Math.round(ms * 1e6));
+  // epoch 毫秒 ×1e6 ≈ 1.7e18 > 2^53，double 直接乘会丢精度 —— 必须先取整再转 BigInt
+  const nanos = (ms: number): string => String(BigInt(Math.round(ms)) * 1_000_000n);
   type OtlpAttr = { key: string; value: Record<string, unknown> };
   const strAttr = (key: string, v: string): OtlpAttr => ({ key, value: { stringValue: v } });
 
@@ -632,6 +664,19 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         ],
       },
     });
+    // 浮点指标（成本）必须走 asDouble —— OTLP 的 asInt 是 string 编码 int64，
+    // 塞浮点（如 0.25）会让 collector 直接拒收整批数据
+    const sumDouble = (name: string, value: number, help: string, attrs: OtlpAttr[]) => ({
+      name,
+      description: help,
+      sum: {
+        aggregationTemporality: 2, // CUMULATIVE
+        isMonotonic: true,
+        dataPoints: [
+          { attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asDouble: value },
+        ],
+      },
+    });
     const hist = (name: string, stat: DurationStat, help: string, attrs: OtlpAttr[]) => ({
       name,
       description: help,
@@ -644,7 +689,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
             timeUnixNano: now,
             count: stat.count,
             sum: stat.sumMs,
-            bucketCounts: stat.cumulative(),
+            // OTLP 的 bucketCounts 是每桶**非累积**计数（Prometheus 文本才是累积语义）
+            bucketCounts: stat.perBucket(),
             explicitBounds: [...stat.boundsList],
           },
         ],
@@ -662,7 +708,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       sum(`${p}tokens_total`, tokens.cacheCreation, '缓存写 token 累计', [
         strAttr('kind', 'cache_creation'),
       ]),
-      sum(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []),
+      sumDouble(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []),
       hist(`${p}run_duration_ms`, runStat, 'run 时长（毫秒）', []),
     ];
     for (const label of [...capabilities.keys()].sort()) {
@@ -674,14 +720,18 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       if (acc.tokens !== null)
         metrics.push(sum(`${p}capability_tokens_total`, acc.tokens, '子孙 token 合计', attrs));
       if (acc.costUsd !== null)
-        metrics.push(sum(`${p}capability_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs));
+        metrics.push(
+          sumDouble(`${p}capability_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs),
+        );
     }
     for (const model of [...models.keys()].sort()) {
       const acc = models.get(model)!;
       const attrs = [strAttr('model', model)];
       metrics.push(sum(`${p}model_turns_total`, acc.turns, '模型往返次数', attrs));
       metrics.push(sum(`${p}model_tokens_total`, acc.tokens, '模型 token 合计', attrs));
-      metrics.push(sum(`${p}model_cost_usd_total`, acc.costUsd, '模型估算成本（美元）', attrs));
+      metrics.push(
+        sumDouble(`${p}model_cost_usd_total`, acc.costUsd, '模型估算成本（美元）', attrs),
+      );
       if (acc.unpricedTurns > 0) {
         metrics.push(
           sum(`${p}model_unpriced_turns_total`, acc.unpricedTurns, '未定价 turn 数', attrs),
@@ -718,6 +768,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+        ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
       });
       if (!res.ok) {
         const text = (await res.text()).slice(0, 200);

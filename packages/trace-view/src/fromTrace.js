@@ -111,12 +111,17 @@ export function playTrace(view, trace) {
   };
 
   const items = [];
+  let seq = 0; // 出现顺序：时间缺失 / 并列时的确定性回退（NaN 参与比较会让排序结果随引擎不定）
+  const timeOf = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
   for (const s of spans) {
-    items.push({ t: s.startedAt, ord: 0, d: depthOf(s), s, kind: 'start' });
-    if (s.endedAt != null) items.push({ t: s.endedAt, ord: 2, d: 0, s, kind: 'end' });
-    for (const ev of s.events || []) items.push({ t: ev.time, ord: 1, d: 0, s, kind: 'event', ev });
+    const start = timeOf(s.startedAt, 0);
+    items.push({ t: start, ord: 0, d: depthOf(s), s, kind: 'start', seq: seq++ });
+    if (s.endedAt != null)
+      items.push({ t: timeOf(s.endedAt, start), ord: 2, d: 0, s, kind: 'end', seq: seq++ });
+    for (const ev of s.events || [])
+      items.push({ t: timeOf(ev.time, start), ord: 1, d: 0, s, kind: 'event', ev, seq: seq++ });
   }
-  items.sort((a, b) => a.t - b.t || a.ord - b.ord || a.d - b.d);
+  items.sort((a, b) => a.t - b.t || a.ord - b.ord || a.d - b.d || a.seq - b.seq);
 
   const rootRaw = String(root.name || 'run');
   // 框架的 run 根名可能是 runName（如 'app'）或已是 'run · x' 形态，避免重复前缀

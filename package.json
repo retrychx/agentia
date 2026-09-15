@@ -1,6 +1,6 @@
 {
   "name": "@migor/agentia",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "面向应用开发的声明式 agent 服务开发框架：装饰器 + DI 声明四类能力，主 agent 编排执行；每次 run 产出结构化结果与可观测调用树（trace、成本、指标），交付可直接上线的服务。",
   "type": "module",
   "main": "dist/index.js",
@@ -46,8 +46,9 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" && node --test \"packages/cli/test/*.test.mjs\" && node --test \"packages/trace-view/test/*.test.js\"",
-    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts && tsx scripts/e2e-examples.ts",
+    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts && tsx scripts/e2e-examples.ts && tsx scripts/e2e-deploy.ts",
     "e2e:examples": "npm run build && tsx scripts/e2e-examples.ts",
+    "e2e:deploy": "npm run build && tsx scripts/e2e-deploy.ts",
     "e2e:live": "tsx scripts/e2e-live.ts",
     "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts"
   },

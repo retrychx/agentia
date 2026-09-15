@@ -53,6 +53,11 @@ export function parseEnvText(text: string): Record<string, string> {
     if (eq === -1) throw new Error(`.env 第 ${i + 1} 行不是 KEY=VALUE：${raw}`);
     const key = body.slice(0, eq).trim();
     if (!KEY_RE.test(key)) throw new Error(`.env 第 ${i + 1} 行键名非法：${key || '(空)'}`);
+    // __proto__ 走原型 setter：`out['__proto__'] = 'v'`（字符串值）被**静默忽略** ——
+    // 正是本文件「静默跳过 = 以为配上了其实没配上」要防的事，显式拒绝
+    if (key === '__proto__') {
+      throw new Error(`.env 第 ${i + 1} 行键名 "__proto__" 不可用（会走原型 setter 被静默吞掉）`);
+    }
     out[key] = parseValue(body.slice(eq + 1));
   }
   return out;

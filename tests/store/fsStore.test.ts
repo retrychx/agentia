@@ -5,6 +5,7 @@ import {
   rmSync,
   existsSync,
   appendFileSync,
+  mkdirSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs';
@@ -211,6 +212,33 @@ describe('FileTaskStore', () => {
       const b = rec();
       s2.save(b);
       assert.equal(new FileTaskStore(file).list().length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('compact() 原子重写：临时文件写失败时原文件完整、不留半截', () => {
+    const { dir, file } = tmp();
+    const tmpFile = `${file}.compact.tmp`;
+    try {
+      const store = new FileTaskStore(file);
+      const a = rec({ idempotencyKey: 'k' });
+      store.save(a);
+      store.save({ ...a, status: 'succeeded' });
+      const before = readFileSync(file, 'utf8');
+
+      // 注入失败：把临时文件路径预先占成一个目录 → writeFileSync 抛 EISDIR，
+      // 等价于「写临时文件中途失败」；此时原文件必须一字节不动
+      mkdirSync(tmpFile);
+      assert.throws(() => store.compact());
+      assert.equal(readFileSync(file, 'utf8'), before, '压实失败不得动原文件');
+      rmSync(tmpFile, { recursive: true });
+
+      // 恢复后可正常压实，且 rename 后不留临时文件
+      store.compact();
+      assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 1);
+      assert.ok(!existsSync(tmpFile), 'rename 后不应残留临时文件');
+      assert.deepEqual(new FileTaskStore(file).get(a.taskId), store.get(a.taskId));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

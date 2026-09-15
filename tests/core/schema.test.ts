@@ -35,6 +35,24 @@ describe('validateJsonSchema（运行时输入校验）', () => {
     assert.match(validateJsonSchema(person, { name: 'a', age: 1.5 })!, /\$\.age: 期望 integer/);
   });
 
+  it('原型链键不算数：required 的 constructor 不被放行、additionalProperties:false 拦住 toString', () => {
+    // `key in obj` 会命中 Object.prototype —— required:['constructor'] 对 {} 恒通过、
+    // additionalProperties:false 时自有 toString 键被当成「已声明」放行；必须用 hasOwn。
+    const s: JsonSchema = { type: 'object', properties: {}, required: ['constructor'] };
+    assert.match(
+      validateJsonSchema(s, {})!,
+      /缺少必需属性 "constructor"/,
+      '原型链上的 constructor 不算「提供了该属性」',
+    );
+    assert.match(
+      validateJsonSchema(person, { name: 'a', toString: 1 })!,
+      /未声明的属性 "toString"/,
+      '自有 toString 键不得借原型链混入 properties 被放行',
+    );
+    // 正向：自有的合法属性不受影响
+    assert.equal(validateJsonSchema(person, { name: 'a' }), null);
+  });
+
   it('嵌套对象与数组元素给出路径', () => {
     assert.match(
       validateJsonSchema(person, { name: 'a', addr: {} })!,

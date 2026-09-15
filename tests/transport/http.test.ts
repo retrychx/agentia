@@ -319,6 +319,18 @@ describe('createHttpHandler', () => {
     }
   });
 
+  it('maxConcurrentRuns 校验：NaN/0/负数构造期抛错（NaN 会让闸门静默失效）；Infinity 合法', () => {
+    const app = fakeApp();
+    assert.throws(
+      () => createHttpHandler(app, { maxConcurrentRuns: Number.NaN }),
+      /maxConcurrentRuns/,
+    );
+    assert.throws(() => createHttpHandler(app, { maxConcurrentRuns: 0 }), /maxConcurrentRuns/);
+    assert.throws(() => createHttpHandler(app, { maxConcurrentRuns: -1 }), /maxConcurrentRuns/);
+    // Infinity = 恢复无上限（选项注释承诺的形态）
+    assert.ok(createHttpHandler(app, { maxConcurrentRuns: Number.POSITIVE_INFINITY }));
+  });
+
   it('exposeErrors 缺省 false：500 只回通用文案，内部细节走 console.error', async () => {
     const app = fakeApp({
       run: async () => {

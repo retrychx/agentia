@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { registerPackage } from './registry.js';
+import { npmBin } from './npm-bin.js';
 
 /** 从 add 参数解析真实包名：支持 name[@version]、@scope/name[@version]、本地路径（. / 前缀，或 file: 协议） */
 export function resolvePackageName(arg: string): string {
@@ -37,7 +38,7 @@ export function packageNameToToken(pkgName: string): string {
 export function addPackage(arg: string): number {
   const cwd = process.cwd();
 
-  const r = spawnSync('npm', ['install', arg], { cwd, stdio: 'inherit' });
+  const r = spawnSync(npmBin('npm'), ['install', arg], { cwd, stdio: 'inherit' });
   if (r.error || r.status !== 0) {
     console.error(`错误：npm install ${arg} 失败，src/registry.ts 未改动`);
     process.exitCode = 1;

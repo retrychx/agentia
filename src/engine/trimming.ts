@@ -4,7 +4,9 @@ import type Anthropic from '@anthropic-ai/sdk';
  * Agentia —— 长上下文策略的纯函数层（spec §5/§6：compaction / context editing 分清）。
  *
  * 三策略不混：
- * - **context editing**（`trimToolPairs`）：清旧 tool_use→tool_result 对，不掉内容、不额外调模型；
+ * - **context editing**（`trimToolPairs`）：把旧的 tool_use→tool_result **对**整条消息
+ *   移除（含 assistant 消息里的 text 块 —— 是「丢旧工具往返」，不是逐块替换内容），
+ *   保留最近 N 对与全部非工具消息；不额外调模型；
  * - **compaction**（`compactMessages`）：把旧消息前缀做**服务端摘要**（摘要器由上层注入，可走模型），
  *   只保留最近 N 条 + 一段摘要 —— 新的消息数组仍保证角色交替合法；
  * - **客户端剪裁** = 子 agent 的独立上下文（见 toolkit/subagent.ts）。
@@ -109,8 +111,13 @@ export function estimateMessages(
  * 累计 467ms（10→160 回合之间增长 ×103，明显超线性）。
  *
  * 这里缓存「已计过的前缀」，只对**新增消息**计数 —— 追加场景降为 O(上下文)。
- * 数组引用变了、或长度变短（策略裁剪过 / 换了新数组）→ 自动从零重算，所以
- * 在 `messages.splice(...)` 原地替换后也不会读到脏缓存。
+ * 数组引用变了、长度变短（策略裁剪过）、或钉住的首/尾元素对象变了（原地替换）
+ * → 自动从零重算，所以在 `replaceMessages` 整体原地替换后也不会读到脏缓存。
+ *
+ * ⚠️ 残余局限：「同数组、同长度、首尾元素都没变、只有**中间**元素被原地换掉」
+ * 仍会读到脏计数 —— 框架自身路径不会产生这种形态（replaceMessages 整体替换必动
+ * 首元素或边界，trimToolPairs/compactMessages 都返回新数组），只有自定义
+ * contextPolicy 原地改写中间消息时才会踩到；那种写法请自行换数组引用。
  */
 export function createTokenCounter(
   estimate: (text: string) => number = defaultEstimateTokens,
@@ -120,11 +127,19 @@ export function createTokenCounter(
   let tokens = 0;
   /** 已计入区间**最后一个元素的对象标识** —— 用于发现「同数组、长度不减、内容却被换掉」 */
   let boundary: Anthropic.MessageParam | undefined;
+  /** 数组**首元素的对象标识** —— 与 boundary 配合收窄「原地替换」的漏判面 */
+  let head: Anthropic.MessageParam | undefined;
   return function count(messages: Anthropic.MessageParam[]): number {
     const edge = counted > 0 ? messages[counted - 1] : undefined;
-    // 三重失效判据：换了数组 / 长度变短（被裁剪） / 边界元素已不是同一个对象
-    // （第三种覆盖自定义 contextPolicy 原地覆写同长度内容的情形 —— 只有长度判据会漏）
-    if (messages !== ref || messages.length < counted || edge !== boundary) {
+    // 失效判据：换了数组 / 长度变短（被裁剪） / 边界元素或首元素已不是同一个对象
+    // （后两种覆盖引擎整体原地替换（replaceMessages）与自定义 contextPolicy 的常见覆写形态
+    // —— 只有长度判据会全漏，只钉边界又漏「换了首元素」的情形）
+    if (
+      messages !== ref ||
+      messages.length < counted ||
+      edge !== boundary ||
+      messages[0] !== head
+    ) {
       ref = messages;
       counted = 0;
       tokens = 0;
@@ -135,6 +150,7 @@ export function createTokenCounter(
     }
     counted = messages.length;
     boundary = counted > 0 ? messages[counted - 1] : undefined;
+    head = counted > 0 ? messages[0] : undefined;
     return tokens;
   };
 }

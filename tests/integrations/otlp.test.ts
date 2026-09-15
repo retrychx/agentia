@@ -158,4 +158,45 @@ describe('createOtlpExporter', () => {
       await close(server);
     }
   });
+
+  it('collector 半开（accept 不回包）→ 按 timeoutMs 超时 reject，不永久挂起 run 收尾', async () => {
+    // 接受连接却永不写响应 —— 裸 fetch 在这种 collector 上会永远挂起
+    const server = createServer(() => {
+      /* 故意不回包，模拟半开连接 */
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const exporter = createOtlpExporter({
+        endpoint: `http://127.0.0.1:${port}`,
+        timeoutMs: 100,
+      });
+      // reject 后由上层 flushSinks 的 catch 吞掉（观测失败不击穿业务）
+      await assert.rejects(exporter.export(sampleTrace()), (e: unknown) => {
+        assert.equal((e as { name?: string }).name, 'TimeoutError');
+        return true;
+      });
+    } finally {
+      // 中止的 fetch 应已断开，但保险起见强制清掉残留连接，否则 close 会等它
+      (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+      await close(server);
+    }
+  });
+
+  it('纳秒时间戳走 BigInt：epoch 毫秒 ×1e6 超 2^53，double 直接乘会丢精度', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const exporter = createOtlpExporter({ endpoint: base });
+      const trace = sampleTrace();
+      const epochMs = 1_757_894_400_123; // 真实 epoch 毫秒量级；×1e6 ≈ 1.76e18 > 2^53
+      trace.spans[0]!.startedAt = epochMs;
+      trace.spans[0]!.endedAt = epochMs + 5;
+      await exporter.export(trace);
+      const root = captured[0].body.resourceSpans[0].scopeSpans[0].spans[0];
+      assert.equal(root.startTimeUnixNano, String(BigInt(epochMs) * 1_000_000n));
+      assert.equal(root.endTimeUnixNano, String(BigInt(epochMs + 5) * 1_000_000n));
+    } finally {
+      await close(server);
+    }
+  });
 });

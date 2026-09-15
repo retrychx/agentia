@@ -223,8 +223,13 @@ describe('AsyncRunner', () => {
     release(); // 放掉第一次被放弃的执行（其结果无人接收）
   });
 
-  it('runTimeoutMs 校验：负数抛错', () => {
+  it('runTimeoutMs 校验：负数 / NaN / Infinity 抛错（NaN、Infinity 会被 setTimeout 钳到 1ms，每任务立即「超时」）', () => {
     assert.throws(() => new AsyncRunner(fakeApp(), { runTimeoutMs: -1 }), /runTimeoutMs/);
+    assert.throws(() => new AsyncRunner(fakeApp(), { runTimeoutMs: Number.NaN }), /runTimeoutMs/);
+    assert.throws(
+      () => new AsyncRunner(fakeApp(), { runTimeoutMs: Number.POSITIVE_INFINITY }),
+      /runTimeoutMs/,
+    );
   });
 
   it('异步 store 的 byIdempotency reject：同步门面必须订阅，不得逃逸成 unhandled rejection', async () => {

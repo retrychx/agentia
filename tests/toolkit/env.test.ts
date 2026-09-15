@@ -78,6 +78,12 @@ describe('parseEnvText（.env 解析）', () => {
     // 键名带空格且去掉空白后为空的情况
     assert.throws(() => parseEnvText('  =x\n'), /键名非法/);
   });
+
+  it('__proto__ 键 → 显式抛错（原型 setter 会把字符串值静默吞掉）', () => {
+    assert.throws(() => parseEnvText('__proto__=polluted\n'), /__proto__.*不可用/);
+    // 相邻的普通键不受影响；constructor 只是普通自有属性，不在禁用之列
+    assert.deepEqual(parseEnvText('A=1\nconstructor=ok\n'), { A: '1', constructor: 'ok' });
+  });
 });
 
 describe('loadEnvFile（读进 process.env）', () => {

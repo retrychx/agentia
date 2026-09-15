@@ -21,6 +21,13 @@ export interface OtlpExporterOptions {
   headers?: Record<string, string>;
   /** resource 的 service.name，缺省 'agentia' */
   serviceName?: string;
+  /**
+   * 单次导出请求超时（毫秒），缺省 10000；非正数 = 不限。
+   * 裸 fetch 没有超时：collector 半开连接（accept 后永不回包）会让 run 收尾永久挂起。
+   * 超时按导出失败处理（export reject 一个 name=TimeoutError 的错误），
+   * 上层 flushSinks 的 catch 会吞掉它 —— 观测失败不击穿业务。
+   */
+  timeoutMs?: number;
 }
 
 export interface OtlpExporter {
@@ -50,9 +57,9 @@ function hexId(id: string): string {
   return id.replaceAll('-', '');
 }
 
-/** ms → string 纳秒 */
+/** ms → string 纳秒（epoch 毫秒 ×1e6 > 2^53，必须 BigInt，double 直接乘会丢精度） */
 function nanos(ms: number): string {
-  return String(Math.round(ms * 1e6));
+  return String(BigInt(Math.round(ms)) * 1_000_000n);
 }
 
 function spanAttributes(span: Span): OtlpAttribute[] {
@@ -121,6 +128,7 @@ function mapSpan(span: Span) {
 export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
   const endpoint = opts.endpoint.replace(/\/+$/, '');
   const serviceName = opts.serviceName ?? 'agentia';
+  const timeoutMs = opts.timeoutMs ?? 10_000;
 
   return {
     async export(trace: Trace): Promise<void> {
@@ -146,6 +154,8 @@ export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
           ...opts.headers,
         },
         body: JSON.stringify(payload),
+        // 半开连接防护：超时后 fetch reject（TimeoutError），由上层按导出失败处理
+        ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
       });
       if (!res.ok) {
         const text = (await res.text()).slice(0, 200);

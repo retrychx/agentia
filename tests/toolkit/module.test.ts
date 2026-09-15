@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp, SystemPrompt, Tool, SubAgent } from '../../src/index.js';
+import type { AgentTool } from '../../src/index.js';
 import { defineModule } from '../../src/toolkit/module.js';
 import type { CapabilityMiddleware } from '../../src/toolkit/middleware.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
@@ -219,5 +220,129 @@ describe('modules 能力包装配（R5）', () => {
     // 修复点：子 agent 的 tools 引用必须解析到「中间件包装后」的菜单，
     // 否则内部工具调用完全绕过中间件（鉴权/限流/审计全失效）
     assert.ok(calls.includes('inner_tool'), '子 agent 内部工具也必须走中间件');
+  });
+});
+
+describe('per-run tools 覆盖（RunInvocationOptions.tools）', () => {
+  const bareTool = (name: string, out: string): AgentTool => ({
+    name,
+    description: 'd',
+    inputSchema: OBJ,
+    run: () => out,
+  });
+
+  it('per-run 覆盖的裸工具同样过中间件链 —— 与 AppOptions.tools 同语义，不是旁路', async () => {
+    const calls: string[] = [];
+    const mw: CapabilityMiddleware = (call, next) => {
+      calls.push(call.capability.name);
+      return next();
+    };
+    const app = createApp({ providers: [], middleware: [mw], system: sys() });
+
+    const { client } = mockClient([toolUseMsg('extra_tool', {}), endTurnMsg('done')]);
+    const out = await app.run([{ role: 'user', content: 'go' }], {
+      client,
+      tools: [bareTool('extra_tool', 'extra-ok')],
+    });
+
+    assert.equal(out.result.stopReason, 'end_turn');
+    // 恰好一次：触发了中间件（修复点），且没有被双重包裹
+    assert.deepEqual(calls, ['extra_tool'], 'per-run 工具调用必须过中间件（且仅一层）');
+  });
+
+  it('per-run 包裹不改写调用方传入的数组（applyMiddleware 产出新对象）', async () => {
+    const mw: CapabilityMiddleware = (_call, next) => next();
+    const app = createApp({ providers: [], middleware: [mw], system: sys() });
+    const extra = bareTool('extra_tool', 'ok');
+    const { client } = mockClient([toolUseMsg('extra_tool', {}), endTurnMsg('done')]);
+    await app.run([{ role: 'user', content: 'go' }], { client, tools: [extra] });
+    // 传入的工具对象仍是裸实现：若被就地改写，复用同一数组的下一次 run 会被重复包裹
+    assert.equal(extra.run({}), 'ok');
+    assert.equal(app.tools.length, 0, 'per-run 覆盖不进入应用主菜单');
+  });
+
+  it('未传 per-run tools 时主菜单不被二次包裹（中间件每次调用仍只触发一层）', async () => {
+    class A {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_a(): string {
+        return 'a';
+      }
+    }
+    const calls: string[] = [];
+    const mw: CapabilityMiddleware = (call, next) => {
+      calls.push(call.capability.name);
+      return next();
+    };
+    const app = createApp({
+      providers: [{ provide: 'a', useClass: A }],
+      middleware: [mw],
+      system: sys(),
+    });
+    const { client } = mockClient([toolUseMsg('tool_a', {}), endTurnMsg('done')]);
+    await app.run([{ role: 'user', content: 'go' }], { client });
+    assert.deepEqual(calls, ['tool_a']);
+  });
+});
+
+describe('useValue 为 null/undefined/原始值的 provider', () => {
+  it('空收集、不抛无上下文 TypeError；DI 语义不变（值原样可解析）', () => {
+    const app = createApp({
+      providers: [
+        { provide: 'nil', useValue: null },
+        { provide: 'undef', useValue: undefined },
+        { provide: 'num', useValue: 42 },
+      ],
+      system: sys(),
+    });
+    assert.deepEqual(app.tools, []);
+    assert.equal(app.container.resolve('nil'), null);
+    assert.equal(app.container.resolve('undef'), undefined);
+    assert.equal(app.container.resolve('num'), 42);
+  });
+
+  it('与有能力 provider 混用时互不干扰', () => {
+    class A {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_a(): string {
+        return 'a';
+      }
+    }
+    const app = createApp({
+      providers: [
+        { provide: 'a', useClass: A },
+        { provide: 'cfg', useValue: null },
+      ],
+      system: sys(),
+    });
+    assert.deepEqual(
+      app.tools.map((t) => t.name),
+      ['tool_a'],
+    );
+  });
+});
+
+describe('能力名装配期校验（与 MCP 桥同口径 ^[A-Za-z0-9_-]{1,64}$）', () => {
+  it('非法装饰器能力名在 createApp 即抛可读错误（不延迟到首次模型调用 400）', () => {
+    class Bad {
+      @Tool({ description: 'd', schema: OBJ, name: 'a"b' })
+      bad(): string {
+        return 'x';
+      }
+    }
+    assert.throws(
+      () => createApp({ providers: [{ provide: 'bad', useClass: Bad }], system: sys() }),
+      /@Tool 能力名 "a\\"b" 非法：须匹配 \^\[A-Za-z0-9_-\]\{1,64\}\$/,
+    );
+  });
+
+  it('非法名在四类能力上一致拦截（@SubAgent 示例）', () => {
+    class Bad {
+      @SubAgent({ description: 'd', schema: OBJ, system: 's', name: 'has space' })
+      reviewer(_input: unknown): void {}
+    }
+    assert.throws(
+      () => createApp({ providers: [{ provide: 'bad', useClass: Bad }], system: sys() }),
+      /@SubAgent 能力名 .* 非法/,
+    );
   });
 });

@@ -164,13 +164,14 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     assert.throws(() => new RedisTaskStore(fake, { prefix: '' }), /prefix 不能为空/);
   });
 
-  it('ttlSeconds：save 的记录与幂等索引都带 EX；缺省不设；负数抛错', async () => {
+  it('ttlSeconds：save 的记录与幂等索引都带 EX（位置参数形态）；缺省不设；负数抛错', async () => {
     const inner = new InMemoryRedisFake();
-    const calls: Array<{ key: string; opts?: { EX?: number } }> = [];
+    const calls: Array<{ key: string; args: unknown[] }> = [];
     const spy: RedisLike = {
       get: (k) => inner.get(k),
-      set: async (key, value, opts) => {
-        calls.push({ key, opts });
+      // 位置参数形态（ioredis / node-redis v4 legacy 的公共形态）：无 TTL 时零尾参
+      set: async (key, value, ...args: unknown[]) => {
+        calls.push({ key, args });
         return inner.set(key, value);
       },
       del: (k) => inner.del(k),
@@ -181,26 +182,30 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     await ttlStore.save(rec({ idempotencyKey: 'k' })); // 无幂等键的 save 只写记录
     assert.equal(calls.length, 2);
     assert.deepEqual(
-      calls.map((c) => c.opts),
-      [{ EX: 60 }, { EX: 60 }],
+      calls.map((c) => c.args),
+      [
+        ['EX', 60],
+        ['EX', 60],
+      ],
     );
     assert.match(calls[0].key, /task:/);
     assert.match(calls[1].key, /idem:k/);
 
-    // 缺省不设 EX（老行为：记录永不过期）
+    // 缺省不设 EX（老行为：记录永不过期）—— 只传两参，连 undefined 尾参都不给
+    // （显式 undefined 会被 ioredis 序列化成空串参数，服务端报语法错）
     calls.length = 0;
     await new RedisTaskStore(spy).save(rec());
     assert.deepEqual(
-      calls.map((c) => c.opts),
-      [undefined],
+      calls.map((c) => c.args),
+      [[]],
     );
 
     // 0 也视为不设（便于用 0 明确关闭）
     calls.length = 0;
     await new RedisTaskStore(spy, { ttlSeconds: 0 }).save(rec());
     assert.deepEqual(
-      calls.map((c) => c.opts),
-      [undefined],
+      calls.map((c) => c.args),
+      [[]],
     );
 
     assert.throws(() => new RedisTaskStore(spy, { ttlSeconds: -1 }), /ttlSeconds/);
@@ -283,5 +288,104 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
       () => new RedisTaskStore(new InMemoryRedisFake(), { ttlSeconds: Number.NaN }),
       /ttlSeconds/,
     );
+  });
+});
+
+/**
+ * 忠实模拟 ioredis 的参数序列化：变参逐个位置发给服务端。
+ * - 对象参数被 String() 成 "[object Object]" → 服务端语法错（真实行为，2026-09 实测
+ *   ioredis 6 把 `set(k, v, { EX: 60 })` 发成 `SET k v "[object Object]"`）；
+ * - 显式 undefined 尾参被序列化成空串参数 → 语法错；
+ * - 合法形态：两参，或 ('EX', 正整数秒)。
+ * store 若回退到对象形态，这个 fake 必挂 —— 它就是兼容性的护栏。
+ */
+class IORedisFake implements RedisLike {
+  readonly map = new Map<string, { value: string; ex?: number }>();
+
+  async get(key: string): Promise<string | null> {
+    return this.map.get(key)?.value ?? null;
+  }
+  async set(key: string, value: string, ...args: unknown[]): Promise<string> {
+    for (const a of args) {
+      if (a === undefined || typeof a === 'object') throw new Error('ERR syntax error');
+    }
+    if (args.length === 0) {
+      this.map.set(key, { value });
+    } else if (args.length === 2 && args[0] === 'EX' && Number.isInteger(args[1])) {
+      this.map.set(key, { value, ex: args[1] as number });
+    } else {
+      throw new Error('ERR syntax error');
+    }
+    return 'OK';
+  }
+  async del(key: string): Promise<number> {
+    return this.map.delete(key) ? 1 : 0;
+  }
+  async keys(pattern: string): Promise<string[]> {
+    const re = globToRegExp(pattern);
+    return [...this.map.keys()].filter((k) => re.test(k));
+  }
+}
+
+/**
+ * node-redis v4 形态：对象选项（{ EX }）与 legacy 变参（'EX', seconds）**都**接受。
+ * store 只能依赖两者的交集（位置参数形态）——对象形态由 IORedisFake 负责拦截。
+ */
+class NodeRedisFake extends IORedisFake {
+  override async set(key: string, value: string, ...args: unknown[]): Promise<string> {
+    if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
+      const ex = (args[0] as { EX?: number }).EX;
+      this.map.set(key, ex ? { value, ex } : { value });
+      return 'OK';
+    }
+    return super.set(key, value, ...args);
+  }
+}
+
+describe('RedisTaskStore 客户端形态兼容（ioredis / node-redis 真实参数形态）', () => {
+  for (const [name, make] of [
+    ['ioredis', () => new IORedisFake()],
+    ['node-redis', () => new NodeRedisFake()],
+  ] as const) {
+    it(`${name}：无 TTL（只传两参）与带 TTL（'EX', seconds 位置参数）全链路`, async () => {
+      const client = make();
+      // 无 TTL：必须只传两参（显式 undefined 会被 ioredis 序列化成空串 → 语法错）
+      const plain = new RedisTaskStore(client, { prefix: `${name}:` });
+      const a = rec({ idempotencyKey: 'k' });
+      await plain.save(a);
+      assert.deepEqual(await plain.get(a.taskId), a, `${name}: 无 TTL 读写`);
+      assert.equal((await plain.byIdempotency('k'))?.taskId, a.taskId);
+      assert.equal((await plain.list()).length, 1);
+
+      // 带 TTL：位置参数形态两种客户端都接受；记录与幂等索引都带 EX
+      const ttlStore = new RedisTaskStore(client, { prefix: `${name}:`, ttlSeconds: 60 });
+      const b = rec({ idempotencyKey: 'k2' });
+      await ttlStore.save(b);
+      assert.deepEqual(await ttlStore.get(b.taskId), b, `${name}: 带 TTL 读写`);
+      assert.equal(client.map.get(`${name}:task:${b.taskId}`)?.ex, 60);
+      assert.equal(client.map.get(`${name}:idem:k2`)?.ex, 60);
+    });
+  }
+
+  it('ioredis 形态 + TTL 接入 AsyncRunner：任务跑到终态（原对象形态 SET 全挂、任务全 failed、store 零记录）', async () => {
+    const app: AppCallable & { calls: number } = {
+      name: 'fake',
+      calls: 0,
+      async run() {
+        app.calls++;
+        return {
+          run: { runId: `r-${app.calls}`, status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
+      },
+    };
+    const runner = new AsyncRunner(app, {
+      store: new RedisTaskStore(new IORedisFake(), { ttlSeconds: 300 }),
+    });
+    const t = runner.submit('a', { idempotencyKey: 'k' });
+    const done = await runner.awaitTask(t.taskId);
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.runId, 'r-1');
+    assert.equal((await runner.list()).length, 1, '记录必须真实落进 store');
   });
 });

@@ -62,19 +62,21 @@ function checkObject(schema: JsonSchema, value: unknown, path: string): string |
   const obj = value as Record<string, unknown>;
 
   for (const key of schema.required ?? []) {
-    if (!(key in obj)) return `${path}: 缺少必需属性 "${key}"`;
+    // 用 Object.hasOwn 而非 `in`：后者会命中原型链，required:['constructor'] 就恒通过了
+    if (!Object.hasOwn(obj, key)) return `${path}: 缺少必需属性 "${key}"`;
   }
 
   const properties = schema.properties ?? {};
   for (const [key, sub] of Object.entries(properties)) {
-    if (key in obj) {
+    if (Object.hasOwn(obj, key)) {
       const err = check(sub, obj[key], `${path}.${key}`);
       if (err) return err;
     }
   }
 
   if (schema.additionalProperties === false) {
-    const extra = Object.keys(obj).filter((k) => !(k in properties));
+    // 同上：`k in properties` 会把 toString 之类的原型键当成「已声明」放行
+    const extra = Object.keys(obj).filter((k) => !Object.hasOwn(properties, k));
     if (extra.length > 0) {
       return `${path}: 存在 schema 未声明的属性 ${extra.map((k) => `"${k}"`).join(', ')}`;
     }

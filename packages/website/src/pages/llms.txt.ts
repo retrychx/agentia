@@ -49,6 +49,15 @@ export const GET: APIRoute = () => {
     boundaryLines.push(`- ${m[1]}: ${m[2]}`);
   }
 
+  // 守护单源格式：上面的解析依赖 docs/usage-guide.md 的「### 分节 + 表格行」与「已知边界」节表。
+  // 格式微调会让清单静默变空、构建照绿、线上丢整节 —— 这里让构建响亮失败。
+  if (!apiLines) {
+    throw new Error('llms.txt: 从 docs/usage-guide.md 没抠到任何 API 条目（单源格式变了？）');
+  }
+  if (boundaryLines.length === 0) {
+    throw new Error('llms.txt: 从 docs/usage-guide.md 没抠到「已知边界」表（单源格式变了？）');
+  }
+
   const body = `# Agentia
 
 > 面向应用开发的声明式 agent 服务开发框架：装饰器 + DI 声明四类能力，主 agent 编排执行；每次 run 产出结构化结果与可观测调用树（trace、成本、指标），交付可直接上线的服务。npm 包 \`@migor/agentia\` 与 \`@migor/cli\`；ESM、Node ≥ 18。

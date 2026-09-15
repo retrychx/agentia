@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { Skill, collectSkills, skillToTool, TraceRecorder } from '../../src/index.js';
-import type { SkillContext, SkillCapability, ToolRunContext } from '../../src/index.js';
-import { mockClient, endTurnMsg, U } from '../helpers.js';
+import { Skill, collectSkills, skillToTool, TraceRecorder, runAgent } from '../../src/index.js';
+import type { AgentTool, SkillContext, SkillCapability, ToolRunContext } from '../../src/index.js';
+import { mockClient, endTurnMsg, toolUseMsg, U } from '../helpers.js';
 
 /** 自造 stop_reason：让受限子运行以「未识别的 stop_reason」失败（loop.error 由 engine 挂） */
 function rawMsg(stop_reason: string, text = 'part'): Record<string, unknown> {
@@ -77,5 +77,43 @@ describe('Skill 能力（ctx.llm 受限子运行）', () => {
     assert.equal(capability.error?.type, 'agent_error');
     assert.equal(capability.error?.retryable, false);
     assert.match(capability.error?.message ?? '', /model_context_window_exceeded/);
+  });
+
+  it('预算护栏透传 ctx.llm 子循环（C1）：子循环超支即停，主 run 以 budget_exceeded 收尾', async () => {
+    class Searcher {
+      @Skill({ description: 'd', tools: ['noop'] })
+      async go(_input: unknown, ctx: SkillContext): Promise<string> {
+        const out = await ctx.llm({ prompt: 'q' });
+        return out.text;
+      }
+    }
+    const noop: AgentTool = {
+      name: 'noop',
+      description: 'd',
+      inputSchema: { type: 'object', properties: {} },
+      run: () => 'ok',
+    };
+    // 主 turn（15）+ 子 turn×2（45 ≤ 50）→ 子第 3 回合后 60 > 50 → 子循环 budget_exceeded
+    const { seen, client } = mockClient([
+      toolUseMsg('go', {}, 'tu_main'),
+      toolUseMsg('noop', {}, 's1'),
+      toolUseMsg('noop', {}, 's2'),
+      toolUseMsg('noop', {}, 's3'),
+      toolUseMsg('noop', {}, 's4'),
+      endTurnMsg('不该被请求到'),
+    ]);
+    const tool = skillToTool(onlySkill(new Searcher()), () => [noop]);
+    const result = await runAgent({
+      client,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [tool],
+      maxTotalTokens: 50,
+    });
+
+    assert.equal(result.stopReason, 'budget_exceeded');
+    assert.equal(seen.length, 4, '主 1 次 + 子 3 次；子循环超支后主循环不得再发请求');
+    const capability = result.trace.spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'error');
+    assert.equal(capability.error?.type, 'budget_exceeded');
   });
 });

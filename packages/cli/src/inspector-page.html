@@ -145,7 +145,12 @@
       const es = new EventSource('/stream');
       es.onmessage = async (m) => {
         const s = JSON.parse(m.data);
-        liveEl.innerHTML = `最新 run：<b>${s.name}</b> · ${fmtMs(s.ms)}`;
+        // s.name 来自 POST /ingest 的 trace 根 span 名（模型可控内容）——
+        // 只能走 textContent，拼进 innerHTML 就是 XSS
+        liveEl.textContent = '最新 run：';
+        const nameEl = document.createElement('b');
+        nameEl.textContent = s.name;
+        liveEl.append(nameEl, ` · ${fmtMs(s.ms)}`);
         await refresh();
         await open(s.traceId);
       };

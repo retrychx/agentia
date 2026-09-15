@@ -291,6 +291,50 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
     assert.ok(!evs.some((c) => c[3] === 'tool:?'), '不得再出现 tool:? 这个假工具名');
   });
 
+  it('事件缺 time：确定性回退（按所属 span 的 startedAt + 出现顺序），不产生 NaN 排序', () => {
+    const t = {
+      spans: [
+        {
+          spanId: 'r',
+          traceId: 'x',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'app',
+          startedAt: 0,
+          endedAt: 10,
+          status: 'ok',
+          attributes: {},
+          events: [],
+        },
+        {
+          spanId: 't',
+          traceId: 'x',
+          parentSpanId: 'r',
+          kind: 'llm.turn',
+          name: 'm',
+          startedAt: 5,
+          endedAt: 8,
+          status: 'ok',
+          attributes: {},
+          events: [
+            { name: 'tool.input', body: { tool: 'a', input: {} } }, // 无 time
+            { time: 6, name: 'tool.output', body: { tool: 'a', ok: true, content: '1' } },
+            { name: 'usage.unpriced', body: { model: 'm' } }, // 无 time
+          ],
+        },
+      ],
+    };
+    const v = fakeView();
+    assert.equal(playTrace(v, t), true);
+    // 缺 time 的事件按 startedAt(=5) 落位、相对顺序保持出现顺序；
+    // 带 time 的事件按真实时间插入 —— 两次调用结果必须一致（确定性）
+    const v2 = fakeView();
+    playTrace(v2, t);
+    assert.deepEqual(v2.calls, v.calls, '相同输入必须得到相同动作序列');
+    const evTypes = v.calls.filter((c) => c[0] === 'event').map((c) => c[2]);
+    assert.deepEqual(evTypes, ['tool.input', 'usage.unpriced', 'tool.output']);
+  });
+
   it('renderSummary 不受影响：非 tool.* 事件不进能力排行（只有 tool.output 计入）', async () => {
     const { summarizeTrace } = await import('../src/summary.js');
     const rows = summarizeTrace({

@@ -160,6 +160,9 @@ export function skillToTool(
             priceOverrides: ctx.priceOverrides,
             // 事件截断口径透传：同一棵树上主/子 agent 的正文可见性必须一致
             maxEventChars: ctx.maxEventChars,
+            // 成本护栏透传（C1）：预算是整条 run（含子循环）的口径，子循环每回合也检查
+            maxTotalTokens: ctx.maxTotalTokens,
+            maxCostUsd: ctx.maxCostUsd,
           });
           if (!isSuccessStopReason(loop.stopReason)) {
             const report = `skill "${name}".llm ${loop.stopReason}: ${(

@@ -33,8 +33,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── helpers.ts           # 共用 mock client（**忽略 on('text')**；要「真吐字」用 src/eval 的
 │   │                        #   scriptedClient —— 两者定位不同，改 helpers 影响全部套件，谨慎）
 │   ├── fixtures/            # discover/asset 测试夹具
-│   ├── architecture/        # 分层守卫：解析 src 的 import 图，断言「允许边集合 + 无环 +
-│   │                        #   src 不引 src 之外」—— AGENTS.md「分层单向」的可执行版本
+│   ├── architecture/        # 分层守卫：解析 src 的 import 图（覆盖 from / 副作用 / 动态 import
+│   │                        #   字面量三种形式，带解析计数下限护栏防真空变绿；BARREL 豁免只认
+│   │                        #   src/index.ts 本身），断言「允许边集合 + 无环 + src 不引 src 之外」——
+│   │                        #   AGENTS.md「分层单向」的可执行版本
 │   ├── types/               # **类型断言测试**（*.types.ts，只被 typecheck:types 编译、不被 node:test 收）
 │   └── docs/                # 文档校验（usage-guide.md 的表格逐项对源码核；api.html 的导出表
 │                            #   正向核 + **反向全覆盖**：导出面的每个导出都必须在页面上出现；
@@ -46,6 +48,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第二步：examples/complete 真构建、真起服务，
 │                            #   按它 README 跑完 /healthz · 鉴权 401 · 同步 /run · SSE · 异步 /tasks ·
 │                            #   /metrics · 优雅停机；模型侧是内置假 OpenAI 兼容端点，不联网）
+├── scripts/e2e-deploy.ts    # 部署示例端到端（npm run e2e 第三步：examples/deploy 真构建、真起服务，
+│                            #   跑 /healthz · 同步 /run · /metrics · 优雅停机 + **崩溃续跑**
+│                            #   （SIGKILL 后同库重启 resumePending 续跑）；假 Anthropic 端点，不联网）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
 ├── scripts/e2e-live.ts      # 真 API 集成验证（npm run e2e:live：真实厂商端点跑框架主路径 ——
 │                            #   SSE 分片 / tool_use / tool_result 回灌 / cache_control / signal 中止 /
@@ -55,7 +60,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── packages/
 │   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/add），零运行时依赖
-│   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector）
+│   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector；
+│   │                        #   inspector 有 Host 头校验，非 localhost 403）；dev/add 支持 Windows
+│   │                        #   （npmBin 的 .cmd 处理）；build 自给自足（copy-assets 在 trace-view
+│   │                        #   未构建时就地补跑其构建，prepublishOnly 只跑 build，无需根 build:cli 预热）
 │   ├── trace-view/          # trace 调用树渲染器（零依赖 ESM）：createTraceView + playTrace(真实 Trace)
 │   │                        #   官网 playground 与 CLI inspector 共用同一份，避免两处渲染漂移
 │   │                        #   test/ 用 node:test，**已并入根 `npm test`** —— 这份共用的渲染器
@@ -152,7 +160,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   `packages/cli/src/templates.ts` 的 pin）由 `scripts/check-release.mjs` 校验，挂在**两包的
   `prepublishOnly`** 上 —— **不**进 `verify-all`：未发布窗口内 `AGENTIA_VERSION` 是**有意落后**的
   （包版本先行），只有真发时才要求一致；不一致 `npm publish` 当场失败。
-  发版步骤：bump 四处 → `npm run verify-all` → 两包分别 `npm publish`（`prepublishOnly` 会先自检再 build）。
+  发版步骤：bump 四处 → `bash scripts/verify-all.sh` → 两包分别 `npm publish`（`prepublishOnly` 会先自检再 build）。
 - **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
   构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。
   - **wrangler 钉死 `4.131.0`，不要改回裸 `npx wrangler`**：`latest`（4.131.1）依赖的 workerd 二进制

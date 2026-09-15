@@ -1,4 +1,3 @@
-import type Anthropic from '@anthropic-ai/sdk';
 import type { ContextPolicy } from './types.js';
 import {
   compactMessages,
@@ -58,6 +57,11 @@ export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolic
 
   return {
     budgetTokens,
+    // per-run 隔离（ContextPolicy.forRun 契约）：lastCompactAt 滞回与 countTokens 缓存都是
+    // per-run 状态 —— 策略实例被配成应用级单例复用时，引擎对每条 run 调 forRun 拿全新实例，
+    // 否则「run A 刚压缩过」会卡住「run B 前 compactEvery 回合不压缩」、并发 run 还会互相
+    // 把对方的计数缓存打回零重算。
+    forRun: () => createBudgetPolicy(opts),
     async beforeTurn(messages, info) {
       if (countTokens(messages) <= budgetTokens) return messages;
 

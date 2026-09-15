@@ -132,7 +132,21 @@ export class Scheduler {
   private pruneInFlight(inFlight: Set<string>): void {
     const forget = (taskId: string) => inFlight.delete(taskId);
     for (const taskId of inFlight) {
-      const rec = this.runner.poll(taskId);
+      let rec: ReturnType<AsyncRunner['poll']>;
+      try {
+        rec = this.runner.poll(taskId);
+      } catch (e) {
+        // 同步 store 的 poll 可能**同步抛错**（如已 close 的 SqliteTaskStore ——
+        // 停机顺序 store.close() 先于 scheduler.stop() 时）。这里逃出即定时器回调里的
+        // uncaughtException → 崩宿主进程。与异步路径的 .catch 同口径：查不动就别再
+        // 挡住后续 tick（否则闸门永久自锁）。
+        forget(taskId);
+        console.error(
+          `[agentia:scheduler] 在飞任务 ${taskId} 状态查询失败`,
+          (e as Error)?.message ?? e,
+        );
+        continue;
+      }
       if (isThenable(rec)) {
         void rec
           .then((r) => {

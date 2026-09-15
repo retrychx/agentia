@@ -54,7 +54,9 @@ describe('OpenAI 适配器：真流式（C3）', () => {
   });
 
   it('请求带 stream:true 与 stream_options.include_usage', async () => {
-    const { fetchImpl, requests } = sseFetch(sseBody(['[DONE]']));
+    const { fetchImpl, requests } = sseFetch(
+      sseBody([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']),
+    );
     await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
     assert.equal(requests[0].json.stream, true);
     assert.deepEqual(requests[0].json.stream_options, { include_usage: true });
@@ -199,8 +201,33 @@ describe('OpenAI 适配器：真流式（C3）', () => {
     assert.deepEqual(msg.content, [{ type: 'text', text: '好的' }]);
   });
 
+  it('流内 error 分片（200 + data: {"error":…} 然后 [DONE]）→ 抛错，不得映射成成功空回复', async () => {
+    // 上游故障流的真实形态：HTTP 200 + text/event-stream，流里只有错误分片
+    const body = sseBody([
+      { error: { message: 'model overloaded', type: 'server_error' } },
+      '[DONE]',
+    ]);
+    const { fetchImpl } = sseFetch(body);
+    await assert.rejects(
+      createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage(),
+      /错误分片: model overloaded/,
+    );
+  });
+
+  it('流正常结束但什么都没累积到（无 content、无 tool_calls）→ 抛错而非返回成功空消息', async () => {
+    // 与非流式 toAnthropicMessage 的空 choices 守卫同款：end_turn + content:[] + usage 全 0
+    // 会把一次上游故障记成正常收尾
+    const { fetchImpl } = sseFetch(sseBody(['[DONE]']));
+    await assert.rejects(
+      createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage(),
+      /流式响应为空/,
+    );
+  });
+
   it('signal 被转发给 fetch（否则取消/超时中止不了在飞请求）', async () => {
-    const { fetchImpl, requests } = sseFetch(sseBody(['[DONE]']));
+    const { fetchImpl, requests } = sseFetch(
+      sseBody([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']),
+    );
     const ac = new AbortController();
     await createOpenAIClient({ fetchImpl })
       .messages.stream({ ...BASE, signal: ac.signal })
@@ -244,7 +271,9 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
     }) as Anthropic.ImageBlockParam;
 
   it('base64 图片 → image_url 的 data URL；文本一起进 parts', async () => {
-    const { fetchImpl, requests } = sseFetch(sseBody(['[DONE]']));
+    const { fetchImpl, requests } = sseFetch(
+      sseBody([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']),
+    );
     await createOpenAIClient({ fetchImpl })
       .messages.stream({
         model: 'gpt-x',
@@ -264,7 +293,9 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
   });
 
   it('url 源的图片直接透传（不再包一层 data URL）', async () => {
-    const { fetchImpl, requests } = sseFetch(sseBody(['[DONE]']));
+    const { fetchImpl, requests } = sseFetch(
+      sseBody([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']),
+    );
     await createOpenAIClient({ fetchImpl })
       .messages.stream({
         model: 'gpt-x',
@@ -283,7 +314,9 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
   });
 
   it('没有图片时回落成纯字符串（兼容只吃 string 的端点 —— 旧行为）', async () => {
-    const { fetchImpl, requests } = sseFetch(sseBody(['[DONE]']));
+    const { fetchImpl, requests } = sseFetch(
+      sseBody([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']),
+    );
     await createOpenAIClient({ fetchImpl })
       .messages.stream({
         model: 'gpt-x',

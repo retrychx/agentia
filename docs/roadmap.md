@@ -5,11 +5,13 @@
 
 ## R1 —— 中间件（拦截器链）✅
 
-**中间件是下一个大块的框架能力**，spec §9.2 已留伏笔（"对齐拦截器：每次能力调用包一层"）。
+**中间件是下一个大块的框架能力**（拦截链落在装配层，spec §9.2）。
 
 - **能力调用拦截器链**：`createApp({ middleware: [(call, next) => …] })`，在每次能力（tool/skill/subagent/prompt）
-  调用前后执行。框架自带的 trace 记账从 engine 硬编码改写成第一个内置拦截器——
-  既落地 spec §9.2 的设想，也用自己验证这套抽象（dogfooding）。
+  调用前后执行。~~框架自带的 trace 记账从 engine 硬编码改写成第一个内置拦截器~~ —— 该 dogfooding
+  设想经评审**放弃**（capability span 生命周期与模型调用纠缠在 loop 内，强行外置反而割裂）：
+  trace 记账**有意留在 engine 层**，中间件只承担能力调用层的拦截（见 spec §10 2026-09-11 R1 条；
+  是否二次评估列为 R7 候选）。
 - 用户场景：鉴权（按 blackboard 拒绝调用）、限流（按能力计数）、结果缓存
   （幂等工具直接短路）、调用日志/审计、超时包装。
 - 设计约束：链式 `next()` 语义；顺序 = 注册顺序；拦截器只见 `ToolRunContext` +
@@ -18,7 +20,7 @@
 ## R2 —— 结构化结果 + 类型打通 ✅
 
 - **typed 结果一等化**（spec §6.2 欠账）：run 收尾产出符合 schema 的结构化结果
-  （走 `output_config.format` / 强制 tool 收尾），`result.typed<T>()` 取代纯文本猜解析。
+  （engine 内部追加隐藏 `submit_result` 工具，见 spec §10 R2），`result.typed<T>()` 取代纯文本猜解析。
 - **schema ↔ TS 类型打通**：可选 zod 接入（`@Tool({ schema: z.object(...) })`，
   从 zod 推导 JSON Schema + 入参类型），裸 JSON Schema 写法保留；不改现有 API。
 

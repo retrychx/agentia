@@ -21,7 +21,17 @@ import { readFileSync } from 'node:fs';
  *
  * @param base 调用方模块的 import.meta.url（相对它解析 rel）
  * @param rel  相对资产路径（'./system.md'）
+ *
+ * 边界口径：rel 是**开发者字面量**而非外部输入，`../` 越出能力目录**有意放行**
+ *（共享资产如 `../../shared/common.md` 是合法用法，框架不替作者设防）；
+ * 但带 scheme 的「相对路径」（`file:` / `https:` …）会让 `new URL(rel, base)` 整个
+ * 忽略 base —— 「以为读了能力目录里的文件，实际读了别处」，这种静默错位显式拒绝。
  */
 export function asset(base: string | URL, rel: string): string {
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(rel)) {
+    throw new Error(
+      `asset() 的 rel 必须是相对路径（如 './system.md'），收到带 scheme 的 "${rel}" —— 它会让 base 被整个忽略`,
+    );
+  }
   return readFileSync(new URL(rel, base), 'utf8');
 }

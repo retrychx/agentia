@@ -24,16 +24,30 @@ import type { TaskRecord, TaskStore } from './store.js';
  * await 后再 SET idem 索引」的写入顺序（见 async.ts #execute 注释）——若改为
  * 先写索引或 MULTI 事务，需同步复核该去重路径。
  */
-/** SET 选项（ioredis / node-redis 的 `EX` 形态；仅 ttlSeconds 用到） */
+/**
+ * @deprecated node-redis 的对象形态 SET 选项。对象形态是 node-redis **独有** ——
+ * ioredis 会把它字符串化成 "[object Object]" 发给服务端（报语法错），本 store 因此
+ * 已改用两种客户端通吃的位置参数形态（见 RedisLike.set 的 RedisSetArgs）。
+ * 保留导出仅为不破坏既有公共面。
+ */
 export interface RedisSetOptions {
   /** 过期秒数（EX）；<= 0 视为不过期 */
   EX?: number;
 }
 
+/**
+ * SET 调用的尾参形态（**位置参数**，ioredis / node-redis 的公共形态）：
+ * - 无 TTL：`set(key, value)`，只传两参 —— 显式补一个 undefined 会被 ioredis
+ *   序列化成空串参数，服务端直接报语法错；
+ * - 有 TTL：`set(key, value, 'EX', seconds)` —— ioredis 的原生形态，node-redis v4
+ *   保留的 legacy 变参形态同样接受它。
+ */
+export type RedisSetArgs = [] | ['EX', number];
+
 export interface RedisLike {
   get(key: string): Promise<string | null>;
-  /** opts 为可选第三参（ioredis / node-redis 均兼容）；老 fake 只实现两参也照常工作 */
-  set(key: string, value: string, opts?: RedisSetOptions): Promise<unknown>;
+  /** 尾参为位置参数形态（ioredis 原生 / node-redis v4 legacy 兼容，见 RedisSetArgs）；老 fake 只实现两参也照常工作 */
+  set(key: string, value: string, ...args: RedisSetArgs): Promise<unknown>;
   /** 单键删除（ioredis / node-redis 的公共最小面；批量清理由多次单删组成） */
   del(key: string): Promise<unknown>;
   /** 模式枚举（node-redis / ioredis 均有）；与 scanIterator 至少提供其一 */
@@ -96,12 +110,23 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async save(rec: TaskRecord): Promise<void> {
-    const opts = this.ttlSeconds > 0 ? { EX: this.ttlSeconds } : undefined;
-    await this.client.set(this.taskKey(rec.taskId), JSON.stringify(rec), opts);
+    const json = JSON.stringify(rec);
     // 每次覆写都刷新 TTL：任务的查询窗口从「最后一次状态推进」起算，而不是创建时刻
+    await this.setWithTtl(this.taskKey(rec.taskId), json);
     if (rec.idempotencyKey) {
-      await this.client.set(this.idemKey(rec.idempotencyKey), rec.taskId, opts);
+      await this.setWithTtl(this.idemKey(rec.idempotencyKey), rec.taskId);
     }
+  }
+
+  /**
+   * SET 一次（含 TTL）。不设 TTL 时**只传两参**（显式 undefined 会被 ioredis 序列化成
+   * 空串参数）；设 TTL 用位置参数形态 'EX', seconds —— 对象形态 { EX } 是 node-redis
+   * 独有，ioredis 下会被字符串化成 "[object Object]" 发出（实测服务端报语法错），
+   * 而位置参数形态两者通吃（node-redis v4 保留了 legacy 变参形态）。
+   */
+  private setWithTtl(key: string, value: string): Promise<unknown> {
+    if (this.ttlSeconds > 0) return this.client.set(key, value, 'EX', this.ttlSeconds);
+    return this.client.set(key, value);
   }
 
   async get(taskId: string): Promise<TaskRecord | undefined> {

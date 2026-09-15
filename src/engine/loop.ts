@@ -135,6 +135,18 @@ function appendResultInstruction(system?: SystemParam): SystemParam {
   return [...system, { type: 'text' as const, text: RESULT_INSTRUCTION }];
 }
 
+/**
+ * 上下文策略按 run 隔离：实现提供 `forRun` 时每条 run 拿一个全新实例 ——
+ * 内置 createBudgetPolicy 的滞回计数（lastCompactAt）与增量 token 缓存都是
+ * **per-run 状态**，应用级单例（AppOptions.contextPolicy）被多 run 复用时，
+ * 不隔离会让「run A 第 39 回合刚压缩过」卡住「run B 前 40 回合永不压缩」，
+ * 并发 run 交替调用还会让计数缓存每次从零重算。
+ * 未实现 forRun 的自定义策略原样复用（无状态策略本来就不需要隔离）。
+ */
+function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | undefined {
+  return policy?.forRun ? policy.forRun() : policy;
+}
+
 /** 循环体核心：带父 span 跑一轮 manual loop。请求失败按 error 收掉 turn 后抛出，由外层收尾。 */
 async function agentLoop<S extends JsonSchema = JsonSchema>(
   args: AgentLoopArgs<S>,
@@ -195,6 +207,14 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           },
         })
       : undefined;
+  const budgetError = (over: 'tokens' | 'cost'): SpanError => ({
+    type: 'budget_exceeded',
+    message:
+      over === 'tokens'
+        ? `累计 token 已超过上限 ${args.maxTotalTokens}`
+        : `累计成本已超过上限 $${args.maxCostUsd}`,
+    retryable: false,
+  });
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
     // 调用方已取消：不再发起新回合，直接以 aborted 收尾（不抛异常，语义确定）
@@ -203,6 +223,19 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       error = { type: 'aborted', message: 'run 已被取消', retryable: false };
       finished = true;
       break;
+    }
+    // 成本硬管控（C1）回合入口再判一次：上一回合的**工具执行**（子 agent 循环等嵌套能力）
+    // 可能已把整条 run 的累计用量推过上限（回合末的那次判断当时还没超）—— 在发起新
+    // 请求前拦住：不再发请求 = 不再花钱。与「模型自然收尾不改判」不冲突：自然收尾在
+    // 上一回合就 break 了，走不到这里。
+    if (budget) {
+      const over = budget.check(recorder.snapshot('ok'));
+      if (over) {
+        stopReason = 'budget_exceeded';
+        error = budgetError(over);
+        finished = true;
+        break;
+      }
     }
     // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）
     if (args.contextPolicy) {
@@ -238,7 +271,11 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
         });
         stream.on('text', (delta) => {
           emitted = true;
-          args.onText?.(delta);
+          try {
+            args.onText?.(delta);
+          } catch {
+            /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
+          }
         });
         message = await stream.finalMessage();
         break;
@@ -259,7 +296,11 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
         if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/capability 与收尾
         const delayMs = backoffDelay(attempt, retryCfg);
         recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
-        retryCfg.onRetry({ attempt, delayMs, error: errInfo });
+        try {
+          retryCfg.onRetry({ attempt, delayMs, error: errInfo });
+        } catch {
+          /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
+        }
         try {
           await sleep(delayMs, signal);
         } catch {
@@ -325,6 +366,13 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     if (message.stop_reason === 'max_tokens') {
       stopReason = 'max_tokens';
       finalText = textOf(message);
+      // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span），
+      // 否则 trace 里这类 run「失败却没有原因」
+      error = {
+        type: 'max_tokens',
+        message: `模型输出触顶被截断（max_tokens=${args.maxTokens}）`,
+        retryable: false,
+      };
       finished = true;
       break;
     }
@@ -332,6 +380,11 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       // 无 server tools 时正常不会到；避免无限循环直接停
       stopReason = 'pause_turn';
       finalText = textOf(message);
+      error = {
+        type: 'pause_turn',
+        message: '模型返回 pause_turn（无 server tools 的场景不应出现），防死循环直接收尾',
+        retryable: false,
+      };
       finished = true;
       break;
     }
@@ -366,25 +419,17 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
 
     // 成本硬管控（C1）：走得到这里说明循环还要继续（模型要求调工具）—— 超限就停，
     // 连带不执行这批工具（避免超预算的 run 继续产生副作用）。已产出的文本保留。
-    if (overBudget) {
-      stopReason = 'budget_exceeded';
-      finalText = textOf(message);
-      error = {
-        type: 'budget_exceeded',
-        message:
-          overBudget === 'tokens'
-            ? `累计 token 已超过上限 ${args.maxTotalTokens}`
-            : `累计成本已超过上限 $${args.maxCostUsd}`,
-        retryable: false,
-      };
-      finished = true;
-      break;
-    }
+    // 例外：submit_result 是纯内部的结构化提交（零副作用、不触外部系统），超预算也照常
+    // 处理本回合的它 —— 模型已经把最终结果交出来了，连同回合一起丢弃等于白烧这一回合
+    // （与「自然收尾不因超预算改判失败」同口径）。
+    const runnable = overBudget
+      ? toolUses.filter((u) => args.resultSchema !== undefined && u.name === SUBMIT_RESULT)
+      : toolUses;
 
     // —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
     //    单条 user 消息回全部 tool_result（抑制并行是反模式）——
     const toolResults: Anthropic.ToolResultBlockParam[] = await mapWithConcurrency(
-      toolUses,
+      runnable,
       args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
       async (use) => {
         const tool = args.tools.find((t) => t.name === use.name);
@@ -407,6 +452,10 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
           // 事件截断口径同样透传：调试期开了全文，子 agent 的工具事件不该还是被截断的
           ...(args.maxEventChars != null ? { maxEventChars: args.maxEventChars } : {}),
+          // 成本护栏（C1）同样透传：预算是整条 run（含各级子 agent）的口径，
+          // 子循环拿不到就等于护栏在子循环期间离线（各级共享同一 recorder，按同一账单判断）
+          ...(args.maxTotalTokens != null ? { maxTotalTokens: args.maxTotalTokens } : {}),
+          ...(args.maxCostUsd != null ? { maxCostUsd: args.maxCostUsd } : {}),
         };
         let ok = true;
         let content: unknown = '';
@@ -425,9 +474,13 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
               content = `invalid input: ${invalid}`;
             } else {
               content = 'submitted';
-              // 模型提交的 input 已过 resultSchema 校验 → 断言为 SchemaType<S>（信任边界在此）
-              typed = use.input as SchemaType<S>;
-              submitted = true;
+              // 同回合并行多个 submit_result：**先到先得**（首个校验通过的生效，后续忽略）——
+              // 不 guarded 赋值的话 typed 由并发完成顺序竞态决定，同输入可能产出不同结果
+              if (!submitted) {
+                // 模型提交的 input 已过 resultSchema 校验 → 断言为 SchemaType<S>（信任边界在此）
+                typed = use.input as SchemaType<S>;
+                submitted = true;
+              }
             }
           } catch (e) {
             ok = false;
@@ -495,7 +548,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       },
     );
 
-    messages.push({ role: 'user', content: toolResults });
+    if (toolResults.length > 0) messages.push({ role: 'user', content: toolResults });
 
     if (submitted) {
       // submit_result 校验通过：结构化结果落定，循环正常收尾（finalText 取该回合文本，可空）
@@ -504,11 +557,26 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       finished = true;
       break;
     }
+
+    // 超预算且本回合未落定结构化结果：不再发起下一回合，以 budget_exceeded 收尾
+    if (overBudget) {
+      stopReason = 'budget_exceeded';
+      finalText = textOf(message);
+      error = budgetError(overBudget);
+      finished = true;
+      break;
+    }
   }
 
   if (!finished) {
-    // 循环因 maxIterations 上限退出而非正常终止（所有置 stopReason 的分支都已同时置 finished）
+    // 循环因 maxIterations 上限退出而非正常终止（所有置 stopReason 的分支都已同时置 finished）。
+    // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span）。
     stopReason = 'max_iterations';
+    error = {
+      type: 'max_iterations',
+      message: `达到循环上限（maxIterations=${args.maxIterations}）仍未收尾`,
+      retryable: false,
+    };
   }
 
   return { stopReason, finalText, error, iterations: progress.iterations, typed };
@@ -545,7 +613,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       onText: options.onText,
       signal: options.signal,
       retry: options.retry,
-      contextPolicy: options.contextPolicy,
+      // 按 run 分叉策略实例：per-run 状态（滞回/计数缓存）不跨 run 泄漏
+      contextPolicy: forkPolicyPerRun(options.contextPolicy),
       resultSchema: options.resultSchema,
       progress,
       maxTotalTokens: options.maxTotalTokens,
@@ -613,6 +682,15 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   priceOverrides?: Record<string, ModelPricing>;
   /** 未定价模型回调（F2）：由发起它的能力透传 */
   onUnpricedModel?: (info: { model: string; spanId: string }) => void;
+  /**
+   * 成本硬管控（C1）：由发起它的能力从 ToolRunContext 透传 —— 预算是整条 run 的口径
+   * （各级循环共享同一 recorder，按同一份累计账单判断），子循环每回合同样检查；
+   * 子循环超限以 stopReason='budget_exceeded' 收尾，由能力层包成 is_error 回主循环，
+   * 主循环回合入口的预算检查随即将整条 run 停掉。
+   */
+  maxTotalTokens?: number;
+  /** 成本硬管控（C1）：累计成本（美元）上限；同 maxTotalTokens */
+  maxCostUsd?: number;
 }): Promise<AgentLoopResult<SchemaType<S>>> {
   return agentLoop<S>({
     client: opts.client ?? createAnthropicClient(),
@@ -627,13 +705,15 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     onText: opts.onText,
     signal: opts.signal,
     retry: opts.retry,
-    contextPolicy: opts.contextPolicy,
+    contextPolicy: forkPolicyPerRun(opts.contextPolicy),
     resultSchema: opts.resultSchema,
     toolTimeoutMs: opts.toolTimeoutMs,
     maxToolConcurrency: opts.maxToolConcurrency,
     maxEventChars: opts.maxEventChars,
     priceOverrides: opts.priceOverrides,
     onUnpricedModel: opts.onUnpricedModel,
+    maxTotalTokens: opts.maxTotalTokens,
+    maxCostUsd: opts.maxCostUsd,
   });
 }
 

@@ -1,4 +1,9 @@
-import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
+import {
+  assertMethodTarget,
+  scanDecoratedMethods,
+  capabilityName,
+  isScannableInstance,
+} from './collect.js';
 import type { CapabilityDecoratorContext } from './collect.js';
 import type { AgentTool, JsonSchema } from '../core/tool.js';
 
@@ -42,10 +47,12 @@ export function Prompt(spec: PromptSpec) {
 
 /**
  * 收集容器实例（+ 其类上的静态方法）里所有 @Prompt，产出 AgentTool[]。
- * 实例方法沿原型链（含继承）；静态方法扫描 instance.constructor 自身属性。
+ * 实例方法沿原型链（含继承）；静态方法同样沿构造函数原型链（含继承的父类静态 @Prompt）。
  */
 export function collectPrompts(instance: object): AgentTool[] {
   const tools: AgentTool[] = [];
+  // null/undefined/原始值 provider（useValue 合法形态）：无装饰器能力可收，空结果
+  if (!isScannableInstance(instance)) return tools;
   // 传 key 而非捕获的 fn：子类「未装饰地 override」时 spec 继承自父类，
   // 但实现必须取**实例/类上**的（否则会绕开子类实现，与 @Tool 语义不一致）。
   const pushTool = (
@@ -69,20 +76,29 @@ export function collectPrompts(instance: object): AgentTool[] {
     pushTool(capabilityName(spec, key, '@Prompt'), inst, key, spec);
   }
 
-  // 静态方法（类自身属性）；已被实例方法占用的 key 跳过
+  // 静态方法：沿构造函数原型链（含父类静态 @Prompt），Reflect.ownKeys 含 symbol key。
+  // target 取**最外层**构造函数：子类「未装饰地 override」静态方法时调用走子类实现
+  //（与实例侧 override 语义一致）；只看自身属性会把父类静态资产静默丢掉。
   const seen = new Set<string | symbol>(found.map((f) => f.key));
-  const cls: unknown = (instance as { constructor?: unknown }).constructor;
-  if (typeof cls === 'function') {
-    const ctor = cls as unknown as Record<string, unknown>;
-    for (const key of Object.getOwnPropertyNames(ctor)) {
+  const root: unknown = (instance as { constructor?: unknown }).constructor;
+  let ctor = root;
+  while (typeof ctor === 'function' && ctor !== Function.prototype) {
+    const rec = ctor as unknown as Record<string | symbol, unknown>;
+    for (const key of Reflect.ownKeys(rec)) {
       if (seen.has(key)) continue;
-      const fn = ctor[key];
-      if (typeof fn !== 'function') continue;
-      const spec = promptSpecs.get(fn as Function);
-      if (!spec) continue;
+      const desc = Object.getOwnPropertyDescriptor(rec, key);
+      if (!desc || typeof desc.value !== 'function') continue;
+      const spec = promptSpecs.get(desc.value as Function);
+      if (!spec) continue; // 未装饰的 override 不标 seen，父类静态 spec 继续生效
       seen.add(key);
-      pushTool(key, ctor as Record<string | symbol, unknown>, key, spec);
+      pushTool(
+        capabilityName(spec, key, '@Prompt'),
+        root as Record<string | symbol, unknown>,
+        key,
+        spec,
+      );
     }
+    ctor = Object.getPrototypeOf(ctor);
   }
   return tools;
 }

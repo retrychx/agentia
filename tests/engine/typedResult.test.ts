@@ -298,3 +298,63 @@ describe('runAgentScoped（子 agent 嵌套入口）的 resultSchema 透传', ()
     assert.equal(params.system, undefined);
   });
 });
+
+describe('同回合并行多个 submit_result', () => {
+  it('先到先得：typed 取首个（数组序）校验通过的提交，后续忽略', async () => {
+    // 两个都合法的 submit_result 挤在同一回合：typed 必须由确定规则决定（首个生效），
+    // 不能由并发完成顺序竞态决定 —— 否则同一输入可能产出不同结果。
+    const { client } = mockClient([
+      {
+        ...toolUseMsg('submit_result', { answer: 'first', confidence: 0.1 }, 'tu1'),
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'submit_result',
+            input: { answer: 'first', confidence: 0.1 },
+          },
+          {
+            type: 'tool_use',
+            id: 'tu2',
+            name: 'submit_result',
+            input: { answer: 'second', confidence: 0.9 },
+          },
+        ],
+      },
+    ]);
+    const result = await runAgent({
+      client,
+      messages: [{ role: 'user', content: 'q' }],
+      tools: [echoTool()],
+      resultSchema: RESULT_SCHEMA,
+    });
+    assert.equal(result.stopReason, 'end_turn');
+    assert.deepEqual(result.typed, { answer: 'first', confidence: 0.1 }, '首个提交生效');
+  });
+
+  it('首个校验失败、第二个通过：第二个生效（“先到”指首个**校验通过**的）', async () => {
+    const { client } = mockClient([
+      {
+        ...toolUseMsg('submit_result', { answer: 42 }, 'tu1'),
+        content: [
+          // 缺 confidence → 校验失败（is_error 回模型）
+          { type: 'tool_use', id: 'tu1', name: 'submit_result', input: { answer: 'x' } },
+          {
+            type: 'tool_use',
+            id: 'tu2',
+            name: 'submit_result',
+            input: { answer: 'ok', confidence: 0.9 },
+          },
+        ],
+      },
+    ]);
+    const result = await runAgent({
+      client,
+      messages: [{ role: 'user', content: 'q' }],
+      tools: [echoTool()],
+      resultSchema: RESULT_SCHEMA,
+    });
+    assert.equal(result.stopReason, 'end_turn');
+    assert.deepEqual(result.typed, { answer: 'ok', confidence: 0.9 });
+  });
+});

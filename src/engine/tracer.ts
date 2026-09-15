@@ -140,10 +140,22 @@ export class TraceRecorder {
         totalUsage.costEstimate = (totalUsage.costEstimate ?? 0) + s.usage.costEstimate;
       }
     }
+    // 与 capability 聚合（end() 内）同一取整口径（1e-6 美元）：浮点连加的尾差
+    // （0.1+0.2=0.30000000000000004）不该进 trace/OTLP
+    if (totalUsage.costEstimate != null) {
+      totalUsage.costEstimate = Math.round(totalUsage.costEstimate * 1e6) / 1e6;
+    }
     return {
       traceId: this.traceId,
       rootSpanId: this.rootSpanId,
-      spans: [...this.spans],
+      // span 浅拷 + attributes/events 拷一层：快照交付后仍在记账的残尾（如超时工具的
+      // 后台事件）会继续 push 进 recorder 持有的数组 —— 不拷贝就会事后变异已交付的 trace。
+      // （不递归深拷：事件 body 本身记账后不再被框架改写）
+      spans: this.spans.map((s) => ({
+        ...s,
+        attributes: { ...s.attributes },
+        events: [...s.events],
+      })),
       status,
       totalUsage,
     };

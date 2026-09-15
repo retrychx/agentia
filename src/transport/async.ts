@@ -8,7 +8,7 @@ import { normalizeMessages } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
-import { combineSignals } from '../core/abort.js';
+import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -46,7 +46,8 @@ export interface AsyncRunnerOptions {
   /** 任务完成回调（进程内）；见 TaskSink */
   taskSinks?: TaskSink[];
   /**
-   * 单任务执行超时（毫秒）；缺省 0 = 不限。
+   * 单任务执行超时（毫秒）；缺省 0 = 不限。必须为非负**有限**数（NaN/Infinity 会被
+   * setTimeout 钳到 1ms，等同每个任务立即超时 —— 构造期直接报配置错误）。
    *
    * **超时即中止**：到点会 abort 本次 run 的 signal —— 对尊重 signal 的模型客户端
    * （框架自带的 Anthropic / OpenAI 适配器都转发 signal）是**真中止**，token 不再继续烧；
@@ -104,8 +105,10 @@ export class AsyncRunner {
       throw new Error(`concurrency 必须为正数，收到 ${opts.concurrency}`);
     }
     this.runTimeoutMs = opts.runTimeoutMs ?? 0;
-    if (this.runTimeoutMs < 0) {
-      throw new Error(`runTimeoutMs 不能为负，收到 ${opts.runTimeoutMs}`);
+    if (!Number.isFinite(this.runTimeoutMs) || this.runTimeoutMs < 0) {
+      // NaN/Infinity 都不能放给 setTimeout：两者都会被钳到 1ms，每个任务立即「超时」失败
+      // （且 NaN 会绕过 `< 0` 检查静默通过）。要「不限」请传 0（缺省）。
+      throw new Error(`runTimeoutMs 必须为 ≥ 0 的有限数（0 = 不限），收到 ${opts.runTimeoutMs}`);
     }
     this.ownerId = `p${process.pid}-${randomUUID().slice(0, 8)}`;
   }
@@ -385,22 +388,29 @@ export class AsyncRunner {
           // runTimeoutMs 到点即 abort（对尊重 signal 的客户端是真中止）；与调用方
           // 可能传入的 signal 合成，任一触发都中止本次 run。
           const timeoutAc = new AbortController();
+          const combined = combineSignals(rec.spec.options?.signal, timeoutAc.signal);
           const callOpts: RunInvocationOptions = {
             ...(rec.spec.options ?? {}),
             client: rec.spec.options?.client ?? this.client,
             idempotencyKey: rec.idempotencyKey,
             rethrow: false, // 硬失败也以 failed 记录落库
-            signal: combineSignals(rec.spec.options?.signal, timeoutAc.signal),
+            signal: combined,
           };
-          const out = await this.#raceTimeout(
-            this.app.run(rec.spec.messages, callOpts),
-            rec.taskId,
-            () => timeoutAc.abort(),
-          );
-          rec.runId = out.run.runId;
-          rec.status = out.run.status;
-          rec.result = out.result;
-          rec.error = out.result.error;
+          try {
+            const out = await this.#raceTimeout(
+              this.app.run(rec.spec.messages, callOpts),
+              rec.taskId,
+              () => timeoutAc.abort(),
+            );
+            rec.runId = out.run.runId;
+            rec.status = out.run.status;
+            rec.result = out.result;
+            rec.error = out.result.error;
+          } finally {
+            // 正常收尾（没有源中止）时主动摘除挂在各源上的监听器 —— 宿主级共享
+            // signal 是长寿的，不摘会按任务数累积（MaxListenersExceededWarning）
+            releaseCombinedSignal(combined);
+          }
         } catch (e) {
           rec.error = classifyError(e);
           rec.status = 'failed';

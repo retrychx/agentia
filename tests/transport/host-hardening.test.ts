@@ -507,15 +507,17 @@ describe('B2 优雅停机（drain）', () => {
     }
   });
 
-  it('收口长连 SSE：drain 会关掉仍挂着的流', async () => {
+  it('收口长连 SSE：drain 会关掉仍挂着的流，并中止对应 run（不再后台空烧 token）', async () => {
     let started!: () => void;
     const begun = new Promise<void>((r) => {
       started = r;
     });
+    let runSignal: AbortSignal | undefined;
     const app: AppCallable = {
       name: 'streamer',
       async run(_messages, opts) {
         opts?.onText?.('片段');
+        runSignal = opts?.signal;
         started();
         // 挂住：只有被 abort（res close）才返回
         await new Promise<void>((resolve) =>
@@ -539,6 +541,11 @@ describe('B2 优雅停机（drain）', () => {
       assert.equal(await handler.drain({ timeoutMs: 50 }), false);
       const text = await textPromise;
       assert.ok(text.includes('片段'), '关流前已下发的增量还在');
+      assert.equal(
+        runSignal?.aborted,
+        true,
+        'drain 强制关流必须同时 abort 对应 run —— 只 close 的话 res.end() 让 writableEnded 变 true，onClose 守卫永不触发，run 在后台继续烧 token',
+      );
     } finally {
       await close(server);
     }

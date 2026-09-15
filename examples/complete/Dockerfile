@@ -19,6 +19,8 @@ WORKDIR /repo
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
+# npm run build 会跑 scripts/copy-assets.mjs —— 找不到 docs/usage-guide.md 就 exit 1
+COPY docs ./docs
 RUN npm install --no-audit --no-fund \
  && npm run build
 

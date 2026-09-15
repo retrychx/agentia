@@ -30,8 +30,8 @@ import type { RunStatus } from '../core/run.js';
  *
  * 方法不符 405；路径不符 404；body 非法 JSON 400。runner 缺省内部 new AsyncRunner(app)。
  *
- * 鉴权（B1）：配了 `authenticate` 时，**除 /healthz 外的所有路径**先过钩子，且必须在
- * 读 body 之前 —— 未通过即回错误并断开连接，**不接收 body**（省资源）。框架只给缝：
+ * 鉴权（B1）：配了 `authenticate` 时，**除 /healthz 与 /metrics 外的所有路径**先过钩子，
+ * 且必须在读 body 之前 —— 未通过即回错误并断开连接，**不接收 body**（省资源）。框架只给缝：
  * token / JWT / 签名策略是宿主或反代的事（框架不读 env、不碰凭据）。
  *
  * 优雅停机（B2）：`handler.drain()` 拒新单（POST /run 与 /tasks → 503）、等异步任务与
@@ -85,8 +85,8 @@ export interface HttpHandlerOptions {
    */
   sseMaxBufferedBytes?: number;
   /**
-   * 入口鉴权钩子。请求进入时调用，**除 /healthz 外所有路径**都过它，且**在读 body 之前**
-   * （未通过就不接收 body，省资源）。
+   * 入口鉴权钩子。请求进入时调用，**除 /healthz 与 /metrics 外所有路径**都过它，且**在读 body 之前**
+   * （未通过就不接收 body，省资源）。/metrics 与 /healthz 同档不鉴权（见 `metrics` 选项）。
    * - 正常返回（任意值）→ 视为通过。返回值框架不转交：要 per-request 上下文请在钩子自己的
    *   闭包里存（避免为「暂时没有消费点」的东西发明传递通道）；
    * - 抛出 `HttpException` → 按其 `status` / `body` 回响应（想回 403 就抛 `status: 403`）；
@@ -305,6 +305,14 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
   const runner = opts.runner ?? new AsyncRunner(app);
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxConcurrentRuns = opts.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
+  if (!(maxConcurrentRuns > 0)) {
+    // NaN 会让 `inFlightRuns >= maxConcurrentRuns` 恒 false（闸门静默失效）；
+    // 0 / 负数则全部 503 —— 都是配置错误，宁可在构造期响亮失败。
+    // Infinity 合法（`Infinity > 0` 成立）：无上限（见选项注释）。
+    throw new Error(
+      `maxConcurrentRuns 必须为正数（Infinity = 无上限），收到 ${opts.maxConcurrentRuns}`,
+    );
+  }
   const exposeErrors = opts.exposeErrors ?? false;
   const sseMaxBufferedBytes = opts.sseMaxBufferedBytes;
   const authenticate = opts.authenticate;
@@ -339,7 +347,9 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
     );
     // 同步 /run（含 SSE 流）也在 inFlightRuns 里计数 —— 同样给到 deadline
     const runsDrained = inFlightRuns === 0 || (await waitUntil(() => inFlightRuns === 0, deadline));
-    // 收口：超时仍挂着的 SSE 流强制关闭（其 run 因 res 'close' 中止，stopReason='aborted'）
+    // 收口：超时仍挂着的 SSE 流强制关闭。closeSse 会同时 abort 对应 run
+    // （stopReason='aborted'）——只 close 不 abort 的话，res.end() 让 writableEnded
+    // 同步变 true，onClose 守卫永不触发，run 会在后台继续烧 token（实测复现）。
     for (const close of [...openSse]) close();
     return tasksDrained && runsDrained;
   };
@@ -432,9 +442,14 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
             });
             const heartbeat = setInterval(() => sse.comment('ping'), 15_000);
             heartbeat.unref?.();
-            // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）
+            // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）。
+            // 收口必须同时 abort 对应 run：sse.close() → res.end() 后 writableEnded 同步
+            // 变 true，上面的 onClose 守卫（`!writableEnded`）在 close 事件时不成立，
+            // 只 close 不 abort 会让 run 在后台继续烧 token（与背压收口路径的
+            // onBackpressure → abort 对齐；run 已正常结束时 abort 是无害 no-op）。
             const closeSse = (): void => {
               clearInterval(heartbeat);
+              runAc.abort();
               sse.close();
             };
             openSse.add(closeSse);

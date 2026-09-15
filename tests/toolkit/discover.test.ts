@@ -106,6 +106,58 @@ describe('discoverProviders（目录发现）', () => {
     });
   });
 
+  it('.ts 与编译产物并存：首选失败时回落下一候选并留告警', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentia-fallback-'));
+    const warns: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...a: unknown[]) => {
+      warns.push(a.join(' '));
+    };
+    try {
+      mkdirSync(join(root, 'dual'), { recursive: true });
+      // .ts 入口在求值期抛错（模拟纯 node 选中了 .ts）；.mjs 是并存的可加载产物
+      //（不用 index.js 当对照：tsx 会把 .js 说明符解析回 .ts，测不出回落）
+      writeFileSync(join(root, 'dual', 'index.ts'), 'throw new Error("ts 入口加载不了");\n');
+      writeFileSync(join(root, 'dual', 'index.mjs'), 'export default class Dual {}\n');
+
+      const providers = await discoverProviders(root);
+      assert.deepEqual(
+        providers.map((p) => p.provide),
+        ['dual'],
+        '首选 .ts 失败后应回落 index.mjs 装配成功（tsx dev 下 .ts 仍是首选，顺序未变）',
+      );
+      assert.ok(
+        warns.some((w) => /回落/.test(w) && w.includes('dual')),
+        `回落必须留告警（命中的可能是陈旧编译产物），实际: ${JSON.stringify(warns)}`,
+      );
+    } finally {
+      console.warn = realWarn;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('全部候选都加载失败 → 报错列出每个候选与各自原因', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentia-allfail-'));
+    try {
+      mkdirSync(join(root, 'broken'), { recursive: true });
+      writeFileSync(join(root, 'broken', 'index.ts'), 'throw new Error("ts-boom");\n');
+      writeFileSync(join(root, 'broken', 'index.mjs'), 'throw new Error("mjs-boom");\n');
+
+      await assert.rejects(discoverProviders(root), (e: unknown) => {
+        assert.ok(e instanceof Error);
+        assert.match(e.message, /能力 broken 入口加载失败/);
+        assert.ok(e.message.includes('index.ts'), `应列出 .ts 候选: ${e.message}`);
+        assert.ok(e.message.includes('ts-boom'), `应带 .ts 的失败原因: ${e.message}`);
+        assert.ok(e.message.includes('index.mjs'), `应列出 .mjs 候选: ${e.message}`);
+        assert.ok(e.message.includes('mjs-boom'), `应带 .mjs 的失败原因: ${e.message}`);
+        assert.ok(e.cause instanceof Error, '应把原始异常保留在 cause 上');
+        return true;
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('软链目录（pnpm/monorepo）同样识别为能力目录', async () => {
     const real = mkdtempSync(join(tmpdir(), 'agentia-capability-'));
     const root = mkdtempSync(join(tmpdir(), 'agentia-capabilities-'));
@@ -190,6 +242,17 @@ describe('asset（文本资产加载）', () => {
   it('相对调用模块读取文本', () => {
     const text = asset(import.meta.url, '../fixtures/asset.md');
     assert.ok(text.includes('fixture asset content'));
+  });
+
+  it('../ 越出调用方目录是有意放行（共享资产；rel 是开发者字面量）', () => {
+    // 上面的用例本身就是 ../fixtures/... —— 越出 tests/toolkit/ 读共享夹具
+    const text = asset(import.meta.url, '../fixtures/asset.md');
+    assert.ok(text.length > 0);
+  });
+
+  it('带 scheme 的 rel 显式拒绝（new URL 会整个忽略 base，静默读到别处）', () => {
+    assert.throws(() => asset(import.meta.url, 'file:///etc/passwd'), /必须是相对路径/);
+    assert.throws(() => asset(import.meta.url, 'https://example.com/x.md'), /必须是相对路径/);
   });
 });
 

@@ -7,6 +7,9 @@
  * Node 18 没有 `AbortSignal.any`，这里手写兜底（Node 20.3+ 才有）。
  */
 
+/** 合成 signal → 其「摘除全部源监听器」的清理函数（仅 combineSignals 多源分支的产物在表内） */
+const cleanups = new WeakMap<AbortSignal, () => void>();
+
 /** 合成多个中断源：任一已中止 / 后中止即中止；忽略 undefined；全空返回**永不中止**的 signal。 */
 export function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal {
   const real = signals.filter((s): s is AbortSignal => s !== undefined);
@@ -21,7 +24,32 @@ export function combineSignals(...signals: Array<AbortSignal | undefined>): Abor
     }
   }
   if (!ac.signal.aborted) {
-    for (const s of real) s.addEventListener('abort', () => ac.abort(s.reason), { once: true });
+    // 每个源一个具名监听（存进 map 供摘除）：合成 signal 中止后，其余源上的监听器
+    // 就再也没用 —— 不摘掉的话，宿主级共享 signal（长寿）每跑一条 run 多挂一个，
+    // 累积 >10 触发 MaxListenersExceededWarning，闭包也跟着滞留。
+    const listeners = new Map<AbortSignal, () => void>();
+    const detach = (): void => {
+      for (const [s, l] of listeners) s.removeEventListener('abort', l);
+      listeners.clear();
+      cleanups.delete(ac.signal);
+    };
+    for (const s of real) {
+      const l = (): void => ac.abort(s.reason);
+      listeners.set(s, l);
+      s.addEventListener('abort', l, { once: true });
+    }
+    ac.signal.addEventListener('abort', detach, { once: true });
+    cleanups.set(ac.signal, detach);
   }
   return ac.signal;
+}
+
+/**
+ * run 正常收尾（没有任何源中止）时主动摘除 combineSignals 挂在各源上的监听器。
+ * 对非 combineSignals 产物 / 已清理的 signal 幂等空操作。
+ *
+ * 模块级 export（不进公共面）：调用方（如 transport/async）在 run settle 后调用。
+ */
+export function releaseCombinedSignal(signal: AbortSignal): void {
+  cleanups.get(signal)?.();
 }

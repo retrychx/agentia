@@ -1,39 +1,49 @@
 /** 测试共用：mock Anthropic client（脚本化往返）与 fake AppCallable。 */
 
+import type Anthropic from '@anthropic-ai/sdk';
+import type { ModelClient } from '../src/index.js';
+
 export interface MockExchange {
   /** 收到完整请求参数时可断言/记录 */
   onParams?: (params: unknown) => void;
   message: Record<string, unknown>;
 }
 
-/** 按脚本依次返回 message 的 mock client（stream().on 忽略，finalMessage 出脚本） */
-export function mockClient(script: Array<Record<string, unknown> | MockExchange>) {
+/**
+ * 按脚本依次返回 message 的 mock client（stream().on 忽略，finalMessage 出脚本）。
+ *
+ * client 显式标注 `ModelClient`（不是 `as never`）：契约加必需成员时这里编译报错，
+ * 而不是所有调用方静默拿一个 any。⚠️ 「忽略 on('text')」是**设计**（要真吐字的增量
+ * 用 src/eval 的 scriptedClient）；脚本 message 是测试夹具形状，类型上按 unknown 过渡。
+ */
+export function mockClient(script: Array<Record<string, unknown> | MockExchange>): {
+  seen: unknown[];
+  client: ModelClient;
+} {
   const seen: unknown[] = [];
   let i = 0;
-  return {
-    seen,
-    client: {
-      messages: {
-        stream: (params: unknown) => {
-          seen.push(params);
-          return {
-            on() {},
-            finalMessage: async () => {
-              const step = script[i++];
-              if (!step) throw new Error(`mock 脚本耗尽（第 ${i} 次调用）`);
-              if ('message' in step) {
-                // `in` 对 `Record<string, unknown>` 联合不会收窄 → 显式按 MockExchange 用
-                const ex = step as MockExchange;
-                ex.onParams?.(params);
-                return ex.message;
-              }
-              return step;
-            },
-          };
-        },
+  const client: ModelClient = {
+    messages: {
+      stream: (params) => {
+        seen.push(params);
+        return {
+          on() {},
+          finalMessage: async () => {
+            const step = script[i++];
+            if (!step) throw new Error(`mock 脚本耗尽（第 ${i} 次调用）`);
+            if ('message' in step) {
+              // `in` 对 `Record<string, unknown>` 联合不会收窄 → 显式按 MockExchange 用
+              const ex = step as MockExchange;
+              ex.onParams?.(params);
+              return ex.message as unknown as Anthropic.Message;
+            }
+            return step as unknown as Anthropic.Message;
+          },
+        };
       },
-    } as never,
+    },
   };
+  return { seen, client };
 }
 
 /** 常用 usage 块 */
