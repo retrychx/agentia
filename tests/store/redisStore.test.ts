@@ -164,48 +164,49 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     assert.throws(() => new RedisTaskStore(fake, { prefix: '' }), /prefix 不能为空/);
   });
 
-  it('ttlSeconds：save 的记录与幂等索引都带 EX（位置参数形态）；缺省不设；负数抛错', async () => {
+  it('ttlSeconds：记录与幂等索引都经 expire 施加 TTL；缺省不设；负数 / 无 expire 抛错', async () => {
     const inner = new InMemoryRedisFake();
-    const calls: Array<{ key: string; args: unknown[] }> = [];
+    const calls: string[][] = [];
     const spy: RedisLike = {
       get: (k) => inner.get(k),
-      // 位置参数形态（ioredis / node-redis v4 legacy 的公共形态）：无 TTL 时零尾参
-      set: async (key, value, ...args: unknown[]) => {
-        calls.push({ key, args });
+      // 只两参：SET 的尾参形状两家相反，TTL **不走这里**（见 RedisTaskStore.write 注释）
+      set: async (key, value) => {
+        calls.push(['SET', key, value]);
         return inner.set(key, value);
+      },
+      expire: async (key, seconds) => {
+        calls.push(['EXPIRE', key, String(seconds)]);
+        return 1;
       },
       del: (k) => inner.del(k),
       keys: (p) => inner.keys(p),
     };
 
     const ttlStore = new RedisTaskStore(spy, { ttlSeconds: 60 });
-    await ttlStore.save(rec({ idempotencyKey: 'k' })); // 无幂等键的 save 只写记录
-    assert.equal(calls.length, 2);
-    assert.deepEqual(
-      calls.map((c) => c.args),
-      [
-        ['EX', 60],
-        ['EX', 60],
-      ],
-    );
-    assert.match(calls[0].key, /task:/);
-    assert.match(calls[1].key, /idem:k/);
+    const a = rec({ idempotencyKey: 'k' });
+    await ttlStore.save(a);
+    // 逐条钉死 argv：node-redis 的 SET 会丢掉位置参数，TTL 只能在 EXPIRE 上
+    assert.deepEqual(calls, [
+      ['SET', `agentia:task:${a.taskId}`, JSON.stringify(a)],
+      ['EXPIRE', `agentia:task:${a.taskId}`, '60'],
+      ['SET', 'agentia:idem:k', a.taskId],
+      ['EXPIRE', 'agentia:idem:k', '60'],
+    ]);
 
-    // 缺省不设 EX（老行为：记录永不过期）—— 只传两参，连 undefined 尾参都不给
-    // （显式 undefined 会被 ioredis 序列化成空串参数，服务端报语法错）
+    // 缺省不设 TTL（老行为：记录永不过期）—— 只 SET，一条 EXPIRE 都不发
     calls.length = 0;
     await new RedisTaskStore(spy).save(rec());
     assert.deepEqual(
-      calls.map((c) => c.args),
-      [[]],
+      calls.map((c) => c[0]),
+      ['SET'],
     );
 
     // 0 也视为不设（便于用 0 明确关闭）
     calls.length = 0;
     await new RedisTaskStore(spy, { ttlSeconds: 0 }).save(rec());
     assert.deepEqual(
-      calls.map((c) => c.args),
-      [[]],
+      calls.map((c) => c[0]),
+      ['SET'],
     );
 
     assert.throws(() => new RedisTaskStore(spy, { ttlSeconds: -1 }), /ttlSeconds/);
@@ -321,6 +322,13 @@ class IORedisFake implements RedisLike {
   async del(key: string): Promise<number> {
     return this.map.delete(key) ? 1 : 0;
   }
+  /** ioredis 的 `expire(key, seconds)`：与 node-redis 同名同形，是两家的公共面 */
+  async expire(key: string, seconds: number): Promise<number> {
+    const cur = this.map.get(key);
+    if (!cur) return 0;
+    this.map.set(key, { value: cur.value, ex: seconds });
+    return 1;
+  }
   async keys(pattern: string): Promise<string[]> {
     const re = globToRegExp(pattern);
     return [...this.map.keys()].filter((k) => re.test(k));
@@ -328,28 +336,117 @@ class IORedisFake implements RedisLike {
 }
 
 /**
- * node-redis v4 形态：对象选项（{ EX }）与 legacy 变参（'EX', seconds）**都**接受。
- * store 只能依赖两者的交集（位置参数形态）——对象形态由 IORedisFake 负责拦截。
+ * 忠实模拟 **node-redis** 的命令序列化 —— 口径来自**实跑它自己的命令定义**，不是推断：
+ *
+ * ```js
+ * // node-redis v4.7.1: @redis/client/dist/lib/commands/SET.js 的 transformArguments
+ * // node-redis v6.2.1: 同文件的 parseCommand（v6 更名）
+ * transformArguments('k', 'v', { EX: 60 }) → ['SET','k','v','EX','60']   ✅ TTL 生效
+ * transformArguments('k', 'v', 'EX', 60)   → ['SET','k','v']             ❌ TTL 被丢
+ * ```
+ *
+ * 根因：SET 的命令定义只声明 `(key, value, options)` **三个形参**，多出来的位置参数被
+ * JS 直接丢弃 —— **不报错、不警告**。v4 与 v6 一致。
+ *
+ * ⚠️ 本 fake 上一版把「对象选项与 legacy 变参**都**接受」写了进去 —— 那是**把假设写成
+ * 事实**：store 于是把「位置参数」当成两种客户端的交集，而它在 node-redis 上让 TTL
+ * **静默失效**，测试却一直全绿。教训：fake 只能模拟**实测过**的形态，并注明出处与版本。
  */
-class NodeRedisFake extends IORedisFake {
-  override async set(key: string, value: string, ...args: unknown[]): Promise<string> {
-    if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
-      const ex = (args[0] as { EX?: number }).EX;
-      this.map.set(key, ex ? { value, ex } : { value });
-      return 'OK';
-    }
-    return super.set(key, value, ...args);
+class NodeRedisFake implements RedisLike {
+  readonly map = new Map<string, { value: string; ex?: number }>();
+  /** 逐条记录发给服务端的 argv（断言「到底发了什么」用） */
+  readonly argv: string[][] = [];
+
+  async get(key: string): Promise<string | null> {
+    this.argv.push(['GET', key]);
+    return this.map.get(key)?.value ?? null;
+  }
+
+  async set(key: string, value: string, ...args: unknown[]): Promise<string> {
+    this.argv.push(['SET', key, value, ...args.map((a) => String(a))]);
+    // 只有 options 对象形态认得 EX；位置参数按真实行为丢弃
+    const opts = args[0];
+    const ex = typeof opts === 'object' && opts !== null ? (opts as { EX?: number }).EX : undefined;
+    this.map.set(key, ex !== undefined ? { value, ex } : { value });
+    return 'OK';
+  }
+
+  async expire(key: string, seconds: number): Promise<number> {
+    this.argv.push(['EXPIRE', key, String(seconds)]);
+    const cur = this.map.get(key);
+    if (!cur) return 0;
+    this.map.set(key, { value: cur.value, ex: seconds });
+    return 1;
+  }
+
+  async del(key: string): Promise<number> {
+    this.argv.push(['DEL', key]);
+    return this.map.delete(key) ? 1 : 0;
+  }
+
+  async keys(pattern: string): Promise<string[]> {
+    const re = globToRegExp(pattern);
+    return [...this.map.keys()].filter((k) => re.test(k));
   }
 }
+
+describe('node-redis 的 SET 只认 options 对象 —— TTL 必须走 expire（实测口径 2026-09-15）', () => {
+  it('ttlSeconds > 0：TTL 落到记录与幂等索引上；SET 只许两参（位置参数 TTL 会被静默丢弃）', async () => {
+    const client = new NodeRedisFake();
+    const store = new RedisTaskStore(client, { prefix: 'nr:', ttlSeconds: 60 });
+    const a = rec({ idempotencyKey: 'k' });
+    await store.save(a);
+
+    assert.equal(client.map.get(`nr:task:${a.taskId}`)?.ex, 60, 'task 记录必须带 TTL');
+    assert.equal(client.map.get('nr:idem:k')?.ex, 60, '幂等索引必须带 TTL');
+
+    // 反向断言：TTL 不得借 SET 的位置参数表达 —— node-redis 会整段丢掉而不报错
+    const sets = client.argv.filter((c) => c[0] === 'SET');
+    assert.ok(
+      sets.every((c) => c.length === 3),
+      `SET 只能收 (key, value) 两参，实际发了：${JSON.stringify(sets)}`,
+    );
+    assert.deepEqual(
+      client.argv.filter((c) => c[0] === 'EXPIRE'),
+      [
+        ['EXPIRE', `nr:task:${a.taskId}`, '60'],
+        ['EXPIRE', 'nr:idem:k', '60'],
+      ],
+      'TTL 必须经 EXPIRE 逐键施加',
+    );
+  });
+
+  it('无 ttlSeconds：一条 EXPIRE 都不发（记录永不过期，保持既有缺省）', async () => {
+    const client = new NodeRedisFake();
+    await new RedisTaskStore(client, { prefix: 'nr:' }).save(rec());
+    assert.equal(client.argv.filter((c) => c[0] === 'EXPIRE').length, 0);
+  });
+
+  it('ttlSeconds > 0 但客户端没有 expire：构造期抛错（不许静默把 TTL 关掉）', () => {
+    const noExpire: RedisLike = {
+      get: async () => null,
+      set: async () => 'OK',
+      del: async () => 0,
+      keys: async () => [],
+    };
+    assert.throws(
+      () => new RedisTaskStore(noExpire, { ttlSeconds: 60 }),
+      /expire/,
+      '没有 expire 就设 TTL 会静默失效 —— 必须启动期响亮失败',
+    );
+    // 不设 TTL 时不需要 expire
+    assert.doesNotThrow(() => new RedisTaskStore(noExpire));
+  });
+});
 
 describe('RedisTaskStore 客户端形态兼容（ioredis / node-redis 真实参数形态）', () => {
   for (const [name, make] of [
     ['ioredis', () => new IORedisFake()],
     ['node-redis', () => new NodeRedisFake()],
   ] as const) {
-    it(`${name}：无 TTL（只传两参）与带 TTL（'EX', seconds 位置参数）全链路`, async () => {
+    it(`${name}：无 TTL（只 SET 两参）与带 TTL（SET + EXPIRE）全链路`, async () => {
       const client = make();
-      // 无 TTL：必须只传两参（显式 undefined 会被 ioredis 序列化成空串 → 语法错）
+      // 无 TTL：只传两参（显式 undefined 会被 ioredis 序列化成空串 → 语法错）
       const plain = new RedisTaskStore(client, { prefix: `${name}:` });
       const a = rec({ idempotencyKey: 'k' });
       await plain.save(a);
@@ -357,7 +454,7 @@ describe('RedisTaskStore 客户端形态兼容（ioredis / node-redis 真实参�
       assert.equal((await plain.byIdempotency('k'))?.taskId, a.taskId);
       assert.equal((await plain.list()).length, 1);
 
-      // 带 TTL：位置参数形态两种客户端都接受；记录与幂等索引都带 EX
+      // 带 TTL：SET + EXPIRE 在两家客户端上都真的生效；记录与幂等索引都带 TTL
       const ttlStore = new RedisTaskStore(client, { prefix: `${name}:`, ttlSeconds: 60 });
       const b = rec({ idempotencyKey: 'k2' });
       await ttlStore.save(b);

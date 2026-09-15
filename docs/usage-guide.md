@@ -326,7 +326,7 @@ const app = await createApp({ ... });
 | `InMemoryTaskStore` | 内存任务存储（可设 `maxRecords` 做内存闸门） |
 | `FileTaskStore` | JSONL 耐久存储（`compact()` 可压实日志） |
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
-| `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；`RedisLike.set` 用**位置参数**形态 `set(key, value, 'EX', seconds)` —— ioredis 原生 / node-redis legacy 变参通吃（对象形态 `{EX}` 是 node-redis 独有，ioredis 会把它字符串化成 `"[object Object]"` 发出）；不设 TTL 时只传两参 |
+| `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；客户端结构面 `get` / `set` / `del` / `keys`（或 `scanIterator`），外加设 TTL 时必需的 `expire`。`set` **只传两参** —— 尾参的选项形状两家相反：ioredis 认位置参数 `('EX', n)`、node-redis 认对象 `{ EX: n }`，取任何一种都会在另一家上失效（ioredis 会把对象字符串化成 `"[object Object]"` 报语法错；**node-redis 的 `SET` 只声明三个形参，位置参数被静默丢弃**）。所以 TTL 一律走 `expire(key, seconds)`（两家同名同形）；设了 `ttlSeconds > 0` 却没给 `expire` 时**构造期抛错**，不静默丢掉 TTL |
 
 ### HTTP 端点速查（`createHttpHandler` 的路由）
 

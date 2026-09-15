@@ -179,7 +179,13 @@ async function startFakeProvider(): Promise<{
   };
 }
 
-/** 取一个空闲端口（listen 0 拿到再放掉；留给被 spawn 的示例进程用） */
+/**
+ * 取一个空闲端口（`listen(0)` 拿到再放掉；留给被 spawn 的示例进程用）。
+ *
+ * ⚠️ **这里天然有 TOCTOU 窗口**：探到 → `close()` → 子进程再 `bind`，两步之间那个临时
+ * 端口可能被系统分给别的连接（本地实测真撞上过 `EADDRINUSE: ::53174`）。所以调用方一律
+ * 走 `startExampleRetrying()`，不要直接用它 —— 端口争用必须靠换端口重试收敛。
+ */
 async function freePort(): Promise<number> {
   const probe = createServer();
   const port = await new Promise<number>((ready) => {
@@ -269,6 +275,57 @@ async function startExample(opts: {
   return { child, stdout: () => out, waitExit: () => exited };
 }
 
+/**
+ * 起示例进程，**撞上端口争用就换端口重试**。
+ *
+ * 为什么要重试：`freePort()` 是「`listen(0)` 探到端口 → 关掉 → 子进程再绑」，两步之间那个
+ * 临时端口可能被系统分给别的连接（TOCTOU）。本地实测真撞上过一次（`EADDRINUSE: ::53174`），
+ * 而症状被报成**「示例进程启动即退出」** —— 读起来像示例或实现坏了，其实是环境抢了端口。
+ *
+ * ⚠️ **只对端口争用重试**：其他启动失败（示例真挂了）必须原样抛出，不能被重试掩盖成
+ * 「多试几次就好了」。三次都撞端口才失败，并逐次记下是哪个端口。
+ */
+async function startExampleRetrying(opts: {
+  dbPath: string;
+  fakeBaseURL: string;
+  tag: string;
+  attempts?: number;
+}): Promise<{
+  child: ChildProcess;
+  stdout: () => string;
+  waitExit: () => Promise<number | null>;
+  port: number;
+  base: string;
+}> {
+  const attempts = opts.attempts ?? 3;
+  const collided: string[] = [];
+  for (let i = 1; i <= attempts; i++) {
+    const port = await freePort();
+    try {
+      const started = await startExample({
+        port,
+        dbPath: opts.dbPath,
+        fakeBaseURL: opts.fakeBaseURL,
+        tag: opts.tag,
+      });
+      if (collided.length > 0) {
+        console.log(
+          `[${opts.tag}] 换到端口 ${port} 后启动成功（此前撞过：${collided.join('、')}）`,
+        );
+      }
+      return { ...started, port, base: `http://127.0.0.1:${port}` };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!msg.includes('EADDRINUSE')) throw e;
+      collided.push(`第 ${i} 次端口 ${port}`);
+      console.warn(`[${opts.tag}] 端口 ${port} 被占用（TOCTOU 抖动），换端口重试`);
+    }
+  }
+  throw new Error(
+    `[${opts.tag}] 连续 ${attempts} 次都撞上端口占用（${collided.join('、')}）—— 环境异常，非示例问题`,
+  );
+}
+
 /** 轮询任务记录到终态（预算给足：验的是「最终会成功」，不是「多快成功」） */
 async function pollTask(base: string, taskId: string): Promise<Record<string, unknown>> {
   const deadline = Date.now() + 20_000;
@@ -292,15 +349,14 @@ async function waitFor(cond: () => boolean, what: string, budgetMs = 10_000): Pr
 const fake = await startFakeProvider();
 const tmp = mkdtempSync(join(tmpdir(), 'agentia-e2e-deploy-'));
 const dbPath = join(tmp, 'agentia.db');
-let server: Awaited<ReturnType<typeof startExample>> | undefined;
+let server: Awaited<ReturnType<typeof startExampleRetrying>> | undefined;
 try {
   ensureLinks();
   buildExample();
 
   // —— 阶段 A：起服务 → 提交异步任务 → 模型调用挂在闸门里 → SIGKILL 模拟崩溃 ——
-  const portA = await freePort();
-  const baseA = `http://127.0.0.1:${portA}`;
-  server = await startExample({ port: portA, dbPath, fakeBaseURL: fake.baseURL, tag: 'A' });
+  server = await startExampleRetrying({ dbPath, fakeBaseURL: fake.baseURL, tag: 'A' });
+  const baseA = server.base;
 
   const health = (await (await fetch(`${baseA}/healthz`)).json()) as Record<string, unknown>;
   assert(health.ok === true, `healthz.ok=${health.ok}`);
@@ -323,9 +379,8 @@ try {
   server = undefined;
 
   // —— 阶段 B：同库重启 → resumePending 必须把死在半路的任务续跑到 succeeded ——
-  const portB = await freePort();
-  const baseB = `http://127.0.0.1:${portB}`;
-  server = await startExample({ port: portB, dbPath, fakeBaseURL: fake.baseURL, tag: 'B' });
+  server = await startExampleRetrying({ dbPath, fakeBaseURL: fake.baseURL, tag: 'B' });
+  const baseB = server.base;
   assert(
     server.stdout().includes('[boot] 续跑 1 个未完成任务'),
     `重启应续跑 1 个未完成任务，实际 stdout：${server.stdout()}`,

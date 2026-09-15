@@ -10,7 +10,7 @@ import type { TaskRecord, TaskStore } from './store.js';
  * 存储模型（prefix 缺省 'agentia:'）：
  * - `${prefix}task:<taskId>` → 整行记录 JSON（save = SET 覆写，last-wins）；
  * - `${prefix}idem:<idempotencyKey>` → taskId（同键重提覆写，byIdempotency last-wins）。
- * 两者都按 `ttlSeconds`（若设）带 EX 过期，见该选项。
+ * 两者都按 `ttlSeconds`（若设）过期（SET 覆写 + EXPIRE 刷新窗口），见该选项。
  *
  * 语义对照 FileTaskStore / SqliteTaskStore：save 覆写、byIdempotency 取最近、
  * clear 清空本前缀全部 key。差异在 list 序：Redis 本身无序，按 createdAt
@@ -25,29 +25,33 @@ import type { TaskRecord, TaskStore } from './store.js';
  * 先写索引或 MULTI 事务，需同步复核该去重路径。
  */
 /**
- * @deprecated node-redis 的对象形态 SET 选项。对象形态是 node-redis **独有** ——
- * ioredis 会把它字符串化成 "[object Object]" 发给服务端（报语法错），本 store 因此
- * 已改用两种客户端通吃的位置参数形态（见 RedisLike.set 的 RedisSetArgs）。
- * 保留导出仅为不破坏既有公共面。
+ * @deprecated 本 store 已不再使用它。历史：这是「对象形态 SET 选项」，对象形态是
+ * node-redis 独有（ioredis 会把对象字符串化成 "[object Object]" 发给服务端，报语法错）；
+ * 0.4.1 曾改用「位置参数形态」想当两家客户端的交集，**但那是错的** —— node-redis 的
+ * SET 只声明 `(key, value, options)` 三个形参，多出来的位置参数被 JS **静默丢弃**，
+ * TTL 会无声失效（见 `RedisLike.expire`）。保留导出仅为不破坏既有公共面。
  */
 export interface RedisSetOptions {
   /** 过期秒数（EX）；<= 0 视为不过期 */
   EX?: number;
 }
 
-/**
- * SET 调用的尾参形态（**位置参数**，ioredis / node-redis 的公共形态）：
- * - 无 TTL：`set(key, value)`，只传两参 —— 显式补一个 undefined 会被 ioredis
- *   序列化成空串参数，服务端直接报语法错；
- * - 有 TTL：`set(key, value, 'EX', seconds)` —— ioredis 的原生形态，node-redis v4
- *   保留的 legacy 变参形态同样接受它。
- */
-export type RedisSetArgs = [] | ['EX', number];
-
 export interface RedisLike {
   get(key: string): Promise<string | null>;
-  /** 尾参为位置参数形态（ioredis 原生 / node-redis v4 legacy 兼容，见 RedisSetArgs）；老 fake 只实现两参也照常工作 */
-  set(key: string, value: string, ...args: RedisSetArgs): Promise<unknown>;
+  /**
+   * 覆写一个键。**只传两参** —— 这是 ioredis 与 node-redis 唯一无歧义的公共形态：
+   * 尾参的「选项形状」两家相反（ioredis 认位置参数 `('EX', n)`、node-redis 认对象
+   * `{ EX: n }`），取任何一种写法都会在另一家上静默失效或报语法错。
+   * 所以 **TTL 不走这里**，改由 `expire` 单独施加（见 `RedisTaskStore`）。
+   * 另：显式补一个 undefined 尾参会让 ioredis 发出 `SET k v ""` → 语法错。
+   */
+  set(key: string, value: string): Promise<unknown>;
+  /**
+   * 设置过期秒数 —— ioredis / node-redis **同名同形**的公共面（`expire(key, seconds)`）。
+   * `RedisTaskStore` 的 `ttlSeconds > 0` 时**必需**：构造期校验，缺失即抛错（静默丢掉
+   * TTL 会让键永不过期、`list()` 无界增长，比启动期报错难查得多）。
+   */
+  expire?(key: string, seconds: number): Promise<unknown>;
   /** 单键删除（ioredis / node-redis 的公共最小面；批量清理由多次单删组成） */
   del(key: string): Promise<unknown>;
   /** 模式枚举（node-redis / ioredis 均有）；与 scanIterator 至少提供其一 */
@@ -74,7 +78,11 @@ export interface RedisTaskStoreOptions {
 
 export class RedisTaskStore implements TaskStore {
   private readonly prefix: string;
-  private readonly ttlSeconds: number;
+  /**
+   * TTL 施加函数（`ttlSeconds > 0` 时构造期已确保存在）。TTL 不走 `SET` 的尾参 ——
+   * 两家客户端的尾参形状相反，取任何一种都会在另一家上失败（详见 `RedisLike.set`）。
+   */
+  private readonly applyTtl?: (key: string) => Promise<unknown>;
 
   constructor(
     private readonly client: RedisLike,
@@ -98,7 +106,17 @@ export class RedisTaskStore implements TaskStore {
         `RedisTaskStore 的 ttlSeconds 必须为 ≥ 0 的数（0 = 不设 TTL），收到 ${opts.ttlSeconds}`,
       );
     }
-    this.ttlSeconds = ttl;
+    if (ttl > 0) {
+      const expire = client.expire;
+      if (typeof expire !== 'function') {
+        // 静默失效比启动期报错难查得多：键永不过期，list() 无界增长，且没有任何信号
+        throw new Error(
+          'RedisTaskStore 设了 ttlSeconds > 0，但 client 没有 expire(key, seconds) —— ' +
+            'TTL 会静默失效（键永不过期）。请用 ioredis / node-redis 客户端，或补一个 expire 实现。',
+        );
+      }
+      this.applyTtl = (key) => expire.call(client, key, ttl);
+    }
   }
 
   private taskKey(taskId: string): string {
@@ -111,22 +129,30 @@ export class RedisTaskStore implements TaskStore {
 
   async save(rec: TaskRecord): Promise<void> {
     const json = JSON.stringify(rec);
-    // 每次覆写都刷新 TTL：任务的查询窗口从「最后一次状态推进」起算，而不是创建时刻
-    await this.setWithTtl(this.taskKey(rec.taskId), json);
+    // 写入顺序是 load-bearing（AsyncRunner 的延迟幂等去重依赖它）：先记录、后幂等索引
+    await this.write(this.taskKey(rec.taskId), json);
     if (rec.idempotencyKey) {
-      await this.setWithTtl(this.idemKey(rec.idempotencyKey), rec.taskId);
+      await this.write(this.idemKey(rec.idempotencyKey), rec.taskId);
     }
   }
 
   /**
-   * SET 一次（含 TTL）。不设 TTL 时**只传两参**（显式 undefined 会被 ioredis 序列化成
-   * 空串参数）；设 TTL 用位置参数形态 'EX', seconds —— 对象形态 { EX } 是 node-redis
-   * 独有，ioredis 下会被字符串化成 "[object Object]" 发出（实测服务端报语法错），
-   * 而位置参数形态两者通吃（node-redis v4 保留了 legacy 变参形态）。
+   * 写一次（`SET` 覆写 + 设了 `ttlSeconds` 时 `EXPIRE` 刷新窗口）。
+   *
+   * **为什么 TTL 不走 `SET ... EX`**：两家客户端的尾参形状**相反** —— ioredis 认位置参数
+   * `('EX', n)`（给对象会被字符串化成 "[object Object]"、服务端报语法错），而 node-redis
+   * 的 SET 只声明 `(key, value, options)` **三个形参**，位置参数被 JS **静默丢弃**
+   * （v4.7.1 / v6.2.1 实跑其命令定义确认：`transformArguments('k','v','EX',60)` →
+   * `['SET','k','v']`）。`expire(key, seconds)` 是两家**同名同形**的公共面，没有歧义。
+   *
+   * 代价（如实记）：`SET` 与 `EXPIRE` 两条命令、**非原子** —— 两步之间进程被杀会留下一个
+   * **没有 TTL 的键**（多活一条本该到期的记录），不会损坏数据。TTL 只是查询窗口，用这个
+   * 窗口换「两家客户端都真的生效」，是本 store 有意的取舍（见 spec §10）。
    */
-  private setWithTtl(key: string, value: string): Promise<unknown> {
-    if (this.ttlSeconds > 0) return this.client.set(key, value, 'EX', this.ttlSeconds);
-    return this.client.set(key, value);
+  private async write(key: string, value: string): Promise<void> {
+    await this.client.set(key, value);
+    // 每次覆写都刷新 TTL：任务的查询窗口从「最后一次状态推进」起算，而不是创建时刻
+    if (this.applyTtl) await this.applyTtl(key);
   }
 
   async get(taskId: string): Promise<TaskRecord | undefined> {
