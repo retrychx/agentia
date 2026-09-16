@@ -1129,6 +1129,35 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   **⑦ 在线评估采样**按调研结论落为 **recipe**（usage-guide §6：sampleSink + judge + attachScore
   + metricsSink 拼装），不进框架 —— 评什么、采样率多少是业务策略，与「护栏/配额只给缝」同口径。
 
+- 2026-09-16：**trace diff 与分叉重放落地（`diffTraces` / `forkMessages`）**。
+  设计取舍**在此锁定**：
+  **① trace diff 落 `diffTraces(a, b, opts?)`（engine，纯函数，公共导出）**：不发起请求、
+  不改 trace，产出 `TraceDiff { equal; summary; spans }` —— run 级 summary（status /
+  totalUsage.* / 根 span attributes）+ 逐 span 字段级差异（`SpanDiff { path; a?; b?; fields }`，
+  字段差逐条 `DiffEntry { field; a; b }`）。**配对键决策**：llm.turn 的配对键**只有 kind、
+  忽略 name** —— name 是模型 id，而「换个模型重跑」正是 A/B 主用例，按 name 配对会把两侧
+  所有 turn 都报成缺失；模型差异降格为配对 turn 的 `name` 字段差。capability span 按
+  `kind:name` 配对（`skill:foo` vs `skill:bar` 是不同能力，不该配上）。同键孩子按 startedAt
+  稳定排序后按下标一一配对；**缺侧子树不下钻** —— 一条缺侧 SpanDiff（fields 为空、path 照给）
+  即代表整支。**默认忽略墙钟**（`ignoreTiming` 缺省 true：span startedAt/endedAt、event time
+  缺省不比；`false` 时改比 span 时长 endedAt-startedAt，绝对时间戳永不比）；traceId 是身份
+  不是行为，永不比。**根 attributes 差同时进 summary（第一眼视图）与根 SpanDiff（完整视图），
+  重复是有意的** —— A/B 模型第一眼就看 `attributes.model`，而完整下钻视图不该少这一块。
+  **② 分叉重放落 `forkMessages(trace, { atTurn, append? })`（公共导出）**：在主循环第 N 回合
+  （0-based）之前截断，只重放分叉点前的真实历史，再拼上调用方给的新消息（通常是改写过的
+  新 user 消息）。锚点 = **主循环回合**（`parentSpanId === rootSpanId` 的 llm.turn，子 agent
+  嵌套回合不算 —— **与 harvest 口径一致**），越界抛可读错误（带回合总数）。**不做「真续跑」**：
+  trace 不记 assistant 文本 / run 原始输入 / blackboard —— 产物是喂回 `app.run` / `runAgent`
+  的 messages（assistant 文本为标注占位、首尾说明性 user 为合成），跑的是一条**新 run**，
+  不是接着原 run 的循环位置；黑板的分叉种子由调用方经 `RunInvocationOptions.blackboard` 自带。
+  **③ 为什么不做图形 diff / UI**：对照 R7 调研结论（不建看板 / CMS，框架内建 trace + 零后端
+  导出）—— diff 给**结构化数据**（`TraceDiff`）与命令行出口即可，渲染复用既有 trace-view /
+  inspector 生态，不新建 diff 看板。
+  **④ CLI `agentia diff`（同批落地）**：trace.jsonl 直比，
+  **有差异时 exit code 1**（diff(1) 语义，可直接进 CI 挡「换 prompt 后轨迹漂移」）；实现按
+  harvest 同模式 —— CLI 零运行时依赖不能 import 框架，故为**去类型移植副本 + 逐字对拍**守护
+  （改 diff 语义必须两边同步）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

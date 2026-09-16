@@ -521,6 +521,8 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 | `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
 | `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用 |
 | `traceToMessages` | 把 trace 还原成 messages（重放基底） |
+| `forkMessages` | 分叉重放：在主循环第 `atTurn` 回合之前截断重放历史、拼上 `append` 新消息喂回 `app.run`（「从第 N 回合换个问法重跑」的基底，**不是续跑**） |
+| `diffTraces` | 两条 trace 的 A/B 比对（prompt / 模型实验）：run 级 summary + 逐 span 字段差；纯函数，llm.turn 配对**忽略模型名**，缺省忽略墙钟 |
 | `applyMiddleware` | 手动包裹配置菜单（装配层已自动做） |
 
 ### MCP 桥（MCP 是「工具来源」，不是新机制）
@@ -601,6 +603,48 @@ agentia harvest trace.jsonl --failed --limit 5 --out evals/harvested.ts
   - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本（要覆盖子 agent 请单独写 eval）；
   - 预填的 `expect` 是从原 trace **抄录的实际轨迹** —— 发生过 ≠ 应该发生；
   - `EvalCase` 没有 `expect` 字段，粘贴时把断言搬进 `defineEval({ expect })`（脚手架注释会教）。
+
+### prompt / 模型 A/B（trace diff 与分叉重放）
+
+同一份输入跑两条 run（换模型、换 `SystemPrompt` 版本、换 prompt 都行），用 `diffTraces` 比出**结构与成本差**；
+想「从第 3 回合换个问法重跑」，用 `forkMessages` 在分叉点截断、拼上新消息喂回 `app.run`：
+
+```ts
+import { diffTraces, forkMessages } from '@migor/agentia';
+
+// A/B：同输入，只换模型（或换 system 版本），各跑一条
+const a = await app.run(input, { model: 'claude-sonnet-5' });
+const b = await app.run(input, { model: 'claude-opus-5' });
+
+const diff = diffTraces(a.result.trace, b.result.trace);
+// diff.summary：status / totalUsage.* / 根 attributes 差 —— A/B 模型第一眼就看 attributes.model
+// diff.spans：逐 span 字段级差异，path 形如 run:main/llm.turn#0/capability:search
+if (!diff.equal) console.log(diff.summary, diff.spans);
+
+// 分叉重放：在主循环第 3 回合（0-based）之前截断，该回合及其后丢弃，换个问法继续
+const messages = forkMessages(a.result.trace, {
+  atTurn: 3, // 合法范围 0..主循环回合数-1，越界抛可读错误
+  append: [{ role: 'user', content: '换个思路：先给结论，再补证据。' }],
+});
+const c = await app.run(messages); // 起一条新 run，沿着分叉点前的真实 tool 历史继续
+```
+
+不落代码也可以直比两份 trace 导出：`agentia diff a.jsonl b.jsonl`（输入形态同 `agentia report`），
+打印 run 级 summary + 逐 span 差异，**有差异时退出码 1**（diff(1) 语义）——可直接进 CI 挡
+「换 prompt / 模型后轨迹漂移」。
+
+- **配对语义**（结构性配对，字段差异不影响配对）：llm.turn 按回合序配对、**忽略 span name** ——
+  name 是模型 id，而「换模型重跑」正是 A/B 主用例，按 name 配对会把两侧所有 turn 报成缺失；
+  模型差异降格为配对 turn 的 `name` 字段差。capability span 按 `kind:name` 配对
+  （`skill:foo` vs `skill:bar` 是不同能力，不该配上）。一侧多出的调用树记**一条缺侧记录**
+  （`SpanDiff.fields` 为空、`path` 照给），整支子树不再下钻。
+- **墙钟缺省不比**：`ignoreTiming` 缺省 true（A/B 不关心时序）；传 `false` 改比 span 时长
+  （`duration`），绝对时间戳永不比；`traceId` 是身份不是行为，同样永不比。
+- ⚠️ **有损边界（与 `traceToMessages` / harvest 同源）**：trace **不记 assistant 文本与 run 的
+  原始输入** —— 重放里 assistant 是标注占位（非逐字原文）、首尾说明性 user 是合成。
+  因此 `forkMessages` **不是「续跑」**：它产出的是一份喂回 `app.run` / `runAgent` 的 messages，
+  跑的是一条**新 run**，不是接着原 run 的循环位置。分叉的 blackboard 种子由调用方自带
+  （`app.run(messages, { blackboard: {…} })` —— trace 不记 blackboard）。
 
 ### 指标（从 trace 派生）
 
@@ -912,6 +956,7 @@ const callable = {
 | 能力标签有基数上限 | `labelMode:'capability'`（缺省）+ `maxCapabilities`（缺省 200），超出的能力归入 `capability="__other__"`；`snapshot().droppedCapabilities` 给出被归并的能力个数。要完整明细请用 `buildRunReport`（不设上限） |
 | 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
 | `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
+| 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace 不记 assistant 文本与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工介入只到「闸门」 | `middleware` 能 `await` 审批决策再放行；**跨进程挂起/续跑框架不做** —— `RunStatus` 无「待批准」态、循环位置不落库，`traceToMessages` 重放有损，不能拿它假装续跑（要跨重启审批请上工作流引擎）|

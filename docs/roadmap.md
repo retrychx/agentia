@@ -212,8 +212,18 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
     + metricsSink 拼装）—— 是配方不是框架功能；
   - **Grafana dashboard JSON 随仓库发布**：`examples/observability/grafana-dashboard.json`，
     对着 metricsSink 指标族（导入方式见其 README「Grafana 看板」）。
-  **未做**：**trace diff / 分叉重放**（仍是中期候选：两条 run 的调用树 diff 支撑 prompt/模型 A/B，
-  replay + blackboard 做「从第 N 回合改写消息重放」）。
+  **trace diff / 分叉重放 ✅ 已落地（2026-09-16，决策见 spec §10 当日条）**：
+  - **trace diff**：`diffTraces(a, b)`（engine，纯函数，公共导出）—— run 级 summary + 逐 span
+    字段级差异，支撑 prompt / 模型 A/B；llm.turn 的配对键**忽略 name**（name 是模型 id，
+    「换模型重跑」正是 A/B 主用例，按 name 配对会把两侧全报缺失 —— 模型差降格为配对 turn 的
+    `name` 字段差），capability 按 `kind:name`；缺省忽略墙钟，绝对时间戳永不比；
+  - **分叉重放**：`forkMessages(trace, { atTurn, append? })`（公共导出）—— 锚点是**主循环回合**
+    （直属 run 根的 llm.turn，与 harvest 同口径），截断后拼新消息喂回 `app.run`；
+    与 replay 同源有损（trace 不记 assistant 文本 / 原始输入 / blackboard），是「新 run」不是续跑；
+  - **CLI `agentia diff`**（与上面同批落地）：trace.jsonl 直比（输入形态同 `agentia report`），
+    打印 run 级 summary + 逐 span 差异，差异非空 exit 1；框架 `diffTraces` 的去类型移植副本 +
+    逐字对拍守护（同 harvest 模式，改算法必须两边同步）。图形 diff / UI 不做（对照 R7 调研结论：
+    不建看板，给数据与 CLI）。
   HITL 耐用审批门由上面既有候选（`awaiting_approval` 状态机）覆盖，不重复列。
 - **维护：CI 抖动 —— 已定位并修掉（`toolTiming` 的「工具超时」，见 spec §10 2026-09-14）**。
   v0.2.2 窗口内 main 曾红一次（PR #8 那棵树），同树**重跑即绿** ⇒ 抖动而非回归。
