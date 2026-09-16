@@ -32,7 +32,7 @@ export interface SkillSpec {
   model?: string;
   maxTokens?: number;
   maxIterations?: number;
-  /** skill 内 ctx.llm() 可调工具：容器 provider token 列表（复用其 @Tool 菜单） */
+  /** skill 内 ctx.llm() 可调工具：容器 provider token 列表，或 `<token>/<能力名>` 能力级路径（只引该 provider 菜单里的单个能力）；缺省 = 无工具纯文本 */
   tools?: string[];
 }
 

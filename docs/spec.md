@@ -43,13 +43,13 @@
 export class ProjectModule {
   // 落定形态：SubAgentSpec 的字段全部声明在装饰器参数里（字段表见 usage-guide 的
   // @SubAgent 一节）；被装饰方法体**从不执行** —— 运行时拉起独立循环，方法只是登记锚点。
-  //（没有 role/canCall 这类字段：角色走 system，能力边是 provider 粒度的 tools 引用；
-  //  canCall 只是 roadmap R7 的未做候选）
+  //（没有 role 字段：角色走 system；能力边 = tools 引用 —— provider 整片引用，
+  //  或 'token/能力名' 能力级路径，2026-09-16 落地，见 §10）
   @SubAgent({
     description: '按品牌规范评审设计稿，输出评审报告',
     schema: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'] },
     system: '你是苛刻的品牌设计评审员……',
-    tools: ['image-tools'], // 可选：provider token 列表
+    tools: ['image-tools'], // 可选：provider token 列表，或 'image-tools/resize' 能力级路径
     model: 'claude-opus-5',
   })
   reviewer() {}
@@ -1157,6 +1157,17 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   **有差异时 exit code 1**（diff(1) 语义，可直接进 CI 挡「换 prompt 后轨迹漂移」）；实现按
   harvest 同模式 —— CLI 零运行时依赖不能 import 框架，故为**去类型移植副本 + 逐字对拍**守护
   （改 diff 语义必须两边同步）。
+- 2026-09-16：**canCall 能力级能力边落地（`token/能力名` 路径语法）**。`SubAgentSpec.tools` /
+  `SkillSpec.tools` 的元素此前只能是 provider token（整片菜单引用）；现在同时接受
+  `'<provider-token>/<能力名>'`，只引该 provider 菜单里的单个能力。决策：**字符串路径语法**
+  （不引入对象形态）—— 类型 `string[]` 不变、向后兼容，能力名经 collect 校验不含 `/`
+  （`^[A-Za-z0-9_-]{1,64}$`），按第一个 `/` 切分无歧义。校验在**装配期**（createApp 即抛）：
+  token 未注册沿用原文案（既有测试锁定），能力名不存在则报错并附**排序后的可用名单**；
+  可用名单与运行时菜单同口径（@Tool + 该 provider 的 skill/subagent/prompt 工具四份合集
+  —— 只用 @Tool 菜单会误拒 `'skills/helper'` 这类合法点名，校验面与解析面必须一致）。
+  解析从 `wrappedByToken`（**中间件包装后**的菜单）按名 filter —— 嵌套能力绕不过中间件，
+  2026-09-11 ① 的防绕过教训对本路径同样成立。粒度收窄全部发生在装配层产出菜单时，
+  engine 分发点零改动。MCP 裸工具仍不可被引用（没有 provider token，边界不变）。
 
 ## 11. 开放项
 
