@@ -98,14 +98,17 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   一旦进了公共导出面，`tests/docs/api-page.test.ts` 的反向全覆盖就会要求官网 API 页同步，
   而那些是纯内部实现细节。
 - **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
-- **厂商 SDK 只有一个实例化点**：`@anthropic-ai/sdk` 的唯一 `new` 在
-  `src/integrations/anthropic.ts` 的 `createAnthropicClient()`。引擎不得直接 `new Anthropic()`
-  （改回散落 = 厂商细节重新渗进引擎）。使用者自定义 client 只需
-  `createAnthropicClient({ apiKey, baseURL })`，**不必直接依赖该 SDK**。
-  ⚠️ 已知边界：`engine/errors.ts` 仍用 `instanceof` 判 SDK 错误类（不做实例化）。
-  实测该 SDK 的错误类 `name` 恒为 `'Error'`、`type` 为 null，鸭子类型只能靠
-  `constructor.name`（压缩即失效）—— 故保留 `instanceof`；若使用者自装一份**不兼容版本**
-  的 SDK 会形成双副本，届时分类退化为 unknown（该重试的不再重试）。
+- **默认 client 是自研 fetch + SSE 实现**：`src/integrations/anthropic.ts` 手写
+  `POST {baseURL}/v1/messages` + 逐行 SSE 组装，**不再实例化 `@anthropic-ai/sdk`**；
+  引擎经 `createAnthropicClient()` 取默认 client。使用者自定义只需
+  `createAnthropicClient({ apiKey, baseURL })`，**不必直接依赖该 SDK**（SDK 仍在
+  dependencies，仅提供公共类型；类型自有化是后续步骤）。
+  ⚠️ 错误分类随之改为**鸭子类型**：`engine/errors.ts` 不再 `instanceof` SDK 错误类，
+  改认数值 `status`（429→rate_limit、5xx→server、其余 4xx→api）、带 `cause` 的
+  TypeError / errno `code`（→connection）。历史教训：该 SDK 的错误类 `name` 恒为
+  `'Error'`、`type` 为 null，鸭子类型若靠 `constructor.name` 则压缩即失效 ——
+  所以只认数据属性。已知边界：SDK 的 `APIConnectionError` 无 status/code 可判，
+  若使用者自装 SDK 并让它抛到引擎，该类错误会落 unknown（该重试的不再重试）。
 - **lint / format**：Biome 单工具二合一（`biome.jsonc`）。`npm run lint` 检查、`npm run lint:fix` 写回；
   CI 有独立 `lint` job，**并且已折进 `scripts/verify-all.sh` 的第 1 步**（本地这条链与 CI 是同一条，
   「本地全绿、CI 挂 Biome」曾经真的发生过 —— 加检查要折进已有步骤，理由见「验证顺序」）。规则基线刻意关掉三条与既有风格冲突的（理由写在 `biome.jsonc` 注释里）；

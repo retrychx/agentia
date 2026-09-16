@@ -28,11 +28,8 @@ describe('RetryOptions 归一（resolveRetry）', () => {
 
   it('缺省 isRetryable 走 classifyError：429 可重试、普通错误不可', () => {
     const r = resolveRetry(undefined)!;
-    assert.equal(
-      r.isRetryable(Object.assign(new Error('x'), { status: 429 })),
-      false,
-      '普通 Error 不是 SDK 错误',
-    );
+    // 鸭子类型分类：任何带数值 status=429 的错误都可重试（不限于 SDK 错误类）
+    assert.equal(r.isRetryable(Object.assign(new Error('x'), { status: 429 })), true);
     assert.equal(r.isRetryable(new Error('boom')), false);
     assert.equal(classifyError(new Error('boom')).retryable, false);
   });
