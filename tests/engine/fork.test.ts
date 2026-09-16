@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
 import { TraceRecorder, forkMessages, traceToMessages } from '../../src/index.js';
-import type { Trace } from '../../src/index.js';
+import type { MessageParam, Trace } from '../../src/index.js';
 
 /**
  * 主循环 3 回合（第 1 回合含 tool 往返）+ 第 2 回合内嵌一个子 agent 回合：
@@ -38,12 +37,12 @@ function buildTrace(): Trace {
 
 type Block = { type: string; text?: string; name?: string };
 
-function blocks(m: Anthropic.MessageParam): Block[] {
+function blocks(m: MessageParam): Block[] {
   return (Array.isArray(m.content) ? m.content : []) as Block[];
 }
 
 /** 全部消息里的 `[replay turn …]` 回合标注 */
-function turnNotes(msgs: Anthropic.MessageParam[]): string[] {
+function turnNotes(msgs: MessageParam[]): string[] {
   return msgs
     .flatMap((m) => blocks(m))
     .filter((b) => b.type === 'text' && b.text?.includes('[replay turn'))

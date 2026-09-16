@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
 import { TraceRecorder } from '../../src/index.js';
-import type { Trace } from '../../src/index.js';
+import type { MessageParam, Trace } from '../../src/index.js';
 import { traceToMessages } from '../../src/engine/replay.js';
 
 /**
@@ -51,7 +50,7 @@ type Block = {
   input?: unknown;
 };
 
-function blocks(m: Anthropic.MessageParam): Block[] {
+function blocks(m: MessageParam): Block[] {
   return (Array.isArray(m.content) ? m.content : []) as Block[];
 }
 
@@ -104,7 +103,7 @@ describe('traceToMessages（trace 重放基底）', () => {
 
   it('嵌套 llm.turn 被线性化并标注来源 capability；主 agent 回合标注 run', () => {
     const msgs = traceToMessages(buildTrace());
-    const note = (m: Anthropic.MessageParam) => blocks(m).find((b) => b.type === 'text')!.text!;
+    const note = (m: MessageParam) => blocks(m).find((b) => b.type === 'text')!.text!;
 
     assert.ok(note(msgs[1]).includes('model=model-a'));
     assert.ok(note(msgs[1]).includes('capability=(主 agent run)'));

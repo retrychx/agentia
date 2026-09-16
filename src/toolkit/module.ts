@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../core/message.js';
 import type { AgentTool, JsonSchema, ModelPricing, SchemaType } from '../core/tool.js';
 import type { SystemParam } from '../engine/types.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
@@ -388,7 +388,7 @@ export class AgentApp {
    * 传 `resultSchema: fromZod<T>(...)` 时返回值 `result.typed` 为 `T | undefined`。
    */
   run<S extends JsonSchema = JsonSchema>(
-    messages: Anthropic.MessageParam[],
+    messages: MessageParam[],
     opts: RunAppOptions<S> = {},
   ): Promise<AgentRunOutput<SchemaType<S>>> {
     const sys = opts.system ?? this.system;

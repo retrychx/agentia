@@ -1,11 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { runSync, createSyncHandler } from '../../src/index.js';
-import type { AppCallable, AgentRunResult, RunInvocationOptions } from '../../src/index.js';
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  AppCallable,
+  AgentRunResult,
+  MessageParam,
+  RunInvocationOptions,
+} from '../../src/index.js';
 
 interface Call {
-  messages: Anthropic.MessageParam[];
+  messages: MessageParam[];
   opts?: RunInvocationOptions;
 }
 

@@ -1,4 +1,12 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  Message,
+  MessageParam,
+  TextBlock,
+  ToolInputSchema,
+  ToolParam,
+  ToolResultBlockParam,
+  ToolUseBlock,
+} from '../core/message.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import type {
   AgentTool,
@@ -72,7 +80,7 @@ interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   maxIterations: number;
   system?: SystemParam;
   /** 本轮循环自有消息（内部复制，不改调用方数组） */
-  messages: Anthropic.MessageParam[];
+  messages: MessageParam[];
   tools: AgentTool[];
   recorder: RecorderBackend;
   /** llm.turn 的父 span（run 根 / 子 agent 的 capability span） */
@@ -152,7 +160,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   args: AgentLoopArgs<S>,
 ): Promise<AgentLoopResult<SchemaType<S>>> {
   const { client, model, recorder, parentSpanId } = args;
-  const messages: Anthropic.MessageParam[] = [...args.messages];
+  const messages: MessageParam[] = [...args.messages];
 
   // resultSchema 模式：追加隐藏 submit_result 工具 + system 末尾指令。
   // 该工具由 engine 内部注入，不属开发者菜单；菜单已有同名工具视为装配冲突。
@@ -169,7 +177,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       {
         name: SUBMIT_RESULT,
         description: '任务完成时调用它提交最终结构化结果（input 必须符合本工具的 input_schema）',
-        input_schema: args.resultSchema as unknown as Anthropic.Tool.InputSchema,
+        input_schema: args.resultSchema as unknown as ToolInputSchema,
       },
     ];
     system = appendResultInstruction(args.system);
@@ -254,7 +262,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
 
     // —— 一次逻辑回合：可能含多次尝试（重试）；每次尝试开自己的 llm.turn span ——
     let turnId: SpanId = '';
-    let message: Anthropic.Message | undefined;
+    let message: Message | undefined;
     let aborted = false;
     let emitted = false; // 本回合是否已吐出过文本（吐过就不能重试，否则会重复输出）
     for (let attempt = 1; ; attempt++) {
@@ -396,9 +404,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       break;
     }
 
-    const toolUses = message.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-    );
+    const toolUses = message.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
     if (toolUses.length === 0) {
       // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
       // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开，
@@ -428,7 +434,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
 
     // —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
     //    单条 user 消息回全部 tool_result（抑制并行是反模式）——
-    const toolResults: Anthropic.ToolResultBlockParam[] = await mapWithConcurrency(
+    const toolResults: ToolResultBlockParam[] = await mapWithConcurrency(
       runnable,
       args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
       async (use) => {
@@ -667,7 +673,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
 export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   client?: ModelClient;
   system?: SystemParam;
-  messages: Anthropic.MessageParam[];
+  messages: MessageParam[];
   tools?: AgentTool[];
   model?: string;
   maxTokens?: number;
@@ -727,11 +733,11 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   });
 }
 
-function toApiTool(t: AgentTool): Anthropic.Tool {
+function toApiTool(t: AgentTool): ToolParam {
   return {
     name: t.name,
     description: t.description,
-    input_schema: t.inputSchema as unknown as Anthropic.Tool.InputSchema,
+    input_schema: t.inputSchema as unknown as ToolInputSchema,
     ...(t.strict ? { strict: true } : {}),
   };
 }
@@ -775,9 +781,9 @@ function runConfigSnapshot(
   return out;
 }
 
-function textOf(message: Anthropic.Message): string {
+function textOf(message: Message): string {
   return message.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .filter((b): b is TextBlock => b.type === 'text')
     .map((b) => b.text)
     .join('\n');
 }
@@ -790,10 +796,7 @@ function textOf(message: Anthropic.Message): string {
  * （实测 12 万 ok、30 万抛）。`next` 来自调用方注入的 `contextPolicy`，长度不受框架
  * 控制，所以用循环逐项写，彻底没有这个上限。
  */
-export function replaceMessages(
-  target: Anthropic.MessageParam[],
-  next: readonly Anthropic.MessageParam[],
-): void {
+export function replaceMessages(target: MessageParam[], next: readonly MessageParam[]): void {
   target.length = 0;
   for (const m of next) target.push(m);
 }

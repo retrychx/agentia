@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../core/message.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { attachScore, type Trace } from '../core/trace.js';
 import type { ModelClient } from '../core/tool.js';
@@ -91,7 +91,7 @@ export function defineEval<T = unknown>(
       for (let i = 0; i < def.cases.length; i++) {
         const c = def.cases[i];
         const label = c.name ?? `case#${i + 1}`;
-        const messages: Anthropic.MessageParam[] = [{ role: 'user', content: c.input }];
+        const messages: MessageParam[] = [{ role: 'user', content: c.input }];
         let report: EvalCaseReport = { name: label, ok: false };
         try {
           const { result } = await app.run(messages, { ...c.opts, client: c.client });

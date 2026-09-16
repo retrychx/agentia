@@ -1,7 +1,6 @@
 /** 测试共用：mock Anthropic client（脚本化往返）与 fake AppCallable。 */
 
-import type Anthropic from '@anthropic-ai/sdk';
-import type { ModelClient } from '../src/index.js';
+import type { Message, ModelClient } from '../src/index.js';
 
 export interface MockExchange {
   /** 收到完整请求参数时可断言/记录 */
@@ -35,9 +34,9 @@ export function mockClient(script: Array<Record<string, unknown> | MockExchange>
               // `in` 对 `Record<string, unknown>` 联合不会收窄 → 显式按 MockExchange 用
               const ex = step as MockExchange;
               ex.onParams?.(params);
-              return ex.message as unknown as Anthropic.Message;
+              return ex.message as unknown as Message;
             }
-            return step as unknown as Anthropic.Message;
+            return step as unknown as Message;
           },
         };
       },

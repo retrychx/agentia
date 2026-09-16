@@ -1,11 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
 import { executeRun, InMemorySessionStore } from '../../src/index.js';
-import type { SessionStore } from '../../src/index.js';
+import type { MessageParam, SessionStore } from '../../src/index.js';
 import { endTurnMsg } from '../helpers.js';
 
-const user = (text: string): Anthropic.MessageParam => ({ role: 'user', content: text });
+const user = (text: string): MessageParam => ({ role: 'user', content: text });
 
 /**
  * 记录**发送时刻** messages 快照的 client。
@@ -15,13 +14,13 @@ const user = (text: string): Anthropic.MessageParam => ({ role: 'user', content:
  * 是「跑完后的最终态」，拿它断言「发出去的是什么」会永远看到多出来的那一轮。
  */
 function capturingClient(script: Array<Record<string, unknown>>) {
-  const sent: Anthropic.MessageParam[][] = [];
+  const sent: MessageParam[][] = [];
   let i = 0;
   return {
     sent,
     client: {
       messages: {
-        stream: (params: { messages: Anthropic.MessageParam[] }) => {
+        stream: (params: { messages: MessageParam[] }) => {
           sent.push(structuredClone(params.messages));
           return {
             on() {},
@@ -39,7 +38,7 @@ function capturingClient(script: Array<Record<string, unknown>>) {
 
 /** 记录每次 append 的 spy store（底层用 InMemorySessionStore） */
 function spyStore(inner = new InMemorySessionStore()) {
-  const appends: Array<{ id: string; messages: Anthropic.MessageParam[] }> = [];
+  const appends: Array<{ id: string; messages: MessageParam[] }> = [];
   const store: SessionStore = {
     load: (id) => inner.load(id),
     append: (id, messages) => {

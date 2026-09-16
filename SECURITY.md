@@ -37,6 +37,7 @@
 
 ## 已知边界（如实标注）
 
-- `errors.ts` 用 `instanceof` 判定厂商 SDK 的错误类。若使用者**自装一份不兼容版本**的
-  `@anthropic-ai/sdk` 形成双副本，错误分类会退化为 `unknown`（该重试的不再重试）——
-  这是已知边界，非安全漏洞。详见 `AGENTS.md`。
+- `errors.ts` 的错误分类是**鸭子类型**（认数值 `status` / errno `code`，不认错误类身份）——
+  厂商 SDK 已退出运行时依赖（公共消息类型自有）。若使用者**自装一份 SDK** 并让它把
+  `APIConnectionError`（无 status/code 可判）直接抛到引擎，该类错误会落 `unknown`
+  （该重试的不再重试）—— 这是已知边界，非安全漏洞。详见 `AGENTS.md`。

@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { ContentBlockParam, MessageParam } from '../core/message.js';
 import type { Span, SpanId, Trace } from '../core/trace.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 
@@ -50,7 +50,7 @@ export interface ForkReplayOptions extends ReplayOptions {
    *  harvest 的口径一致）；合法范围 0 .. 主循环回合数-1，越界抛可读错误（带回合总数） */
   atTurn: number;
   /** 分叉点之后追加的消息（通常是改写过的新 user 消息）；缺省不追加 */
-  append?: Anthropic.MessageParam[];
+  append?: MessageParam[];
 }
 
 const DEFAULT_MAX_EVENT_CHARS = 2000;
@@ -65,7 +65,7 @@ interface ToolEventIO {
   content?: string;
 }
 
-export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Anthropic.MessageParam[] {
+export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): MessageParam[] {
   const includeToolIO = opts.includeToolIO ?? true;
   const maxChars = opts.maxEventChars ?? DEFAULT_MAX_EVENT_CHARS;
 
@@ -79,7 +79,7 @@ export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Anthrop
   );
 }
 
-export function forkMessages(trace: Trace, opts: ForkReplayOptions): Anthropic.MessageParam[] {
+export function forkMessages(trace: Trace, opts: ForkReplayOptions): MessageParam[] {
   const includeToolIO = opts.includeToolIO ?? true;
   const maxChars = opts.maxEventChars ?? DEFAULT_MAX_EVENT_CHARS;
 
@@ -110,7 +110,7 @@ export function forkMessages(trace: Trace, opts: ForkReplayOptions): Anthropic.M
     `[fork] 以下来自已完成 run ${trace.traceId} 的前 ${atTurn}/${total} 回合 trace 重放` +
     `（assistant 文本为标注占位，非逐字原文），请从分叉点继续。`;
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: MessageParam[] = [
     // fork 头无条件在最前（溯源信息必须存在，不能像 replay 头那样「首条已是 user 就省」）
     { role: 'user', content: head },
     ...expandTurns(kept, byId, includeToolIO, maxChars),
@@ -130,8 +130,8 @@ function expandTurns(
   byId: Map<SpanId, Span>,
   includeToolIO: boolean,
   maxChars: number,
-): Anthropic.MessageParam[] {
-  const messages: Anthropic.MessageParam[] = [];
+): MessageParam[] {
+  const messages: MessageParam[] = [];
   let seq = 0;
 
   turns.forEach((turn, i) => {
@@ -140,7 +140,7 @@ function expandTurns(
       `[replay turn ${i + 1}/${turns.length}] model=${turn.name} ` +
       `capability=${capability ?? '(主 agent run)'} span=${turn.spanId}`;
 
-    const content: Anthropic.ContentBlockParam[] = [{ type: 'text', text: note }];
+    const content: ContentBlockParam[] = [{ type: 'text', text: note }];
     const pairs: Array<{ id: string; output?: ToolEventIO }> = [];
 
     if (includeToolIO) {
@@ -209,12 +209,8 @@ const FORK_TAIL = '[fork] 以上是分叉点前的全部回合，请继续。';
  *   空 trace（无 llm.turn）返回的也是这条前置 user，而非 `[]`（空 messages 同样非法）。
  * head/tail 文案由调用方给（replay 与 fork 语义不同），规整逻辑两者一致。
  */
-function normalizeForApi(
-  messages: Anthropic.MessageParam[],
-  head: string,
-  tail: string,
-): Anthropic.MessageParam[] {
-  const merged: Anthropic.MessageParam[] = [];
+function normalizeForApi(messages: MessageParam[], head: string, tail: string): MessageParam[] {
+  const merged: MessageParam[] = [];
   for (const m of messages) {
     const last = merged[merged.length - 1];
     if (last && last.role === m.role) {
@@ -230,7 +226,7 @@ function normalizeForApi(
   return merged;
 }
 
-function toBlocks(content: Anthropic.MessageParam['content']): Anthropic.ContentBlockParam[] {
+function toBlocks(content: MessageParam['content']): ContentBlockParam[] {
   return typeof content === 'string' ? [{ type: 'text', text: content }] : [...content];
 }
 

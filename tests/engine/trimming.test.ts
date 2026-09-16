@@ -9,7 +9,7 @@ import {
 } from '../../src/index.js';
 // 内部工具（刻意不进公共导出面，故不走 index.js）
 import { createTokenCounter } from '../../src/engine/trimming.js';
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../../src/index.js';
 
 describe('长上下文策略', () => {
   it('defaultEstimateTokens：ASCII 按 4 字符/token，CJK 按 1.5 字/token', () => {
@@ -34,7 +34,7 @@ describe('长上下文策略', () => {
   });
 
   it('trimToolPairs：丢旧工具对、保留最近 keepToolPairs 对', () => {
-    const msgs: Anthropic.MessageParam[] = [];
+    const msgs: MessageParam[] = [];
     for (let i = 0; i < 5; i++) {
       msgs.push({
         role: 'assistant',
@@ -54,7 +54,7 @@ describe('长上下文策略', () => {
   });
 
   it('compactMessages：旧前缀变摘要并入尾段首条 user', async () => {
-    const msgs: Anthropic.MessageParam[] = Array.from({ length: 10 }, (_, i) => ({
+    const msgs: MessageParam[] = Array.from({ length: 10 }, (_, i) => ({
       role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant',
       content: `m${i}`,
     }));
@@ -68,7 +68,7 @@ describe('长上下文策略', () => {
   });
 
   it('createBudgetPolicy：预算内原样放行；超预算先裁剪；滞回防连续压缩', async () => {
-    const small: Anthropic.MessageParam[] = [{ role: 'user', content: 'hi' }];
+    const small: MessageParam[] = [{ role: 'user', content: 'hi' }];
     const policy = createBudgetPolicy({
       budgetTokens: 100,
       summarize: () => 'S',
@@ -77,7 +77,7 @@ describe('长上下文策略', () => {
     });
     assert.equal(await policy.beforeTurn(small, { iteration: 0, model: 'm' }), small);
 
-    const big: Anthropic.MessageParam[] = Array.from({ length: 20 }, (_, i) => ({
+    const big: MessageParam[] = Array.from({ length: 20 }, (_, i) => ({
       role: 'user' as const,
       content: 'x'.repeat(100) + i,
     }));
@@ -89,7 +89,7 @@ describe('长上下文策略', () => {
   });
 
   it('trimToolPairs：非严格交替（连续两条 assistant 带 tool_use）→ 放弃裁剪，不切出孤立块', () => {
-    const msgs: Anthropic.MessageParam[] = [
+    const msgs: MessageParam[] = [
       { role: 'user', content: 'go' },
       // 畸形：两条 assistant 各带 tool_use，结果挤在第三条 user 里
       { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'x', input: {} }] },
@@ -108,7 +108,7 @@ describe('长上下文策略', () => {
   });
 
   it('trimToolPairs：孤立的 tool_result（上一条不是带 tool_use 的 assistant）→ 放弃裁剪', () => {
-    const msgs: Anthropic.MessageParam[] = [
+    const msgs: MessageParam[] = [
       { role: 'user', content: 'go' },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'r0' }] },
     ];
@@ -117,7 +117,7 @@ describe('长上下文策略', () => {
 
   it('createBudgetPolicy：keepToolPairs 决定编辑保留的「对数」（与 keepRecent 的「条数」分离）', async () => {
     // 每条消息都很大，确保超预算；5 对工具交换
-    const msgs: Anthropic.MessageParam[] = [{ role: 'user', content: 'x'.repeat(400) }];
+    const msgs: MessageParam[] = [{ role: 'user', content: 'x'.repeat(400) }];
     for (let i = 0; i < 5; i++) {
       msgs.push({
         role: 'assistant',
@@ -140,7 +140,7 @@ describe('长上下文策略', () => {
   });
 
   it('compactMessages：尾段以 assistant 开头 → 摘要单独作首条 user（角色交替合法）', async () => {
-    const msgs: Anthropic.MessageParam[] = [
+    const msgs: MessageParam[] = [
       { role: 'user', content: 'u0' },
       { role: 'assistant', content: 'a1' },
       { role: 'user', content: 'u2' },
@@ -156,7 +156,7 @@ describe('长上下文策略', () => {
   });
 
   it('compactMessages：cut 落在 tool_result 上 → 整对后移进保留段（不拆散工具对）', async () => {
-    const msgs: Anthropic.MessageParam[] = [
+    const msgs: MessageParam[] = [
       { role: 'user', content: 'u0' },
       { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'x', input: {} }] },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'r' }] },
@@ -171,7 +171,7 @@ describe('长上下文策略', () => {
 });
 
 describe('增量 token 计数（createTokenCounter，预算策略的快路径）', () => {
-  const sample = (): Anthropic.MessageParam[] => [
+  const sample = (): MessageParam[] => [
     { role: 'user', content: '请处理' },
     { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'x', input: { a: 1 } }] },
     {
@@ -241,7 +241,7 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
 
   it('同数组、长度不减、但内容被原地换掉 → 必须重算（只有长度判据会漏）', () => {
     const count = createTokenCounter();
-    const msgs: Anthropic.MessageParam[] = [
+    const msgs: MessageParam[] = [
       { role: 'user', content: 'a' },
       { role: 'assistant', content: 'b' },
       { role: 'user', content: 'c' },
@@ -254,7 +254,7 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
 
   it('末元素没变但**首元素**被原地换掉 → 同样重算（首尾双钉，replaceMessages 整换的兜底）', () => {
     const count = createTokenCounter();
-    const msgs: Anthropic.MessageParam[] = [
+    const msgs: MessageParam[] = [
       { role: 'user', content: 'a' },
       { role: 'assistant', content: 'b' },
       { role: 'user', content: 'c' },
@@ -268,7 +268,7 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
   it('换成另一个数组（新 run / 策略返回新数组）时不复用旧缓存', () => {
     const count = createTokenCounter();
     count(sample());
-    const other = [{ role: 'user', content: '完全不同的历史' }] as Anthropic.MessageParam[];
+    const other = [{ role: 'user', content: '完全不同的历史' }] as MessageParam[];
     assert.equal(count(other), estimateMessages(other));
   });
 });

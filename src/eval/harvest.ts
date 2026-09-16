@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam, TextBlockParam } from '../core/message.js';
 import type { Span, Trace } from '../core/trace.js';
 import { stringifySafe } from '../core/json.js';
 
@@ -24,7 +24,7 @@ export interface HarvestEvalCaseInput {
   /** 一条完成的线上 trace（run 根 + llm.turn + 事件） */
   trace: Trace;
   /** 原始输入（TaskRecord 的 spec.messages）；没有则 input 用占位并注释提醒 */
-  messages?: Anthropic.MessageParam[];
+  messages?: MessageParam[];
   /** 用例名；缺省 `harvest-<traceId>` */
   name?: string;
   /** 来源标注（只写进注释，如 jsonl 文件名） */
@@ -77,7 +77,7 @@ function toMessageUsage(u: Span['usage']): Record<string, number> {
 }
 
 /** 取 messages 里最后一条非空 user 文本（string 或 text 块拼接）；没有则 null */
-function lastUserText(messages: Anthropic.MessageParam[] | undefined): string | null {
+function lastUserText(messages: MessageParam[] | undefined): string | null {
   if (!messages) return null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -87,7 +87,7 @@ function lastUserText(messages: Anthropic.MessageParam[] | undefined): string | 
         ? m.content
         : m.content
             .filter((b) => b.type === 'text')
-            .map((b) => (b as Anthropic.TextBlockParam).text)
+            .map((b) => (b as TextBlockParam).text)
             .join('\n');
     if (text.trim()) return text;
   }

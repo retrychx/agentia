@@ -17,16 +17,16 @@
         <p class="api-kicker">REFERENCE · @migor/agentia</p>
         <h1>公共 API 参考</h1>
         <p class="api-lede">
-          全部导出都来自包根 <code>@migor/agentia</code>，运行时依赖只有 <strong>1 个</strong>
-          （<code>@anthropic-ai/sdk</code>，厂商 SDK 的单一实例化点）——
+          全部导出都来自包根 <code>@migor/agentia</code>，<strong>零运行时依赖</strong>
+          （公共消息类型自有，与 <code>@anthropic-ai/sdk</code> 结构兼容但不需要安装它）——
           可选能力（zod / Redis / MCP）一律 duck-typed，零新增依赖。可观测面（<code>Trace</code> / <code>TraceSink</code> /
           <code>metricsSink</code> / <code>createOtlpExporter</code>）与四类能力<strong>同级导出</strong>，
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>186</b> 个导出</span>
+          <span class="api-chip"><b>201</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
-          <span class="api-chip"><b>1</b> 个运行时依赖</span>
+          <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
         </div>
       </header>
@@ -51,7 +51,9 @@
           <tbody>
             <tr><td>AgentTool&lt;I, O&gt;</td><td><code>{ name; description; inputSchema; strict?; run(input: I, ctx?: ToolRunContext) }</code></td><td>模型可见工具的最小结构面。run 抛错被包成 is_error 的 tool_result 回给模型，run 不中断。</td></tr>
             <tr><td>JsonSchema</td><td><code>{ type; description?; properties?; required?; additionalProperties?; … }</code></td><td>工具 input_schema 的 JSON Schema 子集（v1 裸 schema，不依赖 zod）。</td></tr>
-            <tr><td>ModelClient</td><td><code>{ messages.stream(params) → { on('text', cb); finalMessage() } }</code></td><td>engine 对模型端的最小结构面；Anthropic SDK 天然满足，其他 provider 适配成同一形态。params 含可选 <code>signal</code>（取消传播）。</td></tr>
+            <tr><td>ModelClient</td><td><code>{ messages.stream(params) → { on('text', cb); finalMessage() } }</code></td><td>engine 对模型端的最小结构面；消息形态为自有类型（与 Anthropic Messages API 逐字对齐），其他 provider 适配成同一形态。params 含可选 <code>signal</code>（取消传播）。</td></tr>
+            <tr><td>MessageParam / ContentBlockParam / TextBlockParam / ImageBlockParam / ToolUseBlockParam / ToolResultBlockParam / Role / CacheControl / ToolParam</td><td><code>{ role; content: string | ContentBlockParam[] }</code> 等</td><td>请求侧消息类型族（自有公共类型，snake_case 与 Anthropic Messages API 逐字对齐、与 <code>@anthropic-ai/sdk</code> 结构兼容 —— 双向兼容由类型门禁钉住）。<code>ContentBlockParam</code> 联合含 <code>{ type: string }</code> 兜底成员：厂商新块型原样携带，不丢内容。ToolParam 避让 @Tool 装饰器命名。</td></tr>
+            <tr><td>Message / ContentBlock / TextBlock / ToolUseBlock / ThinkingBlock / MessageUsage</td><td><code>{ id; type; role; content; model; stop_reason; stop_sequence; usage }</code> 等</td><td>响应侧消息类型族（<code>finalMessage()</code> 的产物）；MessageUsage 避让 trace 的 <code>Usage</code> 命名。</td></tr>
             <tr><td>ToolRunContext</td><td><code>{ client; recorder; parentSpanId; signal? }</code></td><td>engine 调用每个工具时注入的执行上下文，供子能力把嵌套 span 挂进当前 trace；signal 由工具自行决定是否尊重。</td></tr>
             <tr><td>RecorderBackend</td><td><code>begin / end / event / setAttribute / snapshot</code></td><td>TraceRecorder 面向子能力的最小记账面（core 不依赖 engine）。</td></tr>
             <tr><td>Trace</td><td><code>{ traceId; rootSpanId; spans: Span[]; status; totalUsage }</code></td><td>一次 run == 一条 trace（traceId == runId）；totalUsage 只累加 llm.turn span（capability 的 usage 是子孙聚合，仅供展示）。</td></tr>

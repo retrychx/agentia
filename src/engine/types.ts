@@ -1,10 +1,10 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { CacheControl, MessageParam } from '../core/message.js';
 import type { AgentTool, JsonSchema, ModelClient, ModelPricing } from '../core/tool.js';
 import type { SpanError, Trace } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
 
 /**
- * engine 对模型端的最小结构面（R4 多模型）：Anthropic SDK 天然满足，
+ * engine 对模型端的最小结构面（R4 多模型）：消息形态见 core/message.js 的自有类型族，
  * 其他 provider（OpenAI 兼容端点等）只需适配出同一形态。
  * 定义在 core/tool.js 并从此处转导出。
  */
@@ -45,7 +45,7 @@ export function isSuccessStopReason(reason: AgentStopReason): boolean {
 export interface SystemTextBlock {
   type: 'text';
   text: string;
-  cache_control?: { type: 'ephemeral' };
+  cache_control?: CacheControl;
 }
 /** system 参数：纯文本，或可缓存块数组（稳定段带 breakpoint，volatile 段放其后不带） */
 export type SystemParam = string | SystemTextBlock[];
@@ -63,9 +63,9 @@ export interface ContextPolicy {
   /** 预算（估算 input tokens）；超预算的回合触发降级。供观测/文档用 */
   readonly budgetTokens?: number;
   beforeTurn(
-    messages: Anthropic.MessageParam[],
+    messages: MessageParam[],
     info: { iteration: number; model: string },
-  ): Promise<Anthropic.MessageParam[]>;
+  ): Promise<MessageParam[]>;
   /**
    * 每条 run 开始时由引擎调用一次，返回**本 run 专用**的策略实例（隔离滞回/缓存等
    * per-run 状态）。缺省（不实现）= 复用自身 —— 只适合无状态策略；有状态又不实现
@@ -78,7 +78,7 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
   system?: SystemParam;
   /** 初始消息；由调用方给 user 起始消息 */
-  messages: Anthropic.MessageParam[];
+  messages: MessageParam[];
   /** 主 agent 可调工具（v1 裸 JSON schema） */
   tools?: AgentTool[];
   model?: string;

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { executeRun } from '../../src/index.js';
-import type { JsonSchema, Span } from '../../src/index.js';
+import type { JsonSchema, MessageParam, Span } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 // 内部工具（刻意不进公共导出面，故不走 index.js）
 import { replaceMessages } from '../../src/engine/loop.js';
@@ -316,7 +316,7 @@ describe('agentLoop 边界与失败路径', () => {
 
 describe('replaceMessages：原地替换没有展开实参上限', () => {
   it('超大数组也不抛（旧的 splice 展开写法在 ~12 万项以上会 RangeError）', () => {
-    const big: Anthropic.MessageParam[] = Array.from({ length: 300_000 }, () => ({
+    const big: MessageParam[] = Array.from({ length: 300_000 }, () => ({
       role: 'user' as const,
       content: '',
     }));
@@ -327,14 +327,14 @@ describe('replaceMessages：原地替换没有展开实参上限', () => {
       (t as unknown[]).splice(0, t.length, ...big);
     }, RangeError);
 
-    const target: Anthropic.MessageParam[] = [{ role: 'user', content: '旧内容' }];
+    const target: MessageParam[] = [{ role: 'user', content: '旧内容' }];
     replaceMessages(target, big);
     assert.equal(target.length, big.length);
     assert.equal(target[big.length - 1].content, '');
   });
 
   it('原地替换保持数组引用不变（循环各处持有同一数组）', () => {
-    const target: Anthropic.MessageParam[] = [{ role: 'user', content: 'a' }];
+    const target: MessageParam[] = [{ role: 'user', content: 'a' }];
     const ref = target;
     replaceMessages(target, [{ role: 'assistant', content: 'b' }]);
     assert.equal(target, ref, '引用必须不变');
@@ -342,7 +342,7 @@ describe('replaceMessages：原地替换没有展开实参上限', () => {
   });
 
   it('清空后传入空数组 → 变空', () => {
-    const target: Anthropic.MessageParam[] = [{ role: 'user', content: 'a' }];
+    const target: MessageParam[] = [{ role: 'user', content: 'a' }];
     replaceMessages(target, []);
     assert.equal(target.length, 0);
   });
