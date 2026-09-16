@@ -59,10 +59,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── packages/
-│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/report/harvest/add），零运行时依赖
+│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/report/harvest/diff/add），零运行时依赖
 │   │                        #   report = trace.jsonl → 调优报告；harvest = trace.jsonl → eval 用例骨架
 │   │                        #   （harvest 的用例生成器是框架 src/eval/harvest.ts 的去类型移植副本，
-│   │                        #   packages/cli/test 有逐字对拍守护，改生成格式必须两边同步）
+│   │                        #   packages/cli/test 有逐字对拍守护，改生成格式必须两边同步）；
+│   │                        #   diff = 两条 trace.jsonl 的调用树 A/B 比对（有差异退出码 1），
+│   │                        #   其 diffTraces 是框架 src/engine/trace-diff.ts 的去类型移植副本，
+│   │                        #   同样有逐字对拍守护，改算法必须两边同步
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector；
 │   │                        #   inspector 有 Host 头校验，非 localhost 403）；dev/add 支持 Windows
 │   │                        #   （npmBin 的 .cmd 处理）；build 自给自足（copy-assets 在 trace-view

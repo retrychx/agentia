@@ -154,6 +154,10 @@ export type { RedisLike, RedisSetOptions, RedisTaskStoreOptions } from './store/
 export type { MaybePromise } from './store/store.js';
 export { traceToMessages } from './engine/replay.js';
 export type { ReplayOptions } from './engine/replay.js';
+export { forkMessages } from './engine/replay.js';
+export type { ForkReplayOptions } from './engine/replay.js';
+export { diffTraces } from './engine/trace-diff.js';
+export type { DiffEntry, SpanDiff, TraceDiff, TraceDiffOptions } from './engine/trace-diff.js';
 
 // integrations：MCP 桥（D1）—— duck-typed，框架零依赖；连接器在独立包 @migor/mcp
 export { mcpTools, MCP_DEFAULT_TIMEOUT_MS } from './integrations/mcp.js';

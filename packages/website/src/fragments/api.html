@@ -24,7 +24,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>179</b> 个导出</span>
+          <span class="api-chip"><b>186</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>1</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -141,6 +141,10 @@
             <tr><td>BudgetPolicyOptions</td><td><code>{ budgetTokens?=60000; keepToolPairs?=1; keepRecent?=20; estimateTokens?; editBeforeCompact?=true; summarize?; compactEvery?=1 }</code></td><td>keepToolPairs 管 context editing（按<strong>对数</strong>），keepRecent 管 compaction（按<strong>条数</strong>）；summarize 提供才允许 compaction。</td></tr>
             <tr><td>trimToolPairs</td><td><code>(messages, opts?: TrimOptions) → messages</code></td><td>context editing：丢弃超出 <code>keepToolPairs</code>（缺省 1 <strong>对</strong>）的旧 tool_use→tool_result 对；非严格交替历史整体放弃裁剪。</td></tr>
             <tr><td>traceToMessages</td><td><code>(trace, opts?: ReplayOptions) → MessageParam[]</code></td><td>trace 重放基底：把完成的 run 还原成可喂回模型的对话（角色交替合法、tool 对配对、末条为 user、可截断）。</td></tr>
+            <tr><td>forkMessages</td><td><code>(trace, opts: ForkReplayOptions) → MessageParam[]</code></td><td>分叉重放：在主循环第 <code>atTurn</code> 回合（0-based；直属 run 根的 llm.turn，子 agent 嵌套回合不算，与 harvest 同口径）之前截断，只重放分叉点前的真实历史，再拼上 <code>append</code> 的新消息（通常是改写过的新 user 消息）——「从第 N 回合换个问法重跑」的基底，喂回 <code>app.run</code> / <code>runAgent</code>。越界抛可读错误。与 traceToMessages 同一份有损边界（assistant 文本为标注占位、原始输入不入 trace），<strong>不是续跑</strong>。</td></tr>
+            <tr><td>diffTraces</td><td><code>(a, b, opts?: TraceDiffOptions) → TraceDiff</code></td><td>trace diff（A/B 比对）：同输入换模型 / 换 prompt 跑两条 run，比出 run 级 summary（status / totalUsage / 根 attributes —— 模型差第一眼就在 <code>attributes.model</code>）+ 逐 span 字段级差异。纯函数。配对键：llm.turn 忽略 name（name 是模型 id，按 name 配对会把两侧全报缺失），capability 按 <code>kind:name</code>；缺侧子树不下钻（一条缺侧记录代表整支）；缺省忽略墙钟（<code>ignoreTiming:false</code> 时改比时长，绝对时间戳永不比）。</td></tr>
+            <tr><td>TraceDiff / SpanDiff / DiffEntry</td><td><code>{ equal; summary: DiffEntry[]; spans: SpanDiff[] }</code> / <code>{ path; a?; b?; fields: DiffEntry[] }</code> / <code>{ field; a; b }</code></td><td>diffTraces 的产物：summary 是第一眼视图，spans 只收有字段差或缺侧的 span（配平且全同的不出现）；path 是配对路径（<code>run:&lt;name&gt;/llm.turn#&lt;i&gt;/capability:&lt;name&gt;</code>），字段差逐条 <code>{ field, a, b }</code>。</td></tr>
+            <tr><td>TraceDiffOptions / ForkReplayOptions</td><td><code>{ ignoreTiming? }</code> / <code>ReplayOptions &amp; { atTurn; append? }</code></td><td>ignoreTiming 缺省 true（A/B 不关心时序）；atTurn 合法范围 0..主循环回合数-1，append 缺省不追加。分叉的 blackboard 种子由调用方经 <code>RunInvocationOptions.blackboard</code> 自带（trace 不记 blackboard）。</td></tr>
             <tr><td>compactMessages</td><td><code>(messages, opts: CompactOptions) → Promise&lt;messages&gt;</code></td><td>compaction：旧前缀经 summarize 摘要，只留最近 <code>keepRecent</code>（缺省 20 条）。</td></tr>
             <tr><td>defaultEstimateTokens</td><td><code>(text: string) → number</code></td><td>CJK 感知的 token 启发式估算（预算决策用，非精确记账）。</td></tr>
             <tr><td>estimateMessages</td><td><code>(messages, estimate?) → number</code></td><td>整组消息 token 估算。<strong>每次调用都全量计算</strong> —— 需要每回合反复估同一段历史时，用预算策略（内部走增量计数）而不是直接调它。</td></tr>

@@ -9,6 +9,7 @@ import { doctor } from './doctor.js';
 import { addPackage } from './add.js';
 import { reportCommand } from './report.js';
 import { harvestCommand } from './harvest.js';
+import { diffCommand } from './diff.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
 
@@ -21,6 +22,7 @@ const USAGE = `agentia —— Agentia 框架命令行工具
   agentia report <trace.jsonl>             从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
   agentia harvest <trace.jsonl>            把线上 trace 翻成 eval 用例骨架
                                            （[--out <file.ts>] [--failed] [--limit N]）
+  agentia diff <a.jsonl> <b.jsonl>         两条 trace 的调用树 A/B 比对（有差异时退出码 1）
   agentia add <pkg>                        安装第三方能力包并登记到 src/registry.ts
   agentia --help                           显示本帮助
 
@@ -107,6 +109,15 @@ function main(argv: string[]): number {
   if (command === 'harvest') {
     // 异步命令（读文件/写文件）：同 report 的受理模式
     void harvestCommand(rest).catch((e: unknown) => {
+      console.error(`错误：${(e as Error).message}`);
+      process.exitCode = 1;
+    });
+    return 0;
+  }
+
+  if (command === 'diff') {
+    // 异步命令（读文件）：同 report 的受理模式
+    void diffCommand(rest).catch((e: unknown) => {
       console.error(`错误：${(e as Error).message}`);
       process.exitCode = 1;
     });

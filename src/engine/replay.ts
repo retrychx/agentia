@@ -28,7 +28,13 @@ import { stringifySafe, truncateWithMark } from '../core/json.js';
  *   以 assistant 收尾即 prefill，缺省模型上 400）。
  *
  * 注意：trace 不记录 assistant 文本（llm.turn 只记 usage/事件），还原的
- * assistant 消息以标注文本占位，非逐字原文。
+ * assistant 消息以标注文本占位，非逐字原文。trace 同样不记 run 的原始输入，
+ * 故重放的首尾说明性 user 均为合成（这一有损边界对 forkMessages 同样成立）。
+ *
+ * forkMessages —— 分叉重放：在主循环第 N 回合之前截断，只重放分叉点前的历史，
+ * 再拼上调用方给的新消息（通常是改写过的新 user 消息）。定位：A/B 实验与
+ * 「从中间某步换个说法重跑」的基底 —— trace 已完整记录分叉点前发生的 tool
+ * 往返与子 agent 嵌套回合，模型可沿着真实历史继续，而非从零重放。
  */
 
 export interface ReplayOptions {
@@ -36,6 +42,15 @@ export interface ReplayOptions {
   includeToolIO?: boolean;
   /** 单段事件负载（工具入参/出参）的最大字符数，超长截断（缺省 2000） */
   maxEventChars?: number;
+}
+
+export interface ForkReplayOptions extends ReplayOptions {
+  /** 在主循环第 N 回合（0-based）之前截断：该回合及其后全部丢弃，从这点分叉。
+   *  主循环回合 = parentSpanId === rootSpanId 的 llm.turn（子 agent 嵌套回合不算，与
+   *  harvest 的口径一致）；合法范围 0 .. 主循环回合数-1，越界抛可读错误（带回合总数） */
+  atTurn: number;
+  /** 分叉点之后追加的消息（通常是改写过的新 user 消息）；缺省不追加 */
+  append?: Anthropic.MessageParam[];
 }
 
 const DEFAULT_MAX_EVENT_CHARS = 2000;
@@ -55,10 +70,67 @@ export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Anthrop
   const maxChars = opts.maxEventChars ?? DEFAULT_MAX_EVENT_CHARS;
 
   const byId = new Map<SpanId, Span>(trace.spans.map((s) => [s.spanId, s]));
-  const turns = trace.spans
-    .filter((s) => s.kind === 'llm.turn')
-    .sort((a, b) => a.startedAt - b.startedAt); // 稳定排序：同刻保 spans 数组插入序
+  const turns = sortTurns(trace);
 
+  return normalizeForApi(
+    expandTurns(turns, byId, includeToolIO, maxChars),
+    REPLAY_HEAD,
+    REPLAY_TAIL,
+  );
+}
+
+export function forkMessages(trace: Trace, opts: ForkReplayOptions): Anthropic.MessageParam[] {
+  const includeToolIO = opts.includeToolIO ?? true;
+  const maxChars = opts.maxEventChars ?? DEFAULT_MAX_EVENT_CHARS;
+
+  const byId = new Map<SpanId, Span>(trace.spans.map((s) => [s.spanId, s]));
+  const turns = sortTurns(trace);
+
+  // 主循环回合 = 直属 run 根的 llm.turn；记录它们在全量时序里的位置
+  const mainPositions: number[] = [];
+  turns.forEach((t, i) => {
+    if (t.parentSpanId === trace.rootSpanId) mainPositions.push(i);
+  });
+  const total = mainPositions.length;
+  const { atTurn } = opts;
+  if (!Number.isInteger(atTurn) || atTurn < 0 || atTurn >= total) {
+    throw new Error(
+      total === 0
+        ? `forkMessages: atTurn=${atTurn} 越界 —— 该 trace 主循环共 0 回合，无可分叉点`
+        : `forkMessages: atTurn=${atTurn} 越界 —— 该 trace 主循环共 ${total} 回合` +
+            `（合法范围 0..${total - 1}）`,
+    );
+  }
+
+  // 截断点 = 第 atTurn 个主循环回合在时序中的位置：该位置起（含）的回合不展开；
+  // 位置之前的子 agent 嵌套回合保留（它们是分叉点前历史的一部分）
+  const kept = turns.slice(0, mainPositions[atTurn]);
+
+  const head =
+    `[fork] 以下来自已完成 run ${trace.traceId} 的前 ${atTurn}/${total} 回合 trace 重放` +
+    `（assistant 文本为标注占位，非逐字原文），请从分叉点继续。`;
+
+  const messages: Anthropic.MessageParam[] = [
+    // fork 头无条件在最前（溯源信息必须存在，不能像 replay 头那样「首条已是 user 就省」）
+    { role: 'user', content: head },
+    ...expandTurns(kept, byId, includeToolIO, maxChars),
+    ...(opts.append ?? []),
+  ];
+  return normalizeForApi(messages, head, FORK_TAIL);
+}
+
+/** 全部 llm.turn 按 startedAt 时序排列（稳定排序：同刻保 spans 数组插入序） */
+function sortTurns(trace: Trace): Span[] {
+  return trace.spans.filter((s) => s.kind === 'llm.turn').sort((a, b) => a.startedAt - b.startedAt);
+}
+
+/** 回合 → 消息展开（traceToMessages / forkMessages 共用；不含 normalize 与头尾合成） */
+function expandTurns(
+  turns: Span[],
+  byId: Map<SpanId, Span>,
+  includeToolIO: boolean,
+  maxChars: number,
+): Anthropic.MessageParam[] {
   const messages: Anthropic.MessageParam[] = [];
   let seq = 0;
 
@@ -116,7 +188,7 @@ export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Anthrop
     }
   });
 
-  return normalizeForApi(messages);
+  return messages;
 }
 
 /** 前置 user 说明（API 要求首条为 user；trace 不含 run 的原始输入） */
@@ -124,17 +196,24 @@ const REPLAY_HEAD =
   '[replay] 以下是一次已完成 run 的 trace 重放（assistant 文本为标注占位，非逐字原文）。';
 /** 收尾 user 请求：末条为 assistant 会被 API 当作 prefill */
 const REPLAY_TAIL = '[replay] 以上是全部回合，请分析这次 run 的过程与结果。';
+/** fork 收尾：仅在末条非 user 时补一条简短的「请继续」user */
+const FORK_TAIL = '[fork] 以上是分叉点前的全部回合，请继续。';
 
 /**
  * 规整为可直接喂回 Messages API 的形态：
  * - 连续同 role 消息合并（无 tool 对的连续 assistant 会合流，交替保持合法；
  *   带 tool_use 的 assistant 之后必有其 tool_result user，配对不受影响）；
- * - 首条确保为 user（API 硬要求）——trace 不含 run 的原始输入，前置一条说明性 user；
+ * - 首条确保为 user（API 硬要求）——trace 不含 run 的原始输入，前置一条说明性 user（head）；
  * - **末条也确保为 user**：多数 run 以 `end_turn` 的 assistant 回合收尾，直接喂回就是
  *   assistant prefill —— 缺省模型（claude-opus-5 / claude-sonnet-5）上会 400。
  *   空 trace（无 llm.turn）返回的也是这条前置 user，而非 `[]`（空 messages 同样非法）。
+ * head/tail 文案由调用方给（replay 与 fork 语义不同），规整逻辑两者一致。
  */
-function normalizeForApi(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+function normalizeForApi(
+  messages: Anthropic.MessageParam[],
+  head: string,
+  tail: string,
+): Anthropic.MessageParam[] {
   const merged: Anthropic.MessageParam[] = [];
   for (const m of messages) {
     const last = merged[merged.length - 1];
@@ -144,9 +223,9 @@ function normalizeForApi(messages: Anthropic.MessageParam[]): Anthropic.MessageP
       merged.push({ role: m.role, content: toBlocks(m.content) });
     }
   }
-  if (merged[0]?.role !== 'user') merged.unshift({ role: 'user', content: REPLAY_HEAD });
+  if (merged[0]?.role !== 'user') merged.unshift({ role: 'user', content: head });
   if (merged[merged.length - 1]!.role !== 'user') {
-    merged.push({ role: 'user', content: REPLAY_TAIL });
+    merged.push({ role: 'user', content: tail });
   }
   return merged;
 }
