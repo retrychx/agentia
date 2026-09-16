@@ -194,7 +194,9 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   补上它的第一轮就挖出「默认 client 从不转发 `signal`」（中止在飞 run 失效、超时的 run 继续烧 token）。
   这条前置并没有白设：mock 全绿也发现不了那个 bug；
 - Workers 代理版 playground（免 BYOK 的托管演示）；
-- 文档站内容扩充（指南按场景组织）；
+- ~~文档站内容扩充（指南按场景组织）~~ **已落地（2026-09-16）**：docs 页新增「场景指南」区
+  （`packages/website/src/fragments/docs.html` 的 `#scenarios`，快速开始之后）——上线 HTTP 服务 /
+  监控 / 评测回流 / A/B / HITL 五张场景卡，CLI 表补 `agentia diff`，观测区补评分指标与 `gen_ai.*` 对齐；
 - ~~canCall 能力级能力边~~ **已落地（2026-09-16，决策见 spec §10 当日条）**：`tools` 元素
   在 provider token 之外新增 `'<token>/<能力名>'` 路径语法（只引单个能力，装配期校验 +
   可用名单报错，解析走中间件包装后的菜单）。
