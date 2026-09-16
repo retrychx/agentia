@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { distReadyOrLoud } from './dist-guard.mjs';
 
 /* 对构建产物测试（inspector 的静态资源在 dist/inspector，src 下没有）。
  * 未构建时跳过而非报错 —— 免得只跑 npm test 的人卡在构建前置上。 */
@@ -12,6 +13,8 @@ if (existsSync(DIST)) {
   ({ startInspector } = await import(new URL('../dist/inspector.js', import.meta.url).href));
 }
 const SKIP = !startInspector ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' : false;
+/* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
+if (SKIP) distReadyOrLoud(DIST, 'CLI 构建产物');
 
 const sample = (id) => ({
   traceId: id,

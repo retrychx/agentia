@@ -1,6 +1,8 @@
-# Agentia —— 规格（v0.1 草案）
+# Agentia —— 规范（持续修订）
 
-状态：讨论收敛后的书面化。锁定的决策在此，后续实现照此推进；契约先行。
+状态：讨论收敛后的书面化，此后随实现持续修订（当前发布 v0.5.0）。**阅读口径**：§1–§9 是规范快照，
+§10 是带时间线的决策日志 —— **两者冲突时以 §10 较新的决策为准**（快照只在新决策落地时回填，
+回填滞后以日志为准）。
 
 ## 1. 定位（一句话）
 
@@ -33,7 +35,7 @@
 
 统一抽象：这些能力对主 agent 都是“可调用项”，差异只在运行时执行方式。注册 = 把每个能力的 `name + description + 怎么用` 编译进主 agent 的菜单，由 LLM 决定调度谁。
 
-## 4. 装饰器表面（草案）
+## 4. 装饰器表面（已落定）
 
 **已定决策：标准装饰器（ECMAScript Stage 3），不用 `experimentalDecorators` / `emitDecoratorMetadata` / `reflect-metadata`。** 因此不支持构造器参数反射 —— DI 采用模块内显式 `providers` + factory 装配（`useFactory` 式）。框架的元数据一律显式声明（装饰器参数即配置，外加 `WeakMap`/注册表存储），不依赖 `design:paramtypes`。
 
@@ -76,7 +78,7 @@ const providers = [
 - **长上下文三策略分清楚**：compaction（服务端摘要）/ context editing（清旧工具结果与 thinking）/ 客户端剪裁——三者不同，不混。
 - **子 agent = 完整独立循环 + 裁剪上下文 + 报告以 `tool_result` 交回**（隔离是核心）。
 - **预算/形态**：task budget、effort 档、流式、strict tools + 结构化输出（落地为 engine 内部追加的隐藏 `submit_result` 工具，见 §10 R2）。
-- **别自研黑名单**：token 计数走 `/messages/count_tokens`（不用 tiktoken 近似）；错误分类靠鸭子类型（数值 `status` / errno `code`，见 §10 2026-09-14 —— SDK 类型化异常那套已随 client 自研化退役）；缓存验证靠 `cache_read_input_tokens`。
+- **别自研黑名单**：token 估算用内置启发式（CJK 感知、带增量缓存，见 §10 Turn 4 与 2026-09-13 性能审计；要精确计数由上层注入 `/messages/count_tokens`，框架不替你造 token），不用 tiktoken 近似；错误分类靠鸭子类型（数值 `status` / errno `code` / 带 `cause` 的 TypeError，见 §10 2026-09-17 —— SDK 类型化异常那套已随 client 自研化退役）；缓存验证靠 `cache_read_input_tokens`。
 
 ## 6. 服务层（agent 服务的关键，区别于对话）
 
@@ -155,7 +157,11 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 ### 9.4 开放问题
 
 - 全量记录成本 vs 截断/采样默认阈值。
-- trace 是否作“重放基底”（把完成的 trace 喂回模型做调试）—— 未来，不进 v1。
+
+> 「trace 作重放基底」已落地，不再是开放问题：`traceToMessages` 把 trace 线性化为 messages
+> （R6 / v0.2.0，见 §10 2026-09-11），`forkMessages(trace, { atTurn, append? })` 支持在主循环
+> 第 N 回合截断分叉、拼新消息喂回 `app.run`（2026-09-16，见 §10）。两者同源有损
+> （trace 不记 assistant 原文）：产物跑的是**新 run**，不是接着原 run 续跑。
 
 ## 10. 决策记录
 
@@ -550,8 +556,11 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **不做鸭子类型**：实测该 SDK 的错误类 `name` 恒为 `'Error'`、`type` 为 null，鸭子类型只能靠
   `constructor.name`（压缩即失效）—— 保留 `errors.ts` 的 `instanceof`（只做类身份判定、不做实例化），
   并把「双副本 → 分类退化为 unknown」记为已知边界。
+  ⚠️ **本条结论已被 2026-09-17 决策取代**（client 自研化后 `errors.ts` 改认数据属性的鸭子类型，
+  「压缩即失效」的论据反而成了**必须**鸭子类型的理由，见下）。原判断与理由保留在此，不改写。
   **未做（记入 roadmap）**：默认 client 换自研 fetch 实现 + 公共类型自有化 —— 那才是让 SDK 真正可选的正道，
   前置条件是先有「真 API 集成测试」（当前单测与 e2e 全用 mock）。
+  ⇒ **两半均已于 2026-09-17 落地**（前置条件「真 API 集成测试」= `e2e:live`，2026-09-14 已就位），见下两条。
 
 - 2026-09-14：**示例真跑纳入门禁 + 抖动可疑构造普查**。两件事的共同起因都是「文档指着说可跑/没人看清」。
 
@@ -1169,6 +1178,18 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   2026-09-11 ① 的防绕过教训对本路径同样成立。粒度收窄全部发生在装配层产出菜单时，
   engine 分发点零改动。MCP 裸工具仍不可被引用（没有 provider token，边界不变）。
 
+- 2026-09-17：**默认 client 自研化落地 —— fetch + SSE 手写实现，engine 对 SDK 零运行时 import**。
+  `integrations/anthropic.ts` 手写 `POST {baseURL}/v1/messages` + 逐行 SSE 组装，**不再实例化
+  `@anthropic-ai/sdk`**；引擎经 `createAnthropicClient()` 取默认 client，使用者自定义只传
+  `apiKey` / `baseURL`，不必直接依赖该 SDK（2026-09-13「未做」两半中的前半落地）。
+  **错误分类随之改为鸭子类型**：`engine/errors.ts` 不再 `instanceof` SDK 错误类，改认数值
+  `status`（429→rate_limit、5xx→server、其余 4xx→api）、带 `cause` 的 TypeError / errno `code`
+  （→connection）—— 反转 2026-09-13「不做鸭子类型」的结论：当日实测的「SDK 错误类 `name` 恒为
+  `'Error'`、`type` 为 null、靠 `constructor.name` 压缩即失效」此时不再是拒绝鸭子类型的理由，
+  反而是**必须只认数据属性**的理由（自研 client 抛的是自有 `AnthropicApiError` 与 fetch 原生
+  网络错误，同套判法对第三方 SDK 错误同样适用）。已知边界：SDK 的 `APIConnectionError` 无
+  status/code 可判，若使用者自装 SDK 并让它抛到引擎，该类错误落 unknown（该重试的不再重试）。
+
 - 2026-09-17：**公共类型自有化落地，`@anthropic-ai/sdk` 退出运行时依赖（零运行时依赖达成）**。
   新增 `src/core/message.ts` 自有消息类型族（请求侧 `MessageParam` / `ContentBlockParam`
   （text / image / tool_use / tool_result + 兜底）/ `ToolParam`，响应侧 `Message` /
@@ -1193,6 +1214,29 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   这条传递链偶然进编译程序的，移除 SDK import 后全局类型（AbortSignal / process / setTimeout…）
   整片消失（117 个错误）；显式声明后这条隐性依赖被根除。
   实证：`npm pkg get dependencies` 输出 `{}`；`e2e:live` 真端点 6/6。
+- 2026-09-17：**外部 review 驱动的修复批**（DeepSeek 通读全仓后的指认，逐条核实后修）：
+  ① **CLI Windows 支持修复** —— `npmBin` 只加 `.cmd` 后缀，CVE-2024-27980 后裸 spawn `.cmd`
+  直接 EINVAL（「dev/add 支持 Windows」曾是超前宣称）。改 `npmSpawn`：win32 走
+  `cmd.exe /d /s /c` 包装 + 逐参数脱敏（cross-spawn 算法；不用 `shell: true`——它把参数
+  空格 join 零转义，`add` 的包名/路径是用户输入，含 `&` 即成命令注入）；非 win32 原样直传。
+  ② **doctor import 识别**不再只认 default import（named / namespace / 别名 / 双引号 / 跨行
+  都认）——此前这些形态命中「无法定位 import，跳过」，悬空条目**漏检**（静默跳过）。
+  ③ **脚手架模板纳入类型检查**：e2e-cli 新增 4c 步（生成项目在临时目录跑真 `tsc`，
+  `@migor/agentia` 解析到 dist .d.ts 即发布形态）——此前模板类型错误要等用户
+  install 后才暴露。折进既有 e2e 步骤，不加 verify-all 第 9 步。
+  ④ **对拍守护排响**：`distReadyOrLoud` —— 产物缺失时本地醒目横幅 + skip（裸跑场景），
+  CI 里（产物恒在）直接判失败；harvest 对拍升到 diff 同款（六组夹具逐字相等），
+  report/templates/inspector 的静默 skip 同批消除。
+  ⑤ **agentLoop 拆分（纯重构，零语义变更）**：433 行循环体拆成 8 个有名字的函数
+  （编排骨架 82 行），教训注释随代码块搬迁；全部 699 例测试一行未改全绿 +
+  e2e:live 6/6 复验。
+  ⑥ **官网对外口径**：正文链接默认蓝 → 主题色（--ice）；playground 两处单价
+  {3,15}/{0.8,4} 对齐 usage.ts 真源（{5,25}/{1,5}）；playground-real 的「trace 原样
+  产物」措辞改诚实（浏览器侧按 trace 形状构造的演示数据）；docs 页补 h1。
+  ⑦ **文档对账**：spec 标题去「v0.1 草案」（规范快照 vs §10 时间线的阅读口径写明）、
+  §9.4 replay「不进 v1」等过期断言改写为现状、被取代条目按体例加标注不改写历史。
+  未采纳项及理由：`agentLoop` 未拆新文件（动分层 ALLOWED 集合，收益不抵成本）；
+  executeOneTool 的 submit_result 分支未再拆（共享局部态）。
 
 ## 11. 开放项
 
@@ -1201,6 +1245,9 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）
   → v0.4.2（发布后更正：Redis 的 TTL 在 node-redis 上静默失效）
   → v0.5.0（R7 质量闭环：`Score`/`attachScore`、gen_ai.* 对齐、trace 回流 eval、prompt·session 上 trace）；`AGENTIA_VERSION = '0.5.0'`。
+  main 上未发布（随下一版本走）：trace diff 与分叉重放（`diffTraces` / `forkMessages` / CLI `agentia diff`，2026-09-16）、
+  canCall 能力级能力边（`'token/能力名'` 路径语法，2026-09-16）、默认 client 自研化 + 公共类型自有化
+  （零运行时依赖达成，2026-09-17）—— 决策均见 §10；`AGENTIA_VERSION` 按约定发版时才同步。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

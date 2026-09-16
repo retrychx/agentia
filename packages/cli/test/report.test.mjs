@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { distReadyOrLoud } from './dist-guard.mjs';
 
 /* 对构建产物测试（未构建时跳过而非报错）。`report` 依赖构建期拷进
  * dist/inspector/ 的 trace-view 聚合实现，所以只有 build:cli 之后才有意义。 */
@@ -14,6 +15,11 @@ const SKIP =
   !existsSync(CLI) || !existsSync(SUMMARY)
     ? '未构建 packages/cli/dist —— 先跑 npm run build:cli'
     : false;
+/* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
+if (SKIP) {
+  distReadyOrLoud(CLI, 'CLI 构建产物');
+  distReadyOrLoud(SUMMARY, 'trace-view 聚合产物');
+}
 
 const trace = {
   traceId: 'run-1',

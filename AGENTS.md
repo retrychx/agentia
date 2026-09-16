@@ -44,7 +44,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   no-legacy-terms.test.ts 钉「面向使用者的表面不得出现旧伞形术语」——
 │                            #   覆盖文档 / 官网 / npm 包 README 与 description / CLI 的 --help 与报错文本；
 │                            #   仅 `<!-- no-legacy-terms: allow -->` 标记块内可豁免，且有行数上限）
-├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e 第一步：脚手架→生成→装配→mock run）
+├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e 第一步：脚手架→生成→装配→mock run
+│                            #   + 生成项目过 tsc（生成物 tsconfig 为底 + 仓库 @types 路径 overlay，
+│                            #   '@migor/agentia' 经 node_modules 软链解析到 dist —— 即发布形态））
 ├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第二步：examples/complete 真构建、真起服务，
 │                            #   按它 README 跑完 /healthz · 鉴权 401 · 同步 /run · SSE · 异步 /tasks ·
 │                            #   /metrics · 优雅停机；模型侧是内置假 OpenAI 兼容端点，不联网）
@@ -68,7 +70,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   同样有逐字对拍守护，改算法必须两边同步
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector；
 │   │                        #   inspector 有 Host 头校验，非 localhost 403）；dev/add 支持 Windows
-│   │                        #   （npmBin 的 .cmd 处理）；build 自给自足（copy-assets 在 trace-view
+│   │                        #   （npmSpawn：win32 走 cmd.exe /d /s /c 包装 + 逐参数脱敏 ——
+│   │                        #   CVE-2024-27980 后裸 spawn .cmd 会 EINVAL，shell:true 不转义
+│   │                        #   参数、add 的包名是用户输入有注入面）；build 自给自足（copy-assets 在 trace-view
 │   │                        #   未构建时就地补跑其构建，prepublishOnly 只跑 build，无需根 build:cli 预热）
 │   ├── trace-view/          # trace 调用树渲染器（零依赖 ESM）：createTraceView + playTrace(真实 Trace)
 │   │                        #   官网 playground 与 CLI inspector 共用同一份，避免两处渲染漂移

@@ -1537,6 +1537,28 @@ pre code {
 .docs-content li {
   margin-bottom: 6px;
 }
+/* 正文链接（prose）：内容区里【无 class】的裸 <a>。此前没有任何规则命中它们，
+   一律落到浏览器默认蓝，与主题色 --ice 不符（docs 的「详见」锚点是其主要形态）。
+   只收 p/li 里的裸链接：导航 / 页脚 / 按钮 / 索引卡 / CTA 等链接组件都带 class、
+   各有专属样式，`:not([class])` 把它们整体排除在外，互不染指。
+   风格与终端面板里已 styled 的 .tp-stream.md a 对齐（冰青 + 下划线）：
+   下划线平时用 --ice-border 弱呈现，hover 实化。 */
+.docs-content p a:not([class]),
+.docs-content li a:not([class]),
+.section p a:not([class]),
+.section li a:not([class]) {
+  color: var(--ice);
+  text-decoration: underline;
+  text-decoration-color: var(--ice-border);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.18s;
+}
+.docs-content p a:not([class]):hover,
+.docs-content li a:not([class]):hover,
+.section p a:not([class]):hover,
+.section li a:not([class]):hover {
+  text-decoration-color: var(--ice);
+}
 .docs-content .code-block {
   margin: 16px 0 20px;
 }

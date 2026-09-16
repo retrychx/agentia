@@ -164,6 +164,30 @@ try {
   );
   rmSync(join(proj, 'env-probe.mjs'), { force: true });
 
+  // —— 4c) 脚手架模板过 tsc：生成的 tsconfig 原样做底（strict / NodeNext / include 全生效），
+  // overlay 只补「临时项目在 tmp，解析不到仓库的 @types/node」这一条路径 ——
+  // '@migor/agentia' 已由上面 4) 的 node_modules 软链解决（解析到 dist 的 .d.ts，即发布形态）。
+  // 此前模板从未经 tsc 检查：模板里一个类型错误要等用户 npm install 后才暴露。
+  writeFileSync(
+    join(proj, 'tsconfig.check.json'),
+    `${JSON.stringify(
+      {
+        extends: './tsconfig.json',
+        compilerOptions: {
+          noEmit: true,
+          typeRoots: [join(repoRoot, 'node_modules', '@types')],
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  execFileSync(
+    process.execPath,
+    [join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.check.json'],
+    { cwd: proj, stdio: 'inherit' },
+  );
+
   // —— 5) 发现机制：discoverProviders（四分类目录数组，顺序即装配顺序）——
   const capabilityDirs = ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'].map((d) =>
     join(proj, d),

@@ -12,14 +12,47 @@ interface RegistryEntry {
   ident: string;
 }
 
+/**
+ * 解析 import 绑定子句，产出本文件内可见的标识符。
+ * 覆盖 default / named（含 `as` 别名与 `type` 修饰）/ namespace / 混合形态；
+ * 注册表由 codemod 与人工共同维护，named import 等形态此前被静默跳过（悬空条目漏检）。
+ */
+function boundIdents(clause: string): string[] {
+  const idents: string[] = [];
+  const brace = clause.match(/\{([\s\S]*)\}/);
+  const head = brace ? clause.replace(brace[0], '') : clause;
+  // 括号外部分：default 标识符和/或 `* as Ns`
+  for (const part of head.split(',')) {
+    const p = part.trim().replace(/^type\s+/, '');
+    if (!p) continue;
+    const ns = p.match(/^\*\s+as\s+(\w+)$/);
+    if (ns) idents.push(ns[1]);
+    else if (/^\w+$/.test(p)) idents.push(p);
+  }
+  // 括号内 named 列表：`A`、`A as B`、`type A`
+  if (brace) {
+    for (const item of brace[1].split(',')) {
+      const p = item.trim().replace(/^type\s+/, '');
+      if (!p) continue;
+      const as = p.match(/^\w+\s+as\s+(\w+)$/);
+      if (as) idents.push(as[1]);
+      else if (/^\w+$/.test(p)) idents.push(p);
+    }
+  }
+  return idents;
+}
+
 /** 解析 src/registry.ts：imports（标识符 → 来源）+ entries（provide token → useClass 标识符） */
 function parseRegistry(content: string): {
   imports: Map<string, string>;
   entries: RegistryEntry[];
 } {
   const imports = new Map<string, string>();
-  for (const m of content.matchAll(/^import\s+(\w+)\s+from\s+'([^']+)'/gm)) {
-    imports.set(m[1], m[2]);
+  // 单/双引号、type 修饰、跨行 named 列表都认；副作用 import（无绑定子句）不产生标识符
+  for (const m of content.matchAll(
+    /^import\s+(?:type\s+)?([\s\S]*?)\s+from\s+(['"])([^'"]+)\2/gm,
+  )) {
+    for (const ident of boundIdents(m[1])) imports.set(ident, m[3]);
   }
   const entries: RegistryEntry[] = [];
   for (const m of content.matchAll(/\{\s*provide:\s*'([^']+)'\s*,\s*useClass:\s*(\w+)/g)) {

@@ -14,7 +14,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startInspector, type InspectorServer } from './inspector.js';
-import { npmBin } from './npm-bin.js';
+import { npmSpawn } from './npm-bin.js';
 
 /** --import 可用性：Node ≥20.6（≥18.19 已回移植） */
 function supportsImport(): boolean {
@@ -47,7 +47,9 @@ export function devServer(): number {
   process.on('SIGTERM', forward('SIGTERM'));
 
   const startChild = (env: NodeJS.ProcessEnv): void => {
-    child = spawn(npmBin('npx'), ['tsx', 'watch', 'src/main.ts'], { cwd, stdio: 'inherit', env });
+    // 参数全是静态字面量（无用户输入）；win32 下经 npmSpawn 走 cmd.exe 包装（见 npm-bin.ts）
+    const spec = npmSpawn('npx', ['tsx', 'watch', 'src/main.ts']);
+    child = spawn(spec.command, spec.args, { cwd, stdio: 'inherit', env, ...spec.options });
     child.on('error', (err) => {
       console.error(`错误：启动 dev 失败：${err.message}`);
       process.exitCode = 1;

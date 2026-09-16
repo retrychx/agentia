@@ -5,11 +5,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { distReadyOrLoud } from './dist-guard.mjs';
 
 /* 对构建产物测试（未构建时跳过而非报错），同 report.test.mjs 的约定。 */
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const SKIP = !existsSync(CLI) ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' : false;
-/* 框架构建产物：只在它也在时才跑「CLI 与框架 harvestEvalCase 逐字同形」的对拍 */
+/* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
+if (SKIP) distReadyOrLoud(CLI, 'CLI 构建产物');
+/* 对拍用产物：CLI 移植副本（dist 缺失时整个 describe 已 skip）与框架真源 */
+const CLI_HARVEST = fileURLToPath(new URL('../dist/harvest.js', import.meta.url));
 const FW_HARVEST = fileURLToPath(new URL('../../../dist/eval/harvest.js', import.meta.url));
 
 const turn1 = {
@@ -85,6 +89,185 @@ const failedRecord = recordOf({
   input: '这一步挂了',
 });
 const bareTrace = traceOf('run-bare', 'ok');
+
+/* ── 对拍夹具（与 diff.test.mjs 同款：多组形态、逐字相等断言）────────────────── */
+
+const U1 = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 };
+
+/** span 简写：只列 harvestEvalCase 会读的字段，其余给缺省 */
+function spanOf(partial) {
+  return {
+    spanId: 'sx',
+    parentSpanId: 's0',
+    kind: 'llm.turn',
+    name: 'claude-opus-5',
+    startedAt: 0,
+    status: 'ok',
+    attributes: {},
+    events: [],
+    ...partial,
+  };
+}
+
+function runRoot(partial = {}) {
+  return {
+    spanId: 's0',
+    parentSpanId: null,
+    kind: 'run',
+    name: 'agent.run',
+    startedAt: 0,
+    status: 'ok',
+    attributes: {},
+    events: [],
+    ...partial,
+  };
+}
+
+/** ① 无子 agent 的单工具 run：一次 tool.input + 纯文本收尾 */
+const traceSingleTool = {
+  traceId: 'run-single',
+  rootSpanId: 's0',
+  status: 'ok',
+  spans: [
+    runRoot(),
+    spanOf({
+      spanId: 't1',
+      startedAt: 10,
+      usage: U1,
+      events: [
+        {
+          time: 11,
+          name: 'tool.input',
+          body: { tool: 'search', tool_use_id: 'tu_a1', input: '{"q":"北京天气"}' },
+        },
+      ],
+    }),
+    spanOf({ spanId: 't2', startedAt: 20, usage: U1 }),
+  ],
+};
+
+/** ② 子 agent 嵌套回合：c1 capability 下挂的 t3 只进注释、不进主循环脚本 */
+const traceNested = {
+  traceId: 'run-nested',
+  rootSpanId: 's0',
+  status: 'ok',
+  spans: [
+    runRoot(),
+    spanOf({
+      spanId: 't1',
+      startedAt: 10,
+      usage: U1,
+      events: [
+        {
+          time: 11,
+          name: 'tool.input',
+          body: { tool: 'search', tool_use_id: 'tu_a1', input: '{"q":"竞品"}' },
+        },
+      ],
+    }),
+    spanOf({ spanId: 'c1', kind: 'capability', name: 'subagent:researcher', startedAt: 15 }),
+    spanOf({
+      spanId: 't3',
+      parentSpanId: 'c1',
+      startedAt: 16,
+      usage: U1,
+      events: [
+        { time: 17, name: 'tool.input', body: { tool: 'internal_tool', tool_use_id: 'tu_z9' } },
+      ],
+    }),
+    spanOf({ spanId: 't2', startedAt: 20, usage: U1 }),
+  ],
+};
+
+/** ③ 失败 run：trace.status = error（harvestEvalCase 不看它，但输入形态要覆盖到） */
+const traceFailed = {
+  traceId: 'run-failed',
+  rootSpanId: 's0',
+  status: 'error',
+  spans: [
+    runRoot({ status: 'error', error: { type: 'api', message: 'boom', retryable: false } }),
+    spanOf({
+      spanId: 't1',
+      startedAt: 10,
+      status: 'error',
+      usage: U1,
+      events: [
+        {
+          time: 11,
+          name: 'tool.input',
+          body: { tool: 'pay', tool_use_id: 'tu_p1', input: '{"amount":12}' },
+        },
+      ],
+    }),
+  ],
+};
+
+/** ④ 多回合交替：tool / 无 tool / 双 tool / 无 tool */
+const traceMulti = {
+  traceId: 'run-multi',
+  rootSpanId: 's0',
+  status: 'ok',
+  spans: [
+    runRoot(),
+    spanOf({
+      spanId: 't1',
+      startedAt: 10,
+      usage: U1,
+      events: [
+        {
+          time: 11,
+          name: 'tool.input',
+          body: { tool: 'search', tool_use_id: 'tu_m1', input: '{"q":"a"}' },
+        },
+      ],
+    }),
+    spanOf({ spanId: 't2', startedAt: 20, usage: U1 }),
+    spanOf({
+      spanId: 't3',
+      startedAt: 30,
+      usage: U1,
+      events: [
+        {
+          time: 31,
+          name: 'tool.input',
+          body: { tool: 'translate', tool_use_id: 'tu_m2', input: '{"text":"你好"}' },
+        },
+        {
+          time: 32,
+          name: 'tool.input',
+          body: { tool: 'search', tool_use_id: 'tu_m3', input: '{"q":"b"}' },
+        },
+      ],
+    }),
+    spanOf({ spanId: 't4', startedAt: 40, usage: U1 }),
+  ],
+};
+
+/** ⑤ 老 trace 边界：缺 tool_use_id（合成 id）、非 JSON input（包 _raw）、input 缺省 */
+const traceLegacy = {
+  traceId: 'run-legacy',
+  rootSpanId: 's0',
+  status: 'ok',
+  spans: [
+    runRoot(),
+    spanOf({
+      spanId: 't1',
+      startedAt: 10,
+      events: [
+        { time: 11, name: 'tool.input', body: { tool: 'translate', input: 'not-json{' } },
+        { time: 12, name: 'tool.input', body: { tool: 'search' } },
+      ],
+    }),
+  ],
+};
+
+/** ⑥ 无主循环回合：空脚本分支 */
+const traceNoTurns = {
+  traceId: 'run-empty',
+  rootSpanId: 's0',
+  status: 'ok',
+  spans: [runRoot()],
+};
 
 function withFile(lines, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'agentia-harvest-'));
@@ -218,23 +401,72 @@ describe('agentia harvest', { skip: SKIP }, () => {
     assert.match(run(['--help']), /agentia harvest <trace\.jsonl>/);
   });
 
-  it('CLI 生成器与框架侧 harvestEvalCase 逐字同形（移植漂移对拍）', async () => {
-    if (!existsSync(FW_HARVEST)) return; // 框架未构建时跳过（对拍是加强校验，不是门禁主体）
-    const { harvestEvalCase } = await import(FW_HARVEST);
-    withFile([JSON.stringify(bareTrace)], (file) => {
-      // CLI 对裸 trace 的调用形状：无 spec.messages，name 按 traceId，source 是文件名
-      const fw = harvestEvalCase({
-        trace: bareTrace,
-        name: 'harvest-run-bare',
-        source: file,
-      });
-      // CLI 汇总文件里把每个用例骨架缩进了两格 —— 反缩进后应逐字包含框架产物
-      const out = run(['harvest', file]);
-      const deindented = out.replace(/^ {2}/gm, '');
-      assert.ok(
-        deindented.includes(fw.trim()),
-        'CLI 产物与框架 harvestEvalCase 漂移了 —— packages/cli/src/harvest.ts 是逐行移植，改生成格式要两边同步',
+  it('CLI 生成器与框架 harvestEvalCase 逐字相等（移植漂移对拍，六组夹具）', async () => {
+    if (!distReadyOrLoud(FW_HARVEST, '框架构建产物')) return; // 本地未 build：醒目警告后跳过
+    const { harvestEvalCase: fwHarvest } = await import(FW_HARVEST);
+    const { harvestEvalCase: cliHarvest } = await import(CLI_HARVEST);
+    const cases = [
+      [
+        '无子 agent 的单工具 run',
+        {
+          trace: traceSingleTool,
+          messages: [{ role: 'user', content: '帮我查下北京天气' }],
+          name: 'harvest-run-single',
+          source: 'online.jsonl',
+        },
+      ],
+      [
+        '子 agent 嵌套回合（嵌套回合只进注释不进脚本）',
+        {
+          trace: traceNested,
+          messages: [{ role: 'user', content: '调研一下竞品' }],
+          name: 'harvest-run-nested',
+          source: 'online.jsonl',
+        },
+      ],
+      [
+        '失败 run（无 messages → input 占位分支）',
+        { trace: traceFailed, name: 'harvest-run-failed', source: 'online.jsonl' },
+      ],
+      [
+        '多回合交替（块形态 messages）',
+        {
+          trace: traceMulti,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '第一句' },
+                { type: 'text', text: '第二句' },
+              ],
+            },
+          ],
+          name: 'harvest-run-multi',
+        },
+      ],
+      [
+        '缺 tool_use_id / 非 JSON input 的老 trace',
+        {
+          trace: traceLegacy,
+          messages: [{ role: 'user', content: '老输入' }],
+          name: 'harvest-run-legacy',
+        },
+      ],
+      [
+        '无主循环回合（空脚本分支）',
+        {
+          trace: traceNoTurns,
+          messages: [{ role: 'user', content: 'go' }],
+          name: 'harvest-run-empty',
+        },
+      ],
+    ];
+    for (const [label, args] of cases) {
+      assert.equal(
+        cliHarvest(args),
+        fwHarvest(args),
+        `夹具「${label}」：CLI 移植副本与框架 harvestEvalCase 漂移了 —— packages/cli/src/harvest.ts 是逐行移植，改生成格式要两边同步`,
       );
-    });
+    }
   });
 });
