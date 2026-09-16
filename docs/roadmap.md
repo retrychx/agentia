@@ -195,7 +195,9 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   这条前置并没有白设：mock 全绿也发现不了那个 bug；
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - 文档站内容扩充（指南按场景组织）；
-- canCall 能力级能力边（当前 tools 引用粒度为 provider）。
+- ~~canCall 能力级能力边~~ **已落地（2026-09-16，决策见 spec §10 当日条）**：`tools` 元素
+  在 provider token 之外新增 `'<token>/<能力名>'` 路径语法（只引单个能力，装配期校验 +
+  可用名单报错，解析走中间件包装后的菜单）。
 - **质量闭环（score / 回流 / 标准对齐）✅ 主体已落地（2026-09-16，决策见 spec §10 当日条）**：
   对照 Langfuse / LangSmith / OTel GenAI 后的取舍不变（框架内建 trace + 零后端导出，不学它们建看板/CMS）。
   **已落地**：

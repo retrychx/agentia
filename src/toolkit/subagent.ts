@@ -37,7 +37,7 @@ export interface SubAgentSpec {
     | string
     | SystemPrompt
     | ((task: Record<string, unknown>) => SystemParam | Promise<SystemParam>);
-  /** 子 agent 可调工具：容器 provider token 列表（复用其 @Tool 菜单）；缺省 = 无工具纯文本 */
+  /** 子 agent 可调工具：容器 provider token 列表，或 `<token>/<能力名>` 能力级路径（只引该 provider 菜单里的单个能力）；缺省 = 无工具纯文本 */
   tools?: string[];
   model?: string;
   maxTokens?: number;
@@ -97,7 +97,7 @@ async function resolveSubSystem(
 /**
  * 把 SubAgentCapability 变成主 agent 菜单里的 AgentTool。
  * run(input, ctx) 需要 ToolRunContext（engine 调用时必有）；手动直调会抛错提示。
- * tools token 列表 → resolveTools() 由装配层给出（该 token 的 @Tool 菜单）。
+ * tools 引用（整片 token / `<token>/<能力名>` 能力级路径）→ resolveTools() 由装配层给出。
  */
 export function subagentToTool(
   capability: SubAgentCapability,

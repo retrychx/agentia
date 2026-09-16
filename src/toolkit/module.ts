@@ -247,13 +247,48 @@ export class AgentApp {
     // 装配期立即解析 tools 引用（§7 启动期静态校验）：引用未注册 provider 在
     // createApp 即抛错，不延迟到模型调用该能力的运行时。实际取值延迟到运行时
     // （惰性 thunk）—— 那时 wrappedByToken 已就绪。
+    //
+    // 引用有两种形态，混写合法：
+    // - `'token'`：整片引用该 provider 的菜单（@Tool + 它的 subagent/skill/prompt 工具）；
+    // - `'token/能力名'`：能力级路径，只引菜单里的单个能力。按第一个 '/' 切分
+    //   （能力名经 collect 校验不含 '/'，右段必然干净；token 含 '/' 查不到，
+    //   按「未注册 provider」报错即可，不特殊处理）。
     const resolveRefTools = (owner: string, refs: string[] | undefined): (() => AgentTool[]) => {
-      for (const t of refs ?? []) {
-        if (!plainByToken.has(t)) {
-          throw new Error(`${owner} tools 引用未注册 provider: "${t}"`);
+      const parsed = (refs ?? []).map((ref) => {
+        const slash = ref.indexOf('/');
+        return slash === -1
+          ? { token: ref, name: undefined as string | undefined }
+          : { token: ref.slice(0, slash), name: ref.slice(slash + 1) };
+      });
+      for (const { token, name } of parsed) {
+        if (!plainByToken.has(token)) {
+          throw new Error(`${owner} tools 引用未注册 provider: "${token}"`);
+        }
+        if (name !== undefined) {
+          // 可用名单 = 该 provider 收集菜单全量（@Tool 与它的 subagent/skill/prompt
+          // 工具名），按名排序给出，方便作者对照改正。
+          const available = [
+            ...(plainByToken.get(token) ?? []),
+            ...(capabilitiesByToken.get(token) ?? []),
+            ...(skillsByToken.get(token) ?? []),
+            ...(promptsByToken.get(token)?.tools ?? []),
+          ]
+            .map((t) => t.name)
+            .sort();
+          if (!available.includes(name)) {
+            throw new Error(
+              `${owner} tools 引用 "${token}" 中不存在的能力: "${name}"（可用: ${available.join(', ')}）`,
+            );
+          }
         }
       }
-      return () => (refs ?? []).flatMap((t) => wrappedByToken.get(t) ?? []);
+      return () =>
+        parsed.flatMap(({ token, name }) => {
+          const wrapped = wrappedByToken.get(token) ?? [];
+          // 能力级引用按名从**包装后**的菜单 filter（见上方 wrappedByToken 记档的教训）
+          // —— 中间件不得被绕过。
+          return name === undefined ? wrapped : wrapped.filter((t) => t.name === name);
+        });
     };
 
     const buildSlice = (token: Token): AgentTool[] => {

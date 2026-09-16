@@ -105,7 +105,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `model` | `ctx.llm()` 的缺省模型 |
 | `maxTokens` | 同上 |
 | `maxIterations` | 同上 |
-| `tools` | `ctx.llm()` 可调工具：**provider token 列表**（复用该 provider 的 `@Tool` 菜单） |
+| `tools` | `ctx.llm()` 可调工具：**provider token 列表**（复用该 provider 的能力菜单），或 `'<token>/<能力名>'` 能力级路径（只引菜单里的单个能力） |
 
 技能方法体拿到的第二参是 `SkillContext`：`ctx.llm({ prompt })` 才会真正调模型（脚本式，调几次由你写死）。
 
@@ -117,7 +117,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `schema` | 主 agent 填给子 agent 的任务入参 schema |
 | `name` | 缺省取方法名 |
 | `system` | 子 agent 的角色提示：`string` / `SystemPrompt` / `(task) => SystemParam` |
-| `tools` | 子 agent 可调工具：**provider token 列表** |
+| `tools` | 子 agent 可调工具：**provider token 列表**，或 `'<token>/<能力名>'` 能力级路径 |
 | `model` | 子 agent 自己的模型 |
 | `maxTokens` | 同上 |
 | `maxIterations` | 同上 |
@@ -922,7 +922,7 @@ const callable = {
 | schema 校验是**子集** | 只覆盖 `type/properties/required/additionalProperties/enum/items`；`format`/`minimum`/`oneOf` 一律放行 |
 | 历史畸形就放弃裁剪 | `trimToolPairs` 遇到非严格交替历史会整体放弃（宁可少裁，也不切出孤立 tool_use 让请求 400） |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
-| 能力引用是 provider 粒度 | 子 agent / skill 的 `tools` 写的是 **provider token**，不是单个工具名 |
+| 能力引用两种粒度 | `tools` 写 **provider token** = 整片能力菜单；写 `'<token>/<能力名>'` = 只引单个能力（@Tool/@Skill/@SubAgent/@Prompt 都可点名，装配期校验，名字不存在即抛错并列出可用名单） |
 | 能力名有格式校验 | 装饰器能力名（`name` 或缺省的方法名）必须匹配 `^[A-Za-z0-9_-]{1,64}$`（与 MCP 桥同口径），非法名在 `createApp` **装配期即抛错** —— 含空格/点/中文的名字会让模型 API 400，宁可在启动期拦住 |
 | `discover` 入口会回落 | 能力目录里源码与编译产物并存（`index.ts` + `index.js`）时，首选 `.ts` 加载失败会**回落 `.js` 并 warn** —— 命中的可能是**陈旧编译产物**（刚改过源码时注意）；全部候选都失败才抛错并列出各自原因 |
 | `asset()` 的 rel 必须是相对路径 | 带 scheme（`file:` / `https:` …）的 rel 会让 `new URL(rel, base)` 整个忽略 base（「以为读了能力目录、实际读了别处」），显式抛错；`../` 越出能力目录是**有意放行**（共享资产如 `../../shared/x.md` 是合法用法） |
@@ -946,7 +946,7 @@ const callable = {
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
 | MCP 超时同样是「不等了」 | 桥自带的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它与 engine 的 `toolTimeoutMs` **双重计时**，谁短谁生效 |
 | MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool` attribute 里查得到） |
-| MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用 —— 引用是 provider 粒度 |
+| MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用（两种引用粒度都要先有 token） |
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
 | 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |
 | OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run） |
@@ -976,7 +976,7 @@ const callable = {
 | `ctx.get('k')` 没有类型 | 没做 `Blackboard` 声明合并（见 5.1） |
 | `result.typed` 是 `unknown` | `resultSchema` 用的是裸 JsonSchema；改 `fromZod<T>`（见 5.3） |
 | TS 里想 `app.my_tool(...)` | 不要这样写：能力由模型选择，不是你的方法。要确定性调用就**直接调类方法** |
-| 子 agent 调不到工具 | `tools` 是 **provider token**（文件夹名）列表，不是工具名 |
+| 子 agent 调不到工具 | `tools` 的元素是 **provider token** 或 `'<token>/<能力名>'` 路径，不是裸工具名（裸名字会按「未注册 provider」在装配期抛错） |
 | 长跑内存涨 | 缺省内存 store 不淘汰；设 `InMemoryTaskStore({ maxRecords })` 或换耐久 store |
 | 鉴权钩子抛错，客户端只看到「未通过鉴权」 | 这是设计：非 `HttpException` 的错误原文只进服务端日志（要回给调用方就抛 `HttpException(status, body)`） |
 | 停机后 `POST /tasks` 回 503 | `drain()` 已被调用（或注入的 runner 已 drain）—— 这是「拒新单」的正常行为，任务没丢 |
