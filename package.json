@@ -53,7 +53,7 @@
     "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.124.0",
+    "@anthropic-ai/sdk": "^0.125.0",
     "@biomejs/biome": "^2.5.13",
     "@types/node": "^26.5.1",
     "tsx": "^4.19.0",
