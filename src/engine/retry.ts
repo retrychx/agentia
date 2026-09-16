@@ -10,10 +10,11 @@ import { classifyError } from './errors.js';
  * **只重试尚未产出任何文本的尝试** —— 已流出一半的文本无法撤回，重试会造成
  * 重复输出。这条约束由 engine/loop.ts 保证（它才知道有没有吐过文本）。
  *
- * ⚠️ 与 SDK 内置重试叠加：Anthropic SDK 自己会对 429/5xx 重试（默认 2 次）。
- * 框架层是更外层的兜底（覆盖 SDK 放弃后、以及 OpenAI 兼容客户端）。两层同时开
- * 最多会打 `(1+sdkAttempts) × maxAttempts` 次请求 —— 建议二选一调（把这里设
- * `maxAttempts: 1`，或把 SDK 的 `maxRetries` 设小）。
+ * ⚠️ 与默认 client 内置重试叠加：默认 client（integrations/anthropic.ts）自己会对
+ * 429/5xx/连接错误重试（缺省 2 次，与 SDK 缺省语义对齐）。框架层是更外层的兜底
+ * （覆盖 client 层放弃后、以及 OpenAI 兼容客户端）。两层同时开最多会打
+ * `(1+clientRetries) × maxAttempts` 次请求 —— 建议二选一调（把这里设
+ * `maxAttempts: 1`，或把 client 的 `maxRetries` 设小）。
  */
 export interface RetryOptions {
   /** 最大尝试次数（含首次）；1 = 关闭。缺省 3 */

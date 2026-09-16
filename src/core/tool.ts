@@ -77,8 +77,8 @@ export interface ModelClient {
        * SDK 把「传输层的 signal」放在**请求选项**里（如 `@anthropic-ai/sdk` 的
        * `stream(body, options?)` —— `signal` 只在 `RequestOptions` 里认）。若把本 params 原样
        * 交给 SDK，signal 会被**静默丢弃**，中止失效且**没有任何报错**。
-       * 参考实现：`integrations/anthropic.ts` 的 `splitSignal()`（把 signal 摘出来搬到 options），
-       * 以及 `integrations/openai.ts`（手写 fetch，直接透传）。
+       * 参考实现：`integrations/anthropic.ts`（手写 fetch，signal 摘出 body 直接传给 fetch），
+       * 以及 `integrations/openai.ts`（同款）。
        * 门禁：`tests/integrations/anthropic.test.ts`（零 key 本地假端点，abort 后必须断开）。
        */
       signal?: AbortSignal;
