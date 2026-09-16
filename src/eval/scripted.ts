@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { Message } from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -39,7 +39,7 @@ export function scriptedClient(steps: ScriptedStep[]): ModelClient {
           on(event: 'text', cb: (delta: string) => void): void {
             if (event === 'text') handlers.push(cb);
           },
-          async finalMessage(): Promise<Anthropic.Message> {
+          async finalMessage(): Promise<Message> {
             const step = steps[cursor];
             if (step === undefined) {
               throw new Error(
@@ -48,7 +48,7 @@ export function scriptedClient(steps: ScriptedStep[]): ModelClient {
             }
             const message = (await (typeof step === 'function'
               ? step(params)
-              : step)) as unknown as Anthropic.Message;
+              : step)) as unknown as Message;
             // 真的逐块吐文本 —— onText / SSE 链路在 eval 里按真实路径走一遍
             for (const block of (message.content ?? []) as Array<{
               type?: string;

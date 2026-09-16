@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { Message, MessageParam, TextBlockParam, ToolParam } from './message.js';
 import type { SpanError, SpanId, SpanKind, SpanStatus, Trace, Usage } from './trace.js';
 
 /**
@@ -59,17 +59,18 @@ export interface RecorderBackend {
 }
 
 /**
- * engine 对模型端的最小结构面（R4 多模型）：Anthropic SDK 天然满足，
- * 其他 provider（OpenAI 兼容端点等）只需适配出同一形态。
+ * engine 对模型端的最小结构面（R4 多模型）：消息形态由 core/message.js 的自有类型族
+ * 定义（与 Anthropic Messages API 逐字对齐），其他 provider（OpenAI 兼容端点等）
+ * 只需适配出同一形态。
  */
 export interface ModelClient {
   messages: {
     stream(params: {
       model: string;
       max_tokens: number;
-      system?: string | Anthropic.TextBlockParam[];
-      tools?: Anthropic.Tool[];
-      messages: Anthropic.MessageParam[];
+      system?: string | TextBlockParam[];
+      tools?: ToolParam[];
+      messages: MessageParam[];
       /**
        * 中断信号（可选）：实现须转发给底层请求，否则调用方无法中止在飞 run。
        *
@@ -84,7 +85,7 @@ export interface ModelClient {
       signal?: AbortSignal;
     }): {
       on(event: 'text', cb: (delta: string) => void): void;
-      finalMessage(): Promise<Anthropic.Message>;
+      finalMessage(): Promise<Message>;
     };
   };
 }

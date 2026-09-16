@@ -1,4 +1,9 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  MessageParam,
+  TextBlockParam,
+  ToolResultBlockParam,
+  ToolUseBlockParam,
+} from '../core/message.js';
 
 /**
  * Agentia —— 长上下文策略的纯函数层（spec §5/§6：compaction / context editing 分清）。
@@ -46,29 +51,32 @@ export function defaultEstimateTokens(text: string): number {
   return Math.max(1, Math.ceil(cjk / 1.5 + other / 4));
 }
 
-export function isToolResultMessage(msg: Anthropic.MessageParam): boolean {
+export function isToolResultMessage(msg: MessageParam): boolean {
   if (msg.role !== 'user') return false;
   if (typeof msg.content === 'string') return false;
   return msg.content.length > 0 && msg.content.every((b) => b.type === 'tool_result');
 }
 
-function hasToolUse(msg: Anthropic.MessageParam): boolean {
+function hasToolUse(msg: MessageParam): boolean {
   if (msg.role !== 'assistant') return false;
   if (typeof msg.content === 'string') return false;
   return msg.content.some((b) => b.type === 'tool_use');
 }
 
-function contentToText(content: Anthropic.MessageParam['content']): string {
+function contentToText(content: MessageParam['content']): string {
   if (typeof content === 'string') return content;
   return content
     .map((b) => {
+      // 联合含兜底成员（type: string），按字面量收窄后仍需断言到具体块型
       switch (b.type) {
         case 'text':
-          return b.text;
-        case 'tool_use':
-          return `${b.name}(${JSON.stringify(b.input)})`;
+          return (b as TextBlockParam).text;
+        case 'tool_use': {
+          const tu = b as ToolUseBlockParam;
+          return `${tu.name}(${JSON.stringify(tu.input)})`;
+        }
         case 'tool_result':
-          return JSON.stringify(b.content);
+          return JSON.stringify((b as ToolResultBlockParam).content);
         default:
           return JSON.stringify(b);
       }
@@ -77,21 +85,21 @@ function contentToText(content: Anthropic.MessageParam['content']): string {
 }
 
 function contentTokens(
-  content: Anthropic.MessageParam['content'],
+  content: MessageParam['content'],
   estimate: (text: string) => number,
 ): number {
   if (typeof content === 'string') return estimate(content);
   let n = 0;
   for (const b of content) {
     n += 1; // block 自身开销
-    n += estimate(contentToText([b] as Anthropic.MessageParam['content']));
+    n += estimate(contentToText([b] as MessageParam['content']));
   }
   return n;
 }
 
 /** 整组消息的估算 token（含每条 role 开销）。 */
 export function estimateMessages(
-  messages: Anthropic.MessageParam[],
+  messages: MessageParam[],
   estimate: (text: string) => number = defaultEstimateTokens,
 ): number {
   let n = 0;
@@ -121,15 +129,15 @@ export function estimateMessages(
  */
 export function createTokenCounter(
   estimate: (text: string) => number = defaultEstimateTokens,
-): (messages: Anthropic.MessageParam[]) => number {
-  let ref: Anthropic.MessageParam[] | null = null;
+): (messages: MessageParam[]) => number {
+  let ref: MessageParam[] | null = null;
   let counted = 0;
   let tokens = 0;
   /** 已计入区间**最后一个元素的对象标识** —— 用于发现「同数组、长度不减、内容却被换掉」 */
-  let boundary: Anthropic.MessageParam | undefined;
+  let boundary: MessageParam | undefined;
   /** 数组**首元素的对象标识** —— 与 boundary 配合收窄「原地替换」的漏判面 */
-  let head: Anthropic.MessageParam | undefined;
-  return function count(messages: Anthropic.MessageParam[]): number {
+  let head: MessageParam | undefined;
+  return function count(messages: MessageParam[]): number {
     const edge = counted > 0 ? messages[counted - 1] : undefined;
     // 失效判据：换了数组 / 长度变短（被裁剪） / 边界元素或首元素已不是同一个对象
     // （后两种覆盖引擎整体原地替换（replaceMessages）与自定义 contextPolicy 的常见覆写形态
@@ -156,7 +164,7 @@ export function createTokenCounter(
 }
 
 /** 把消息渲染成可喂给摘要器的纯文本（role: content）。 */
-export function renderMessages(messages: Anthropic.MessageParam[]): string {
+export function renderMessages(messages: MessageParam[]): string {
   return messages.map((m) => `${m.role}: ${contentToText(m.content)}`).join('\n\n');
 }
 
@@ -166,19 +174,17 @@ export interface TrimOptions {
 }
 
 /** assistant 消息里的 tool_use id 列表（无则空） */
-function toolUseIds(msg: Anthropic.MessageParam): string[] {
+function toolUseIds(msg: MessageParam): string[] {
   if (msg.role !== 'assistant' || typeof msg.content === 'string') return [];
-  return msg.content
-    .filter((b) => b.type === 'tool_use')
-    .map((b) => (b as Anthropic.ToolUseBlockParam).id);
+  return msg.content.filter((b) => b.type === 'tool_use').map((b) => (b as ToolUseBlockParam).id);
 }
 
 /** user 消息里的 tool_result 对应 id 列表（无则空） */
-function toolResultIds(msg: Anthropic.MessageParam): string[] {
+function toolResultIds(msg: MessageParam): string[] {
   if (msg.role !== 'user' || typeof msg.content === 'string') return [];
   return msg.content
     .filter((b) => b.type === 'tool_result')
-    .map((b) => (b as Anthropic.ToolResultBlockParam).tool_use_id);
+    .map((b) => (b as ToolResultBlockParam).tool_use_id);
 }
 
 /**
@@ -188,7 +194,7 @@ function toolResultIds(msg: Anthropic.MessageParam): string[] {
  * 按「相邻性」配对会只丢掉后一对，把前一条 assistant 的 tool_use 变成**孤立块**
  * → 下一次请求被 API 以 400 拒绝。检测到畸形即整体放弃裁剪，返回原数组更安全。
  */
-function toolBlocksPaired(messages: Anthropic.MessageParam[]): boolean {
+function toolBlocksPaired(messages: MessageParam[]): boolean {
   for (let i = 0; i < messages.length; i++) {
     const useIds = toolUseIds(messages[i]);
     if (useIds.length > 0) {
@@ -214,10 +220,7 @@ function toolBlocksPaired(messages: Anthropic.MessageParam[]): boolean {
  * 前置：历史必须是工具块严格成对的（toolBlocksPaired）。畸形历史直接返回原数组
  * —— 宁可少裁剪，也不能切出孤立 tool_use/tool_result 让后续请求 400。
  */
-export function trimToolPairs(
-  messages: Anthropic.MessageParam[],
-  opts: TrimOptions = {},
-): Anthropic.MessageParam[] {
+export function trimToolPairs(messages: MessageParam[], opts: TrimOptions = {}): MessageParam[] {
   const keep = Math.max(0, opts.keepToolPairs ?? 1);
   if (!toolBlocksPaired(messages)) return messages;
   const pairs: Array<[assistant: number, result: number]> = [];
@@ -253,9 +256,9 @@ export interface CompactOptions {
  * - 角色交替合法 —— 尾段首条是普通 user 时摘要并入之；否则摘要以 user 角色放最前。
  */
 export async function compactMessages(
-  messages: Anthropic.MessageParam[],
+  messages: MessageParam[],
   opts: CompactOptions,
-): Promise<Anthropic.MessageParam[]> {
+): Promise<MessageParam[]> {
   const keepRecent = Math.max(1, opts.keepRecent ?? 20);
   if (messages.length <= keepRecent) return messages;
 
@@ -275,7 +278,7 @@ export async function compactMessages(
   const [first, ...rest] = tail;
   if (first.role === 'user' && !isToolResultMessage(first)) {
     // 并入首条普通 user 消息，保持 user→assistant 交替
-    const merged: Anthropic.MessageParam =
+    const merged: MessageParam =
       typeof first.content === 'string'
         ? { ...first, content: `${label}\n\n${first.content}` }
         : { ...first, content: [{ type: 'text', text: label }, ...first.content] };

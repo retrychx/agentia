@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../../src/index.js';
 import { createBudgetPolicy, runAgent } from '../../src/index.js';
 import { mockClient, endTurnMsg } from '../helpers.js';
 
 /** 4 条普通消息（> keepRecent=2，保证压缩真的会调 summarize） */
-function fourMessages(): Anthropic.MessageParam[] {
+function fourMessages(): MessageParam[] {
   return [
     { role: 'user', content: 'a' },
     { role: 'assistant', content: 'b' },
@@ -78,7 +78,7 @@ describe('createBudgetPolicy 的 per-run 状态隔离（ContextPolicy.forRun）'
     let calls = 0;
     const custom = {
       budgetTokens: 100,
-      async beforeTurn(messages: Anthropic.MessageParam[]): Promise<Anthropic.MessageParam[]> {
+      async beforeTurn(messages: MessageParam[]): Promise<MessageParam[]> {
         calls++;
         return messages;
       },

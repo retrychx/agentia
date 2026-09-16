@@ -251,6 +251,25 @@ result.typed;   // { answer: string } | undefined
 
 模型没提交就是 `undefined`（不是失败）。`stopReason` 仍以 `end_turn` 正常收尾。
 
+### 5.4 消息类型族（自有公共类型，与厂商 SDK 结构兼容）
+
+`messages` 与模型响应的类型是框架**自有定义**（不从 `@anthropic-ai/sdk` 引类型），字段口径与
+Anthropic Messages API 逐字对齐（snake_case），并与 SDK 的对应类型**结构兼容**：
+手里的 `Anthropic.MessageParam[]` 可以直接喂给 `app.run` / `executeRun`；装框架**不会**连带安装厂商 SDK。
+
+| 类型 | 说明 |
+|---|---|
+| `MessageParam` | 请求消息 `{ role, content: string \| ContentBlockParam[] }`（`Role` 含 `'system'`，与 SDK 逐字对齐；发给端点仍是 user/assistant 语义） |
+| `ContentBlockParam` | 请求块联合：text / image / tool_use / tool_result + `{ type: string }` 兜底成员（厂商新块型原样携带，读字段先按 `type` 收窄） |
+| `Message` | 模型响应（`finalMessage()` 的产物）：`{ id, type, role, content, model, stop_reason, stop_sequence, usage }` |
+| `ContentBlock` | 响应块联合：text / tool_use / thinking + `{ type: string }` 兜底成员 |
+| `ToolParam` | 发给模型的工具定义（**避让 @Tool 装饰器**，故不叫 Tool） |
+| `MessageUsage` | 响应的 token 计量（**避让 trace 的 `Usage`**，故不叫 Usage） |
+| `TextBlockParam` / `ImageBlockParam` / `ToolUseBlockParam` / `ToolResultBlockParam` | 请求侧具体块（与 SDK 同名类型逐字对齐） |
+| `TextBlock` / `ToolUseBlock` / `ThinkingBlock` / `CacheControl` / `Role` | 响应侧具体块 / cache 断点标记 / 角色联合 |
+
+注意命名避让：`Tool` 是装饰器、`Usage` 是 trace 的聚合用量（camelCase）—— 消息侧对应物分别是 `ToolParam` 与 `MessageUsage`（snake_case）。
+
 ---
 
 ## 6. 运行时 API
@@ -410,7 +429,7 @@ process.on('SIGTERM', async () => {
 | `mapWithConcurrency` | 有界并发 map（结果保序）；`maxToolConcurrency` 的底座，也可自用 |
 
 - **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**（构造期校验：必须 ≥ 0 的**有限**数 —— NaN/Infinity 会被 `setTimeout` 钳到 1ms，等于每个任务立即超时，故直接抛错；要「不限」传 0 或不设）。
-- **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与 SDK 内置重试叠加 —— 建议二选一调（这里 `maxAttempts: 1` 或把 SDK 的 `maxRetries` 调小）。
+- **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与底层 client 的内置重试叠加（默认 client 的 `maxRetries` 缺省 2）—— 建议二选一调（这里 `maxAttempts: 1`，或 `createAnthropicClient({ maxRetries: 0 })`）。
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
 - **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。
 
@@ -516,7 +535,7 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 
 | API | 说明 |
 |---|---|
-| `createAnthropicClient` | 默认 ModelClient（Anthropic）：自定义只传 `apiKey` / `baseURL`，不必直接依赖厂商 SDK |
+| `createAnthropicClient` | 默认 ModelClient（Anthropic）：自定义只传 `apiKey` / `baseURL`；框架**零运行时依赖**，不装厂商 SDK |
 | `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、cache token 恒 0） |
 | `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
 | `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用 |

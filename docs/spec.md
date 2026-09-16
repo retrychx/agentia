@@ -76,7 +76,7 @@ const providers = [
 - **长上下文三策略分清楚**：compaction（服务端摘要）/ context editing（清旧工具结果与 thinking）/ 客户端剪裁——三者不同，不混。
 - **子 agent = 完整独立循环 + 裁剪上下文 + 报告以 `tool_result` 交回**（隔离是核心）。
 - **预算/形态**：task budget、effort 档、流式、strict tools + 结构化输出（落地为 engine 内部追加的隐藏 `submit_result` 工具，见 §10 R2）。
-- **别自研黑名单**：token 计数走 `/messages/count_tokens`（不用 tiktoken 近似）；错误分类用 SDK 类型化异常；缓存验证靠 `cache_read_input_tokens`。
+- **别自研黑名单**：token 计数走 `/messages/count_tokens`（不用 tiktoken 近似）；错误分类靠鸭子类型（数值 `status` / errno `code`，见 §10 2026-09-14 —— SDK 类型化异常那套已随 client 自研化退役）；缓存验证靠 `cache_read_input_tokens`。
 
 ## 6. 服务层（agent 服务的关键，区别于对话）
 
@@ -1168,6 +1168,31 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   解析从 `wrappedByToken`（**中间件包装后**的菜单）按名 filter —— 嵌套能力绕不过中间件，
   2026-09-11 ① 的防绕过教训对本路径同样成立。粒度收窄全部发生在装配层产出菜单时，
   engine 分发点零改动。MCP 裸工具仍不可被引用（没有 provider token，边界不变）。
+
+- 2026-09-17：**公共类型自有化落地，`@anthropic-ai/sdk` 退出运行时依赖（零运行时依赖达成）**。
+  新增 `src/core/message.ts` 自有消息类型族（请求侧 `MessageParam` / `ContentBlockParam`
+  （text / image / tool_use / tool_result + 兜底）/ `ToolParam`，响应侧 `Message` /
+  `ContentBlock`（text / tool_use / thinking + 兜底）/ `MessageUsage`），字段口径与 SDK
+  逐字对齐（snake_case）。**这条是 2026-09-13「依赖形态 = 纯 dependencies」结论的反转与消解**：
+  当日论据①（公共类型面直接用 `Anthropic.MessageParam`，用户必须装 SDK）因类型自有化不再成立，
+  SDK 随之从 `dependencies` 移入 `devDependencies` —— 留下的唯一理由是类型兼容门禁
+  （`tests/types/message-compat.types.ts` 钉双向/单向 assignability：SDK 的
+  `MessageParam` / `Message` / `TextBlockParam` / `ToolUseBlockParam` / `ToolResultBlockParam` /
+  `Tool` / `CacheControlEphemeral` → 自有类型整体可赋；自有具体块可赋回 SDK；
+  `@ts-expect-error` 钉住「兜底块不回赋 SDK 精确联合」等不该过的方向）。配套决策：
+  ① **命名避让** —— `Tool` 已被 @Tool 装饰器占用、`Usage` 已被 trace 聚合用量占用，
+  消息侧对应物命名 `ToolParam` / `MessageUsage`；
+  ② **兜底成员是 `{ type: string }`，刻意不带索引签名** —— 实测 SDK 的块类型全是
+  interface（无隐式索引签名），带 `[key: string]: unknown` 的兜底会让
+  「SDK `MessageParam[]` → 自有 `MessageParam[]`」整体赋值编译失败，方向一承诺当场破产；
+  只有 `type` 的最小面两个方向都通，未知块原样携带（读字段自行收窄）；
+  ③ **`Role` 含 `'system'`** —— SDK 0.124 的 `MessageParam.role` 逐字如此，
+  方向一要求对齐（引擎自身只产出 user/assistant）；
+  ④ **`tsconfig` 显式 `"types": ["node"]`** —— 全仓 `@types/node` 此前竟是靠
+  「import SDK 类型 → SDK internal/types.d.mts 引 undici-types → `/// <reference types="node" />`」
+  这条传递链偶然进编译程序的，移除 SDK import 后全局类型（AbortSignal / process / setTimeout…）
+  整片消失（117 个错误）；显式声明后这条隐性依赖被根除。
+  实证：`npm pkg get dependencies` 输出 `{}`；`e2e:live` 真端点 6/6。
 
 ## 11. 开放项
 

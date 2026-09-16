@@ -28,6 +28,24 @@ export type {
 } from './core/tool.js';
 export { validateJsonSchema } from './core/schema.js';
 export { combineSignals } from './core/abort.js';
+// core：消息类型族（自有公共类型，与 @anthropic-ai/sdk 结构兼容；SDK 仅在 devDependencies 做兼容门禁）
+export type {
+  CacheControl,
+  ContentBlock,
+  ContentBlockParam,
+  ImageBlockParam,
+  Message,
+  MessageParam,
+  MessageUsage,
+  Role,
+  TextBlock,
+  TextBlockParam,
+  ThinkingBlock,
+  ToolParam,
+  ToolResultBlockParam,
+  ToolUseBlock,
+  ToolUseBlockParam,
+} from './core/message.js';
 
 // engine：运行时内核
 export { runAgent, resolveDefaultModel } from './engine/loop.js';

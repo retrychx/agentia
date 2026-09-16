@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../core/message.js';
 import type { AgentRunResult, RunAgentOptions } from '../engine/types.js';
 import type { JsonSchema, SchemaType } from '../core/tool.js';
 import type { Trace, TraceSink } from '../core/trace.js';
@@ -198,8 +198,8 @@ const EMPTY_REPLY_MARK = '（本次无文本输出）';
  */
 async function loadSession(
   session: { store: SessionStore; id: string } | undefined,
-  incoming: Anthropic.MessageParam[],
-): Promise<Anthropic.MessageParam[]> {
+  incoming: MessageParam[],
+): Promise<MessageParam[]> {
   if (!session) return incoming;
   try {
     const history = await session.store.load(session.id);
@@ -225,7 +225,7 @@ async function loadSession(
  */
 async function appendSession(
   session: { store: SessionStore; id: string } | undefined,
-  incoming: Anthropic.MessageParam[],
+  incoming: MessageParam[],
   finalText: string,
 ): Promise<void> {
   if (!session) return;

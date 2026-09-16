@@ -13,7 +13,7 @@
 agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── src/
 │   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验、
-│   │                        #   RunStatus/RunMeta、Blackboard 类型族），零依赖
+│   │                        #   RunStatus/RunMeta、Blackboard 类型族、Message 消息类型族），零依赖
 │   ├── engine/              # 运行时内核：agent loop、trace 记账、长上下文裁剪(trimming)、
 │   │                        #   预算策略(policy)、错误分类、replay、run 调用契约
 │   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)
@@ -97,12 +97,20 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   `createTokenCounter`、`engine/loop.ts` 的 `replaceMessages`），但**不要**加进 `src/index.ts` ——
   一旦进了公共导出面，`tests/docs/api-page.test.ts` 的反向全覆盖就会要求官网 API 页同步，
   而那些是纯内部实现细节。
-- **零新增运行时依赖**：可选能力（zod、redis 客户端）一律 duck-typed / peer。
+- **零运行时依赖（2026-09-17 达成）**：`@anthropic-ai/sdk` 已退入 devDependencies —— 公共消息类型
+  自有（`src/core/message.ts`，`MessageParam` / `Message` / 块联合 + `{ type: string }` 兜底成员，
+  命名避让：`ToolParam` ≠ @Tool 装饰器、`MessageUsage` ≠ trace 的 `Usage`），SDK 只留下做
+  类型兼容门禁（`tests/types/message-compat.types.ts` 钉双向/单向 assignability）。
+  可选能力（zod、redis 客户端）一律 duck-typed / peer。
+  ⚠️ 兜底成员**绝不可加索引签名**：SDK 的块类型全是 interface（无隐式索引签名），
+  带 `[key: string]: unknown` 会让「SDK 类型整体赋给自有类型」编译失败（方向一破产，见 spec §10 当日条）。
+  ⚠️ `tsconfig.json` 的 `"types": ["node"]` **不可删**：全仓 @types/node 此前是靠
+  「import SDK 类型 → undici-types → `/// <reference types="node" />`」的传递链偶然进编译程序的，
+  SDK import 移除后只能靠显式声明。
 - **默认 client 是自研 fetch + SSE 实现**：`src/integrations/anthropic.ts` 手写
   `POST {baseURL}/v1/messages` + 逐行 SSE 组装，**不再实例化 `@anthropic-ai/sdk`**；
   引擎经 `createAnthropicClient()` 取默认 client。使用者自定义只需
-  `createAnthropicClient({ apiKey, baseURL })`，**不必直接依赖该 SDK**（SDK 仍在
-  dependencies，仅提供公共类型；类型自有化是后续步骤）。
+  `createAnthropicClient({ apiKey, baseURL })`，**不必直接依赖该 SDK**。
   ⚠️ 错误分类随之改为**鸭子类型**：`engine/errors.ts` 不再 `instanceof` SDK 错误类，
   改认数值 `status`（429→rate_limit、5xx→server、其余 4xx→api）、带 `cause` 的
   TypeError / errno `code`（→connection）。历史教训：该 SDK 的错误类 `name` 恒为

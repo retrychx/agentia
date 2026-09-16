@@ -4,10 +4,10 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
 import type { AddressInfo } from 'node:net';
-import type Anthropic from '@anthropic-ai/sdk';
 import { createHttpHandler } from '../../src/transport/http.js';
 import { AsyncRunner } from '../../src/transport/async.js';
 import type { AppCallable } from '../../src/transport/async.js';
+import type { MessageParam } from '../../src/index.js';
 import type { AgentRunResult } from '../../src/engine/types.js';
 import { waitFor } from '../helpers.js';
 
@@ -27,9 +27,9 @@ function fakeResult(text: string): AgentRunResult {
 }
 
 function fakeApp(over: Partial<AppCallable> = {}): AppCallable & {
-  seen: Anthropic.MessageParam[][];
+  seen: MessageParam[][];
 } {
-  const seen: Anthropic.MessageParam[][] = [];
+  const seen: MessageParam[][] = [];
   return {
     name: 'fake',
     seen,

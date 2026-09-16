@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam, ToolParam } from '../../src/index.js';
 import { executeRun } from '../../src/index.js';
 import type { AgentTool } from '../../src/index.js';
 import { createOpenAIClient } from '../../src/integrations/openai.js';
@@ -46,7 +46,7 @@ const BASE_PARAMS = {
         properties: { city: { type: 'string' } },
         required: ['city'],
       },
-    } as Anthropic.Tool,
+    } as ToolParam,
   ],
   messages: [
     { role: 'user', content: '天气如何' },
@@ -56,7 +56,7 @@ const BASE_PARAMS = {
         { type: 'text', text: '查一下' },
         { type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: '北京' } },
       ],
-    } as Anthropic.MessageParam,
+    } as MessageParam,
     {
       role: 'user',
       content: [
@@ -64,8 +64,8 @@ const BASE_PARAMS = {
         { type: 'tool_result', tool_use_id: 'call_2', content: [{ type: 'text', text: '多云' }] },
         { type: 'text', text: '请总结' },
       ],
-    } as Anthropic.MessageParam,
-  ] as Anthropic.MessageParam[],
+    } as MessageParam,
+  ] as MessageParam[],
 };
 
 describe('createOpenAIClient', () => {
@@ -80,7 +80,7 @@ describe('createOpenAIClient', () => {
     assert.equal(url, 'https://ds.example/v1/chat/completions');
     assert.equal((init.headers as Record<string, string>).authorization, 'Bearer k');
 
-    // tools：Anthropic.Tool → function 形态
+    // tools：ToolParam → function 形态
     assert.deepEqual(json.tools, [
       {
         type: 'function',

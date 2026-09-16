@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { classifyError } from '../engine/errors.js';
@@ -71,7 +71,7 @@ export interface ResumePendingOptions {
 export interface AppCallable {
   readonly name: string;
   run(
-    messages: Anthropic.MessageParam[],
+    messages: MessageParam[],
     opts?: RunInvocationOptions,
   ): Promise<{ run: { runId: string; status: RunStatus }; result: AgentRunResult }>;
 }

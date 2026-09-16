@@ -14,7 +14,7 @@
 FROM node:24-slim AS build
 WORKDIR /repo
 
-# 1) 框架本体。它零运行时依赖（@anthropic-ai/sdk 全是 import type，编译后不留），
+# 1) 框架本体。它零运行时依赖（公共消息类型自有，厂商 SDK 只做构建期类型门禁），
 #    这里装的是构建期的 tsc。
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src

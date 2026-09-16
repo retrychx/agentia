@@ -1,6 +1,6 @@
 import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
 import type { CapabilityDecoratorContext } from './collect.js';
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../core/message.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { AgentStopReason } from '../engine/types.js';
@@ -39,7 +39,7 @@ export interface SkillSpec {
 export interface SkillLlmOptions {
   /** 二选一：直接给 prompt（包成单条 user），或给完整 messages */
   prompt?: string;
-  messages?: Anthropic.MessageParam[];
+  messages?: MessageParam[];
   /** 本次受限子运行的系统提示；SystemPrompt 实例自动打缓存 breakpoint */
   system?: string | SystemPrompt;
   model?: string;

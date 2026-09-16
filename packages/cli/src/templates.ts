@@ -101,6 +101,9 @@ export function projectTsconfig(): string {
         moduleResolution: 'NodeNext',
         lib: ['ES2022'],
         strict: true,
+        // 框架零运行时依赖（不再有厂商 SDK 经传递链把 @types/node 带进编译程序），
+        // node 全局类型必须显式声明
+        types: ['node'],
         esModuleInterop: true,
         skipLibCheck: true,
       },

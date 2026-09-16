@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageUsage } from '../core/message.js';
 import type { ModelPricing } from '../core/tool.js';
 import type { Usage } from '../core/trace.js';
 
@@ -46,7 +46,7 @@ export function buildPricing(
   return { ...DEFAULT_PRICING, ...overrides };
 }
 
-export function usageFromAnthropic(u: Anthropic.Usage): Usage {
+export function usageFromAnthropic(u: MessageUsage): Usage {
   return {
     inputTokens: u.input_tokens ?? 0,
     outputTokens: u.output_tokens ?? 0,

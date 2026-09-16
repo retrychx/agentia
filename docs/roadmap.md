@@ -187,12 +187,12 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
 - **HITL 跨进程挂起 / 续跑**（`awaiting_approval` 状态机 + 循环位置落库）—— 闸门配方已覆盖同步审批，
   此条仅当「审批跨重启」是硬需求时立项（见 spec §10 与 usage-guide §6）；
-- **默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）—— 前者 = 用 fetch 重实现
-  Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），后者 = 在 `core`
-  定义 agentia 自己的 `Message` / `ContentBlock`，只在 `integrations` 边界适配成厂商形状。
-  **前置条件：真 API 集成测试 —— 已补（`npm run e2e:live`，见下面末条与 spec §10 2026-09-14 ③）**；
-  补上它的第一轮就挖出「默认 client 从不转发 `signal`」（中止在飞 run 失效、超时的 run 继续烧 token）。
-  这条前置并没有白设：mock 全绿也发现不了那个 bug；
+- ~~**默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）~~ **✅ 已落地
+  （2026-09-17，两个 PR：#42 自研 client + 本条类型自有化）** —— 前者 = 用 fetch 重实现
+  Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），
+  后者 = `src/core/message.ts` 自有消息类型族（`MessageParam` / `Message` / 块联合 + 兜底成员，
+  与 SDK 结构兼容、双向门禁在 `tests/types/message-compat.types.ts`），SDK 退入 devDependencies
+  只做兼容门禁，**运行时零依赖达成**（决策见 spec §10 当日条）。
 - Workers 代理版 playground（免 BYOK 的托管演示）；
 - ~~文档站内容扩充（指南按场景组织）~~ **已落地（2026-09-16）**：docs 页新增「场景指南」区
   （`packages/website/src/fragments/docs.html` 的 `#scenarios`，快速开始之后）——上线 HTTP 服务 /

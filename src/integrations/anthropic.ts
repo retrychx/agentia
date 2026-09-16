@@ -1,4 +1,10 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  ContentBlock,
+  Message,
+  StopReason,
+  TextBlock,
+  ToolUseBlock,
+} from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -7,7 +13,7 @@ import type { ModelClient } from '../core/tool.js';
  * 引擎（`engine/loop.ts`）只经由此处取默认 client。使用者自定义只传
  * `apiKey` / `baseURL`（或环境变量 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL`），
  * **不必接触厂商 SDK**。工程形态与 `integrations/openai.ts` 同款：手写 fetch、
- * 逐行读 SSE、按分片组装成 `Anthropic.Message`。
+ * 逐行读 SSE、按分片组装成 `Message`。
  *
  * signal 直接进 fetch（这正是 2026-09-14 那个 bug 的根治 —— 当时 SDK 只在
  * RequestOptions 里认 signal，放 body 里会被静默丢弃，在飞 run 中止失效、
@@ -77,7 +83,7 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
         // on('text') 分片、后 await finalMessage()（scripts/e2e-live.ts 步骤 ⑤
         // 就是这个形态）—— 若惰性到 finalMessage() 才发请求，那种形态永远等不到
         // 第一个分片。同步注册的回调不会漏分片：网络 I/O 不可能同步完成。
-        const work = (async (): Promise<Anthropic.Message> => {
+        const work = (async (): Promise<Message> => {
           // signal 是契约字段，不是 API 字段：摘出后 body 才序列化（残留会污染请求体）
           const { signal: paramsSignal, ...bodyParams } = params;
           const { signal, cleanup } = composeSignal(paramsSignal, timeoutMs);
@@ -97,7 +103,7 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
             // 内容协商（与 openai.ts 同款）：个别兼容端点会忽略 stream:true 直接回整份 JSON
             const ctype = res.headers.get('content-type') ?? '';
             if (!ctype.includes('event-stream')) {
-              const message = (await res.json()) as Anthropic.Message;
+              const message = (await res.json()) as Message;
               const full = textOf(message);
               if (full) for (const cb of textCallbacks) cb(full);
               return message;
@@ -303,7 +309,7 @@ interface BlockAcc {
 }
 
 /**
- * 消费 `text/event-stream` 并组装成 Anthropic.Message。事件处理：
+ * 消费 `text/event-stream` 并组装成 Message。事件处理：
  *
  * | 事件 | 动作 |
  * |---|---|
@@ -323,7 +329,7 @@ async function readAnthropicStream(
   body: ReadableStream<Uint8Array>,
   fallbackModel: string,
   textCallbacks: Array<(delta: string) => void>,
-): Promise<Anthropic.Message> {
+): Promise<Message> {
   const blocks: BlockAcc[] = [];
   let started = false;
   let id = '';
@@ -406,7 +412,7 @@ async function readAnthropicStream(
     throw new Error('Anthropic 流式响应为空（未见 message_start）；响应无可用补全，按上游故障处理');
   }
 
-  const content: Anthropic.ContentBlock[] = [];
+  const content: ContentBlock[] = [];
   for (const b of blocks) {
     if (!b) continue; // index 跳号留的洞
     if (b.type === 'tool_use') {
@@ -415,15 +421,15 @@ async function readAnthropicStream(
         id: b.id,
         name: b.name,
         input: parseToolInput(b.partialJson),
-      } as Anthropic.ToolUseBlock);
+      } as ToolUseBlock);
     } else if (b.type === 'thinking') {
       content.push({
         type: 'thinking',
         thinking: b.thinking,
         signature: b.signature,
-      } as unknown as Anthropic.ContentBlock);
+      } as unknown as ContentBlock);
     } else {
-      content.push({ type: 'text', text: b.text } as Anthropic.TextBlock);
+      content.push({ type: 'text', text: b.text } as TextBlock);
     }
   }
 
@@ -433,7 +439,7 @@ async function readAnthropicStream(
     role: 'assistant',
     model: model || fallbackModel,
     content,
-    stop_reason: stopReason as Anthropic.StopReason,
+    stop_reason: stopReason as StopReason,
     stop_sequence: stopSequence,
     usage: {
       input_tokens: usage.input_tokens ?? 0,
@@ -441,7 +447,7 @@ async function readAnthropicStream(
       cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
       cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
     },
-  } as Anthropic.Message;
+  } as Message;
 }
 
 /** 流内 error 事件的类型 → HTTP status（让引擎的错误分类与重试语义照常工作） */
@@ -495,9 +501,9 @@ async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<strin
 }
 
 /** 取消息里的全部文本块（非流式回落路径一次性回调用） */
-function textOf(message: Anthropic.Message): string {
+function textOf(message: Message): string {
   return message.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .filter((b): b is TextBlock => b.type === 'text')
     .map((b) => b.text)
     .join('');
 }

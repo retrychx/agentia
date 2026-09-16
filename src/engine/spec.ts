@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '../core/message.js';
 import type { ModelClient, ModelPricing } from '../core/tool.js';
 import type { AgentTool } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
@@ -59,7 +59,7 @@ export interface RunInvocationOptions {
 
 /** 一次任务的规范化入参：messages（已由 normalizeMessages 规整） */
 export interface RunSpec {
-  messages: Anthropic.MessageParam[];
+  messages: MessageParam[];
   options?: RunInvocationOptions;
   /** 触发来源标记（sync / async / schedule:<id>），供 run 记录审计 */
   source?: string;
@@ -68,11 +68,11 @@ export interface RunSpec {
 /** transport 层接受的原始入参形态 */
 export type RunInput =
   | string
-  | Anthropic.MessageParam[]
-  | { prompt?: string; text?: string; messages?: Anthropic.MessageParam[] };
+  | MessageParam[]
+  | { prompt?: string; text?: string; messages?: MessageParam[] };
 
 /** 把任意任务入参规范成 messages（首条缺省包成 user）。 */
-export function normalizeMessages(input: RunInput | unknown): Anthropic.MessageParam[] {
+export function normalizeMessages(input: RunInput | unknown): MessageParam[] {
   if (typeof input === 'string') {
     // 空串与 []、{prompt:''} 一致报错：返回 [] 会带着空 messages 去调模型
     if (!input) throw new Error('任务 messages 不能为空');
@@ -80,13 +80,13 @@ export function normalizeMessages(input: RunInput | unknown): Anthropic.MessageP
   }
   if (Array.isArray(input)) {
     if (input.length === 0) throw new Error('任务 messages 不能为空');
-    return input as Anthropic.MessageParam[];
+    return input as MessageParam[];
   }
   if (input && typeof input === 'object') {
     const o = input as { prompt?: unknown; text?: unknown; messages?: unknown };
     if (Array.isArray(o.messages)) {
       if (o.messages.length === 0) throw new Error('任务 messages 不能为空');
-      return o.messages as Anthropic.MessageParam[];
+      return o.messages as MessageParam[];
     }
     if (typeof o.prompt === 'string' && o.prompt) return [{ role: 'user', content: o.prompt }];
     if (typeof o.text === 'string' && o.text) return [{ role: 'user', content: o.text }];

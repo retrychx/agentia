@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type { ImageBlockParam, MessageParam, ToolUseBlock } from '../../src/index.js';
 import { createOpenAIClient } from '../../src/integrations/openai.js';
 
 /** 把事件数组编成 SSE 报文（`[DONE]` 原样写） */
@@ -26,7 +26,7 @@ function sseFetch(
   return { fetchImpl, requests };
 }
 
-const BASE: { model: string; max_tokens: number; messages: Anthropic.MessageParam[] } = {
+const BASE: { model: string; max_tokens: number; messages: MessageParam[] } = {
   model: 'gpt-x',
   max_tokens: 64,
   messages: [{ role: 'user', content: 'hi' }],
@@ -173,7 +173,7 @@ describe('OpenAI 适配器：真流式（C3）', () => {
     ]);
     const { fetchImpl } = sseFetch(body);
     const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
-    assert.equal((msg.content[0] as Anthropic.ToolUseBlock).id, 'call_1');
+    assert.equal((msg.content[0] as ToolUseBlock).id, 'call_1');
   });
 
   it('[DONE] 之后的残留数据不再处理；CRLF 行尾也能解析', async () => {
@@ -264,11 +264,11 @@ describe('OpenAI 适配器：真流式（C3）', () => {
 });
 
 describe('OpenAI 适配器：多模态块（C3）', () => {
-  const imageBlock = (): Anthropic.ImageBlockParam =>
+  const imageBlock = (): ImageBlockParam =>
     ({
       type: 'image',
       source: { type: 'base64', media_type: 'image/png', data: 'AAAABBBB' },
-    }) as Anthropic.ImageBlockParam;
+    }) as ImageBlockParam;
 
   it('base64 图片 → image_url 的 data URL；文本一起进 parts', async () => {
     const { fetchImpl, requests } = sseFetch(
@@ -282,7 +282,7 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
           {
             role: 'user',
             content: [{ type: 'text', text: '这是什么' }, imageBlock()],
-          } as Anthropic.MessageParam,
+          } as MessageParam,
         ],
       })
       .finalMessage();
@@ -304,7 +304,7 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
           {
             role: 'user',
             content: [{ type: 'image', source: { type: 'url', url: 'https://x.test/a.png' } }],
-          } as Anthropic.MessageParam,
+          } as MessageParam,
         ],
       })
       .finalMessage();
@@ -321,9 +321,7 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
       .messages.stream({
         model: 'gpt-x',
         max_tokens: 8,
-        messages: [
-          { role: 'user', content: [{ type: 'text', text: '只有文本' }] } as Anthropic.MessageParam,
-        ],
+        messages: [{ role: 'user', content: [{ type: 'text', text: '只有文本' }] } as MessageParam],
       })
       .finalMessage();
     assert.equal(requests[0].json.messages[0].content, '只有文本');

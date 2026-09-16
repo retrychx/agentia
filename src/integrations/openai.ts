@@ -1,11 +1,24 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  ContentBlock,
+  ContentBlockParam,
+  ImageBlockParam,
+  Message,
+  MessageParam,
+  StopReason,
+  TextBlock,
+  TextBlockParam,
+  ToolParam,
+  ToolResultBlockParam,
+  ToolUseBlock,
+  ToolUseBlockParam,
+} from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
  * OpenAI 兼容端点适配器（R4 多模型）。
  *
  * 把 engine 的 Anthropic 形态请求翻译成 OpenAI chat.completions 请求，
- * 响应再翻译回 Anthropic.Message —— 产出的 ModelClient 可直接喂给
+ * 响应再翻译回 Message —— 产出的 ModelClient 可直接喂给
  * executeRun / runAgent 的 client 选项。兼容端点（DeepSeek 等）换 baseURL 即可。
  *
  * 剩余边界（**协议层面无法对齐**，不是没做）：
@@ -45,7 +58,7 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
           on(event: 'text', cb: (delta: string) => void) {
             if (event === 'text') textCallbacks.push(cb);
           },
-          async finalMessage(): Promise<Anthropic.Message> {
+          async finalMessage(): Promise<Message> {
             const req = toOpenAIRequest(params);
             const res = await fetchImpl(`${baseURL}/v1/chat/completions`, {
               method: 'POST',
@@ -164,9 +177,9 @@ interface OpenAIStreamChunk {
 type StreamParams = {
   model: string;
   max_tokens: number;
-  system?: string | Anthropic.TextBlockParam[];
-  tools?: Anthropic.Tool[];
-  messages: Anthropic.MessageParam[];
+  system?: string | TextBlockParam[];
+  tools?: ToolParam[];
+  messages: MessageParam[];
   signal?: AbortSignal;
 };
 
@@ -191,10 +204,8 @@ function toOpenAIRequest(params: StreamParams): OpenAIChatRequest {
     }
     if (m.role === 'user') {
       // tool_result blocks：每个 block 一条 role=tool 消息；其余合成一条 user
-      const blocks = m.content as Anthropic.ContentBlockParam[];
-      const toolResults = blocks.filter(
-        (b): b is Anthropic.ToolResultBlockParam => b.type === 'tool_result',
-      );
+      const blocks = m.content as ContentBlockParam[];
+      const toolResults = blocks.filter((b): b is ToolResultBlockParam => b.type === 'tool_result');
       const rest = blocks.filter((b) => b.type !== 'tool_result');
       for (const tr of toolResults) {
         messages.push({
@@ -211,14 +222,12 @@ function toOpenAIRequest(params: StreamParams): OpenAIChatRequest {
       if (rest.length > 0) messages.push({ role: 'user', content: renderUserContent(rest) });
     } else {
       // assistant：文本部分进 content（无则 null），tool_use → tool_calls
-      const blocks = m.content as Anthropic.ContentBlockParam[];
+      const blocks = m.content as ContentBlockParam[];
       const text = blocks
-        .filter((b): b is Anthropic.TextBlockParam => b.type === 'text')
+        .filter((b): b is TextBlockParam => b.type === 'text')
         .map((b) => b.text)
         .join('\n');
-      const toolUses = blocks.filter(
-        (b): b is Anthropic.ToolUseBlockParam => b.type === 'tool_use',
-      );
+      const toolUses = blocks.filter((b): b is ToolUseBlockParam => b.type === 'tool_use');
       messages.push({
         role: 'assistant',
         content: text || null,
@@ -262,16 +271,16 @@ function toOpenAIRequest(params: StreamParams): OpenAIChatRequest {
  * - **没有图片时回落成纯字符串** —— 部分兼容端点只接受 string content，
  *   无脑上数组会把原本能跑的通路弄坏（旧行为就是纯字符串）。
  */
-function renderUserContent(blocks: Anthropic.ContentBlockParam[]): string | OpenAIContentPart[] {
+function renderUserContent(blocks: ContentBlockParam[]): string | OpenAIContentPart[] {
   const parts: OpenAIContentPart[] = [];
   let hasImage = false;
   for (const b of blocks) {
     if (b.type === 'text') {
-      parts.push({ type: 'text', text: (b as Anthropic.TextBlockParam).text });
+      parts.push({ type: 'text', text: (b as TextBlockParam).text });
       continue;
     }
     if (b.type === 'image') {
-      const url = imageUrlOf(b as Anthropic.ImageBlockParam);
+      const url = imageUrlOf(b as ImageBlockParam);
       if (url) {
         parts.push({ type: 'image_url', image_url: { url } });
         hasImage = true;
@@ -288,7 +297,7 @@ function renderUserContent(blocks: Anthropic.ContentBlockParam[]): string | Open
 }
 
 /** Anthropic image block → OpenAI 能吃的 URL（base64 编 data URL；url 源透传） */
-function imageUrlOf(b: Anthropic.ImageBlockParam): string | null {
+function imageUrlOf(b: ImageBlockParam): string | null {
   const src = b.source as { type?: string; media_type?: string; data?: string; url?: string };
   if (src.type === 'base64' && src.data) {
     return `data:${src.media_type ?? 'image/png'};base64,${src.data}`;
@@ -309,7 +318,7 @@ interface StreamAccumulator {
 }
 
 /**
- * 消费 `text/event-stream` 并组装成 Anthropic.Message。
+ * 消费 `text/event-stream` 并组装成 Message。
  *
  * 关键点（每条都有对应单测）：
  * - **`id` / `name` 取首次出现的值**（OpenAI 在第一个分片给全），
@@ -324,7 +333,7 @@ async function readStream(
   body: ReadableStream<Uint8Array>,
   fallbackModel: string,
   textCallbacks: Array<(delta: string) => void>,
-): Promise<Anthropic.Message> {
+): Promise<Message> {
   const acc: StreamAccumulator = { text: '', toolCalls: new Map() };
   for await (const line of sseLines(body)) {
     if (!line.startsWith('data:')) continue; // 忽略 event: / id: / 注释 / 空行
@@ -387,10 +396,10 @@ function applyChunk(
   if (choice.finish_reason) acc.finish = choice.finish_reason;
 }
 
-/** 累积器 → Anthropic.Message */
-function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): Anthropic.Message {
-  const content: Anthropic.ContentBlock[] = [];
-  if (acc.text) content.push({ type: 'text', text: acc.text } as Anthropic.TextBlock);
+/** 累积器 → Message */
+function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): Message {
+  const content: ContentBlock[] = [];
+  if (acc.text) content.push({ type: 'text', text: acc.text } as TextBlock);
 
   // 按 index 升序还原调用顺序（Map 保留插入序，但 index 可能乱序到达）
   const calls = [...acc.toolCalls.entries()].sort((a, b) => a[0] - b[0]);
@@ -403,7 +412,7 @@ function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): An
       type: 'tool_use',
       name: tc.name,
       input: parseToolArgs(tc.args),
-    } as Anthropic.ToolUseBlock);
+    } as ToolUseBlock);
   }
 
   const hasToolCalls = calls.length > 0;
@@ -422,7 +431,7 @@ function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): An
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     },
-  } as Anthropic.Message;
+  } as Message;
 }
 
 /** tool_call 的 arguments 是模型生成的 JSON 字符串；非法时原样交给下游 schema 校验 */
@@ -463,8 +472,8 @@ async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<strin
   }
 }
 
-/** OpenAI chat.completions 响应 → Anthropic.Message */
-function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.Message {
+/** OpenAI chat.completions 响应 → Message */
+function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
   const choice = data.choices?.[0];
   if (!choice) {
     // 200 但 choices 为空/缺失：上游故障（兼容端点 bug、被网关截断）。
@@ -476,9 +485,9 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.
   }
   const msg = choice.message ?? {};
 
-  const content: Anthropic.ContentBlock[] = [];
+  const content: ContentBlock[] = [];
   if (typeof msg.content === 'string' && msg.content) {
-    content.push({ type: 'text', text: msg.content } as Anthropic.TextBlock);
+    content.push({ type: 'text', text: msg.content } as TextBlock);
   }
   for (const tc of msg.tool_calls ?? []) {
     content.push({
@@ -486,7 +495,7 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.
       id: tc.id,
       name: tc.function.name,
       input: parseToolArgs(tc.function.arguments),
-    } as Anthropic.ToolUseBlock);
+    } as ToolUseBlock);
   }
 
   return {
@@ -504,13 +513,13 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Anthropic.
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     },
-  } as Anthropic.Message;
+  } as Message;
 }
 
 /** 取消息里的全部文本块（非流式路径一次性回调用） */
-function textOf(message: Anthropic.Message): string {
+function textOf(message: Message): string {
   return message.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .filter((b): b is TextBlock => b.type === 'text')
     .map((b) => b.text)
     .join('');
 }
@@ -522,10 +531,7 @@ function textOf(message: Anthropic.Message): string {
  * DeepSeek / vLLM / Ollama 等兼容端点在带工具调用时回的是 `stop`；若映射成 end_turn，
  * engine 会在提取工具块之前就收尾（loop 的 end_turn 即终态），工具调用被静默丢弃。
  */
-function mapStopReason(
-  finish: string | null | undefined,
-  hasToolCalls: boolean,
-): Anthropic.StopReason {
+function mapStopReason(finish: string | null | undefined, hasToolCalls: boolean): StopReason {
   if (hasToolCalls) return 'tool_use';
   switch (finish) {
     case 'tool_calls':

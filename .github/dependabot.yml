@@ -1,5 +1,6 @@
-# 依赖更新自动化。本包运行时依赖极少（唯一硬依赖是 @anthropic-ai/sdk），
-# 但它的 API 面变动会直接影响默认 ModelClient，值得跟着走。
+# 依赖更新自动化。本包**零运行时依赖**；devDependencies 里的 @anthropic-ai/sdk
+# 只做类型兼容门禁（tests/types/message-compat.types.ts），它的 API 面变动会影响
+# 默认 ModelClient 的类型对齐，值得跟着走。
 version: 2
 updates:
   - package-ecosystem: npm
