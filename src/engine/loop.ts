@@ -22,9 +22,10 @@ import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError, isAbortError } from './errors.js';
 import { createBudgetGuard } from './budget.js';
+import type { BudgetGuard } from './budget.js';
 import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
 import { backoffDelay, resolveRetry, sleep } from './retry.js';
-import type { RetryOptions } from './retry.js';
+import type { ResolvedRetry, RetryOptions } from './retry.js';
 import { TraceRecorder } from './tracer.js';
 import type {
   AgentRunResult,
@@ -155,13 +156,127 @@ function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | un
   return policy?.forRun ? policy.forRun() : policy;
 }
 
-/** 循环体核心：带父 span 跑一轮 manual loop。请求失败按 error 收掉 turn 后抛出，由外层收尾。 */
+/**
+ * 循环体核心：带父 span 跑一轮 manual loop。请求失败按 error 收掉 turn 后抛出，由外层收尾。
+ *
+ * 本体只是「一回合执行步骤」的编排骨架，各步骤的实现见下方同名小函数：
+ *   checkTurnEntry（回合入口检查 + 上下文策略）→ streamTurn（发流式请求，含重试）
+ *   → recordTurnUsage（记账关 span）→ resolveStopReason（stop_reason 收尾分流）
+ *   → executeTurnTools（tool_use 过滤与并发执行）。
+ * 回合间共享的状态收在 LoopContext 一个对象里（不拖长参数列）。
+ */
 async function agentLoop<S extends JsonSchema = JsonSchema>(
   args: AgentLoopArgs<S>,
 ): Promise<AgentLoopResult<SchemaType<S>>> {
-  const { client, model, recorder, parentSpanId } = args;
-  const messages: MessageParam[] = [...args.messages];
+  const ctx = buildLoopContext(args);
 
+  let stopReason: AgentStopReason = 'end_turn';
+  let error: SpanError | undefined;
+  let finalText = '';
+  let finished = false;
+
+  for (let iteration = 0; iteration < args.maxIterations; iteration++) {
+    const halt = await checkTurnEntry(ctx, iteration);
+    if (halt) {
+      stopReason = halt.stopReason;
+      error = halt.error;
+      finished = true;
+      break;
+    }
+
+    const { turnId, message, aborted } = await streamTurn(ctx);
+    if (aborted || !message) {
+      stopReason = 'aborted';
+      error = abortedError();
+      finished = true;
+      break;
+    }
+    ctx.progress.iterations++;
+
+    recordTurnUsage(ctx, turnId, message);
+
+    // 成本硬管控（C1）：本回合 usage 已落账 → 立刻判一次（超限会触发 onExceed 记事件）。
+    // 结果**留到「循环是否还要继续」确定后再用**：
+    // - 模型本回合自然收尾 → 不因「最后一回合把额度用超了」把已成功的 run 改判失败
+    //   （只留 budget.exceeded 事件，可观测）；
+    // - 循环还要继续（模型要求调工具）→ 停在这里，不再发下一个请求 = 不再花钱。
+    const overBudget = ctx.budget ? ctx.budget.check(args.recorder.snapshot('ok')) : null;
+
+    ctx.messages.push({ role: 'assistant', content: message.content });
+
+    const resolution = resolveStopReason(message, args.maxTokens);
+    if (resolution.kind === 'finish') {
+      stopReason = resolution.stopReason;
+      finalText = resolution.finalText;
+      if (resolution.error) error = resolution.error;
+      finished = true;
+      break;
+    }
+
+    const toolResults = await executeTurnTools(ctx, turnId, resolution.toolUses, overBudget);
+    if (toolResults.length > 0) ctx.messages.push({ role: 'user', content: toolResults });
+
+    if (ctx.submitted) {
+      // submit_result 校验通过：结构化结果落定，循环正常收尾（finalText 取该回合文本，可空）
+      stopReason = 'end_turn';
+      finalText = textOf(message);
+      finished = true;
+      break;
+    }
+
+    // 超预算且本回合未落定结构化结果：不再发起下一回合，以 budget_exceeded 收尾
+    if (overBudget) {
+      stopReason = 'budget_exceeded';
+      finalText = textOf(message);
+      error = budgetError(args, overBudget);
+      finished = true;
+      break;
+    }
+  }
+
+  if (!finished) {
+    // 循环因 maxIterations 上限退出而非正常终止（所有置 stopReason 的分支都已同时置 finished）。
+    // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span）。
+    stopReason = 'max_iterations';
+    error = {
+      type: 'max_iterations',
+      message: `达到循环上限（maxIterations=${args.maxIterations}）仍未收尾`,
+      retryable: false,
+    };
+  }
+
+  return { stopReason, finalText, error, iterations: ctx.progress.iterations, typed: ctx.typed };
+}
+
+/**
+ * 回合上下文：一次 agentLoop 调用内、跨「一回合执行步骤」共享的全部状态。
+ * 可变字段（typed / submitted / progress / messages）由执行步骤就地更新。
+ */
+interface LoopContext<S extends JsonSchema = JsonSchema> {
+  args: AgentLoopArgs<S>;
+  /** 本轮循环自有消息（内部复制，不改调用方数组；各处持同一引用，见 replaceMessages） */
+  messages: MessageParam[];
+  /** 实际发给 API 的工具表：开发者工具 + resultSchema 模式追加的隐藏 submit_result */
+  apiTools: ToolParam[];
+  /** resultSchema 模式在末尾追加过提交指令的 system（见 appendResultInstruction） */
+  system?: SystemParam;
+  retryCfg: ResolvedRetry | null;
+  pricing: Record<string, ModelPricing>;
+  /** 未定价模型去重（F2）：本循环作用域内每模型只回调一次 */
+  unpricedSeen: Set<string>;
+  budget: BudgetGuard | undefined;
+  progress: { iterations: number };
+  /** submit_result 校验通过的结构化结果（先到先得，见 executeOneTool） */
+  typed: SchemaType<S> | undefined;
+  submitted: boolean;
+}
+
+/**
+ * 装配回合上下文：resultSchema 模式（隐藏提交工具 + system 指令）、重试配置、
+ * 价格表、预算护栏。全是循环开始前的**一次性**准备；
+ * 装配冲突（同名 submit_result）与非法单价在这里抛错。
+ */
+function buildLoopContext<S extends JsonSchema>(args: AgentLoopArgs<S>): LoopContext<S> {
   // resultSchema 模式：追加隐藏 submit_result 工具 + system 末尾指令。
   // 该工具由 engine 内部注入，不属开发者菜单；菜单已有同名工具视为装配冲突。
   let apiTools = args.tools.map(toApiTool);
@@ -183,23 +298,12 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     system = appendResultInstruction(args.system);
   }
 
-  let stopReason: AgentStopReason = 'end_turn';
-  let error: SpanError | undefined;
-  let finalText = '';
-  let finished = false;
-  const progress = args.progress ?? { iterations: 0 }; // 就地累加，抛错时调用方仍读得到
-  let typed: SchemaType<S> | undefined;
-  let submitted = false;
-
-  const signal = args.signal;
   const retryCfg = resolveRetry(args.retry);
   // 价格表（F1）：每次循环解析一次 —— 非法单价在 buildPricing 里立刻抛错（不静默算 NaN）
   const pricing = buildPricing(args.priceOverrides);
-  // 未定价模型去重（F2）：本循环作用域内每模型只回调一次
-  const unpricedSeen = new Set<string>();
 
   // 成本硬管控（C1）：从数值选项就地装配（把「超限」记进 run 根 span 的事件）。
-  // 只在记账完成后判断 —— 见下面 overBudget 的用法（何时「停」、何时只记事件）。
+  // 只在记账完成后判断 —— 见 agentLoop 里 overBudget 的用法（何时「停」、何时只记事件）。
   const budget =
     args.maxTotalTokens != null || args.maxCostUsd != null
       ? createBudgetGuard({
@@ -208,384 +312,433 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           onExceed: (snap) => {
             // 观测是辅助动作：记事件失败不得把「超限」这件事变成崩溃
             try {
-              if (parentSpanId) recorder.event(parentSpanId, 'budget.exceeded', snap);
+              if (args.parentSpanId)
+                args.recorder.event(args.parentSpanId, 'budget.exceeded', snap);
             } catch {
               /* ignore */
             }
           },
         })
       : undefined;
-  const budgetError = (over: 'tokens' | 'cost'): SpanError => ({
+
+  return {
+    args,
+    messages: [...args.messages],
+    apiTools,
+    system,
+    retryCfg,
+    pricing,
+    unpricedSeen: new Set<string>(),
+    budget,
+    progress: args.progress ?? { iterations: 0 }, // 就地累加，抛错时调用方仍读得到
+    typed: undefined,
+    submitted: false,
+  };
+}
+
+/** 超限收尾的结构化 error：与 refusal / max_tokens 同口径（非正常收尾都带「为什么」） */
+function budgetError<S extends JsonSchema>(
+  args: AgentLoopArgs<S>,
+  over: 'tokens' | 'cost',
+): SpanError {
+  return {
     type: 'budget_exceeded',
     message:
       over === 'tokens'
         ? `累计 token 已超过上限 ${args.maxTotalTokens}`
         : `累计成本已超过上限 $${args.maxCostUsd}`,
     retryable: false,
-  });
+  };
+}
 
-  for (let iteration = 0; iteration < args.maxIterations; iteration++) {
-    // 调用方已取消：不再发起新回合，直接以 aborted 收尾（不抛异常，语义确定）
-    if (signal?.aborted) {
-      stopReason = 'aborted';
-      error = { type: 'aborted', message: 'run 已被取消', retryable: false };
-      finished = true;
-      break;
-    }
-    // 成本硬管控（C1）回合入口再判一次：上一回合的**工具执行**（子 agent 循环等嵌套能力）
-    // 可能已把整条 run 的累计用量推过上限（回合末的那次判断当时还没超）—— 在发起新
-    // 请求前拦住：不再发请求 = 不再花钱。与「模型自然收尾不改判」不冲突：自然收尾在
-    // 上一回合就 break 了，走不到这里。
-    if (budget) {
-      const over = budget.check(recorder.snapshot('ok'));
-      if (over) {
-        stopReason = 'budget_exceeded';
-        error = budgetError(over);
-        finished = true;
-        break;
-      }
-    }
-    // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）
-    if (args.contextPolicy) {
-      const next = await args.contextPolicy.beforeTurn(messages, { iteration, model });
-      if (next && next !== messages) {
-        if (parentSpanId) {
-          recorder.event(parentSpanId, 'context.budget', {
-            from: messages.length,
-            to: next.length,
-            model,
-          });
-        }
-        replaceMessages(messages, next);
-      }
-    }
+/** 中止收尾的结构化 error（回合入口检查与回合中途两处共用，文案一致） */
+function abortedError(): SpanError {
+  return { type: 'aborted', message: 'run 已被取消', retryable: false };
+}
 
-    // —— 一次逻辑回合：可能含多次尝试（重试）；每次尝试开自己的 llm.turn span ——
-    let turnId: SpanId = '';
-    let message: Message | undefined;
-    let aborted = false;
-    let emitted = false; // 本回合是否已吐出过文本（吐过就不能重试，否则会重复输出）
-    for (let attempt = 1; ; attempt++) {
-      turnId = recorder.begin('llm.turn', model, parentSpanId);
-      if (attempt > 1) recorder.setAttribute(turnId, 'retry.attempt', attempt);
-      try {
-        const stream = client.messages.stream({
-          model,
-          max_tokens: args.maxTokens,
-          ...(system ? { system } : {}),
-          ...(apiTools.length ? { tools: apiTools } : {}),
-          messages,
-          ...(signal ? { signal } : {}),
+/** 回合入口的终止结论：已取消或预算已在回合间被推超（都带结构化 error） */
+interface EntryHalt {
+  stopReason: AgentStopReason;
+  error: SpanError;
+}
+
+/**
+ * 回合入口检查：已取消 / 预算已被上一回合的工具执行推超 → 给出终止结论；
+ * 否则给上下文策略一个机会（编辑/压缩预算超限的历史），返回 null 继续本回合。
+ */
+async function checkTurnEntry<S extends JsonSchema>(
+  ctx: LoopContext<S>,
+  iteration: number,
+): Promise<EntryHalt | null> {
+  const { args, messages } = ctx;
+  // 调用方已取消：不再发起新回合，直接以 aborted 收尾（不抛异常，语义确定）
+  if (args.signal?.aborted) {
+    return { stopReason: 'aborted', error: abortedError() };
+  }
+  // 成本硬管控（C1）回合入口再判一次：上一回合的**工具执行**（子 agent 循环等嵌套能力）
+  // 可能已把整条 run 的累计用量推过上限（回合末的那次判断当时还没超）—— 在发起新
+  // 请求前拦住：不再发请求 = 不再花钱。与「模型自然收尾不改判」不冲突：自然收尾在
+  // 上一回合就 break 了，走不到这里。
+  if (ctx.budget) {
+    const over = ctx.budget.check(args.recorder.snapshot('ok'));
+    if (over) {
+      return { stopReason: 'budget_exceeded', error: budgetError(args, over) };
+    }
+  }
+  // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）
+  if (args.contextPolicy) {
+    const next = await args.contextPolicy.beforeTurn(messages, {
+      iteration,
+      model: args.model,
+    });
+    if (next && next !== messages) {
+      if (args.parentSpanId) {
+        args.recorder.event(args.parentSpanId, 'context.budget', {
+          from: messages.length,
+          to: next.length,
+          model: args.model,
         });
-        stream.on('text', (delta) => {
-          emitted = true;
-          try {
-            args.onText?.(delta);
-          } catch {
-            /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
-          }
-        });
-        message = await stream.finalMessage();
-        break;
-      } catch (e) {
-        const errInfo = classifyError(e);
-        recorder.end(turnId, { status: 'error', error: errInfo });
-        // 中断：不冒泡、不重试 —— 以确定语义收尾
-        if (isAbortError(e) || signal?.aborted) {
-          aborted = true;
-          break;
-        }
-        // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
-        const canRetry =
-          retryCfg !== null &&
-          attempt < retryCfg.maxAttempts &&
-          retryCfg.isRetryable(e) &&
-          !emitted;
-        if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/capability 与收尾
-        const delayMs = backoffDelay(attempt, retryCfg);
-        recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
+      }
+      replaceMessages(messages, next);
+    }
+  }
+  return null;
+}
+
+/** 一回合的模型请求结果：turn span id + 成功时的 finalMessage；aborted 表示中途被取消 */
+interface TurnOutcome {
+  turnId: SpanId;
+  message?: Message;
+  aborted: boolean;
+}
+
+/**
+ * —— 一次逻辑回合：可能含多次尝试（重试）；每次尝试开自己的 llm.turn span ——
+ * 可重试失败按 retryCfg 退避后重试（已吐出文本的尝试不重试，否则会重复输出）；
+ * 不可重试的失败原样抛出，由外层（runAgent / 子 agent 运行器）标记根/capability 并收尾。
+ */
+async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Promise<TurnOutcome> {
+  const { args } = ctx;
+  const signal = args.signal;
+  const retryCfg = ctx.retryCfg;
+  let turnId: SpanId = '';
+  let message: Message | undefined;
+  let aborted = false;
+  let emitted = false; // 本回合是否已吐出过文本（吐过就不能重试，否则会重复输出）
+  for (let attempt = 1; ; attempt++) {
+    turnId = args.recorder.begin('llm.turn', args.model, args.parentSpanId);
+    if (attempt > 1) args.recorder.setAttribute(turnId, 'retry.attempt', attempt);
+    try {
+      const stream = args.client.messages.stream({
+        model: args.model,
+        max_tokens: args.maxTokens,
+        ...(ctx.system ? { system: ctx.system } : {}),
+        ...(ctx.apiTools.length ? { tools: ctx.apiTools } : {}),
+        messages: ctx.messages,
+        ...(signal ? { signal } : {}),
+      });
+      stream.on('text', (delta) => {
+        emitted = true;
         try {
-          retryCfg.onRetry({ attempt, delayMs, error: errInfo });
+          args.onText?.(delta);
         } catch {
           /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
         }
+      });
+      message = await stream.finalMessage();
+      break;
+    } catch (e) {
+      const errInfo = classifyError(e);
+      args.recorder.end(turnId, { status: 'error', error: errInfo });
+      // 中断：不冒泡、不重试 —— 以确定语义收尾
+      if (isAbortError(e) || signal?.aborted) {
+        aborted = true;
+        break;
+      }
+      // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
+      const canRetry =
+        retryCfg !== null && attempt < retryCfg.maxAttempts && retryCfg.isRetryable(e) && !emitted;
+      if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/capability 与收尾
+      const delayMs = backoffDelay(attempt, retryCfg);
+      args.recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
+      try {
+        retryCfg.onRetry({ attempt, delayMs, error: errInfo });
+      } catch {
+        /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
+      }
+      try {
+        await sleep(delayMs, signal);
+      } catch {
+        aborted = true; // 退避期间被取消
+        break;
+      }
+    }
+  }
+  return { turnId, message, aborted };
+}
+
+/**
+ * 回合记账：usage 换算 + 成本估算（未定价记事件 + 回调）+ 关 llm.turn span + token 属性。
+ * 预算护栏依赖「记账完成后」的 snapshot，所以本函数必须先于任何 budget.check 调用。
+ */
+function recordTurnUsage<S extends JsonSchema>(
+  ctx: LoopContext<S>,
+  turnId: SpanId,
+  message: Message,
+): void {
+  const { args } = ctx;
+  const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
+  if (usage) {
+    const cost = costEstimate(args.model, usage, ctx.pricing);
+    usage.costEstimate = cost;
+    // 未定价（F2）：模型不在价格表内 → 显式记事件 + 回调，别让 maxCostUsd 静默失效
+    if (cost === undefined) {
+      args.recorder.event(turnId, 'usage.unpriced', { model: args.model });
+      if (!ctx.unpricedSeen.has(args.model)) {
+        ctx.unpricedSeen.add(args.model);
         try {
-          await sleep(delayMs, signal);
+          args.onUnpricedModel?.({ model: args.model, spanId: turnId });
         } catch {
-          aborted = true; // 退避期间被取消
-          break;
+          /* 观测是辅助动作：回调抛错不得影响 run */
         }
       }
     }
-    if (aborted || !message) {
-      stopReason = 'aborted';
-      error = { type: 'aborted', message: 'run 已被取消', retryable: false };
-      finished = true;
-      break;
-    }
-    progress.iterations++;
+  }
+  args.recorder.end(turnId, { usage });
+  args.recorder.setAttribute(turnId, 'input_tokens', usage?.inputTokens ?? 0);
+  args.recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
+  args.recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
+  args.recorder.setAttribute(turnId, 'cache_creation_tokens', usage?.cacheCreationTokens ?? 0);
+}
 
-    const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
-    if (usage) {
-      const cost = costEstimate(model, usage, pricing);
-      usage.costEstimate = cost;
-      // 未定价（F2）：模型不在价格表内 → 显式记事件 + 回调，别让 maxCostUsd 静默失效
-      if (cost === undefined) {
-        recorder.event(turnId, 'usage.unpriced', { model });
-        if (!unpricedSeen.has(model)) {
-          unpricedSeen.add(model);
-          try {
-            args.onUnpricedModel?.({ model, spanId: turnId });
-          } catch {
-            /* 观测是辅助动作：回调抛错不得影响 run */
-          }
-        }
-      }
-    }
-    recorder.end(turnId, { usage });
-    recorder.setAttribute(turnId, 'input_tokens', usage?.inputTokens ?? 0);
-    recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
-    recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
-    recorder.setAttribute(turnId, 'cache_creation_tokens', usage?.cacheCreationTokens ?? 0);
+/** 回合收尾分流：finish = 终止/边界分支（带 stopReason 与收尾文本）；tools = 还有工具要执行 */
+type StopResolution =
+  | { kind: 'finish'; stopReason: AgentStopReason; finalText: string; error?: SpanError }
+  | { kind: 'tools'; toolUses: ToolUseBlock[] };
 
-    // 成本硬管控（C1）：本回合 usage 已落账 → 立刻判一次（超限会触发 onExceed 记事件）。
-    // 结果**留到「循环是否还要继续」确定后再用**：
-    // - 模型本回合自然收尾 → 不因「最后一回合把额度用超了」把已成功的 run 改判失败
-    //   （只留 budget.exceeded 事件，可观测）；
-    // - 循环还要继续（模型要求调工具）→ 停在这里，不再发下一个请求 = 不再花钱。
-    const overBudget = budget ? budget.check(recorder.snapshot('ok')) : null;
-
-    messages.push({ role: 'assistant', content: message.content });
-
-    // —— 终止/边界分支（每个都置 finished，退出循环不再兜底改判）——
-    if (message.stop_reason === 'end_turn') {
-      stopReason = 'end_turn';
-      finalText = textOf(message);
-      finished = true;
-      break;
-    }
-    if (message.stop_reason === 'refusal') {
-      stopReason = 'refusal';
-      finalText = textOf(message);
-      error = { type: 'refusal', message: 'model refused the request', retryable: false };
-      finished = true;
-      break;
-    }
-    if (message.stop_reason === 'max_tokens') {
-      stopReason = 'max_tokens';
-      finalText = textOf(message);
-      // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span），
-      // 否则 trace 里这类 run「失败却没有原因」
-      error = {
+/**
+ * —— 终止/边界分支（每个都给出终止结论，退出循环不再兜底改判）——
+ * 五种已知 stop_reason 各有归宿；剩余形态按「有没有可执行块」区分：
+ * 畸形 tool_use（块为空）与框架不认识的 stop_reason。
+ */
+function resolveStopReason(message: Message, maxTokens: number): StopResolution {
+  if (message.stop_reason === 'end_turn') {
+    return { kind: 'finish', stopReason: 'end_turn', finalText: textOf(message) };
+  }
+  if (message.stop_reason === 'refusal') {
+    return {
+      kind: 'finish',
+      stopReason: 'refusal',
+      finalText: textOf(message),
+      error: { type: 'refusal', message: 'model refused the request', retryable: false },
+    };
+  }
+  if (message.stop_reason === 'max_tokens') {
+    // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span），
+    // 否则 trace 里这类 run「失败却没有原因」
+    return {
+      kind: 'finish',
+      stopReason: 'max_tokens',
+      finalText: textOf(message),
+      error: {
         type: 'max_tokens',
-        message: `模型输出触顶被截断（max_tokens=${args.maxTokens}）`,
+        message: `模型输出触顶被截断（max_tokens=${maxTokens}）`,
         retryable: false,
-      };
-      finished = true;
-      break;
-    }
-    if (message.stop_reason === 'pause_turn') {
-      // 无 server tools 时正常不会到；避免无限循环直接停
-      stopReason = 'pause_turn';
-      finalText = textOf(message);
-      error = {
+      },
+    };
+  }
+  if (message.stop_reason === 'pause_turn') {
+    // 无 server tools 时正常不会到；避免无限循环直接停
+    return {
+      kind: 'finish',
+      stopReason: 'pause_turn',
+      finalText: textOf(message),
+      error: {
         type: 'pause_turn',
         message: '模型返回 pause_turn（无 server tools 的场景不应出现），防死循环直接收尾',
         retryable: false,
-      };
-      finished = true;
-      break;
-    }
-    if (message.stop_reason === 'stop_sequence') {
-      // 命中 stop 序列 = 正常收尾（与 end_turn 同类），不是失败
-      stopReason = 'stop_sequence';
-      finalText = textOf(message);
-      finished = true;
-      break;
-    }
-
-    const toolUses = message.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-    if (toolUses.length === 0) {
-      // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
-      // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开，
-      // 后者保留已产出的文本并挂一条可诊断的 error（run 仍按失败收尾）。
-      stopReason =
-        message.stop_reason === 'tool_use' ? 'tool_use_no_blocks' : 'unknown_stop_reason';
-      finalText = textOf(message);
-      if (stopReason === 'unknown_stop_reason') {
-        error = {
-          type: 'agent_error',
-          message: `模型返回了未识别的 stop_reason: ${String(message.stop_reason)}`,
-          retryable: false,
-        };
-      }
-      finished = true;
-      break;
-    }
-
-    // 成本硬管控（C1）：走得到这里说明循环还要继续（模型要求调工具）—— 超限就停，
-    // 连带不执行这批工具（避免超预算的 run 继续产生副作用）。已产出的文本保留。
-    // 例外：submit_result 是纯内部的结构化提交（零副作用、不触外部系统），超预算也照常
-    // 处理本回合的它 —— 模型已经把最终结果交出来了，连同回合一起丢弃等于白烧这一回合
-    // （与「自然收尾不因超预算改判失败」同口径）。
-    const runnable = overBudget
-      ? toolUses.filter((u) => args.resultSchema !== undefined && u.name === SUBMIT_RESULT)
-      : toolUses;
-
-    // —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
-    //    单条 user 消息回全部 tool_result（抑制并行是反模式）——
-    const toolResults: ToolResultBlockParam[] = await mapWithConcurrency(
-      runnable,
-      args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
-      async (use) => {
-        const tool = args.tools.find((t) => t.name === use.name);
-        // 工具级时序（E1）：起点在事件之前 —— durationMs 覆盖「入参校验 + 执行 + 超时等待」
-        // 的完整处理时长，是「哪一步慢」的可信基线。并行工具各记各的（tool_use_id 配对）。
-        const toolStartedAt = Date.now();
-        // tool_use_id 一并记账：同名工具并行时，重放只有靠 id 才能把入参出参正确配对
-        recorder.event(turnId, 'tool.input', {
-          tool: use.name,
-          tool_use_id: use.id,
-          input: limit(use.input, args.maxEventChars ?? DEFAULT_EVENT_CHARS),
-        });
-
-        const ctx: ToolRunContext = {
-          client,
-          recorder,
-          parentSpanId: turnId,
-          ...(signal ? { signal } : {}),
-          // 价格覆盖透传给嵌套能力（F1）：否则子 agent 用同一模型会退化成"未定价"
-          ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
-          // 事件截断口径同样透传：调试期开了全文，子 agent 的工具事件不该还是被截断的
-          ...(args.maxEventChars != null ? { maxEventChars: args.maxEventChars } : {}),
-          // 成本护栏（C1）同样透传：预算是整条 run（含各级子 agent）的口径，
-          // 子循环拿不到就等于护栏在子循环期间离线（各级共享同一 recorder，按同一账单判断）
-          ...(args.maxTotalTokens != null ? { maxTotalTokens: args.maxTotalTokens } : {}),
-          ...(args.maxCostUsd != null ? { maxCostUsd: args.maxCostUsd } : {}),
-        };
-        let ok = true;
-        let content: unknown = '';
-        // 失败归类（E1）：只记「为什么没成」，不记栈 —— 观测看得清「哪个工具老超时」
-        let errorKind: 'invalid_input' | 'timeout' | 'threw' | 'unknown_tool' | undefined;
-        if (args.resultSchema && use.name === SUBMIT_RESULT) {
-          // 隐藏提交工具：校验通过即携结果收尾（循环在下方 break）；
-          // 校验失败回 is_error（含路径，模型可自我修正），同回合其他工具照常执行。
-          // 校验本身也在 try 内：畸形 resultSchema（$ref 成环等）只该废掉这一次提交，
-          // 不该让整次 run 以 error 收场（否则 trace 把该回合记成 ok，与 run 结论矛盾）。
-          try {
-            const invalid = validateJsonSchema(args.resultSchema, use.input);
-            if (invalid) {
-              ok = false;
-              errorKind = 'invalid_input';
-              content = `invalid input: ${invalid}`;
-            } else {
-              content = 'submitted';
-              // 同回合并行多个 submit_result：**先到先得**（首个校验通过的生效，后续忽略）——
-              // 不 guarded 赋值的话 typed 由并发完成顺序竞态决定，同输入可能产出不同结果
-              if (!submitted) {
-                // 模型提交的 input 已过 resultSchema 校验 → 断言为 SchemaType<S>（信任边界在此）
-                typed = use.input as SchemaType<S>;
-                submitted = true;
-              }
-            }
-          } catch (e) {
-            ok = false;
-            errorKind = 'threw';
-            const err = classifyError(e);
-            content = `error(${err.type}): ${err.message}`;
-          }
-        } else if (!tool) {
-          ok = false;
-          errorKind = 'unknown_tool';
-          content = `unknown tool: ${use.name}`;
-        } else {
-          // 模型给的 input 先过 schema 校验：不合法直接回 is_error（含路径，
-          // 模型可自我修正），不进方法体 —— schema 是方法与模型间的运行时契约。
-          // 校验本身也在 try 内：畸形 schema（$ref 成环等）只该废掉这一个调用，
-          // 不该让整次 run 以 error 收场。
-          try {
-            const invalid = validateJsonSchema(tool.inputSchema, use.input);
-            if (invalid) {
-              ok = false;
-              errorKind = 'invalid_input';
-              content = `invalid input: ${invalid}`;
-            } else {
-              // 工具级超时（C2）：超时 = **放弃等待**（AgentTool.run 没有 signal 参数，
-              // 工具内部可能还在跑、副作用可能已发生），该条 tool_result 记 is_error 回模型
-              // —— 与「工具抛错不中断 run」同语义，模型可自行换路。
-              const out = await withTimeout(
-                Promise.resolve(tool.run(use.input, ctx)),
-                args.toolTimeoutMs ?? 0,
-              );
-              if (out === TIMED_OUT) {
-                ok = false;
-                errorKind = 'timeout';
-                content = `error(timeout): 工具执行超过 ${args.toolTimeoutMs}ms`;
-              } else {
-                content = out;
-              }
-            }
-          } catch (e) {
-            ok = false;
-            errorKind = 'threw';
-            const err = classifyError(e);
-            content = `error(${err.type}): ${err.message}`;
-          }
-        }
-        recorder.event(turnId, 'tool.output', {
-          tool: use.name,
-          tool_use_id: use.id,
-          ok,
-          // 耗时（毫秒）：成功/失败/超时/入参被拒四条路径都记（E1）
-          durationMs: Math.max(0, Date.now() - toolStartedAt),
-          ...(errorKind ? { errorKind } : {}),
-          content: limit(
-            content,
-            args.maxEventChars ?? (ok ? DEFAULT_EVENT_CHARS : DEFAULT_ERROR_EVENT_CHARS),
-          ),
-        });
-
-        return {
-          type: 'tool_result',
-          tool_use_id: use.id,
-          content: stringifySafe(content),
-          is_error: !ok,
-        };
       },
-    );
-
-    if (toolResults.length > 0) messages.push({ role: 'user', content: toolResults });
-
-    if (submitted) {
-      // submit_result 校验通过：结构化结果落定，循环正常收尾（finalText 取该回合文本，可空）
-      stopReason = 'end_turn';
-      finalText = textOf(message);
-      finished = true;
-      break;
-    }
-
-    // 超预算且本回合未落定结构化结果：不再发起下一回合，以 budget_exceeded 收尾
-    if (overBudget) {
-      stopReason = 'budget_exceeded';
-      finalText = textOf(message);
-      error = budgetError(overBudget);
-      finished = true;
-      break;
-    }
-  }
-
-  if (!finished) {
-    // 循环因 maxIterations 上限退出而非正常终止（所有置 stopReason 的分支都已同时置 finished）。
-    // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span）。
-    stopReason = 'max_iterations';
-    error = {
-      type: 'max_iterations',
-      message: `达到循环上限（maxIterations=${args.maxIterations}）仍未收尾`,
-      retryable: false,
     };
   }
+  if (message.stop_reason === 'stop_sequence') {
+    // 命中 stop 序列 = 正常收尾（与 end_turn 同类），不是失败
+    return { kind: 'finish', stopReason: 'stop_sequence', finalText: textOf(message) };
+  }
 
-  return { stopReason, finalText, error, iterations: progress.iterations, typed };
+  const toolUses = message.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
+  if (toolUses.length === 0) {
+    // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
+    // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开，
+    // 后者保留已产出的文本并挂一条可诊断的 error（run 仍按失败收尾）。
+    const stopReason =
+      message.stop_reason === 'tool_use' ? 'tool_use_no_blocks' : 'unknown_stop_reason';
+    return {
+      kind: 'finish',
+      stopReason,
+      finalText: textOf(message),
+      ...(stopReason === 'unknown_stop_reason'
+        ? {
+            error: {
+              type: 'agent_error',
+              message: `模型返回了未识别的 stop_reason: ${String(message.stop_reason)}`,
+              retryable: false,
+            },
+          }
+        : {}),
+    };
+  }
+  return { kind: 'tools', toolUses };
+}
+
+/**
+ * —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
+ *    单条 user 消息回全部 tool_result（抑制并行是反模式）——
+ * submit_result 校验通过会就地更新 ctx.typed / ctx.submitted（先到先得，见 executeOneTool）。
+ */
+async function executeTurnTools<S extends JsonSchema>(
+  ctx: LoopContext<S>,
+  turnId: SpanId,
+  toolUses: ToolUseBlock[],
+  overBudget: 'tokens' | 'cost' | null,
+): Promise<ToolResultBlockParam[]> {
+  const { args } = ctx;
+  // 成本硬管控（C1）：走得到这里说明循环还要继续（模型要求调工具）—— 超限就停，
+  // 连带不执行这批工具（避免超预算的 run 继续产生副作用）。已产出的文本保留。
+  // 例外：submit_result 是纯内部的结构化提交（零副作用、不触外部系统），超预算也照常
+  // 处理本回合的它 —— 模型已经把最终结果交出来了，连同回合一起丢弃等于白烧这一回合
+  // （与「自然收尾不因超预算改判失败」同口径）。
+  const runnable = overBudget
+    ? toolUses.filter((u) => args.resultSchema !== undefined && u.name === SUBMIT_RESULT)
+    : toolUses;
+
+  return mapWithConcurrency(runnable, args.maxToolConcurrency ?? Number.POSITIVE_INFINITY, (use) =>
+    executeOneTool(ctx, turnId, use),
+  );
+}
+
+/**
+ * 执行单个工具调用（含隐藏 submit_result 分支），产出该条的 tool_result 块。
+ * 工具的 tool.input / tool.output 事件都记在本回合的 turn span 上（tool_use_id 配对）。
+ */
+async function executeOneTool<S extends JsonSchema>(
+  ctx: LoopContext<S>,
+  turnId: SpanId,
+  use: ToolUseBlock,
+): Promise<ToolResultBlockParam> {
+  const { args } = ctx;
+  const tool = args.tools.find((t) => t.name === use.name);
+  // 工具级时序（E1）：起点在事件之前 —— durationMs 覆盖「入参校验 + 执行 + 超时等待」
+  // 的完整处理时长，是「哪一步慢」的可信基线。并行工具各记各的（tool_use_id 配对）。
+  const toolStartedAt = Date.now();
+  // tool_use_id 一并记账：同名工具并行时，重放只有靠 id 才能把入参出参正确配对
+  args.recorder.event(turnId, 'tool.input', {
+    tool: use.name,
+    tool_use_id: use.id,
+    input: limit(use.input, args.maxEventChars ?? DEFAULT_EVENT_CHARS),
+  });
+
+  const toolCtx: ToolRunContext = {
+    client: args.client,
+    recorder: args.recorder,
+    parentSpanId: turnId,
+    ...(args.signal ? { signal: args.signal } : {}),
+    // 价格覆盖透传给嵌套能力（F1）：否则子 agent 用同一模型会退化成"未定价"
+    ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
+    // 事件截断口径同样透传：调试期开了全文，子 agent 的工具事件不该还是被截断的
+    ...(args.maxEventChars != null ? { maxEventChars: args.maxEventChars } : {}),
+    // 成本护栏（C1）同样透传：预算是整条 run（含各级子 agent）的口径，
+    // 子循环拿不到就等于护栏在子循环期间离线（各级共享同一 recorder，按同一账单判断）
+    ...(args.maxTotalTokens != null ? { maxTotalTokens: args.maxTotalTokens } : {}),
+    ...(args.maxCostUsd != null ? { maxCostUsd: args.maxCostUsd } : {}),
+  };
+  let ok = true;
+  let content: unknown = '';
+  // 失败归类（E1）：只记「为什么没成」，不记栈 —— 观测看得清「哪个工具老超时」
+  let errorKind: 'invalid_input' | 'timeout' | 'threw' | 'unknown_tool' | undefined;
+  if (args.resultSchema && use.name === SUBMIT_RESULT) {
+    // 隐藏提交工具：校验通过即携结果收尾（循环在 agentLoop 下方 break）；
+    // 校验失败回 is_error（含路径，模型可自我修正），同回合其他工具照常执行。
+    // 校验本身也在 try 内：畸形 resultSchema（$ref 成环等）只该废掉这一次提交，
+    // 不该让整次 run 以 error 收场（否则 trace 把该回合记成 ok，与 run 结论矛盾）。
+    try {
+      const invalid = validateJsonSchema(args.resultSchema, use.input);
+      if (invalid) {
+        ok = false;
+        errorKind = 'invalid_input';
+        content = `invalid input: ${invalid}`;
+      } else {
+        content = 'submitted';
+        // 同回合并行多个 submit_result：**先到先得**（首个校验通过的生效，后续忽略）——
+        // 不 guarded 赋值的话 typed 由并发完成顺序竞态决定，同输入可能产出不同结果
+        if (!ctx.submitted) {
+          // 模型提交的 input 已过 resultSchema 校验 → 断言为 SchemaType<S>（信任边界在此）
+          ctx.typed = use.input as SchemaType<S>;
+          ctx.submitted = true;
+        }
+      }
+    } catch (e) {
+      ok = false;
+      errorKind = 'threw';
+      const err = classifyError(e);
+      content = `error(${err.type}): ${err.message}`;
+    }
+  } else if (!tool) {
+    ok = false;
+    errorKind = 'unknown_tool';
+    content = `unknown tool: ${use.name}`;
+  } else {
+    // 模型给的 input 先过 schema 校验：不合法直接回 is_error（含路径，
+    // 模型可自我修正），不进方法体 —— schema 是方法与模型间的运行时契约。
+    // 校验本身也在 try 内：畸形 schema（$ref 成环等）只该废掉这一个调用，
+    // 不该让整次 run 以 error 收场。
+    try {
+      const invalid = validateJsonSchema(tool.inputSchema, use.input);
+      if (invalid) {
+        ok = false;
+        errorKind = 'invalid_input';
+        content = `invalid input: ${invalid}`;
+      } else {
+        // 工具级超时（C2）：超时 = **放弃等待**（AgentTool.run 没有 signal 参数，
+        // 工具内部可能还在跑、副作用可能已发生），该条 tool_result 记 is_error 回模型
+        // —— 与「工具抛错不中断 run」同语义，模型可自行换路。
+        const out = await withTimeout(
+          Promise.resolve(tool.run(use.input, toolCtx)),
+          args.toolTimeoutMs ?? 0,
+        );
+        if (out === TIMED_OUT) {
+          ok = false;
+          errorKind = 'timeout';
+          content = `error(timeout): 工具执行超过 ${args.toolTimeoutMs}ms`;
+        } else {
+          content = out;
+        }
+      }
+    } catch (e) {
+      ok = false;
+      errorKind = 'threw';
+      const err = classifyError(e);
+      content = `error(${err.type}): ${err.message}`;
+    }
+  }
+  args.recorder.event(turnId, 'tool.output', {
+    tool: use.name,
+    tool_use_id: use.id,
+    ok,
+    // 耗时（毫秒）：成功/失败/超时/入参被拒四条路径都记（E1）
+    durationMs: Math.max(0, Date.now() - toolStartedAt),
+    ...(errorKind ? { errorKind } : {}),
+    content: limit(
+      content,
+      args.maxEventChars ?? (ok ? DEFAULT_EVENT_CHARS : DEFAULT_ERROR_EVENT_CHARS),
+    ),
+  });
+
+  return {
+    type: 'tool_result',
+    tool_use_id: use.id,
+    content: stringifySafe(content),
+    is_error: !ok,
+  };
 }
 
 /** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */

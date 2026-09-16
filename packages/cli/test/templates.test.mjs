@@ -2,12 +2,15 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { distReadyOrLoud } from './dist-guard.mjs';
 
 /* 对构建产物测试（未构建时跳过而非报错）。 */
 const DIST = fileURLToPath(new URL('../dist/templates.js', import.meta.url));
 let T = null;
 if (existsSync(DIST)) T = await import(new URL('../dist/templates.js', import.meta.url).href);
 const SKIP = !T ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' : false;
+/* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
+if (SKIP) distReadyOrLoud(DIST, 'CLI 构建产物');
 
 describe('templates 目录约定（四分类目录，无伞形词）', { skip: SKIP }, () => {
   it('四个分类目录都在 src/ 下，且与四个能力类型一一对应', () => {

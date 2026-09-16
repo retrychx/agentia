@@ -4,13 +4,14 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { distReadyOrLoud } from './dist-guard.mjs';
 
-/* 对构建产物测试（未构建时跳过而非报错 —— 免得只跑 npm test 的人卡在构建前置上）。 */
+/* 对构建产物测试（未构建时本地醒目警告+跳过、CI 判失败 —— 不许静默 skip）。 */
 const DIST = fileURLToPath(new URL('../dist/add.js', import.meta.url));
 let resolvePackageName = null;
 let doctor = null;
 let generateCapability = null;
-if (existsSync(DIST)) {
+if (distReadyOrLoud(DIST, 'packages/cli/dist/add.js ')) {
   ({ resolvePackageName } = await import(new URL('../dist/add.js', import.meta.url).href));
   ({ doctor } = await import(new URL('../dist/doctor.js', import.meta.url).href));
   ({ generateCapability } = await import(new URL('../dist/generate.js', import.meta.url).href));
@@ -114,5 +115,67 @@ describe('doctor 能力入口候选', { skip: SKIP }, () => {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('doctor 注册表 import 识别（不再只认 default import）', { skip: SKIP }, () => {
+  /** 在临时项目里写一份注册表，跑 doctor 并捕获输出 */
+  function doctorOutput(registryContent) {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-doctor-imports-'));
+    const cwd = process.cwd();
+    const logs = [];
+    const realLog = console.log;
+    console.log = (...a) => {
+      logs.push(a.join(' '));
+    };
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'registry.ts'), registryContent);
+      process.chdir(dir);
+      doctor();
+      process.exitCode = undefined;
+      return logs.join('\n');
+    } finally {
+      console.log = realLog;
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('named import 也能定位来源：悬空条目被警告（此前被静默跳过）', () => {
+    // 原正则只认 `import Foo from`，named / namespace 形态下 imports 查不到 →
+    // 「无法定位 import，跳过」→ 悬空条目漏检
+    const out = doctorOutput(`import { Hello } from './tools/hello/index.js';
+import type { Provider } from '@migor/agentia';
+export const providers: Provider[] = [
+  { provide: 'hello', useClass: Hello },
+];
+`);
+    assert.ok(out.includes('悬空条目'), `named import 应检出悬空条目，实际:\n${out}`);
+  });
+
+  it('namespace / default+named 混合 / 双引号同样识别', () => {
+    for (const importLine of [
+      "import * as Hello from './tools/hello/index.js';",
+      "import Base, { Hello } from './tools/hello/index.js';",
+      'import Hello from "./tools/hello/index.js";',
+      "import {\n  Hello,\n} from './tools/hello/index.js';",
+    ]) {
+      const out = doctorOutput(`${importLine}
+export const providers = [
+  { provide: 'hello', useClass: Hello },
+];
+`);
+      assert.ok(out.includes('悬空条目'), `应检出悬空条目（${importLine}），实际:\n${out}`);
+    }
+  });
+
+  it('别名绑定按别名解析（useClass 写的是别名）', () => {
+    const out = doctorOutput(`import { Orig as Hello } from './tools/hello/index.js';
+export const providers = [
+  { provide: 'hello', useClass: Hello },
+];
+`);
+    assert.ok(out.includes('悬空条目'), `别名绑定应检出悬空条目，实际:\n${out}`);
   });
 });

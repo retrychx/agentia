@@ -270,8 +270,9 @@ import { createTraceView, fmtArg, rawArg, fmtNum, fmtMs } from '@migor/trace-vie
   const uOut = $('#u-out');
   const uCost = $('#u-cost');
 
-  /* 单价（$/M tokens），仅演示 */
-  const PRICE = { input: 3, output: 15 };
+  /* 单价（$/M tokens），仅演示 —— 与框架内置价格表（src/engine/usage.ts 的
+     DEFAULT_PRICING）的 claude-opus-5 行保持一致；场景脚本里的 span 名也是它 */
+  const PRICE = { input: 5, output: 25 };
 
   const state = {
     scenario: SCENARIOS[0],

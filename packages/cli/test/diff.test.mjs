@@ -5,12 +5,15 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { distReadyOrLoud } from './dist-guard.mjs';
 
 /* 对构建产物测试（未构建时跳过而非报错），同 harvest.test.mjs 的约定。 */
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const CLI_DIFF = fileURLToPath(new URL('../dist/diff.js', import.meta.url));
 const SKIP = !existsSync(CLI) ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' : false;
-/* 框架构建产物：只在它也在时才跑「CLI 与框架 diffTraces 逐字同形」的对拍 */
+/* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
+if (SKIP) distReadyOrLoud(CLI, 'CLI 构建产物');
+/* 框架构建产物：对拍「CLI 与框架 diffTraces 逐字同形」要 import 它 */
 const FW_DIFF = fileURLToPath(new URL('../../../dist/engine/trace-diff.js', import.meta.url));
 
 const U1 = {
@@ -141,7 +144,7 @@ const run = (args) =>
 
 describe('agentia diff', { skip: SKIP }, () => {
   it('CLI diffTraces 与框架真源逐字同形（移植漂移对拍，六组夹具）', async () => {
-    if (!existsSync(FW_DIFF)) return; // 框架未构建时跳过（对拍是加强校验，不是门禁主体）
+    if (!distReadyOrLoud(FW_DIFF, '框架构建产物')) return; // 本地未 build：醒目警告后跳过
     const { diffTraces: fwDiff } = await import(FW_DIFF);
     const { diffTraces: cliDiff } = await import(CLI_DIFF);
     const cases = [

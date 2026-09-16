@@ -36,9 +36,9 @@
       defaultModel: 'claude-haiku-4-5-20251001',
       models: ['claude-haiku-4-5-20251001'],
       keyPlaceholder: 'sk-ant-...',
-      price: { input: 0.8, output: 4 }, // $/M tokens（haiku 4.5）
+      price: { input: 1, output: 5 }, // $/M tokens（haiku 4.5，同框架内置价格表 DEFAULT_PRICING）
       priceNote:
-        'token 为 API 返回真实值；成本按 claude-haiku-4.5 估算（input $0.8 / output $4 每百万 token），改模型后单价可能不准。',
+        'token 为 API 返回真实值；成本按 claude-haiku-4.5 估算（input $1 / output $5 每百万 token，同框架内置价格表），改模型后单价可能不准。',
       headers: (key) => ({
         'x-api-key': key,
         'anthropic-version': '2023-06-01',
@@ -72,13 +72,14 @@
   let providerId = 'anthropic'; // 当前服务商
   const prov = () => PROVIDERS[providerId];
 
-  /* 单价（$/M tokens）：模拟模式沿用 opus */
-  const PRICE_SIM = { input: 3, output: 15 };
+  /* 单价（$/M tokens）：模拟模式沿用 opus —— 与框架内置价格表
+     （src/engine/usage.ts 的 DEFAULT_PRICING）的 claude-opus-5 行一致 */
+  const PRICE_SIM = { input: 5, output: 25 };
 
   const COPY_SIM = {
     badge: '模拟演示：本地预置脚本，非真实模型调用',
     sub: '选一个任务，看主 agent 如何思考、从菜单选中能力、发起 llm.turn、调用能力并汇总产出。右侧就是 Agentia 的可观测面本体：trace 调用树与 token / 成本随回放同步生长 —— 一次 run == 一条 trace，Turn 0 起内建，不是另配的追踪 SDK。',
-    note: '按 claude-opus 单价估算（input $3 / output $15 每百万 token），仅演示用途。',
+    note: '按 claude-opus-5 单价估算（input $5 / output $25 每百万 token，同框架内置价格表），仅演示用途。',
   };
   function copyReal(p) {
     return {
@@ -88,7 +89,7 @@
         p.label +
         '（' +
         p.host +
-        '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，trace 与 token 用量均为真实值 —— 这棵调用树就是框架那套可观测面的原样产物，不是演示造的假数据。',
+        '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，token 用量是 API 返回的真实值 —— 右侧调用树是按框架 trace 的形状（span 层级 / 事件 / usage 口径）在浏览器侧现场构造的演示数据，并非框架 recorder 的原样产物；渲染与 CLI inspector 共用同一份 @migor/trace-view。',
       note: p.priceNote,
     };
   }
