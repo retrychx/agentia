@@ -2,6 +2,7 @@
     <aside class="docs-nav" id="docs-nav">
       <p class="dn-title">CONTENTS</p>
       <a href="#start">快速开始</a>
+      <a href="#scenarios">场景指南</a>
       <a href="#capabilities">四类能力</a>
       <a href="#structure">目录约定与装配</a>
       <a href="#middleware">中间件</a>
@@ -48,6 +49,109 @@
 <span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>([{ role: <span class="str">'user'</span>, content: process.argv[<span class="dec">2</span>] }]);
 console.<span class="fn">log</span>(result.finalText);</code></pre>
         </div>
+      </section>
+
+      <!-- 场景指南 -->
+      <section id="scenarios">
+        <h2>场景指南</h2>
+        <p>按「要做的事」找配方：五张卡各给最小骨架与一行深入链接，所有 API 与命令都与 <code>docs/usage-guide.md</code> 逐字一致。</p>
+
+        <h3>上线一个 HTTP agent 服务</h3>
+        <p>一份 handler 同时给同步 <code>POST /run</code>（带 <code>Accept: text/event-stream</code> 则 SSE）、异步 <code>POST /tasks</code>（幂等键去重）、<code>GET /healthz</code> 探针；鉴权走 <code>authenticate</code> 缝（拦在读 body 之前），停机走 <code>drain</code> —— 未完成的任务留在 store，重启 <code>resumePending()</code> 续跑。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>server.ts</em></div>
+          <pre><code><span class="kw">import</span> { createServer } <span class="kw">from</span> <span class="str">'node:http'</span>;
+<span class="kw">import</span> { createApp, createHttpHandler, AsyncRunner, SqliteTaskStore, HttpException } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({ name: <span class="str">'my-app'</span>, providers, system });
+<span class="kw">const</span> runner = <span class="kw">new</span> <span class="fn">AsyncRunner</span>(app, { store: <span class="kw">new</span> <span class="fn">SqliteTaskStore</span>(<span class="str">'./tasks.db'</span>) });
+<span class="kw">await</span> runner.<span class="fn">resumePending</span>(); <span class="cm">// 重启续跑 queued/running，不是丢弃</span>
+
+<span class="kw">const</span> handler = <span class="fn">createHttpHandler</span>(app, {
+  runner,
+  authenticate: <span class="kw">async</span> (req) =&gt; {
+    <span class="kw">if</span> (!<span class="fn">verify</span>(req.headers.authorization)) <span class="kw">throw new</span> <span class="fn">HttpException</span>(<span class="dec">401</span>, { error: <span class="str">'无效凭据'</span> });
+  },
+});
+<span class="fn">createServer</span>(handler).<span class="fn">listen</span>(<span class="dec">8080</span>);
+<span class="cm">// POST /run（同步 / SSE）  POST /tasks（异步）  GET /tasks/:id  GET /healthz</span>
+process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; handler.<span class="fn">drain</span>({ timeoutMs: <span class="dec">15_000</span> })); <span class="cm">// 信号处理是宿主的</span></code></pre>
+        </div>
+        <p>详见「<a href="#triggers">触发方式</a>」「<a href="#hardening">宿主硬化</a>」；完整可跑示例（四类能力 + 三种触发 + 鉴权 + 全观测栈 + Dockerfile）见 <code>examples/complete</code>。</p>
+
+        <h3>给 run 上监控</h3>
+        <p>指标与 trace 走<strong>同一条缝</strong>：<code>metricsSink()</code> 满足 <code>TraceSink</code>，接进 <code>sinks</code> 即得 <code>agentia_*</code> 指标族（run / 能力 / 模型 / 评分四级，评分来自 <code>attachScore</code> 的 <code>agentia_score</code> / <code>agentia_score_total</code>）；<code>createOtlpExporter</code> 导出时对齐 OTel GenAI semconv（<code>gen_ai.*</code> 键，Langfuse / Grafana / Datadog 直接识别）。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>observe.ts</em></div>
+          <pre><code><span class="kw">import</span> { metricsSink, createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> metrics = <span class="fn">metricsSink</span>();
+<span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
+  name: <span class="str">'my-app'</span>, providers, system,
+  sinks: [metrics, <span class="fn">createOtlpExporter</span>({ endpoint: <span class="str">'http://localhost:4318'</span> })],
+});
+<span class="fn">createHttpHandler</span>(app, { metrics }); <span class="cm">// 内建 GET /metrics（不鉴权，停机中也回）</span></code></pre>
+        </div>
+        <p>Grafana 看板 JSON 随仓库发（<code>examples/observability/grafana-dashboard.json</code>，对着 <code>metricsSink</code> 缺省前缀做的，导入即用）。详见「<a href="#observability">可观测</a>」「<a href="#ecosystem">生态与观测</a>」。</p>
+
+        <h3>离线评测与线上回流</h3>
+        <p><code>defineEval</code> + <code>scriptedClient</code> 离线跑 CI：脚本化模型往返，对 trace 写断言；<strong>每个用例的结论自动 <code>attachScore</code> 到它的 trace</strong>（<code>value</code> 0|1、<code>source</code> 是 eval 名），下游 <code>metricsSink</code> 可直接聚合成通过率。线上事故用 <code>agentia harvest</code> 回流成 eval 用例骨架。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>evals/doc-review.ts</em></div>
+          <pre><code><span class="kw">import</span> { defineEval, scriptedClient } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> report = <span class="kw">await</span> <span class="fn">defineEval</span>({
+  name: <span class="str">'doc-review'</span>,
+  app: () =&gt; app,
+  cases: [{ input: <span class="str">'总结这份文档'</span>, client: <span class="fn">scriptedClient</span>([searchMsg, submitMsg]) }],
+  expect: (r, { trace }) =&gt; { <span class="cm">/* 断言 stopReason / 工具序列 / result.typed */</span> },
+}).<span class="fn">run</span>();
+<span class="kw">if</span> (!report.ok) process.<span class="fn">exit</span>(<span class="dec">1</span>); <span class="cm">// 失败 case 带完整 trace，进 CI 只看 report.ok</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
+          <pre><code><span class="cmd">agentia</span> harvest trace.jsonl --failed --limit <span class="dec">5</span> --out evals/harvested.ts  <span class="cm"># 线上 trace → eval 用例骨架</span></code></pre>
+        </div>
+        <p><strong>骨架不是成品</strong>：trace 不记 assistant 文本（脚本里是占位），预填的 <code>expect</code> 是抄录的实际轨迹（发生过 ≠ 应该发生）—— 人工核对后再进 CI。详见「<a href="#ecosystem">生态与观测</a>」与「<a href="#cli">CLI 命令参考</a>」。</p>
+
+        <h3>prompt / 模型 A/B</h3>
+        <p>同一份输入跑两条 run（换模型、换 <code>SystemPrompt</code> 版本都行），<code>diffTraces</code> 比出结构与成本差；不落代码就 <code>agentia diff</code> 直比两份落盘 trace，<strong>有差异退出码 1</strong>，可直接进 CI 挡「换 prompt / 模型后轨迹漂移」。想「从第 N 回合换个问法重跑」用 <code>forkMessages</code> —— 它产出的是一份喂回 <code>app.run</code> 的 messages，跑的是<strong>新 run，不是续跑</strong>。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>ab.ts</em></div>
+          <pre><code><span class="kw">import</span> { diffTraces, forkMessages } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> a = <span class="kw">await</span> app.<span class="fn">run</span>(input, { model: <span class="str">'claude-sonnet-5'</span> });
+<span class="kw">const</span> b = <span class="kw">await</span> app.<span class="fn">run</span>(input, { model: <span class="str">'claude-opus-5'</span> });
+<span class="kw">const</span> diff = <span class="fn">diffTraces</span>(a.result.trace, b.result.trace); <span class="cm">// run 级 summary + 逐 span 字段差</span>
+
+<span class="cm">// 分叉重放：主循环第 3 回合（0-based）之前截断，换个问法继续</span>
+<span class="kw">const</span> messages = <span class="fn">forkMessages</span>(a.result.trace, {
+  atTurn: <span class="dec">3</span>,
+  append: [{ role: <span class="str">'user'</span>, content: <span class="str">'换个思路：先给结论，再补证据。'</span> }],
+});
+<span class="kw">const</span> c = <span class="kw">await</span> app.<span class="fn">run</span>(messages); <span class="cm">// 起一条新 run，沿分叉点前的真实 tool 历史继续</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
+          <pre><code><span class="cmd">agentia</span> diff a.jsonl b.jsonl   <span class="cm"># 直比两份落盘 trace（输入形态同 agentia report），有差异退出码 1</span></code></pre>
+        </div>
+        <p>详见「<a href="#cli">CLI 命令参考</a>」；有损边界（trace 不记 assistant 文本与原始输入）见 <code>/llms-full.txt</code> 的 A/B 一节。</p>
+
+        <h3>人工闸门（HITL）</h3>
+        <p>中间件可以 <code>await</code> 人的决策再放行，引擎会等工具结果：<strong>放行</strong>＝<code>next()</code>；<strong>拒绝</strong>＝不调 <code>next()</code>（短路，副作用不发生）；<strong>拒绝并让模型改道</strong>＝抛错（该条结果记 <code>is_error</code>，run 不中断）。</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>approval.ts</em></div>
+          <pre><code><span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> requireApproval: <span class="fn">CapabilityMiddleware</span> = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">if</span> (!DANGEROUS.<span class="fn">has</span>(call.capability.name)) <span class="kw">return</span> <span class="fn">next</span>();
+  <span class="kw">const</span> ok = <span class="kw">await</span> <span class="fn">askHuman</span>(call.capability.name, call.input); <span class="cm">// run 就地停着等人</span>
+  <span class="kw">if</span> (!ok) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">`未获批准：${call.capability.name}`</span>); <span class="cm">// → is_error，模型换路</span>
+  <span class="kw">return</span> <span class="fn">next</span>();
+};
+<span class="fn">createApp</span>({ system, providers, middleware: [requireApproval] });</code></pre>
+        </div>
+        <p><strong>框架不做</strong>「跨进程挂起 / 续跑」：<code>RunStatus</code> 里没有「待批准」态、循环位置不落库 —— 要跨重启审批得自备工作流引擎。详见「<a href="#crosscut">横切配方</a>」。</p>
       </section>
 
       <!-- 四类能力 -->
@@ -298,7 +402,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
           <li><strong>出口是一条缝</strong>：<code>TraceSink { export(trace) }</code> —— run 收尾的<strong>成功与失败两条路径都投递</strong>，且 sink 抛错不影响 run。落库检索 / 采样 / 脱敏都在缝外用 sink 组合，框架不替你做策略（实码见 <code>examples/observability/</code>，说明见 <code>docs/observability.md</code>）。</li>
           <li><strong>成本可管</strong>：<code>priceOverrides</code> 给价目表打补丁；模型不在表里时<strong>显式发 <code>usage.unpriced</code> 事件</strong>（不静默按 0 算）；硬管控见下面「成本硬管控」。</li>
           <li><strong>可回放</strong>：<code>traceToMessages(trace)</code> 把已完成的 trace 线性化喂回模型，作为调试与「改完 prompt 再跑一遍」的基底。</li>
-          <li><strong>可导出</strong>：<code>createOtlpExporter({ endpoint })</code> 推 OTLP；<code>metricsSink()</code> 让指标也走同一条缝（Prometheus 文本或 OTLP metrics），<strong>全程零依赖</strong>。</li>
+          <li><strong>可导出</strong>：<code>createOtlpExporter({ endpoint })</code> 推 OTLP，导出时<strong>对齐 OTel GenAI semconv</strong>（追加 <code>gen_ai.*</code> 键：run 根 <code>invoke_agent</code>、<code>llm.turn</code> 的 <code>gen_ai.request.model</code>、<code>score</code> 事件译为 <code>gen_ai.evaluation.result</code>，既有 <code>usage.*</code> 键保留）；<code>metricsSink()</code> 让指标也走同一条缝（Prometheus 文本或 OTLP metrics），<strong>全程零依赖</strong>。接法见「<a href="#scenarios">场景指南</a> · 给 run 上监控」。</li>
           <li><strong>本地就能看</strong>：<code>agentia dev</code> 起本地 inspector 面板，与 <code>@migor/trace-view</code> 共用同一份渲染器 —— 官网 Playground 用的也是同一份，三处一套代码，不漂移。</li>
         </ul>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>observe.ts</em></div>
@@ -400,7 +504,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
         <ul>
           <li><strong>MCP</strong>：<code>mcpTools(client, { server })</code> 把 server 的 <code>tools/list</code> 映射成菜单项。<strong>duck-typed、框架零依赖</strong>（不 import MCP SDK，也不含 stdio / HTTP 传输 —— 连接器自行提供）。名字里对 LLM 不友好的字符会归一化成 <code>_</code>，<strong>原名</strong>记进 <code>mcp.tool</code> attribute 供审计 / 回放。</li>
           <li><strong>evals</strong>：<code>scriptedClient([...])</code> 脚本化模型往返 + <code>defineEval({ app, cases, expect })</code> 对 trace 写断言 —— 改 prompt / 换模型 / 加工具之后有没有回归，靠断言而不是人眼。失败 case 带完整 trace。</li>
-          <li><strong>指标</strong>：<code>metricsSink()</code> 天然满足 <code>TraceSink</code>，<strong>三个维度都从 trace 派生、不用埋点</strong> —— run 级，以及<strong>能力级</strong>（每个 tool / skill / subagent 的调用数、失败数、耗时、token、成本：工具读 turn 上的 <code>tool.output</code> 事件，skill / subagent 读 capability span）与<strong>模型级</strong>（按模型归因，另出「算不出成本的 turn 数」）。时长同时给可跨实例聚合的 histogram 与窗口内精确分位两种口径；<code>render()</code> 出 Prometheus 文本，<code>createHttpHandler({ metrics })</code> 直接内建 <code>GET /metrics</code>；也可以 <code>export:'otlp'</code> 推给 OTel 采集端（零依赖手写 JSON）。<strong>注意 <code>createHttpHandler({ metrics })</code> 只管渲染</strong> —— 数字要累计须把<strong>同一个</strong> sink 接进 <code>createApp({ sinks: [metricsSink()] })</code>，否则恒 0 且不报错。</li>
+          <li><strong>指标</strong>：<code>metricsSink()</code> 天然满足 <code>TraceSink</code>，<strong>三个维度都从 trace 派生、不用埋点</strong> —— run 级，以及<strong>能力级</strong>（每个 tool / skill / subagent 的调用数、失败数、耗时、token、成本：工具读 turn 上的 <code>tool.output</code> 事件，skill / subagent 读 capability span）与<strong>模型级</strong>（按模型归因，另出「算不出成本的 turn 数」）。时长同时给可跨实例聚合的 histogram 与窗口内精确分位两种口径；<code>render()</code> 出 Prometheus 文本，<code>createHttpHandler({ metrics })</code> 直接内建 <code>GET /metrics</code>；也可以 <code>export:'otlp'</code> 推给 OTel 采集端（零依赖手写 JSON）。<strong>评分级指标</strong>：<code>attachScore</code> 写到 run 根的 <code>score</code> 事件聚合成 <code>agentia_score{name,source}</code>（gauge，最近一次值）与 <code>agentia_score_total</code>（counter，条数）—— eval 结论 / LLM-judge / 人工标注同走这一路；现成 Grafana 看板随仓库发（<code>examples/observability/grafana-dashboard.json</code>）。<strong>注意 <code>createHttpHandler({ metrics })</code> 只管渲染</strong> —— 数字要累计须把<strong>同一个</strong> sink 接进 <code>createApp({ sinks: [metricsSink()] })</code>，否则恒 0 且不报错。</li>
           <li><strong>调优报告</strong>：<code>buildRunReport(trace)</code> 把一条 trace 变成「<strong>哪个能力慢 / 贵 / 爱失败</strong>」的排行（<code>mergeRunReports</code> 跨 run 汇总），CLI 一行 <code>agentia report traces.jsonl</code> 出表（那个 jsonl 要自己落：接一个 <code>TraceSink</code> 追加 JSON 行，或用 <code>FileTaskStore</code> 的导出文件）；<code>agentia dev</code> 面板里也有一份同样的排行。面对一堆旋钮时，这是「该拧哪个」的依据。</li>
           <li><strong>提示词版本</strong>：<code>new SystemPrompt({ version })</code> 把版本号写进 run 根 <code>system.version</code>，trace 里能查「这个结果是哪个版本的提示词产出的」。<strong>多租户配额</strong>：<code>middleware</code>（拦）+ <code>TraceSink</code>（记账）+ BudgetGuard（单次上限）组合即可。</li>
         </ul>
@@ -475,6 +579,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><td>agentia doctor</td><td>装配体检：未登记/悬空能力、命名规范、重复条目。</td></tr>
             <tr><td>agentia report &lt;trace.jsonl&gt;</td><td>从 trace 落盘文件生成调优报告：能力耗时 / 成本 / 错误率排行（跨行按能力合并）。每行一个 JSON —— 裸 Trace，或含 <code>result.trace</code> 的 TaskRecord。<strong>文件要自己落</strong>：接一个 <code>TraceSink</code> 追加 JSON 行，或用 <code>FileTaskStore</code> 的导出文件。</td></tr>
             <tr><td>agentia harvest &lt;trace.jsonl&gt;</td><td>把线上 trace 翻成 eval 用例脚手架（<code>--out &lt;file.ts&gt;</code> / <code>--failed</code> / <code>--limit N</code>）：scriptedClient 脚本按主循环 llm.turn 重建，expect 预填工具序列断言。<strong>脚手架不是成品</strong> —— assistant 文本是占位（trace 不记文本），人工核对后再进 CI。</td></tr>
+            <tr><td>agentia diff &lt;a.jsonl&gt; &lt;b.jsonl&gt;</td><td>两条 trace 落盘文件的调用树 A/B 比对（输入形态同 <code>agentia report</code>）：打印 run 级 summary + 逐 span 差异，<strong>有差异时退出码 1</strong> —— 可直接进 CI 挡「换 prompt / 模型后轨迹漂移」。代码内同款是 <code>diffTraces</code>。</td></tr>
             <tr><td>agentia add &lt;pkg&gt;</td><td>安装第三方能力包（defineModule 能力包）并登记到注册表。</td></tr>
           </tbody>
         </table></div>
