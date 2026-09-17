@@ -143,6 +143,16 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   `src/index.ts` 的导出是 eager 的，静态 import 会让**整包**在旧 Node 上加载即崩（而 `engines` 写着 `>=18`）。
   一律延迟加载 + 可读报错，并由 CI 的 `import-floor` job 在 Node 18/20 上实跑验证。
 - **ESM NodeNext**：相对 import 必须带 `.js` 后缀；注释用中文。
+- **`exactOptionalPropertyTypes` 是承重开关（2026-09-18 起，勿关）**：它让
+  `{foo: x}`（`x: T | undefined`）**不再是**合法的 `foo?: T` —— 「不传这个键」与「传了个
+  undefined」被区分开。关掉 = 39 处防线无声消失（`retry.ts` 的「显式 undefined 覆盖缺省」
+  重新变成合法代码）。由 `tests/architecture/tsconfig-strictness.test.ts` 钉住。
+  **改类型时按角色分三类**（改错类别 = 把开关的价值自己放掉）：
+  ① **结果/状态记录**（总是写进对象字面量）→ 必填 `T | undefined`（`AgentRunResult` /
+  `RunMeta` / `TurnOutcome` …）；② **内部管道**（缺省与 undefined 等价）→ 可选 `?: T | undefined`
+  （`AgentLoopArgs` / `Job` / `TaskRecord` …）；③ **公共入参**（「不提供 = 用缺省」有意义）
+  → **签名不动**，在调用点条件展开 `...(x !== undefined ? { x } : {})`，或一次转交多字段时用
+  `omitUndefined({...})`（`src/core/object.ts`）。理由与实测见 spec §10 2026-09-18 ⑦、`docs/guards.md` 附录。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
 - **验证顺序**：`npm run typecheck && npx biome ci . && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完
   （在仓库里就是 `bash scripts/verify-all.sh`，8 步 —— 第 1 步同时管类型检查与 lint）。

@@ -21,7 +21,11 @@ import type { Span, SpanEvent, Trace } from '../core/trace.js';
  *   键前缀冲突不存在（自有键一律 `agentia.*` 或无前缀），所以 additive 是安全的。
  * - 保留 `usage.inputTokens` 等旧键：既有看板/告警已消费它们，双发成本极低。
  *
- * 非 2xx 抛错（含状态码与响应前 200 字符）。导出失败不影响 run 本身 —— 调用方自行取舍。
+ * 非 2xx 抛 `OtlpExportError`（带**数值** status 与响应前 200 字符）。导出失败不影响 run
+ * 本身 —— 调用方自行取舍；但对「要不要重试」的判定必须可判：状态码只写进文案、对象没有
+ * `status` 的话，`classifyError` 会把 429/5xx 也判成 `unknown` + 不可重试（与 anthropic /
+ * openai 适配器同款教训，见 docs/spec.md §10 2026-09-18，守卫 `tests/architecture/
+ * transport-errors.test.ts`）。
  */
 
 export interface OtlpExporterOptions {
@@ -42,6 +46,20 @@ export interface OtlpExporterOptions {
 
 export interface OtlpExporter {
   export(trace: Trace): Promise<void>;
+}
+
+/**
+ * OTLP 导出失败（非 2xx 或流内失败）。带**数值 `status`** —— 不是装饰：
+ * `engine/errors.ts` 的错误分类是鸭子类型，只认这个字段；丢了它，429/5xx 也会被
+ * 判成 `unknown` + 不可重试，与 anthropic / openai 适配器曾经踩过的坑同形。
+ */
+export class OtlpExportError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'OtlpExportError';
+    this.status = status;
+  }
 }
 
 type OtlpValue =
@@ -259,7 +277,7 @@ export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
       });
       if (!res.ok) {
         const text = (await res.text()).slice(0, 200);
-        throw new Error(`OTLP 导出失败: HTTP ${res.status} ${text}`);
+        throw new OtlpExportError(res.status, `OTLP 导出失败: HTTP ${res.status} ${text}`);
       }
     },
   };

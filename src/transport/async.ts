@@ -80,7 +80,7 @@ export class AsyncRunner {
   readonly store: TaskStore;
   /** 本进程标识：写进认领的 TaskRecord.ownerId，供 resumePending 区分他我 */
   readonly ownerId: string;
-  private readonly client?: ModelClient;
+  private readonly client: ModelClient | undefined;
   private readonly concurrency: number;
   private readonly runTimeoutMs: number;
   private running = 0;
@@ -416,8 +416,13 @@ export class AsyncRunner {
           const combined = combineSignals(rec.spec.options?.signal, timeoutAc.signal);
           const callOpts: RunInvocationOptions = {
             ...(rec.spec.options ?? {}),
-            client: rec.spec.options?.client ?? this.client,
-            idempotencyKey: rec.idempotencyKey,
+            // 显式 undefined ≠ 不传（exactOptionalPropertyTypes）：无幂等键时不落这个键
+            ...(rec.idempotencyKey !== undefined ? { idempotencyKey: rec.idempotencyKey } : {}),
+            ...(rec.spec.options?.client !== undefined
+              ? { client: rec.spec.options.client }
+              : this.client !== undefined
+                ? { client: this.client }
+                : {}),
             rethrow: false, // 硬失败也以 failed 记录落库
             signal: combined,
           };

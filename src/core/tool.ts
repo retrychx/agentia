@@ -52,7 +52,14 @@ export type SchemaInput<S> = S extends TypedSchema<infer T> ? (unknown extends T
 export interface RecorderBackend {
   readonly traceId: string;
   begin(kind: SpanKind, name: string, parentSpanId: SpanId | null): SpanId;
-  end(id: SpanId, patch?: { status?: SpanStatus; error?: SpanError; usage?: Usage }): void;
+  end(
+    id: SpanId,
+    patch?: {
+      status?: SpanStatus | undefined;
+      error?: SpanError | undefined;
+      usage?: Usage | undefined;
+    },
+  ): void;
   event(id: SpanId, name: string, body: unknown): void;
   setAttribute(id: SpanId, key: string, value: string | number | boolean): void;
   snapshot(status: SpanStatus): Trace;

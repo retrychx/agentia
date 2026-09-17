@@ -7,7 +7,7 @@ import type {
 } from '../core/message.js';
 import { textOf } from '../core/text.js';
 import { sseLines } from '../core/sse.js';
-import { interruptibleSleep } from '../core/timeout.js';
+import { backoffMs, interruptibleSleep } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -197,27 +197,9 @@ async function postWithRetries(
   }
 }
 
-/**
- * 退避毫秒：`retry-after`（秒数或 HTTP-date）优先；否则指数退避
- * `min(500 × 2^(attempt-1), 8000)` ±25% 抖动（attempt 从 1 起 = 第一次重试）。
- *
- * ⚠️ **不要**与 `engine/retry.ts` 的 `backoffDelay` 合并（2026-09-17 去重时明确留下的
- * 例外）。旁边的 `interruptibleSleep` 已经下沉到 core 共享，但退避计算器不能跟着走 ——
- * 两者形似而策略不同，合一就是改行为：本函数 ±25% 固定抖动、且**优先尊重 `retry-after`**
- * （限流窗口是上游说了算，框架不该拿自己的指数曲线去猜）；那个是 ±jitter（缺省 ±20%）
- * 的均匀抖动、底数与上限来自 `RetryOptions`，且它在引擎层（client 放弃之后的兜底重试）。
- */
-function backoffMs(attempt: number, retryAfter: string | null): number {
-  if (retryAfter) {
-    const secs = Number(retryAfter);
-    if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
-    const at = Date.parse(retryAfter);
-    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
-    // 解析不了就回落指数退避
-  }
-  const base = Math.min(500 * 2 ** Math.max(0, attempt - 1), 8000);
-  return Math.round(base * (0.75 + Math.random() * 0.5));
-}
+// 退避计算器（backoffMs）与 interruptibleSleep 的单源都在 `core/timeout.ts` ——
+// 引擎层那份 ±20% 的 backoffDelay 与这里的 ±25% + retry-after 是**两种策略**，
+// 刻意不合并（合并即改行为，理由写在 core/timeout.ts 的 backoffMs 注释里）。
 
 /**
  * 合成 params.signal 与 timeout（任一触发即中止）。

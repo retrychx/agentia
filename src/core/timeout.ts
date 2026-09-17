@@ -128,8 +128,10 @@ export async function withTimeout<T>(
  * integrations 只能依赖 core」的注解：**正是那条约束把两份代码逼成了重复**，
  * 所以下沉到 core 是让它们合一的唯一合法落点（见 spec §10 2026-09-17 ① 的单源化口径）。
  *
- * ⚠️ 只合并这个 sleep，**不合并退避计算器**：engine 是 ±20% 均匀抖动、client 是
- * ±25% 且额外尊重 `retry-after`。函数体相同、策略不同 —— 合策略会真改行为。
+ * ⚠️ 「不合并退避计算器」的例外只针对**引擎层**：`engine/retry.ts` 的 `backoffDelay`
+ * 是 ±20% 均匀抖动、底数/上限来自 `RetryOptions`，与 client 层策略不同（见下方
+ * `backoffMs` 的注释）—— 合一就是改行为。两条 client 之间的逐字复制不在此列：
+ * 它们的 `backoffMs` 也已收进本文件。
  *
  * `abortMessage` 参数化而非统一：文案是**调用方语境**（引擎说「run 已被取消」，
  * client 说「请求已被取消」），两者都会出现在用户眼前的报错里。为去重把两句话
@@ -161,4 +163,31 @@ export function interruptibleSleep(
     }, ms);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+/**
+ * client 层重试的退避毫秒（两条内置适配器**共用**的单源）：`retry-after`（秒数或
+ * HTTP-date）优先；否则指数退避 `min(500 × 2^(attempt-1), 8000)` ±25% 抖动
+ * （attempt 从 1 起 = 第一次重试）。
+ *
+ * ⚠️ **不要**与 `engine/retry.ts` 的 `backoffDelay` 合并（2026-09-17 去重时明确留下的
+ * 例外 —— 那条例外针对的是**引擎层**，不是这里）：两者形似而策略不同，合一就是改行为。
+ * 本函数 ±25% 固定抖动、且**优先尊重 `retry-after`**（限流窗口是上游说了算，框架不该
+ * 拿自己的指数曲线去猜）；那个是 ±jitter（缺省 ±20%）的均匀抖动、底数与上限来自
+ * `RetryOptions`，且它在引擎层（client 放弃之后的兜底重试）。
+ *
+ * 本函数此前在 `anthropic.ts` 与 `openai.ts` 各存一份逐字相同的副本 —— 「不合并」的
+ * 例外从来不覆盖 client↔client 的逐字复制（引擎那条理由不适用于同层），两份相同代码
+ * 只会各自漂移。
+ */
+export function backoffMs(attempt: number, retryAfter: string | null): number {
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
+    const at = Date.parse(retryAfter);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+    // 解析不了就回落指数退避
+  }
+  const base = Math.min(500 * 2 ** Math.max(0, attempt - 1), 8000);
+  return Math.round(base * (0.75 + Math.random() * 0.5));
 }

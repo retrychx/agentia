@@ -20,7 +20,7 @@ export interface Usage {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   /** 估算成本(美元)，由 token × 单价算出，随模型表更新 */
-  costEstimate?: number;
+  costEstimate?: number | undefined;
 }
 
 export type SpanStatus = 'ok' | 'error';

@@ -6,13 +6,19 @@ import type { AgentTool } from '../../src/index.js';
 import { createOpenAIClient } from '../../src/integrations/openai.js';
 import { toolUseMsg, endTurnMsg, mockClient } from '../helpers.js';
 
-/** 构造顺序返回脚本化 OpenAI 响应的 fetchImpl，并记录请求体 */
+/**
+ * 构造顺序返回脚本化 OpenAI 响应的 fetchImpl，并记录请求体。
+ *
+ * 脚本耗尽后**重复最后一步**（不抛错）：客户端现在有内层重试（缺省 2），而许多用例
+ * 只关心「单次请求的翻译/映射」，不该被重试的第二次调用打断。要精确断言尝试次数的用例
+ * 显式传 `maxRetries: 0` 或给足脚本长度。
+ */
 function fakeFetch(script: Array<{ status?: number; body: unknown }>) {
   const requests: Array<{ url: string; init: RequestInit; json: any }> = [];
   let i = 0;
   const fetchImpl = (async (url: any, init: any) => {
-    const step = script[i++];
-    if (!step) throw new Error(`fakeFetch 脚本耗尽（第 ${i} 次调用）`);
+    const step = script[Math.min(i, script.length - 1)]!;
+    i++;
     requests.push({ url: String(url), init, json: JSON.parse(String(init?.body)) });
     const status = step.status ?? 200;
     return new Response(typeof step.body === 'string' ? step.body : JSON.stringify(step.body), {
@@ -273,8 +279,9 @@ describe('createOpenAIClient', () => {
   });
 
   it('非 2xx：抛错含 status 与 body 前 200 字', async () => {
+    // maxRetries: 0 —— 本用例只测「错误对象/文案的形状」，不测重试层
     const { fetchImpl } = fakeFetch([{ status: 500, body: 'x'.repeat(300) }]);
-    const client = createOpenAIClient({ fetchImpl });
+    const client = createOpenAIClient({ fetchImpl, maxRetries: 0 });
     await assert.rejects(
       client.messages.stream({ model: 'm', max_tokens: 1, messages: [] }).finalMessage(),
       (e: Error) => {
@@ -297,7 +304,8 @@ describe('createOpenAIClient', () => {
     ];
     for (const [status, label, type, retryable] of cases) {
       const { fetchImpl } = fakeFetch([{ status, body: 'nope' }]);
-      const client = createOpenAIClient({ fetchImpl });
+      // maxRetries: 0 —— 本用例测的是「状态码 → 分类」的映射，不是重试层
+      const client = createOpenAIClient({ fetchImpl, maxRetries: 0 });
       const err = await client.messages
         .stream({ model: 'm', max_tokens: 1, messages: [] })
         .finalMessage()
@@ -321,7 +329,9 @@ describe('createOpenAIClient', () => {
     const retries: number[] = [];
     const { result } = await executeRun({
       messages: [{ role: 'user', content: 'go' }],
-      client: createOpenAIClient({ fetchImpl }),
+      // maxRetries: 0 —— 隔离出**引擎层**重试：客户端的 status 必须一路传到引擎重试层
+      // （客户端内层重试的对称性另由 tests/integrations/adapter-parity.test.ts 对拍）
+      client: createOpenAIClient({ fetchImpl, maxRetries: 0 }),
       retry: {
         maxAttempts: 2,
         baseDelayMs: 1,
@@ -330,7 +340,7 @@ describe('createOpenAIClient', () => {
       },
     });
     assert.equal(result.stopReason, 'end_turn', '重试后成功收尾');
-    assert.equal(requests.length, 2, '第一次 429 被重试');
+    assert.equal(requests.length, 2, '第一次 429 被引擎重试');
     assert.deepEqual(retries, [1], '重试计数进 onRetry');
   });
 

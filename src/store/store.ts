@@ -31,21 +31,21 @@ export function nextTaskId(): string {
 export interface TaskRecord {
   taskId: string;
   status: RunStatus;
-  idempotencyKey?: string;
+  idempotencyKey?: string | undefined;
   spec: RunSpec;
   /** 执行完成后回填 runId（runId == traceId） */
-  runId?: string;
+  runId?: string | undefined;
   createdAt: number;
-  startedAt?: number;
-  finishedAt?: number;
+  startedAt?: number | undefined;
+  finishedAt?: number | undefined;
   /**
    * 认领该任务的进程标识（AsyncRunner 在 submit/重派时写入）。
    * 多进程共用一个 store 时，`resumePending` 靠它跳过「自己进程的记录」——
    * 本进程的记录一定还在内存里跑，重派只会让它跑两遍。
    */
-  ownerId?: string;
-  result?: AgentRunResult;
-  error?: SpanError;
+  ownerId?: string | undefined;
+  result?: AgentRunResult | undefined;
+  error?: SpanError | undefined;
 }
 
 export interface TaskStore {

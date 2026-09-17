@@ -215,10 +215,11 @@ export interface AgentRunResult<T = unknown> {
   /** 最终文本（提交结构化结果的回合若带文本则取之，可空） */
   finalText: string;
   iterations: number;
-  error?: SpanError;
+  /** 非正常收尾时的结构化原因；正常收尾为 undefined（**字段在场**，见 RunMeta 的说明） */
+  error: SpanError | undefined;
   /**
    * resultSchema 校验通过的结构化结果；模型没提交（或未设 resultSchema）则为 undefined。
    * 类型由 resultSchema 推导（见 RunAgentOptions.resultSchema 的泛型说明）。
    */
-  typed?: T;
+  typed: T | undefined;
 }

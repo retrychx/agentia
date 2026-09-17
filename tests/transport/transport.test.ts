@@ -9,8 +9,8 @@ import type {
 } from '../../src/index.js';
 
 interface Call {
-  messages: MessageParam[];
-  opts?: RunInvocationOptions;
+  messages: MessageParam[] | undefined;
+  opts?: RunInvocationOptions | undefined;
 }
 
 function recordingApp(): { app: AppCallable; calls: Call[] } {

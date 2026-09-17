@@ -450,7 +450,7 @@ process.on('SIGTERM', async () => {
 | `mapWithConcurrency` | 有界并发 map（结果保序）；`maxToolConcurrency` 的底座，也可自用 |
 
 - **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**（构造期校验：必须 ≥ 0 的**有限**数 —— NaN/Infinity 会被 `setTimeout` 钳到 1ms，等于每个任务立即超时，故直接抛错；要「不限」传 0 或不设）。
-- **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与底层 client 的内置重试叠加（默认 client 的 `maxRetries` 缺省 2）—— 建议二选一调（这里 `maxAttempts: 1`，或 `createAnthropicClient({ maxRetries: 0 })`）。
+- **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与底层 client 的**内置重试**叠加 —— **两条内置适配器口径一致**（`createAnthropicClient` / `createOpenAIClient` 都有 `maxRetries`，缺省 2，重试同一状态码集合 408/409/429/5xx）—— 建议二选一调（这里 `maxAttempts: 1`，或 `<适配器>({ maxRetries: 0 })`）。
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
 - **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。**超时判定只有一个裁判**：`toolTimeoutMs` 是唯一判据 —— 工具自带的超时（如 MCP 桥的 `timeoutMs`）在设了本项时**不参与**判定；反过来说，工具自判的超时（抛 `code='timeout'` 的错误）与引擎判的记**同一类账**（`errorKind='timeout'`），并同样回 `is_error`。
 

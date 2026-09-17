@@ -46,10 +46,10 @@ export interface RunHttpResponse {
   status: RunStatus;
   stopReason: AgentStopReason;
   finalText: string;
-  /** 结构化结果（R2 起应用可携带；无则省略） */
-  typed?: unknown;
+  /** 结构化结果（R2 起应用可携带；无则为 undefined，字段在场） */
+  typed: unknown;
   trace: Trace;
-  error?: SpanError;
+  error: SpanError | undefined;
 }
 
 /** POST /tasks 的请求体形态 */
@@ -481,7 +481,7 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
                 rethrow: false,
                 signal: runAc.signal,
                 onText: (delta) => sse.event('text.delta', { text: delta }),
-                traceContext,
+                ...(traceContext !== undefined ? { traceContext } : {}),
               });
               sse.event('run.end', toHttpBody(out));
             } catch (e) {
@@ -497,7 +497,7 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
           const out = await app.run(messages, {
             rethrow: false,
             signal: runAc.signal,
-            traceContext,
+            ...(traceContext !== undefined ? { traceContext } : {}),
           });
           sendJson(res, 200, toHttpBody(out));
         } finally {
@@ -531,10 +531,16 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
         let rec: TaskRecord;
         try {
           rec = runner.submit(submitBody.input, {
-            idempotencyKey: submitBody.idempotencyKey,
-            options: submitBody.options?.traceContext
-              ? submitBody.options
-              : { ...submitBody.options, traceContext: submitTrace },
+            ...(submitBody.idempotencyKey !== undefined
+              ? { idempotencyKey: submitBody.idempotencyKey }
+              : {}),
+            options:
+              submitBody.options?.traceContext !== undefined
+                ? submitBody.options
+                : {
+                    ...submitBody.options,
+                    ...(submitTrace !== undefined ? { traceContext: submitTrace } : {}),
+                  },
             source: 'http',
           });
         } catch (e) {

@@ -1657,6 +1657,87 @@ false，时钟前跳构造，不赌毫秒）、`tests/transport/async.test.ts`�
 e2e：`npm run e2e`（CLI / EXAMPLES / DEPLOY 三关全绿）、`npm run e2e:mcp`（真第三方 MCP server → 桥 →
 菜单 → 真跑一轮，metrics 输出里可见 `droppedModels`/`droppedScores`）。
 
+### 2026-09-18 ②：给「约定」补**守卫注册表** —— 上一条 16 条的共同缺口是「没有门禁」
+
+**背景**：第六轮 review（上一条）的 16 条缺陷，逐条追根后是**同一个缺口的不同面貌**：
+约定写在 AGENTS.md / spec / 代码注释里，但**没有任何门禁**。而已有门禁（`layering.test.ts`、
+`api-page.test.ts`、`usage-guide.test.ts`、`no-legacy-terms.test.ts`）恰恰守住了它们覆盖的面 ——
+说明**守卫是沿着「写过文档、写过测试的地方」长的**，没写的地方就是空白。
+
+**决策**：把「哪类危险由谁守」变成仓库的一份**单源清单** `docs/guards.md`，并补一条新的
+架构守卫。三件事：
+
+1. **`tests/architecture/transport-errors.test.ts`（新增）** —— 扫 `src/integrations` 的裸
+   `throw new Error(...)`：文案里出现 HTTP 状态痕迹（`HTTP` / `res.  status`）而对象没有数值
+   `status` 即违规，因为 `classifyError` 是鸭子类型、丢了 status 就落 `unknown` + 不可重试
+   （上一条第 1 条的病根）。判定**刻意做窄**：构造期配置校验（文案含「必须 / 只支持 / 收到 / 非法」）
+   一律豁免 —— 宁可窄不要误报（误报的门禁最终会被人 ignore 掉）。另两条：`*ApiError` 命名即承诺
+   （必须有 `readonly status: number`）、解析器合成样本 + 全覆盖计数下限（防真空变绿）。
+2. **`docs/guards.md`** —— §1 列「已挂守卫 → 保护的不变量 → 退化了会怎样」，§2 列**待守缺口**
+   （成对实现不对称 / 转发漏字段 / 浅合并被 null 覆盖 / 同步实现掩盖真实异步 / `0` 的双重语义…），
+   §3 记三条守卫写法纪律（宁可窄、必须能反向证伪、失败信息带文件:行号）。
+3. **`.github/PULL_REQUEST_TEMPLATE.md`** —— 加「危险类自查 5 问」（成对对称？转发漏字段？
+   错误可分类？边界值走过？是静默失效吗？）+「新增/修改的守卫必须做反向验证」勾选 + 登记 `guards.md`。
+   **问对比写规则便宜，且能覆盖规则没预见到的形状。**
+
+**实证（守卫上线当天就抓到真货）**：新守卫第一次跑就报 `src/integrations/otlp.ts` 的
+`throw new Error(\`OTLP 导出失败: HTTP ${res.status} …\`)` —— 与上一条第 1 条**完全同形**的漏网之鱼
+（上一轮 16 条没覆盖到 otlp）。已修：新增 `OtlpExportError`（带数值 `status`），与
+`AnthropicApiError` / `OpenAICompatApiError` 同形。**这条守卫的价值不在「守住已修的」，在「抓住没修的」。**
+
+**未做（登记为待守，见 guards.md §2）**：`exactOptionalPropertyTypes` 实测会让现有源码报
+**39 处**（TS2379 ×19 / TS2375 ×10 / TS2412 ×8 / TS2322 ×2，集中在 `transport/` 15、`engine/` 12），
+是**独立的一轮迁移**而非无害开关 —— 机械修法（给每个可选属性加 `| undefined`）会放松
+`RunAgentOptions` 等公共契约；正确修法是逐调用点条件展开（`...(x !== undefined ? { x } : {})`，
+`loop.ts` 已在用这个形状）。实测过「只改一个类型文件只消掉 1/39」，证明它不是局部修补。
+**不在本轮硬开**：实测分布与四步迁移方案记在 `docs/guards.md §2` 的专门条目。
+（**后话：已由 2026-09-18 ⑦ 单独一轮完成**，该专门条目随之迁入 `guards.md` 附录。）
+
+**同轮补齐的另一半（对拍矩阵）**：`tests/integrations/adapter-parity.test.ts` ——
+「同一契约的两条适配器必须对称」的可执行版本，**一份场景表跑两遍**（不是把两侧测试写成镜像）。
+**写它的当天就抓到一处真不对称**：`anthropic.ts` 有客户端内层重试（`postWithRetries`，
+缺省 `maxRetries=2`），`openai.ts` **完全没有** —— 同一个 429：anthropic 打 3 次网络请求、
+openai 打 1 次（引擎层那一次）。两侧各自的测试都通过，因为它们只断言「最终成功」，
+**从不比较尝试次数**。已修：`openai.ts` 加同语义的 `postWithRetries`（同状态码集合、同退避曲线、
+同 `retry-after` 尊重），`OpenAIClientOptions` 加 `maxRetries`（缺省 2，与 anthropic 逐字对齐）。
+反向验证：把 openai 的内层重试改回 `0` ⇒ 矩阵 11 条红（含跨侧对称那条），恢复即绿。
+**顺带暴露的可用性瑕疵（未修，记下）**：`anthropic.ts` **没有 `fetchImpl` 注入缝**（openai 有），
+而它的索引签名让错传的参数**静默通过** —— 矩阵因此改用替换 `globalThis.fetch` 做统一注入面。
+
+### 2026-09-18 ⑦：`exactOptionalPropertyTypes` 迁移完成 —— 「显式 undefined ≠ 不传」成为类型级约束
+
+**背景**：上一条把这条开关登记为「待守缺口」（实测 39 处，判为独立一轮）。本轮单独做掉。
+
+**它守什么**：`{foo: x}`（`x: T | undefined`）**不是**合法的 `foo?: T` —— 「不传这个键」与
+「传了个 undefined」被区分开。`retry.ts` 的「显式 undefined 覆盖缺省」事故（重试被静默关闭、
+`backoffDelay` 算出 NaN）正是这条区分缺失造成的。
+
+**迁移规则（三类角色，后来者照此办理）**：
+1. **结果/状态记录**（框架总是把字段写进对象字面量）→ **必填 `T | undefined`**：
+   `AgentRunResult` / `AgentLoopResult` / `RunMeta` / `RunHttpResponse` / `TurnOutcome` /
+   `ToolEventIO` / `SpanDiff`。「字段在场、值可无」是这些记录的真实语义。
+2. **内部管道**（缺省与显式 undefined 等价）→ **可选 `?: T | undefined`**：
+   `AgentLoopArgs` / `LoopContext` / `Job` / `TaskRecord` / `RunSpec` / `BudgetGuardOptions` /
+   `SseWriterOptions` / `CapabilityCall`。
+3. **公共入参**（「不提供 = 用缺省」必须有意义）→ **签名不动**，在**调用点**处理：
+   条件展开 `...(x !== undefined ? { x } : {})`，或集中 `omitUndefined({...})`（新增
+   `src/core/object.ts`，用于 `AgentApp.run` → `executeRun` 那种一次转交十几个字段的场景）。
+   **这一条是重点**：前两类的机械修法若套到公共入参上，等于把开关要守的东西自己放掉。
+
+**代价与结果**：39 处 `error TS` 全清（TS2379 ×19 / TS2375 ×10 / TS2412 ×8 / TS2322 ×2），
+另连带修好测试/示例里的若干处（`RunSpec` 夹具补字段、`retry.test.ts` 的显式 undefined 改用
+`as unknown as` 并注明「模拟动态拼装绕过类型检查」、`examples/complete` 的条件展开）。
+**测试 836 例全绿**，`verify-all` 8/8。
+
+**门禁（防止有人把开关关掉）**：`tests/architecture/tsconfig-strictness.test.ts` 断言
+`exactOptionalPropertyTypes` / `strict` / `types:["node"]` 三个开关在场，各带「退化了会怎样」。
+反向验证：关掉开关 ⇒ 该测试红，且 `{maxAttempts: undefined}` 赋给 `RetryOptions` 立刻从
+「编译错」变回「放行」（实测 ON=1 错 / OFF=0 错）。
+
+**未覆盖（如实记）**：`exactOptionalPropertyTypes` 堵的是「显式 undefined」这一半；
+**「spread 转发时漏掉一个键」TS 结构类型仍然不报**（`{...opts}` 少字段照样过）。
+该缺口留在 `docs/guards.md §2`。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

@@ -67,11 +67,12 @@ const DEFAULT_MAX_ITERATIONS = 40;
 export interface AgentLoopResult<T = unknown> {
   stopReason: AgentStopReason;
   finalText: string;
-  error?: SpanError;
+  /** 非正常收尾时的结构化原因；正常收尾为 undefined（**字段在场**，见 core/run.ts 的说明） */
+  error: SpanError | undefined;
   /** 本轮循环自己发起的模型往返次数 */
   iterations: number;
   /** submit_result 校验通过的结构化结果；未提交则为 undefined（类型由 resultSchema 推导） */
-  typed?: T;
+  typed: T | undefined;
 }
 
 /**
@@ -247,6 +248,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       finalText: '',
       error: classifyError(e),
       iterations: progress.iterations,
+      typed: undefined,
     };
   }
 
@@ -270,42 +272,42 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
  * 供子 agent 产出结构化结果（见 toolkit/subagent.ts 的交回逻辑）。
  */
 export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
-  client?: ModelClient;
-  system?: SystemParam;
+  client?: ModelClient | undefined;
+  system?: SystemParam | undefined;
   messages: MessageParam[];
-  tools?: AgentTool[];
-  model?: string;
-  maxTokens?: number;
-  maxIterations?: number;
+  tools?: AgentTool[] | undefined;
+  model?: string | undefined;
+  maxTokens?: number | undefined;
+  maxIterations?: number | undefined;
   recorder: RecorderBackend;
   parentSpanId: SpanId;
-  onText?: (delta: string) => void;
+  onText?: ((delta: string) => void) | undefined;
   /** 中断信号（由发起它的能力从 ToolRunContext.signal 透传，取消能传播到子 agent） */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
   /** 模型请求重试策略（缺省开启） */
-  retry?: RetryOptions | false;
-  contextPolicy?: ContextPolicy;
+  retry?: RetryOptions | false | undefined;
+  contextPolicy?: ContextPolicy | undefined;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（同 RunAgentOptions.resultSchema） */
-  resultSchema?: S;
+  resultSchema?: S | undefined;
   /** 单个工具执行超时（毫秒）；同 RunAgentOptions.toolTimeoutMs */
-  toolTimeoutMs?: number;
+  toolTimeoutMs?: number | undefined;
   /** 同回合并行工具上限；同 RunAgentOptions.maxToolConcurrency */
-  maxToolConcurrency?: number;
+  maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars */
-  maxEventChars?: number | false;
+  maxEventChars?: number | false | undefined;
   /** 价格表覆盖（F1）：由发起它的能力从 ToolRunContext.priceOverrides 透传 */
-  priceOverrides?: Record<string, ModelPricing>;
+  priceOverrides?: Record<string, ModelPricing> | undefined;
   /** 未定价模型回调（F2）：由发起它的能力透传 */
-  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
+  onUnpricedModel?: ((info: { model: string; spanId: string }) => void) | undefined;
   /**
    * 成本硬管控（C1）：由发起它的能力从 ToolRunContext 透传 —— 预算是整条 run 的口径
    * （各级循环共享同一 recorder，按同一份累计账单判断），子循环每回合同样检查；
    * 子循环超限以 stopReason='budget_exceeded' 收尾，由能力层包成 is_error 回主循环，
    * 主循环回合入口的预算检查随即将整条 run 停掉。
    */
-  maxTotalTokens?: number;
+  maxTotalTokens?: number | undefined;
   /** 成本硬管控（C1）：累计成本（美元）上限；同 maxTotalTokens */
-  maxCostUsd?: number;
+  maxCostUsd?: number | undefined;
 }): Promise<AgentLoopResult<SchemaType<S>>> {
   return agentLoop<S>({
     client: opts.client ?? createAnthropicClient(),
