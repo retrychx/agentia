@@ -21,7 +21,8 @@ Turn 0 起内建。框架本体只负责**产出**这条 trace 的数据结构�
 | `summarizeTrace(trace)` | 从 trace 算**能力排行**：`{ capability, calls, errors, totalMs, maxMs, tokens, costUsd }`，按 `totalMs` 降序 |
 | `renderSummary(rows)` | 把上面的排行渲成小表格（返回 HTML 字符串，样式由 `trace-view.css` 提供） |
 | `capabilityTypeOf(name)` / `CAP_ICO` | 能力类型判定与其图标 |
-| `fmtArg` / `fmtNum` / `fmtMs` | 参数 / 数字 / 耗时的展示格式化 |
+| `fmtArg` / `rawArg` | 入参展示的一对：`fmtArg` 给**折叠态摘要**，`rawArg` 给**展开态原文**（两者同源，宿主别自己再搓一个「原文」，否则展开会退回摘要） |
+| `fmtNum` / `fmtMs` | 数字 / 耗时的展示格式化 |
 
 样式单独导出：`import '@migor/trace-view/style.css'`。
 
@@ -46,7 +47,7 @@ playTrace(view, trace); // trace 即框架 run 结束后的 result.trace
 ## 测试
 
 ```bash
-node --test test/*.test.js   # 已并入仓库根的 `npm test`
+node --test test/*.test.js
 ```
 
 ## 许可
