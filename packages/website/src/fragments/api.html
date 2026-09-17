@@ -86,7 +86,7 @@
             <tr><td>RunAgentOptions</td><td><code>{ messages; system?; tools?; model?; … }</code></td><td>主循环入参（逐项见下表）。<code>ExecuteRunOptions</code> / <code>RunAppOptions</code> 在它之上叠加各自的字段。</td></tr>
             <tr><td>resolveDefaultModel</td><td><code>(over?: string) → string</code></td><td>模型缺省解析：显式参数 &gt; <code>AGENTIA_MODEL</code> 环境变量 &gt; <code>claude-opus-5</code>。</td></tr>
             <tr><td>TraceRecorder</td><td><code>class：begin(kind, name, parent) / end(id, patch?) / event / setAttribute / snapshot(status)</code></td><td>span 记账器，traceId 随实例生成。</td></tr>
-            <tr><td>classifyError</td><td><code>(e: unknown) → SpanError</code></td><td>SDK 异常归类：rate_limit / connection 标 retryable。</td></tr>
+            <tr><td>classifyError</td><td><code>(e: unknown) → SpanError</code></td><td>SDK 异常归类：timeout / rate_limit / connection 标 retryable（超时是<strong>独立一类</strong>，不再混进 connection）。</td></tr>
             <tr><td>isAbortError</td><td><code>(e: unknown) → boolean</code></td><td>判定异常是否为中断（<code>name === 'AbortError'</code>）；中断不重试、不冒泡。</td></tr>
             <tr><td>isSuccessStopReason</td><td><code>(reason: AgentStopReason) → boolean</code></td><td>「正常收尾」的唯一尺子（<code>end_turn</code> / <code>stop_sequence</code>）；run 状态机、trace 状态、子 agent 交回判定共用它。</td></tr>
             <tr><td>AgentRunResult</td><td><code>{ trace; stopReason; finalText; iterations; error?; typed? }</code></td><td>typed 为 resultSchema 校验通过的结构化结果（模型未提交则为 undefined）。</td></tr>

@@ -32,6 +32,9 @@ describe('RetryOptions 归一（resolveRetry）', () => {
     assert.equal(r.isRetryable(Object.assign(new Error('x'), { status: 429 })), true);
     assert.equal(r.isRetryable(new Error('boom')), false);
     assert.equal(classifyError(new Error('boom')).retryable, false);
+    // 超时可重试（2026-09-17 起走 type:'timeout'，此前走 connection —— retryable 一直是 true）
+    assert.equal(r.isRetryable(new DOMException('x', 'TimeoutError')), true);
+    assert.equal(r.isRetryable(Object.assign(new Error('x'), { code: 'timeout' })), true);
   });
 });
 

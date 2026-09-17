@@ -264,6 +264,45 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal(turns[1].attributes['retry.attempt'], 2);
   });
 
+  it('模型调用超时（DOMException TimeoutError）自动重试：成功收尾，且失败 turn 记 type=timeout', async () => {
+    // 端到端钉住两件事：① 超时**缺省可重试**（与改动前一致 —— 那时它走 connection 分支）；
+    // ② 它的 `span.error.type` 是 `timeout` 而不是 `connection`（2026-09-17 起，spec §10 同日 ②）。
+    // 形态取自默认 client 的真实超时信号：`composeSignal` 用 `controller.abort(DOMException(...,'TimeoutError'))`。
+    const timeout = new DOMException('Anthropic 请求超过 100ms', 'TimeoutError');
+    let n = 0;
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            n++;
+            if (n === 1) throw timeout;
+            return endTurnMsg('重试后成功');
+          },
+        }),
+      },
+    } as never;
+    const attempts: number[] = [];
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        jitter: 0,
+        onRetry: (i) => attempts.push(i.attempt),
+      },
+    });
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.finalText, '重试后成功');
+    assert.equal(run.status, 'succeeded');
+    assert.deepEqual(attempts, [1], '超时是可重试故障');
+    const turns = result.trace.spans.filter((s) => s.kind === 'llm.turn');
+    assert.equal(turns.length, 2, '失败尝试与成功尝试各开一个 span');
+    assert.equal(turns[0].error?.type, 'timeout', '超时有自己的 errorType，不再混进 connection');
+    assert.equal(turns[0].error?.retryable, true);
+  });
+
   it('已吐出文本后失败 → 不重试（重试会重复输出）', async () => {
     const rate = new Anthropic.RateLimitError(429, undefined, 'slow down', new Headers());
     const client = {

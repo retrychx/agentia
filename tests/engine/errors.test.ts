@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { classifyError, isAbortError } from '../../src/index.js';
+import { TimeoutError } from '../../src/core/timeout.js';
 import { AnthropicApiError } from '../../src/integrations/anthropic.js';
 
 const headers = () => new Headers();
@@ -26,6 +27,33 @@ describe('classifyError（鸭子类型分类 → SpanError）', () => {
     assert.equal(isAbortError(plain), true, '普通 Error 靠 name 也能识别');
 
     assert.equal(isAbortError(new Error('普通错误')), false);
+  });
+
+  it('超时 → timeout / **可重试**（DOMException 与框架 TimeoutError 同一类账）', () => {
+    // 此前 `name === 'TimeoutError'` 走 isConnectionError ⇒ 归成 connection：与「连不上」混在一起，
+    // 看板 / trace-diff 分不出两者。⚠️ 那条行为**有**用例守着（本文件「无 status 的网络型错误」
+    // 条目的最后一段断言 `TimeoutError → connection`）—— 本 PR 改坏了那条断言，属**有意行为变更**：
+    // 错的契约被钉进了期望，改契约就得连期望一起改（spec §10 2026-09-17 ②）。
+    const dom = new DOMException('Anthropic 请求超过 100ms', 'TimeoutError');
+    assert.deepEqual(classifyError(dom), {
+      type: 'timeout',
+      message: 'Anthropic 请求超过 100ms',
+      retryable: true,
+    });
+
+    // 框架自己判的超时（MCP 桥兜底）与「工具作者自报超时」同样归这类
+    const own = new TimeoutError('MCP 工具 "x" 调用超时（超过 20ms）');
+    assert.equal(classifyError(own).type, 'timeout');
+    assert.deepEqual(classifyError(Object.assign(new Error('自报超时'), { code: 'timeout' })), {
+      type: 'timeout',
+      message: '自报超时',
+      retryable: true,
+    });
+  });
+
+  it('带数值 status 的仍优先按状态归类（超时判据不抢 status 的优先级）', () => {
+    const e = Object.assign(new DOMException('x', 'TimeoutError'), { status: 429 });
+    assert.equal(classifyError(e).type, 'rate_limit');
   });
 
   it('带数值 status：429 → rate_limit、5xx → server、其余 4xx → api（不可重试）', () => {
@@ -70,10 +98,8 @@ describe('classifyError（鸭子类型分类 → SpanError）', () => {
     assert.equal(classifyError(errno).type, 'connection');
     assert.equal(classifyError(errno).retryable, true);
 
-    // AbortSignal.timeout / 默认 client 的 timeout 合成信号：TimeoutError（内建 name，压缩不影响）
-    const timeout = new DOMException('请求超时', 'TimeoutError');
-    assert.equal(classifyError(timeout).type, 'connection');
-    assert.equal(classifyError(timeout).retryable, true);
+    // 注：`name === 'TimeoutError'` 的 DOMException **不再**归 connection —— 2026-09-17 起它有自己的
+    // `type:'timeout'`（见上面「超时 → timeout」那条用例）。本条只钉「真的连不上」这两类形态。
   });
 
   it('裸 TypeError（无 cause）不是网络错误 → unknown（不误伤工具代码抛的普通 TypeError）', () => {
