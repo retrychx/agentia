@@ -448,13 +448,13 @@ process.on('SIGTERM', async () => {
 | `attachScore` | `attachScore(trace, score)`：把评分挂到 run 根 span（一条 `score` 事件，body 即 `Score`）。评分通常来自 run **之外**（跑完才评），所以走事件而非 span 字段；trace 找不到根 span 时静默忽略（观测不击穿业务） |
 
 **评分链路**（R7 质量闭环）：`attachScore` 写 run 根 `score` 事件 → OTLP 导出时译为 `gen_ai.evaluation.result`
-（`gen_ai.evaluation.score.name` / `.value`，`source` / `comment` 走自有 `agentia.score.*` 键）→
+（`gen_ai.evaluation.name` / `.score.value`，`source` / `comment` 走自有 `agentia.score.*` 键）→
 `metricsSink` 聚合成 `agentia_score` 指标族（见 §6「指标」）。eval / 在线评估怎么用见 §6「evals」与「在线评估采样」。
 
 **OTLP 的 `gen_ai.*` 对齐**（R7，对齐 OTel GenAI semconv **v1.37**，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
 run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attributes 有 `session.id` 时另发 `gen_ai.conversation.id`）；
 `llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
-capability span 按前缀分：`subagent:*` → `invoke_agent` + `gen_ai.agent.name`，`skill:*` → `execute_tool` + `gen_ai.tool.name`；
+capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 是**裸能力名**）：`subagent` → `invoke_agent` + `gen_ai.agent.name`，`skill` → `execute_tool` + `gen_ai.tool.name`；
 `score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处，下游（Langfuse / Grafana / Datadog）按 1.37+ 识别这批键做 GenAI 专项视图。
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
@@ -554,7 +554,7 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 | `MCP_DEFAULT_TIMEOUT_MS` | 桥的缺省单次调用超时（60000 ms） |
 
 - **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名（原名不含任何 ASCII 字母/数字/下划线时产物为空，如全 emoji 名）/ 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
-- **原名**：每次调用写进发起 turn 的 `mcp.tool` attribute —— 审计 / 回放要还原它才能回调 server。
+- **原名**：每次调用写进发起 turn 的两条 attribute —— `mcp.tool.<菜单名>`（每次调用各一条，并行调用互不覆盖，审计 / 回放靠它把菜单名还原成 server 认识的原名）与 `mcp.tool`（本次 turn **最近一次**的原名，兼容既有查询）。
 - **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的子集校验器在 `callTool` **之前**校验（非法入参根本不会发给 server，模型自己会改）。
 - **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了。
 - **连接器不在框架里**（守「零运行时依赖」）：stdio / StreamableHTTP 归独立可选包，或你自己接 SDK 后实现 `McpClientLike`。本仓库 `scripts/e2e-mcp.ts` 有一份最小连接器可参考。
@@ -969,7 +969,7 @@ const callable = {
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；连接器（stdio / HTTP）不在框架内 |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
 | MCP 超时同样是「不等了」 | 桥自带的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它与 engine 的 `toolTimeoutMs` **双重计时**，谁短谁生效 |
-| MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool` attribute 里查得到） |
+| MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool.<菜单名>` attribute 逐次可查；`mcp.tool` 是最近一次） |
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用（两种引用粒度都要先有 token） |
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
 | 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |

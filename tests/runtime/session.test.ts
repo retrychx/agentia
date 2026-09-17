@@ -201,3 +201,14 @@ describe('会话持久化接进 executeRun（C4）', () => {
     assert.equal('session.id' in root2.attributes, false);
   });
 });
+
+describe('InMemorySessionStore.append 的传参形态', () => {
+  it('十多万条也不抛 RangeError（展开传参的实参上限会静默丢掉整轮历史）', () => {
+    // `push(...messages)` 在 V8 上约 13 万项即抛 RangeError: Maximum call stack size exceeded，
+    // 而 appendSession 会把异常吞掉 ⇒ 该轮对话既不落库也无提示（同 replaceMessages 的已知坑）。
+    const store = new InMemorySessionStore();
+    const many: MessageParam[] = Array.from({ length: 130_000 }, (_, i) => user(`m${i}`));
+    store.append('s1', many);
+    assert.equal(store.load('s1').length, 130_000);
+  });
+});

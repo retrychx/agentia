@@ -346,3 +346,32 @@ describe('能力名装配期校验（与 MCP 桥同口径 ^[A-Za-z0-9_-]{1,64}$�
     );
   });
 });
+
+/**
+ * `app.run` 的契约字段转发：运行期入参是**逐字段手抄**进 executeRun 的，
+ * 漏一个字段 TS 不报错（RunAppOptions 从 RunInvocationOptions 继承）。
+ * 这里钉住 `signal` —— 它曾整个被漏掉，而三处宿主（HTTP 断开 / drain / AsyncRunner
+ * 超时）以及三份文档都假设它生效；宿主侧测试用的是**假 app**，正好绕过了这一跳。
+ */
+describe('app.run 的契约字段转发', () => {
+  it('signal 原样转发：已中止的 signal → run 以 aborted 收尾，且不打模型', async () => {
+    const app = createApp({ name: 'sig-app', system: sys(), tools: [] });
+    const { client, seen } = mockClient([endTurnMsg('不该被调到')]);
+    const ac = new AbortController();
+    ac.abort();
+    const { result } = await app.run([{ role: 'user', content: 'go' }], {
+      client,
+      signal: ac.signal,
+    });
+    assert.equal(result.stopReason, 'aborted', 'signal 没转发时这里会跑成 end_turn');
+    assert.equal(seen.length, 0, '已中止的 run 不该发出模型请求');
+  });
+
+  it('未中止的 signal 也照原样进模型请求参数（同一个对象，不另包一层）', async () => {
+    const app = createApp({ name: 'sig-app2', system: sys(), tools: [] });
+    const { client, seen } = mockClient([endTurnMsg('ok')]);
+    const ac = new AbortController();
+    await app.run([{ role: 'user', content: 'go' }], { client, signal: ac.signal });
+    assert.equal((seen[0] as { signal?: AbortSignal }).signal, ac.signal);
+  });
+});

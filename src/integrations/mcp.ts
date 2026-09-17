@@ -167,15 +167,22 @@ export async function mcpTools(
         ? (info.inputSchema as JsonSchema)
         : ({ type: 'object' } as JsonSchema);
 
+    // 外部 server 的 tools/list 是**外部输入**：description 不是 string（数字/对象）时
+    // 直接 `.trim()` 会让整个装配期崩 —— 与上面 name / inputSchema 的类型防御保持一致。
+    const description = typeof info.description === 'string' ? info.description.trim() : '';
     tools.push({
       name,
-      description: info.description?.trim() || `MCP 工具 ${original}`,
+      description: description || `MCP 工具 ${original}`,
       inputSchema: schema,
       run: async (input: unknown, ctx?: ToolRunContext) => {
         // 原名先落账再调用：连接器抛错/超时时，trace 里仍留得下「本想调谁」
         if (ctx) {
           try {
+            // 两条键：`mcp.tool` 是「本次 turn 最近一次」的兼容键（既有看板/查询照旧）；
+            // `mcp.tool.<菜单名>` 每次调用各写一条 —— 同回合并行调多个 MCP 工具时单值键会被
+            // 后者覆盖，审计/回放就拿不回被覆盖那个（按菜单名分键即无此问题）。
             ctx.recorder.setAttribute(ctx.parentSpanId, 'mcp.tool', original);
+            ctx.recorder.setAttribute(ctx.parentSpanId, `mcp.tool.${name}`, original);
           } catch {
             /* 观测是辅助动作：记账失败不得把一次正常调用变成失败 */
           }

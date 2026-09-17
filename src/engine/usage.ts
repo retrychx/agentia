@@ -65,7 +65,10 @@ export function costEstimate(
   usage: Usage,
   pricing: Record<string, ModelPricing> = DEFAULT_PRICING as Record<string, ModelPricing>,
 ): number | undefined {
-  const p = pricing[model];
+  // Object.hasOwn：`pricing[model]` 会命中原型链 —— 模型名恰为 'constructor' / 'toString'
+  // 时 p 是个函数（真值）而 p.in/p.out 为 undefined ⇒ 成本算出 NaN，NaN 会进 trace/OTLP，
+  // 且 `NaN > maxCostUsd` 恒 false ⇒ 成本护栏静默失效。与 memory/schema 处的防法一致。
+  const p = Object.hasOwn(pricing, model) ? pricing[model] : undefined;
   if (!p) return undefined;
   const { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens } = usage;
   const cost =

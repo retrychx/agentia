@@ -104,10 +104,11 @@ describe('createOtlpExporter', () => {
       const spans = rs.scopeSpans[0].spans;
       assert.equal(spans.length, 2);
 
-      // 根 span：hex id、无 parent、纳秒时间、OK 状态
+      // 根 span：hex id（trace 32 位 / span 16 位 —— OTLP 契约的两种宽度）、无 parent、
+      // 纳秒时间、OK 状态。内部 id 是 UUID（32 hex），span 侧必须截断。
       const root = spans[0];
       assert.equal(root.traceId, trace.traceId.replaceAll('-', ''));
-      assert.equal(root.spanId, trace.spans[0].spanId.replaceAll('-', ''));
+      assert.equal(root.spanId, trace.spans[0].spanId.replaceAll('-', '').slice(0, 16));
       assert.equal(root.parentSpanId, undefined);
       assert.equal(root.kind, 1);
       assert.equal(root.startTimeUnixNano, String(1000 * 1e6));
@@ -121,7 +122,7 @@ describe('createOtlpExporter', () => {
 
       // 子 span：parent hex、ERROR 状态带 message、usage 展平、events 映射
       const child = spans[1];
-      assert.equal(child.parentSpanId, trace.spans[0].spanId.replaceAll('-', ''));
+      assert.equal(child.parentSpanId, trace.spans[0].spanId.replaceAll('-', '').slice(0, 16));
       assert.equal(child.name, 'tool:search');
       assert.deepEqual(child.status, { code: 'STATUS_CODE_ERROR', message: 'boom' });
       const attrByKey = Object.fromEntries(
@@ -258,7 +259,10 @@ describe('createOtlpExporter', () => {
             traceId,
             parentSpanId: rootId,
             kind: 'capability',
-            name: 'skill:search',
+            // ⚠️ 生产形状：capability span 的 name 是**裸能力名**，类型靠 attributes 区分
+            //（toolkit/subagent.ts / skill.ts 就是这么写的）。写成 'skill:search' 会让
+            // 「按名字前缀判类型」这种错实现看起来是对的 —— 这个夹具曾经如此。
+            name: 'search',
             startedAt: 1500,
             endedAt: 1600,
             status: 'ok',
@@ -270,7 +274,7 @@ describe('createOtlpExporter', () => {
             traceId,
             parentSpanId: rootId,
             kind: 'capability',
-            name: 'subagent:researcher',
+            name: 'researcher', // 生产形状：裸名 + attributes.subagent
             startedAt: 1600,
             endedAt: 1800,
             status: 'ok',
@@ -282,6 +286,13 @@ describe('createOtlpExporter', () => {
       await createOtlpExporter({ endpoint: base }).export(trace);
 
       const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+
+      // OTLP 契约：trace id 16 字节（32 hex）、span id 8 字节（16 hex）。
+      // 内部是 UUID（32 hex），span 侧必须截到 16 —— 发 32 位给真 collector 会被判
+      // invalid span_id（拒收）或按前 16 位截断。
+      assert.equal(spans[0].traceId.length, 32, 'trace id 是 32 hex');
+      assert.equal(spans[0].spanId.length, 16, 'span id 必须是 16 hex');
+      assert.equal(spans[1].parentSpanId.length, 16, '父 span id 同宽');
       const attrByKey = (span: any) =>
         Object.fromEntries(
           span.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
@@ -317,7 +328,8 @@ describe('createOtlpExporter', () => {
       const scoreAttrs = Object.fromEntries(
         events[0].attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
       );
-      assert.deepEqual(scoreAttrs['gen_ai.evaluation.score.name'], {
+      // semconv 无 gen_ai.evaluation.score.name；维度名是 gen_ai.evaluation.name
+      assert.deepEqual(scoreAttrs['gen_ai.evaluation.name'], {
         stringValue: 'faithfulness',
       });
       assert.deepEqual(scoreAttrs['gen_ai.evaluation.score.value'], { doubleValue: 0.75 });

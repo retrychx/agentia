@@ -12,7 +12,10 @@ const cleanups = new WeakMap<AbortSignal, () => void>();
 
 /** 合成多个中断源：任一已中止 / 后中止即中止；忽略 undefined；全空返回**永不中止**的 signal。 */
 export function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal {
-  const real = signals.filter((s): s is AbortSignal => s !== undefined);
+  // 去重：同一个源被传两次时，下面的 listeners Map 按源建（后者覆盖前者），
+  // 却对同一源挂了两个同名监听 ⇒ 摘除只摘掉一个，另一个（连闭包）滞留在宿主级
+  // 长寿 signal 上 —— 正是这段代码要防的累积。Set 保序，行为不变。
+  const real = [...new Set(signals.filter((s): s is AbortSignal => s !== undefined))];
   // 单源直接复用，避免多包一层 listener
   if (real.length === 1) return real[0];
 

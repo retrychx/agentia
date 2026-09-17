@@ -266,7 +266,10 @@ function parseInput(raw: string | undefined, maxChars: number): unknown {
   const s = truncateWithMark(raw ?? '', maxChars);
   try {
     const parsed = JSON.parse(s) as unknown;
-    return typeof parsed === 'object' && parsed !== null ? parsed : { _raw: s };
+    // 数组也是 object，但 tool_use.input 必须是**对象**（API 侧会 400）—— 与自述一致地挡掉
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed
+      : { _raw: s };
   } catch {
     return { _raw: s };
   }

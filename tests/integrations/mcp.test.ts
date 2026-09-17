@@ -260,3 +260,50 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
     );
   });
 });
+
+describe('MCP 桥的健壮性与记账', () => {
+  it('server 的 description 不是 string（数字）→ 装配期不炸，回落默认描述', async () => {
+    // tools/list 是**外部输入**：同一循环里 name / inputSchema 都有类型防御，description 曾漏了。
+    const mcp = fakeMcp(
+      [{ name: 'get_time', description: 123 as unknown as string, inputSchema: OBJ }],
+      async () => 'ok',
+    );
+    const tools = await mcpTools(mcp.client, { server: 's' });
+    assert.equal(tools[0]!.description, 'MCP 工具 get_time');
+  });
+
+  it('同回合并行调两个 MCP 工具 → 原名按菜单名分键留存（单值 mcp.tool 会被覆盖）', async () => {
+    const mcp = fakeMcp(
+      [
+        { name: 'get-time', inputSchema: OBJ },
+        { name: 'fetch-weather', inputSchema: OBJ },
+      ],
+      async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    );
+    const tools = await mcpTools(mcp.client, { server: 's' });
+    const U = {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    };
+    const { client } = mockClient([
+      {
+        id: 'm1',
+        model: 'claude-opus-5',
+        stop_reason: 'tool_use',
+        usage: U,
+        content: [
+          { type: 'tool_use', id: 'tu1', name: 'mcp_s_get_time', input: {} },
+          { type: 'tool_use', id: 'tu2', name: 'mcp_s_fetch_weather', input: {} },
+        ],
+      },
+      endTurnMsg('done'),
+    ]);
+    const result = await runAgent({ messages: [{ role: 'user', content: 'go' }], tools, client });
+    const turn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;
+    // 键按**菜单名**分（含 server 前缀，全局唯一），值为 server 认识的**原名**
+    assert.equal(turn.attributes['mcp.tool.mcp_s_get_time'], 'get-time');
+    assert.equal(turn.attributes['mcp.tool.mcp_s_fetch_weather'], 'fetch-weather');
+  });
+});

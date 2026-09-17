@@ -213,3 +213,29 @@ describe('harvestEvalCase（R7 回流）', () => {
     assert.equal(evalCase.input, '含`反引号`与${dollar}');
   });
 });
+
+describe('harvest 对畸形 tool.input 的处理', () => {
+  it('缺 tool 字段的事件整条跳过，不伪造一个叫 unknown 的调用', () => {
+    // 回填 'unknown' 会在生成的脚本里变成一个真的、且断言必然通过的工具调用 ——
+    // 骨架自我自洽、永不报错，比缺一条更坏。
+    const trace = makeTrace();
+    const mainTurn = trace.spans.find((s) => s.spanId === 't1')!;
+    mainTurn.events.push({ time: 13, name: 'tool.input', body: { tool_use_id: 'tu_orphan' } });
+    const code = harvestEvalCase({ trace, name: 'missing-tool' });
+    assert.ok(!code.includes('"unknown"'), '不得伪造 unknown 工具名');
+    assert.ok(!code.includes('tu_orphan'), '缺 tool 的事件连 id 也不该进脚本');
+  });
+
+  it('name 含换行也不击穿生成物语法（注释行只放单行）', () => {
+    const code = harvestEvalCase({ trace: makeTrace(), name: 'evil\n// }, injected: 1' });
+    const lines = code.split('\n');
+    // 关键词只出现在第一行（不净化时注入内容会自成一行 —— 按行首判，别只数含关键词的行）
+    assert.equal(lines.filter((l) => l.includes('harvest 用例骨架')).length, 1);
+    assert.ok(
+      !lines.some((l) => l.trimStart().startsWith('// }, injected')),
+      '注入内容不得自成一行',
+    );
+    assert.ok(lines[0]!.includes('evil'), '折叠后仍保留可读前缀');
+    assert.doesNotThrow(() => new Function(`return (${code})`), '折叠后生成物仍可解析');
+  });
+});

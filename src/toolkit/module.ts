@@ -419,6 +419,11 @@ export class AgentApp {
       maxIterations: opts.maxIterations ?? this.base.maxIterations,
       client: opts.client,
       onText: opts.onText,
+      // ⚠️ 取消传播（B1）：signal 是 RunInvocationOptions 的契约字段，必须原样进引擎。
+      // 宿主全都经 app.run 传它（HTTP 客户端断开 / drain 收口 / AsyncRunner.runTimeoutMs），
+      // 漏掉这一行 = 取消在 app.run 门口静默断掉：断开后 run 照跑到收尾、继续烧 token，
+      // 而三处宿主测试都用**假 app** 断言「signal 交到了 app」，真 AgentApp 这一跳无人测。
+      signal: opts.signal,
       runName: this.name,
       idempotencyKey: opts.idempotencyKey,
       contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,

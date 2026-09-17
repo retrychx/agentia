@@ -40,7 +40,10 @@ export class InMemorySessionStore implements SessionStore {
 
   append(sessionId: string, messages: MessageParam[]): void {
     const cur = this.data.get(sessionId) ?? [];
-    cur.push(...messages);
+    // 逐项 push，不用展开传参：`push(...messages)` 受 V8 实参个数上限约束，
+    // 超约 12 万条会抛 RangeError（同 runtime/run.ts 的 appendSession 会把异常吞掉 ⇒ 静默丢历史）。
+    // 同族坑见 engine/turn.ts 的 replaceMessages。
+    for (const m of messages) cur.push(m);
     this.data.set(sessionId, cur);
   }
 }

@@ -251,3 +251,18 @@ describe('traceToMessages（trace 重放基底）', () => {
     }
   });
 });
+
+describe('traceToMessages 对 tool_use.input 的还原口径', () => {
+  it('input 是 JSON 数组 → 不原样透传（API 侧要求对象），包 {_raw}', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const t1 = r.begin('llm.turn', 'model-a', root);
+    r.event(t1, 'tool.input', { tool: 'search', input: JSON.stringify(['a', 'b']) });
+    r.end(t1);
+    r.end(root);
+    const tu = traceToMessages(r.snapshot('ok'))
+      .flatMap((m) => blocks(m))
+      .find((b) => b.type === 'tool_use')!;
+    assert.deepEqual(tu.input, { _raw: '["a","b"]' }, '数组不是合法 tool_use.input，应包 _raw');
+  });
+});
