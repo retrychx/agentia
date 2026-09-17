@@ -76,41 +76,41 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   model: string;
   maxTokens: number;
   maxIterations: number;
-  system?: SystemParam;
+  system?: SystemParam | undefined;
   /** 本轮循环自有消息（内部复制，不改调用方数组） */
   messages: MessageParam[];
   tools: AgentTool[];
   recorder: RecorderBackend;
   /** llm.turn 的父 span（run 根 / 子 agent 的 capability span） */
   parentSpanId: SpanId | null;
-  onText?: (delta: string) => void;
+  onText?: ((delta: string) => void) | undefined;
   /** 中断信号：中止后不再发起新回合，以 stopReason='aborted' 收尾 */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
   /** 模型请求重试策略（缺省开启；false 关闭）。见 engine/retry.ts */
-  retry?: RetryOptions | false;
+  retry?: RetryOptions | false | undefined;
   /** 上下文预算策略（compaction / context editing），每回合发送前调用 */
-  contextPolicy?: ContextPolicy;
+  contextPolicy?: ContextPolicy | undefined;
   /** 结构化结果 schema：存在时追加隐藏 submit_result 工具（见 RunAgentOptions.resultSchema） */
-  resultSchema?: S;
+  resultSchema?: S | undefined;
   /**
    * 模型往返计数的外部持有者。抛错路径（请求失败）也要能报出**已发生**的往返次数，
    * 所以用对象就地累加，而不是只靠返回值。
    */
-  progress?: { iterations: number };
+  progress?: { iterations: number } | undefined;
   /** 成本硬管控（C1）：整条 run 累计 token 上限；记账后判断，超限即停 */
-  maxTotalTokens?: number;
+  maxTotalTokens?: number | undefined;
   /** 成本硬管控（C1）：累计成本（美元）上限；依赖价格表，见 createBudgetGuard */
-  maxCostUsd?: number;
+  maxCostUsd?: number | undefined;
   /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */
-  toolTimeoutMs?: number;
+  toolTimeoutMs?: number | undefined;
   /** 同回合并行工具上限；缺省 Infinity（= 全部并行） */
-  maxToolConcurrency?: number;
+  maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars（三类事件共用同一个值） */
-  maxEventChars?: number | false;
+  maxEventChars?: number | false | undefined;
   /** 价格表覆盖（F1）：覆盖内置单价或给其他 provider 的模型定价 */
-  priceOverrides?: Record<string, ModelPricing>;
+  priceOverrides?: Record<string, ModelPricing> | undefined;
   /** 未定价模型回调（F2）：本循环作用域内每模型一次 */
-  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
+  onUnpricedModel?: ((info: { model: string; spanId: string }) => void) | undefined;
 }
 
 /**
@@ -124,7 +124,7 @@ export interface LoopContext<S extends JsonSchema = JsonSchema> {
   /** 实际发给 API 的工具表：开发者工具 + resultSchema 模式追加的隐藏 submit_result */
   apiTools: ToolParam[];
   /** resultSchema 模式在末尾追加过提交指令的 system（见 appendResultInstruction） */
-  system?: SystemParam;
+  system: SystemParam | undefined;
   retryCfg: ResolvedRetry | null;
   pricing: Record<string, ModelPricing>;
   /** 未定价模型去重（F2）：本循环作用域内每模型只回调一次 */
@@ -273,7 +273,8 @@ export async function checkTurnEntry<S extends JsonSchema>(
 /** 一回合的模型请求结果：turn span id + 成功时的 finalMessage；aborted 表示中途被取消 */
 export interface TurnOutcome {
   turnId: SpanId;
-  message?: Message;
+  /** 模型响应；请求失败/中断时为 undefined（字段在场，见 core/run.ts 的说明） */
+  message: Message | undefined;
   aborted: boolean;
 }
 

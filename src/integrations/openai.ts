@@ -14,6 +14,7 @@ import type {
 } from '../core/message.js';
 import { textOf } from '../core/text.js';
 import { sseLines } from '../core/sse.js';
+import { backoffMs, interruptibleSleep } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -44,6 +45,14 @@ export interface OpenAIClientOptions {
   stream?: boolean;
   /** 测试注入用 */
   fetchImpl?: typeof fetch;
+  /**
+   * 单次请求的**客户端内层**重试次数（不含首次；408 / 409 / 429 / 5xx / 连接错误）。
+   * 缺省 2 —— 与 `anthropic.ts` 的 `createAnthropicClient` **逐字对齐**：两条适配器
+   * 必须对同一故障给出同样的尝试次数，否则「同一个 429」在 anthropic 上打 3 次网络
+   * 请求、在 openai 上只打 2 次（引擎层那一次），成本与延迟随厂商而异却没人发现。
+   * 引擎层另有一层重试（`RunAgentOptions.retry`），两层叠加；建议二选一调。
+   */
+  maxRetries?: number;
 }
 
 /**
@@ -69,6 +78,9 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
   const fetchImpl = opts.fetchImpl ?? fetch;
   const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
   const useStream = opts.stream ?? true;
+  // 与 anthropic 对齐的缺省（见 OpenAIClientOptions.maxRetries 的注释：两条适配器
+  // 对同一故障必须给出同样的尝试次数，否则同一个 429 在两边的网络请求数不同）
+  const maxRetries = typeof opts.maxRetries === 'number' ? opts.maxRetries : 2;
 
   return {
     messages: {
@@ -80,19 +92,31 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
           },
           async finalMessage(): Promise<Message> {
             const req = toOpenAIRequest(params);
-            const res = await fetchImpl(`${baseURL}/v1/chat/completions`, {
-              method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+            const res = await postWithRetries(
+              fetchImpl,
+              `${baseURL}/v1/chat/completions`,
+              {
+                method: 'POST',
+                headers: {
+                  'content-type': 'application/json',
+                  ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+                },
+                // signal 必须转发：否则调用方（含 A1 的取消 / 超时）无法中止在飞请求
+                ...(params.signal ? { signal: params.signal } : {}),
+                body: useStream
+                  ? JSON.stringify({
+                      ...req,
+                      stream: true,
+                      stream_options: { include_usage: true },
+                    })
+                  : JSON.stringify(req),
               },
-              // signal 必须转发：否则调用方（含 A1 的取消 / 超时）无法中止在飞请求
-              ...(params.signal ? { signal: params.signal } : {}),
-              body: useStream
-                ? JSON.stringify({ ...req, stream: true, stream_options: { include_usage: true } })
-                : JSON.stringify(req),
-            });
+              params.signal,
+              maxRetries,
+            );
             if (!res.ok) {
+              // 走到这里只可能是**不可重试**的失败（可重试状态已在 postWithRetries 内
+              // 重试过，且是最后一次仍失败才返回）—— 4xx 里除 408/409/429 都在此列。
               const body = await res.text();
               throw new OpenAICompatApiError(
                 res.status,
@@ -209,6 +233,50 @@ type StreamParams = {
   messages: MessageParam[];
   signal?: AbortSignal;
 };
+
+// —— 请求与重试（与 anthropic 的 postWithRetries 同语义；函数体独立是有意的）——
+//
+// 为什么不共用一份 postWithRetries：`integrations` 只能依赖 core，而两者的**响应消费**
+// 不同（这里返回 Response 后自己要按 content-type 分流，anthropic 那边直接读 SSE），
+// 抽到 core 只会得到「参数比逻辑多」的壳子。真正必须一致的是**语义**：可重试状态码集合、
+// 退避曲线、retry-after 的尊重 —— 退避与可中断 sleep 的实现单源在 `core/timeout.ts`
+// （两条适配器 import 同一份），状态码集合与尝试次数由
+// `tests/integrations/adapter-parity.test.ts` 的场景矩阵对拍守着。
+
+/** 可重试的 HTTP 状态：408 / 409 / 429 / 5xx（与 anthropic 逐字对齐） */
+export function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+/**
+ * 带重试的 POST。返回首个非「可重试失败」的响应（含 4xx —— 交给调用方转成结构化错误）。
+ * 可重试状态耗尽 / 网络失败耗尽时返回或抛出最后一次的结果。
+ * abort 由 `signal` 传播：fetch reject 的 AbortError 与退避期间的中止都原样向上。
+ */
+async function postWithRetries(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  maxRetries: number,
+): Promise<Response> {
+  let retryAfter: string | null = null;
+  for (let attempt = 0; ; attempt++) {
+    if (attempt > 0) await interruptibleSleep(backoffMs(attempt, retryAfter), signal);
+    retryAfter = null;
+    let res: Response;
+    try {
+      res = await fetchImpl(url, init);
+    } catch (e) {
+      // abort 原样向上（引擎靠 name === 'AbortError' 判）；其余是网络失败
+      if ((e as { name?: unknown })?.name === 'AbortError' || signal?.aborted) throw e;
+      if (attempt >= maxRetries) throw e;
+      continue;
+    }
+    if (res.ok || !isRetryableStatus(res.status) || attempt >= maxRetries) return res;
+    retryAfter = res.headers.get('retry-after');
+  }
+}
 
 /** Anthropic 请求形态 → OpenAI chat.completions 请求 */
 function toOpenAIRequest(params: StreamParams): OpenAIChatRequest {

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_RETRY, backoffDelay, resolveRetry, sleep } from '../../src/engine/retry.js';
+import type { RetryOptions } from '../../src/engine/retry.js';
 import { classifyError } from '../../src/index.js';
 
 describe('RetryOptions 归一（resolveRetry）', () => {
@@ -34,12 +35,15 @@ describe('RetryOptions 归一（resolveRetry）', () => {
     //    而 run 根快照记 config.retry.maxAttempts: 0（看着像用户主动关的）；
     //  - baseDelayMs 变 undefined → backoffDelay 每次算出 NaN，退避失效、trace 里
     //    `llm.retry.delayMs` 记 NaN。
+    // 注意：`exactOptionalPropertyTypes` 之后这种字面量**已经编译不过**（这正是那个开关
+    // 带来的第一道防线）。这里用 cast 模拟第二道：调用方从 JSON / 动态 spread 拼出来的
+    // 配置带显式 undefined 时，`definedOnly` 必须仍然兜住（运行时防线不能省）。
     const r = resolveRetry({
       maxAttempts: undefined,
       baseDelayMs: undefined,
       maxDelayMs: undefined,
       jitter: undefined,
-    });
+    } as unknown as RetryOptions);
     assert.ok(r, '不得被静默关闭');
     assert.equal(r.maxAttempts, DEFAULT_RETRY.maxAttempts);
     assert.equal(r.baseDelayMs, DEFAULT_RETRY.baseDelayMs);
@@ -49,7 +53,10 @@ describe('RetryOptions 归一（resolveRetry）', () => {
     assert.equal(backoffDelay(2, { ...r, jitter: 0 }), DEFAULT_RETRY.baseDelayMs * 2);
 
     // 混合：显式 undefined 只回落到缺省，不牵连同一对象里的真实值
-    const mixed = resolveRetry({ maxAttempts: undefined, baseDelayMs: 10 })!;
+    const mixed = resolveRetry({
+      maxAttempts: undefined,
+      baseDelayMs: 10,
+    } as unknown as RetryOptions)!;
     assert.equal(mixed.maxAttempts, DEFAULT_RETRY.maxAttempts);
     assert.equal(mixed.baseDelayMs, 10);
   });

@@ -56,7 +56,7 @@ export interface SkillLlmResult {
 /** 方法体收到的运行句柄：只暴露“受限模型调用”，其余脚本逻辑由作者代码控制。 */
 export interface SkillContext {
   /** 本次 skill 的缺省模型（spec.model 或 undefined → engine 缺省） */
-  readonly model?: string;
+  readonly model?: string | undefined;
   /** 受限子运行：每次调用在 skill capability span 下开一轮独立 agent 循环（无工具则纯文本）。 */
   llm(opts: SkillLlmOptions): Promise<SkillLlmResult>;
 }

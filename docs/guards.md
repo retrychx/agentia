@@ -1,0 +1,120 @@
+# Agentia —— 守卫注册表（约定 → 可执行断言）
+
+> **这份文档回答一个问题：这个仓库的哪些承诺是「机器守着的」，哪些只是「写在文档里的」。**
+>
+> 起因：`spec.md §10` 记录「我们决定了什么」，但**不记录「这个决定由谁守」**。于是同一类
+> 缺陷会以不同面貌反复出现 —— 2026-09-18 的第六轮 review 一次挖出 16 条，全部属于
+> 「约定写在文档/注释里，但没有任何门禁」的同一缺口。本文件是该缺口的一次性补齐。
+>
+> **维护约定**（写进 PR 模板）：新增/修改不变量时，必须在下面登记一行。**守卫不是均匀撒的，
+> 它是沿着「你写过文档、写过测试的地方」长的** —— 这份表的作用就是让缺口可见。
+> 未登记的「待守」条目在 §2，那是下次 review 的靶子清单。
+
+---
+
+## 1. 已挂守卫（按危险类分组）
+
+### 1.1 架构与形状
+
+| 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |
+|---|---|---|---|
+| `tests/architecture/layering.test.ts` | 分层单向（`core ← engine ← …`）、依赖图无环、`src` 不 import 到 `src` 之外 | 解析 import 图（`from` / 副作用 / 动态字面量三种），断言允许边集合 + 解析计数下限防真空变绿 | `store → runtime` 这类未声明兄弟依赖悄悄存在（真发生过） |
+| `tests/integrations/adapter-parity.test.ts` | **同一契约的两条适配器必须对称**：同一 HTTP 状态在 anthropic / openai 上的 `{classifyError.type, retryable, 尝试次数}` 完全一致 | 一份场景表（408/409/429/500/503/400 + `retry-after` + `maxRetries:0`）`for (const a of ADAPTERS)` 跑两遍；替换 `globalThis.fetch` 作为两侧统一的注入面；`retry-after: 0` 让退避不真 sleep | 「同一个 429」在 anthropic 打 3 次网络请求、在 openai 打 1 次 —— 成本/延迟随厂商而异却没人发现（真发生过：openai 曾完全没有内层重试） |
+| `tests/architecture/transport-errors.test.ts` | 传输层适配器抛的错误必须带**数值 `status`**（否则被归类为 unknown → 重试层静默失效） | 扫 `src/integrations` 的裸 `throw new Error(...)`：文案带 HTTP 状态痕迹即违规；构造期配置校验按文案豁免 | OpenAI 适配器吃一个 429 就整轮失败、引擎层 3 次重试一次不发生（真发生过）；本守卫上线当天就抓到 `otlp.ts` 的同类漏网 |
+| `tests/architecture/tsconfig-strictness.test.ts` | **承重的 tsconfig 开关不得被关掉**：`exactOptionalPropertyTypes`（显式 undefined ≠ 不传）、`strict`、`types:["node"]` | 读 `tsconfig.json` 断言三个开关。反向验证过：关掉 `exactOptionalPropertyTypes` ⇒ 本测试红，且 `{maxAttempts: undefined}` 赋给 `RetryOptions` 从「编译错」变回「放行」 | 39 处防线无声消失（`retry.ts` 的「显式 undefined 覆盖缺省」重新变成合法代码）；@types/node 缺链导致全仓 Node 类型报错 |
+| `tests/types/message-compat.types.ts` | 自有消息类型族 ↔ `@anthropic-ai/sdk` 的结构兼容（双向 assignability） | 针对构建产物 dist 编译的类型断言（`typecheck:types`，node:test 不收） | 使用者手里的 SDK 类型喂不进来；SDK 升级改字段无人发现 |
+| `tests/types/dx.types.ts` | 类型链路（`fromZod<T>` 校验方法签名、`result.typed` 推导） | 同上 | DX 承诺（「编辑器给不给提示」）退化成 `unknown` |
+
+### 1.2 静默失效（最贵的一类）
+
+| 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |
+|---|---|---|---|
+| `tests/engine/concurrency.test.ts` | **任何 limit 下每个 item 都被处理恰好一次**（含 `0` / `(0,1)` 小数 / `Infinity` / `NaN`） | 边界值矩阵 + 不变量断言 | `Math.floor(0.5)=0` → worker 数为 0 → 工具静默丢弃、run 报成功（真发生过） |
+| `tests/timeoutLiveness.test.ts` | 「等待的终点」不得 `unref()`（唯一把手时进程会先退出） | 干净子进程 + 空事件循环验三个往返 | 调用方什么都拿不到、进程 exit 13（真发生过） |
+| `tests/engine/retry.test.ts` | 显式 `undefined` 字段**不得**覆盖缺省（`{maxAttempts: undefined}` 不是「关闭重试」） | 逐字段传 `undefined`，断言回落到缺省 | 重试静默关闭，而 trace 记成 `config.retry.maxAttempts: 0`（像是用户主动关的） |
+| `tests/toolkit/env.test.ts` | `.env` 解析的分支矩阵（引号 / 引号+行内注释 / 转义 / 不闭合 / 值内含 `#`） | 表格驱动，逐格断言 | 密钥带字面引号进 `process.env` → 每个请求 401，而文件看上去完全正确（真发生过） |
+| `tests/toolkit/subagent.test.ts` · `skill.test.ts` | 嵌套能力必须把 `toolTimeoutMs` 等透传子循环（裁判权交接） | 喂带字段的 ctx，断言子循环按该口径记账 | 子循环永不超时 + MCP 桥起自己的兜底计时器 = 双计时器双账本 |
+
+### 1.3 宿主与耐久
+
+| 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |
+|---|---|---|---|
+| `scripts/e2e-deploy.ts` | 崩溃续跑：`SIGKILL` 后同库重启 `resumePending` 必须续跑 | 真起服务、真杀进程、同库重启、断言终态 | 「耐久」是句空话（在飞任务死半路无人接管） |
+| `tests/transport/host-hardening.test.ts` | 鉴权拦在**读 body 之前**、body 上限、并发闸门、`exposeErrors` | 真 HTTP 请求 + 断言状态码与连接行为 | 未鉴权请求也会被读进 body；内部拓扑回吐给未鉴权调用方 |
+| `tests/transport/async.test.ts` | 幂等键去重、`resumePending` 认领、迟到 reject 不改写终态 | 状态机级用例 | 同键任务重复执行；成功的 run 被落库失败覆写成 failed |
+
+### 1.4 文档与发布面
+
+| 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |
+|---|---|---|---|
+| `tests/docs/usage-guide.test.ts` | `usage-guide.md` 的表格**逐项对源码核**（字段名/默认值/类型） | 解析文档 + 断言与源码一致 | 文档承诺了、代码没有（本仓库最主要的对外风险面） |
+| `tests/docs/api-page.test.ts` | 官网 `api.html` 对导出面的**反向全覆盖**（每个导出都必须在页面出现） | 读 `src/index.ts` 导出清单 + 扫页面文本 | 新增导出在文档里缺席（`1 个运行时依赖 → 0 个` 这类数字也会漂） |
+| `tests/docs/no-legacy-terms.test.ts` | 面向使用者的表面（文档 / 官网 / 包 README / CLI `--help` 与报错）不得出现旧伞形术语 | 文本扫描 + 允许标记块（有行数上限） | 一次改名漏扫几处，读者看到两套术语 |
+| `tests/docs/run-output-shape.test.ts` | `run` 返回结构的文档形状与实际一致 | 扫描 + 断言 | 结构化结果的对外契约漂移 |
+| `tests/scripts/release-scripts.test.ts` | `release.mjs bump` 的**每项替换计数断言**本身可靠 | 直接测护栏（护栏失灵会写坏整棵树，且发生在发版当天） | 一次 bump 把仓库写坏却没人拦 |
+| `scripts/e2e-cli.ts` 第 8 步 | 两包 tarball 必须含 `CHANGELOG.md` | `npm pack --dry-run` 断言（临时 npm cache，不依赖宿主缓存健康） | 迁移指南写了但用户看不到（真发生过） |
+| `scripts/verify-all.sh` 第 1 步 | lint 与类型检查折进同一条链（本地链 == CI 链） | Biome + `tsc` | 「本地 8/8 绿、CI 挂 Biome」（真发生过） |
+| `packages/cli/test/dist-guard.mjs` | CLI 去类型移植副本与框架真源的**逐字对拍**不得静默跳过 | 产物缺失时 CI 判失败、本地醒目警告 | 对拍变成空断言（「逐字守护」名不副实） |
+| CI `import-floor` job（`scripts/check-import-floor.mjs`） | 包在 Node 18/20 上可导入（`engines: >=18` 的声明） | CI 实跑导入 | 旧 Node 上整包加载即崩 |
+
+---
+
+## 2. 待守（已知缺口 —— 下一次 review 从这里开始）
+
+这些是**已经踩过、但还没有机器守卫**的形状。不是「都要立刻建守卫」，而是**改到相关代码时，
+必须用手工清单核对**（见 `.github/PULL_REQUEST_TEMPLATE.md` 的自查问）。
+
+| 待守形状 | 历史事故 | 为什么还没有守卫 | 可能的守卫形状 |
+|---|---|---|---|
+| **`0` 的双重语义（不限 vs 已到点）** | `handler.drain({timeoutMs:1})` 跨过 deadline 后永不返回 | 已有单点用例（`host-hardening.test.ts`），但**没有**统一的「limits 语义对照表」——`mapWithConcurrency` / `drain` / `runTimeoutMs` / `maxIterations` 仍各自解释 `0` | 建一份「limits 语义」单一真源 + 集中用例（`limits.test.ts`） |
+| **零/负/非有限值的语义统一** | 同上一行（`mapWithConcurrency` 已修，其余散在） | 分散在多个模块，无单一真源 | 同上，与上一行合并做 |
+| **手写转发列表不得漏字段** | `runAgentScoped` 漏 `toolTimeoutMs`（跨 3 层：engine → toolkit → ctx） | `exactOptionalPropertyTypes` 已开（见 §1），堵住了「显式传 undefined」这一半；但**「spread 转发时漏掉一个键」TS 结构类型仍不报**（`{...opts}` 少了字段照样过） | 穷尽转发类型（把可转发字段抽成 `Pick<…, ForwardableKey>` 并要求逐项出现）；或改成显式 `omitUndefined({...})` + 一处集中清单 |
+
+> 已在本轮补上守卫、从本表移入 §1 的：**成对实现对称**（`tests/integrations/adapter-parity.test.ts`）、
+> **浅合并被 `null` 覆盖**（`anthropic.test.ts` 的 usage 用例）、**同步 vs 真实异步 store**
+> （`tests/transport/async.test.ts` 的 `AsyncCopyStore`）、**解析器分支矩阵**（`tests/toolkit/env.test.ts`）、
+> **`0` 被 `Math.floor` 压成 0 worker**（`tests/engine/concurrency.test.ts`）、
+> **`exactOptionalPropertyTypes`**（本轮第七轮迁移，见 §1 与 spec §10 2026-09-18 ⑦）。
+
+> §2 的存在方式很重要：**它是活的**。每轮 review 挖到的形状，若暂时建不了守卫，就登记到这里；
+> 建成了就移到 §1 并注明守卫位置。「未登记的形状」= 下次必然重犯。
+
+---
+
+## 附：`exactOptionalPropertyTypes` 迁移（2026-09-18 第七轮，已完成）
+
+**它守什么**：`{foo: x}`（`x: T | undefined`）**不是**合法的 `foo?: T` —— 「不传这个键」与
+「传了个 undefined」被区分开。`retry.ts` 的「显式 undefined 覆盖缺省」事故（重试被静默关闭、
+退避算出 NaN）正是这条区分缺失造成的。开启后这类写法在**类型上就写不出来**。
+
+**迁移规模（实测）**：39 处 `error TS`（TS2379 ×19 / TS2375 ×10 / TS2412 ×8 / TS2322 ×2），
+分布 `transport/` 15、`engine/` 12、`runtime/` 5、`toolkit/` 4、`eval/` 1。
+
+**采用的规则**（后来者照此办理，别反过来）：
+
+| 类型角色 | 修法 | 例 |
+|---|---|---|
+| **结果/状态记录**（框架总是把字段写进对象字面量） | 必填 `T \| undefined` —— 字段在场、值可无 | `AgentRunResult` / `AgentLoopResult` / `RunMeta` / `RunHttpResponse` / `TurnOutcome` / `ToolEventIO` / `SpanDiff` |
+| **内部管道**（缺省与显式 undefined 语义等价） | 可选 `?: T \| undefined`（缺省或显式都给） | `AgentLoopArgs` / `LoopContext` / `Job` / `Record` 类（`TaskRecord` / `RunSpec`）/ `BudgetGuardOptions` / `SseWriterOptions` / `CapabilityCall` |
+| **公共入参**（`foo?: T` 的「不提供 = 用缺省」必须有意义） | **保持 `?: T` 不动**，在**调用点**处理：条件展开 `...(x !== undefined ? { x } : {})`，或集中 `omitUndefined({...})` | `RunAgentOptions` / `RunInvocationOptions` / `ExecuteRunOptions` / `RetryOptions` / 各 client options |
+
+**`omitUndefined`**（`src/core/object.ts`）用于「一次转交十几个可能 undefined 的字段」的场景
+（如 `AgentApp.run` → `executeRun`）：把 undefined 键摘掉，类型上就能安全赋给 `?: T`，
+比十几处条件展开可读。**只过滤 undefined**（`null`/`0`/`''` 保留）。
+
+**门禁**：`tests/architecture/tsconfig-strictness.test.ts` 钉住开关本身（关掉 = 39 条防线无声消失）。
+反向验证：关掉开关 ⇒ 该测试红；且 `{maxAttempts: undefined}` 赋给 `RetryOptions` 立刻从
+「编译错」变回「放行」（实测 ON=1 错 / OFF=0 错）。
+
+
+---
+
+## 3. 守卫的写法（本仓库已验证有效的三条纪律）
+
+1. **宁可窄，不要误报。** 守卫应当断言「**允许集合**」而非「禁止某个写法」（`layering.test.ts`
+   的 `ALLOWED` 就是这个形状）。误报的门禁最终会被人加 ignore 关掉，等于没有。
+2. **必须能反向证伪。** 守卫写完要**回退实现、确认它变红**再恢复（见 PR 模板自查第 5 条）。
+   没做过反向验证的守卫，很可能是永远绿的空断言 —— 本仓库已有「真空变绿」的教训，
+   `layering.test.ts` 的「解析计数下限」就是为它加的。
+3. **失败信息必须能定位。** `assert` 消息里带**文件:行号**与修法（`layering.test.ts` /
+   `transport-errors.test.ts` 都是这个形状），否则 CI 只留一个 exit 1。

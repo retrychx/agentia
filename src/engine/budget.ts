@@ -28,18 +28,18 @@ export interface BudgetSnapshot {
 
 export interface BudgetGuardOptions {
   /** 整条 run（含子 agent）的累计 token 上限 */
-  maxTotalTokens?: number;
+  maxTotalTokens?: number | undefined;
   /**
    * 累计成本上限（美元）。**依赖 span 级 usage 的 `costEstimate`** ——
    * 模型不在 `engine/usage.ts` 的价格表里时成本恒为 0，这条护栏**永远不触发**；
    * 要无条件兜底请用 `maxTotalTokens`。同理，缓存 token 的单价是近似值（见 usage.ts）。
    */
-  maxCostUsd?: number;
+  maxCostUsd?: number | undefined;
   /**
    * 超限时的回调（在 `check` 返回前调用）。**抛错会冒泡进引擎** ——
    * 想记日志/告警请自行保证不抛（引擎侧装配的那条已经做了 try 包裹）。
    */
-  onExceed?: (snapshot: BudgetSnapshot) => void;
+  onExceed?: ((snapshot: BudgetSnapshot) => void) | undefined;
 }
 
 export interface BudgetGuard {

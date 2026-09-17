@@ -5,6 +5,39 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 新增（守卫基建 + 适配器对齐）
+
+- **守卫注册表 `docs/guards.md`**：「哪类危险由谁守」的单源清单（§1 已挂守卫 → 保护的
+  不变量 → 退化后果；§2 待守缺口；§3 写法纪律），配套 PR 模板的「危险类自查 5 问」。
+- **两个新架构守卫**：`tests/architecture/transport-errors.test.ts`（`integrations` 的
+  传输抛错必须带数值 `status`，否则 `classifyError` 判 unknown、重试层静默失效 ——
+  上线当天即抓到 `otlp.ts` 的同形漏网）与 `tests/architecture/tsconfig-strictness.test.ts`
+  （`exactOptionalPropertyTypes` / `strict` / `types:["node"]` 三个承重开关不得被关）。
+  另有元守卫 `tests/docs/guards-registry.test.ts` 防注册表本身腐化。
+- **`OpenAIClientOptions.maxRetries`（缺省 2）**：OpenAI 适配器补齐**客户端内层重试**
+  （408/409/429/5xx + `retry-after` 尊重，与 `createAnthropicClient` 逐字对齐）——
+  此前同一个 429 在 anthropic 打 3 次网络请求、在 openai 只打 1 次（引擎层那一次）。
+  对称性由 `tests/integrations/adapter-parity.test.ts` 守住（一份场景表跑两侧 + 跨侧
+  对称断言）。
+- **`exactOptionalPropertyTypes` 开启并完成迁移**（39 处 `error TS` 全清）：结果/状态
+  记录改必填 `T | undefined`、内部管道 `?: T | undefined`、**公共入参签名不动**（调用点
+  条件展开或 `omitUndefined`）。「显式 undefined ≠ 不传」从此是类型级约束 ——
+  `retry: { maxAttempts: undefined }` 静默关重试这类写法在编译期就写不出来。
+
+### 修复
+
+- **`createOtlpExporter` 非 2xx 改抛 `OtlpExportError`**（带数值 `status`）：此前裸
+  `Error` 会被 `classifyError` 判 `unknown` + 不可重试（与 OpenAI 适配器同形的病，
+  由新守卫抓到）。
+
+### 重构
+
+- 两条适配器的 client 层退避（`backoffMs` / `interruptibleSleep`）单源收进
+  `core/timeout.ts` —— 此前曾短暂存在 anthropic / openai 两份逐字副本；「不与引擎层
+  `backoffDelay` 合并」的例外仍在（±25%+retry-after vs ±20%，策略不同）。
+
 ## [0.6.2] - 2026-09-18
 
 > 本版主题：第六轮全量 review 收口 —— 16 条「不报错地不干活」修复（含两处**语义变更**，见下）、

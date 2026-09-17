@@ -21,14 +21,14 @@ interface Job {
   id: string;
   kind: 'every' | 'at';
   timer: ReturnType<typeof setTimeout>;
-  intervalMs?: number;
+  intervalMs?: number | undefined;
   input: unknown;
-  options?: RunInvocationOptions;
-  source?: string;
-  prefix?: string;
+  options?: RunInvocationOptions | undefined;
+  source?: string | undefined;
+  prefix?: string | undefined;
   /** 未到终态的已派发任务（仅 'every'）：用于 maxInFlight 闸门 */
-  inFlight?: Set<string>;
-  maxInFlight?: number;
+  inFlight?: Set<string> | undefined;
+  maxInFlight?: number | undefined;
 }
 
 export interface ScheduleEveryOptions {
@@ -178,8 +178,8 @@ export class Scheduler {
       : undefined;
     try {
       const rec = this.runner.submit(job.input, {
-        idempotencyKey,
-        options: job.options,
+        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+        ...(job.options !== undefined ? { options: job.options } : {}),
         source: job.source ?? `schedule:${job.id.slice(0, 8)}`,
       });
       // 追踪未终态的派发（去重命中已有终态记录时不计入）

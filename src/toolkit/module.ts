@@ -11,6 +11,7 @@ import type { Trace, TraceSink } from '../core/trace.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
 import type { BlackboardKey } from '../core/blackboard.js';
+import { omitUndefined } from '../core/object.js';
 import { discoverProviders } from './discover.js';
 import { collectTools } from './tool.js';
 import { collectSubAgents, subagentToTool } from './subagent.js';
@@ -176,18 +177,18 @@ export class AgentApp {
   private readonly di: Container;
   private readonly system: SystemPrompt | SystemParam;
   private readonly base: {
-    model?: string;
-    maxTokens?: number;
-    maxIterations?: number;
-    contextPolicy?: ContextPolicy;
-    retry?: RetryOptions | false;
-    maxTotalTokens?: number;
-    maxCostUsd?: number;
-    priceOverrides?: Record<string, ModelPricing>;
-    onUnpricedModel?: (info: { model: string; spanId: string }) => void;
-    toolTimeoutMs?: number;
-    maxToolConcurrency?: number;
-    maxEventChars?: number | false;
+    model?: string | undefined;
+    maxTokens?: number | undefined;
+    maxIterations?: number | undefined;
+    contextPolicy?: ContextPolicy | undefined;
+    retry?: RetryOptions | false | undefined;
+    maxTotalTokens?: number | undefined;
+    maxCostUsd?: number | undefined;
+    priceOverrides?: Record<string, ModelPricing> | undefined;
+    onUnpricedModel?: ((info: { model: string; spanId: string }) => void) | undefined;
+    toolTimeoutMs?: number | undefined;
+    maxToolConcurrency?: number | undefined;
+    maxEventChars?: number | false | undefined;
   };
   private _tools: AgentTool[] = [];
   /**
@@ -423,44 +424,51 @@ export class AgentApp {
       // 不二次包裹）；opts.tools 是调用方给的裸菜单，此处现包一次 —— applyMiddleware 产出
       // 新数组新对象（不改写入参），与装配期结果无共享，不会双重包裹。
       tools: opts.tools ? this.wrapTools(opts.tools) : this._tools,
-      model: opts.model ?? this.base.model,
-      maxTokens: opts.maxTokens ?? this.base.maxTokens,
-      maxIterations: opts.maxIterations ?? this.base.maxIterations,
-      client: opts.client,
-      onText: opts.onText,
-      // ⚠️ 取消传播（B1）：signal 是 RunInvocationOptions 的契约字段，必须原样进引擎。
-      // 宿主全都经 app.run 传它（HTTP 客户端断开 / drain 收口 / AsyncRunner.runTimeoutMs），
-      // 漏掉这一行 = 取消在 app.run 门口静默断掉：断开后 run 照跑到收尾、继续烧 token，
-      // 而三处宿主测试都用**假 app** 断言「signal 交到了 app」，真 AgentApp 这一跳无人测。
-      signal: opts.signal,
       runName: this.name,
-      // 入站链路（spec §9.2）：宿主给的触发来源上下文原样进引擎 —— 与 signal 同一条
-      // 「契约字段必须原样透传」的规则（漏掉这一行 = traceparent 头解析出来了却没人用）。
-      traceContext: opts.traceContext,
-      idempotencyKey: opts.idempotencyKey,
-      contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
-      retry: opts.retry ?? this.base.retry,
-      maxTotalTokens: opts.maxTotalTokens ?? this.base.maxTotalTokens,
-      maxCostUsd: opts.maxCostUsd ?? this.base.maxCostUsd,
-      priceOverrides: opts.priceOverrides ?? this.base.priceOverrides,
-      onUnpricedModel: opts.onUnpricedModel ?? this.base.onUnpricedModel,
-      toolTimeoutMs: opts.toolTimeoutMs ?? this.base.toolTimeoutMs,
-      maxToolConcurrency: opts.maxToolConcurrency ?? this.base.maxToolConcurrency,
-      maxEventChars: opts.maxEventChars ?? this.base.maxEventChars,
-      resultSchema: opts.resultSchema,
-      // 提示词版本化（D4）：system 是 SystemPrompt 实例时自动带上它的 version
-      // （run 根 attribute `system.version`）；传已拼好的 SystemParam 则无版本可记。
-      systemVersion: sys instanceof SystemPrompt ? sys.version : undefined,
-      // @Prompt 资产版本表（R7）：固定来自装配期收集（per-run opts 无此字段）；
-      // 无版本表的 app 传 undefined，engine 空表不记。
-      promptVersions: this.promptVersions,
-      session: opts.session,
-      memory: opts.memory,
-      rethrow: opts.rethrow,
       sinks: this.sinks,
-      // 冲刷前的最后一笔（见 RunAppOptions.beforeFlush）：per-run 字段原样透传 ——
-      // 与 sinks 不同，它**不是**应用级配置（defineEval 每个用例各挂各的结论）。
-      beforeFlush: opts.beforeFlush,
+      // per-run 覆盖：值为 undefined 的键**整体摘掉**再交出去。
+      // 为什么：`exactOptionalPropertyTypes` 下 `{foo: x}`（x: T | undefined）不是合法的
+      // `foo?: T` —— 显式 undefined 与「不传这个键」是有区别的（那正是 `retry.ts` 被
+      // 显式 undefined 覆盖缺省的事故）。语义上与「不传」完全一致：引擎对这些字段
+      // 一律 `?? 缺省` 取值。
+      ...omitUndefined({
+        model: opts.model ?? this.base.model,
+        maxTokens: opts.maxTokens ?? this.base.maxTokens,
+        maxIterations: opts.maxIterations ?? this.base.maxIterations,
+        client: opts.client,
+        onText: opts.onText,
+        // ⚠️ 取消传播（B1）：signal 是 RunInvocationOptions 的契约字段，必须原样进引擎。
+        // 宿主全都经 app.run 传它（HTTP 客户端断开 / drain 收口 / AsyncRunner.runTimeoutMs），
+        // 漏掉这一行 = 取消在 app.run 门口静默断掉：断开后 run 照跑到收尾、继续烧 token，
+        // 而三处宿主测试都用**假 app** 断言「signal 交到了 app」，真 AgentApp 这一跳无人测。
+        signal: opts.signal,
+        // 入站链路（spec §9.2）：宿主给的触发来源上下文原样进引擎 —— 与 signal 同一条
+        // 「契约字段必须原样透传」的规则（漏掉这一行 = traceparent 头解析出来了却没人用）。
+        traceContext: opts.traceContext,
+        idempotencyKey: opts.idempotencyKey,
+        contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
+        retry: opts.retry ?? this.base.retry,
+        maxTotalTokens: opts.maxTotalTokens ?? this.base.maxTotalTokens,
+        maxCostUsd: opts.maxCostUsd ?? this.base.maxCostUsd,
+        priceOverrides: opts.priceOverrides ?? this.base.priceOverrides,
+        onUnpricedModel: opts.onUnpricedModel ?? this.base.onUnpricedModel,
+        toolTimeoutMs: opts.toolTimeoutMs ?? this.base.toolTimeoutMs,
+        maxToolConcurrency: opts.maxToolConcurrency ?? this.base.maxToolConcurrency,
+        maxEventChars: opts.maxEventChars ?? this.base.maxEventChars,
+        resultSchema: opts.resultSchema,
+        // 提示词版本化（D4）：system 是 SystemPrompt 实例时自动带上它的 version
+        // （run 根 attribute `system.version`）；传已拼好的 SystemParam 则无版本可记。
+        systemVersion: sys instanceof SystemPrompt ? sys.version : undefined,
+        // @Prompt 资产版本表（R7）：固定来自装配期收集（per-run opts 无此字段）；
+        // 无版本表的 app 传 undefined，engine 空表不记。
+        promptVersions: this.promptVersions,
+        session: opts.session,
+        memory: opts.memory,
+        rethrow: opts.rethrow,
+        // 冲刷前的最后一笔（见 RunAppOptions.beforeFlush）：per-run 字段原样透传 ——
+        // 与 sinks 不同，它**不是**应用级配置（defineEval 每个用例各挂各的结论）。
+        beforeFlush: opts.beforeFlush,
+      }),
       contextInit: (ctx) => {
         if (seed) {
           // 种子键是运行期字符串，类型上无从与「用户声明的 Blackboard」对齐 ——

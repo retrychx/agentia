@@ -37,8 +37,8 @@ const ASSISTANT_TEXT_PLACEHOLDER = '[harvest] assistant 文本未入 trace';
 /** tool.input 事件体的宽容读取形状（body 是 unknown；与 engine/replay.ts 同源） */
 interface ToolInputEvent {
   tool: string;
-  toolUseId?: string;
-  input?: string;
+  toolUseId?: string | undefined;
+  input?: string | undefined;
 }
 
 /** 取某回合的 tool.input 事件并规整（engine 记账：input 已是截断后的字符串） */

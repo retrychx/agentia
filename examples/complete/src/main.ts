@@ -62,7 +62,10 @@ const app = await createApp({
 // provider，用 `AppCallable` 包一层把 client 补进 opts（异步侧另可直接给 AsyncRunner 传 client）。
 // 不设 OPENAI_BASE_URL 就用框架默认的 Anthropic client（读 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL）。
 const openaiClient = OPENAI_BASE_URL
-  ? createOpenAIClient({ baseURL: OPENAI_BASE_URL, apiKey: process.env.OPENAI_API_KEY })
+  ? createOpenAIClient({
+      baseURL: OPENAI_BASE_URL,
+      ...(process.env.OPENAI_API_KEY !== undefined ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+    })
   : undefined;
 
 const callable: AppCallable = openaiClient
@@ -74,7 +77,11 @@ const callable: AppCallable = openaiClient
 
 // —— 4) 耐久任务存储 + 异步宿主（三种触发共用同一份 RunInput 契约）——
 const store = new SqliteTaskStore(DB_PATH);
-const runner = new AsyncRunner(callable, { store, client: openaiClient, runTimeoutMs: 120_000 });
+const runner = new AsyncRunner(callable, {
+  store,
+  ...(openaiClient !== undefined ? { client: openaiClient } : {}),
+  runTimeoutMs: 120_000,
+});
 
 const resumed = await runner.resumePending(); // 重启续跑未完成任务（不是丢弃）
 if (resumed) console.log(`[boot] 续跑 ${resumed} 个未完成任务`);

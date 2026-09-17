@@ -19,7 +19,7 @@ export interface CapabilityCall {
   /** 模型给出的结构化入参（schema 校验已过） */
   readonly input: unknown;
   /** engine 注入的执行上下文（recorder/parentSpanId/client），同步宿主下可用 */
-  readonly ctx?: ToolRunContext;
+  readonly ctx: ToolRunContext | undefined;
 }
 
 /** 放行到下一层；`next(newInput)` 可改写入参，缺省沿用当前 input */

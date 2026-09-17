@@ -29,7 +29,7 @@ export class SystemPrompt {
    * 效果、排查回归都靠它）。框架**不做**版本库 / 回滚平台（YAGNI，见 spec §10）：
    * 版本号怎么来（git sha / 语义版本 / 手工）由你决定。
    */
-  readonly version?: string;
+  readonly version: string | undefined;
 
   constructor(opts: SystemPromptOptions = {}) {
     this.version = opts.version;

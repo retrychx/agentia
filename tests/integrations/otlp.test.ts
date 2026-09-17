@@ -48,8 +48,8 @@ function sampleTrace(): Trace {
 }
 
 interface Captured {
-  url?: string;
-  contentType?: string;
+  url?: string | undefined;
+  contentType?: string | undefined;
   body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 

@@ -59,10 +59,10 @@ const DEFAULT_MAX_EVENT_CHARS = 2000;
 interface ToolEventIO {
   tool: string;
   /** 原始 tool_use id（engine 记账；老 trace 无此字段 → 回落按名配对） */
-  toolUseId?: string;
-  input?: string;
-  ok?: boolean;
-  content?: string;
+  toolUseId: string | undefined;
+  input: string | undefined;
+  ok: boolean | undefined;
+  content: string | undefined;
 }
 
 export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): MessageParam[] {
@@ -141,7 +141,7 @@ function expandTurns(
       `capability=${capability ?? '(主 agent run)'} span=${turn.spanId}`;
 
     const content: ContentBlockParam[] = [{ type: 'text', text: note }];
-    const pairs: Array<{ id: string; output?: ToolEventIO }> = [];
+    const pairs: Array<{ id: string; output: ToolEventIO | undefined }> = [];
 
     if (includeToolIO) {
       const inputs = eventsOf(turn, 'tool.input');

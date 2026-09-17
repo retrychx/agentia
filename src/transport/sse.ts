@@ -33,9 +33,9 @@ export interface SseWriterOptions {
    * 下游积压上限（字节），按 `res.writableLength` 计；缺省 8 MiB。
    * 正常客户端远达不到，实际只拦「连上但不读」的病态消费者。
    */
-  maxBufferedBytes?: number;
+  maxBufferedBytes?: number | undefined;
   /** 因积压超限而收口时回调（收口**先于**回调发生，回调抛错不影响收口） */
-  onBackpressure?: (info: { bufferedBytes: number; limitBytes: number }) => void;
+  onBackpressure?: ((info: { bufferedBytes: number; limitBytes: number }) => void) | undefined;
 }
 
 /** 缺省积压上限：8 MiB —— 一条 8 MiB 都没被读走的流，已经不是「慢」而是「断了」 */

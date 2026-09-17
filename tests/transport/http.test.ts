@@ -24,6 +24,9 @@ function fakeResult(text: string): AgentRunResult {
     stopReason: 'end_turn',
     finalText: text,
     iterations: 1,
+    // 结果类型必填（exactOptionalPropertyTypes）：正常收尾时两字段在场且为 undefined
+    error: undefined,
+    typed: undefined,
   };
 }
 

@@ -107,7 +107,11 @@ describe('createAnthropicClient（默认 ModelClient 工厂）', () => {
 
   it('请求落在 {baseURL}/v1/messages，带 x-api-key / anthropic-version / stream:true，signal 不进 body', async () => {
     // `as` 防 TS 按初始值把 seen 窄化成 null（赋值发生在闭包里，控制流看不见）
-    let seen = null as { url?: string; headers: Record<string, unknown>; body: string } | null;
+    let seen = null as {
+      url?: string | undefined;
+      headers: Record<string, unknown>;
+      body: string;
+    } | null;
     const server = createServer((req, res) => {
       let body = '';
       req.on('data', (c) => {

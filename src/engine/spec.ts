@@ -70,9 +70,9 @@ export interface RunInvocationOptions {
 /** 一次任务的规范化入参：messages（已由 normalizeMessages 规整） */
 export interface RunSpec {
   messages: MessageParam[];
-  options?: RunInvocationOptions;
+  options?: RunInvocationOptions | undefined;
   /** 触发来源标记（sync / async / schedule:<id>），供 run 记录审计 */
-  source?: string;
+  source?: string | undefined;
 }
 
 /** transport 层接受的原始入参形态 */

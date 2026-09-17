@@ -19,7 +19,7 @@ import type { SessionStore } from './session.js';
 export class Run {
   readonly recorder: TraceRecorder;
   readonly runId: string;
-  readonly idempotencyKey?: string;
+  readonly idempotencyKey: string | undefined;
   readonly createdAt: number = Date.now();
   private _status: RunStatus = 'queued';
   startedAt?: number;
@@ -79,7 +79,10 @@ export class Run {
         stopReason: 'error',
         finalText: '',
         iterations: 0,
+        error: classifyError(error),
+        typed: undefined,
       };
+      return;
     }
     this._result.error = classifyError(error);
   }
@@ -147,7 +150,9 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
 export async function executeRun<S extends JsonSchema = JsonSchema>(
   options: ExecuteRunOptions<S>,
 ): Promise<{ run: Run; result: AgentRunResult<SchemaType<S>> }> {
-  const run = new Run({ idempotencyKey: options.idempotencyKey });
+  const run = new Run(
+    options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {},
+  );
   run.start();
   const ctx = new RunContext(run);
   const memory = options.memory;
@@ -170,7 +175,7 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         messages: await loadSession(session, options.messages),
         recorder: run.recorder,
         // 会话标识落 run 根 attribute（`session.id`）—— 多轮 run 按会话聚合的锚点
-        sessionId: session?.id,
+        ...(session ? { sessionId: session.id } : {}),
       });
       run.finish(result);
       if (memory) {

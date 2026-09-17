@@ -43,9 +43,9 @@ export interface DiffEntry {
 export interface SpanDiff {
   /** 从根到该 span 的配对路径（人读 + 稳定锚），规则见文件头 */
   path: string;
-  /** 缺侧 = 该侧调用树无此位置 */
-  a?: Span;
-  b?: Span;
+  /** 缺侧 = 该侧调用树无此位置（字段在场，值可为 undefined，见 core/run.ts 的说明） */
+  a: Span | undefined;
+  b: Span | undefined;
   /** 两侧都在时的字段级差异；缺侧时为空数组 */
   fields: DiffEntry[];
 }
