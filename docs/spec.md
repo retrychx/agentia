@@ -1344,9 +1344,47 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
 
 - 3× 余量下的桥翻转未复现（0/800）；本条证据是确定性构造与边界档，不依赖它。
 - 「同批到期、计时器表顺序决定谁先」仍是**假说**（② 同样保留）。
-- **`classifyError` 仍不认 `timeout`** ⇒ 模型调用超时（`anthropic.ts` 的 `DOMException('TimeoutError')`、
-  OTLP / metrics 导出超时）在 `span.error` 上仍是 `type:'unknown'`。**没有顺手改**：`retryable` 有消费方
-  （`engine/retry.ts` 的自动重试），把超时标成可重试会改变「模型超时要不要自动重试」的行为 —— 那是独立决策。
+
+### 2026-09-17 ②：超时是**自己一类** —— `errorType` 由 `connection` 改为 `timeout`
+
+**先更正记录**：① 里那条「`classifyError` 仍不认 `timeout` ⇒ 模型调用超时在 `span.error` 上是
+`type:'unknown'`（不可重试）」**整条写错了，已删除**（不写修正版）。事实相反 —— `engine/errors.ts` 的
+`isConnectionError` 有一条专门认 `name === 'TimeoutError'` 的判据（注释写明就是给 `AbortSignal.timeout` /
+默认 client 的超时合成信号用的）⇒ 超时一直落 `type:'connection'` + `retryable: true` ⇒ **缺省就在自动重试**。
+
+**证据（端到端，不是读判据）**：真路径 `runAgent` + 真 trace，第一次尝试抛
+`DOMException('Anthropic 请求超过 100ms', 'TimeoutError')`、第二次成功：
+
+```
+calls=2   onRetry=[{attempt:1, type:'connection', retryable:true}]
+turnCount=2  turnStatuses=['error','ok']   最终 end_turn + finalText='重试后成功'
+firstTurnError={type:'connection', message:'Anthropic 请求超过 100ms', retryable:true}
+```
+
+**为什么误判**：只读了 `classifyError` 的 status 分支与 `instanceof Error` 兜底，漏读了下面
+`isConnectionError` 的第三条；而且断言「这条行为没有用例守着」时用的 `grep … | head -12` 把
+`tests/engine/errors.test.ts` 的匹配**截断**了 —— 那条断言就在那里（「无 status 的网络型错误」条目的最后
+一段，钉的是 `TimeoutError → connection`）。**「我没看到」不等于「不存在」。**
+
+**决定**：超时不再混进 `connection`，它是自己一类。
+
+1. `core/timeout.ts` 的 `isTimeoutError` 扩成三条判据（**全是鸭子类型**）：框架 `TimeoutError` 实例 /
+   `code === 'timeout'` / `name === 'TimeoutError'`（内建 DOMException 的规范 name）。分类与工具级记账
+   共用同一条判据，口径一致。
+2. `classifyError` 新增显式分支 → `{ type: 'timeout', retryable: true }`；`isConnectionError` 里原来的
+   TimeoutError 判据**删除**。分支放在 status 分支**之后** ⇒ 带数值 status 的错误仍优先按状态归类
+   （优先级与改动前逐字一致）。
+3. **`retryable` 保持 `true`**：超时一直是可重试故障，本单**不改重试行为**（缺省 `maxAttempts=3` 照旧），
+   只改记账口径 —— `span.error.type` / `trace-diff` / 看板现在能把「超时」与「连不上」分开。
+
+**代价（如实记）**：**`errorType` 取值变更** —— 按 `span.error.type` 分流的看板 / 告警，超时类会从
+`connection` 变成 `timeout`；`trace-diff` 比对旧 trace 时超时显示为「类型变了」。**重试行为不变。**
+`tests/engine/errors.test.ts` 里那条旧期望（`TimeoutError → connection`）是**有意改掉**的（错的契约被钉成了
+期望），被改坏的原断言与理由写在用例注释里。
+
+**门禁**：`tests/engine/errors.test.ts`（超时三类形态同判 + status 优先级不变）、
+`tests/engine/retry.test.ts`（缺省 `isRetryable` 认超时）、`tests/engine/loop.test.ts`（端到端：
+超时 → 重试 → 成功，断言 `onRetry`、两个 turn，且失败 turn 的 `error.type='timeout'`）。
 
 ## 11. 开放项
 

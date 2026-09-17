@@ -31,10 +31,24 @@ export class TimeoutError extends Error {
   }
 }
 
-/** 是否超时错误：`TimeoutError` 实例，或任何 `code === 'timeout'` 的错误（鸭子类型） */
+/**
+ * 是否超时错误。三条判据（任一条成立即算，**全部是鸭子类型** —— 使用者不必 import 本模块）：
+ *
+ * 1. 本模块的 `TimeoutError` 实例（框架自己判的超时，如 MCP 桥的兜底）；
+ * 2. `code === 'timeout'`（工具作者自报超时的推荐写法）；
+ * 3. 内建 `DOMException` 的 `name === 'TimeoutError'` —— `AbortSignal.timeout()` 与默认 client 的
+ *    超时合成信号（`integrations/anthropic.ts` 的 `composeSignal`）产出的就是它，`name` 是规范值、
+ *    不受压缩影响。
+ *
+ * 为什么第 3 条也算：`engine/errors.ts` 的分类**此前只有它**认这一条（当时把超时归进 `connection`），
+ * 于是「超时」在 trace 里混在「连不上」里，看板与 `trace-diff` 分不出两者。现在超时有自己的
+ * `type: 'timeout'`，这条判据由分类与工具级记账**共用**，口径一致（spec §10 2026-09-17 ②）。
+ */
 export function isTimeoutError(e: unknown): boolean {
   if (e instanceof TimeoutError) return true;
-  return typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'timeout';
+  if (typeof e !== 'object' || e === null) return false;
+  const o = e as { code?: unknown; name?: unknown };
+  return o.code === 'timeout' || o.name === 'TimeoutError';
 }
 
 /**

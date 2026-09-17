@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+### 变更（超时有了自己的 `errorType`：`connection` → `timeout`）
+
+- `classifyError` 对超时（内建 `DOMException('TimeoutError')` —— `AbortSignal.timeout()` 与默认 client 的
+  超时合成信号；以及任何 `code === 'timeout'` 的错误）现在返回 **`type: 'timeout'`**，不再归进 `connection`。
+  **`retryable` 保持 `true`** ⇒ **自动重试行为不变**（超时本来就是可重试故障）；变的是**记账**：
+  按 `span.error.type` 分流的看板 / 告警会把超时类从 `connection` 挪到 `timeout`，`trace-diff` 比对旧 trace
+  时超时会显示为「类型变了」。取证与决策见 `docs/spec.md` §10 2026-09-17 ②。
+- 顺带把 `isTimeoutError` 的契约写清（三条判据，全鸭子类型）：框架 `TimeoutError` 实例 /
+  `code === 'timeout'` / `name === 'TimeoutError'`；引擎的工具级 catch 用它 ⇒ 工具自判的超时与引擎判的
+  超时记同一类账（`errorKind='timeout'`）。
+- ⚠️ **更正**：此前一版说明里「模型调用超时在 `span.error` 上是 `type:'unknown'`（不可重试）」是**错的** ——
+  它一直判 `connection` + 可重试（`engine/errors.ts` 的 `isConnectionError` 专门认 `name === 'TimeoutError'`）。
+  该错误说明已从 `docs/spec.md` 删除，以 2026-09-17 ② 为准。
+
 ### 变更（MCP 超时单源化 —— 一次调用只有一个裁判）
 
 - **原语单源**：`TIMED_OUT` / `withTimeout` 下沉到 `src/core/timeout.ts`，`engine/concurrency.ts`
