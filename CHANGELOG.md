@@ -5,7 +5,12 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.6.2] - 2026-09-18
+
+> 本版主题：第六轮全量 review 收口 —— 16 条「不报错地不干活」修复（含两处**语义变更**，见下）、
+> eval 分数进指标的 `beforeFlush` 时序缝、metrics 三维度基数封顶、trace 跨进程入站关联。
+> **无破坏性变更**：两处语义变更（OpenAI 流式截断判据、MCP 桥对显式 `toolTimeoutMs: 0` 的裁判）
+> 都是「此前错误的行为被改正」，正常用法不受影响。
 
 ### 修复（第六轮全量 review：「不报错地不干活」一次收口）
 
@@ -326,7 +331,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/retrychx/agentia/releases/tag/v0.6.2
 [0.6.1]: https://github.com/retrychx/agentia/releases/tag/v0.6.1
 [0.6.0]: https://github.com/retrychx/agentia/releases/tag/v0.6.0
 [0.5.0]: https://github.com/retrychx/agentia/releases/tag/v0.5.0
