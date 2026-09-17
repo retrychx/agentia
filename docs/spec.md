@@ -1386,6 +1386,47 @@ firstTurnError={type:'connection', message:'Anthropic 请求超过 100ms', retry
 `tests/engine/retry.test.ts`（缺省 `isRetryable` 认超时）、`tests/engine/loop.test.ts`（端到端：
 超时 → 重试 → 成功，断言 `onRetry`、两个 turn，且失败 turn 的 `error.type='timeout'`）。
 
+### 2026-09-17 ③：发版面**单源化** + 闸门扩到全发布面；tag 体例回到 annotated
+
+**先更正一处错**：本仓库的发布约定一直写「这四个同步点」与「发版步骤：bump 四处」。**「四处」是错的** ——
+刚发布的 v0.6.1 一次 bump 真实动了 **17 个文件**，而漏点全在「四处」之外：`examples/` 的 `^旧版` pin
+（含两个 Dockerfile **注释**里那份）、`.github/ISSUE_TEMPLATE/bug_report.yml` 的版本占位、README 版本行、
+`docs/roadmap.md` 状态行、`docs/spec.md` §11 进度链、CHANGELOG 的 compare 基线与链接引用、
+`package-lock.json` 的 4 个 version 字段。这些不是假想风险：上一次发版就出现过「只在 README 改了 pin、
+Dockerfile 注释没改」，lock 的 version 字段也整轮跳过而全链全绿。
+
+**决定**：
+
+1. **发布面清单单源**：`scripts/release-surface.mjs` 定义 18 项替换面（每项带 `count` 期望值与「漏了会
+   怎样」）+ 3 项结构面（本版**必须新增**的：CHANGELOG 条目、CHANGELOG 链接引用、spec §11 链段）。
+   `--list` 给人看、`--json` 给测试。闸门与 bump 共用这一份，免得「闸门认一套、bump 又认一套」。
+2. **闸门扩到全发布面**（`scripts/check-release.mjs`，仍挂两包 `prepublishOnly`）：除原有的发布面一致性
+   与「必须高于 npm 已发布版本」，新增「本版 CHANGELOG 条目存在且不是空骨架」。命中口径是「一个匹配里的
+   **所有**捕获组都等于版本号才算命中」—— lock 里那 343 个第三方版本号一个都不算。
+3. **`scripts/release.mjs bump`**：逐项替换，每项对着 `count` 断言；**任何一项不符即全部中止、一个字节
+   都不写**（先算完所有文件的新内容，再统一落盘）。两个散文位（CHANGELOG 正文 / spec §11 链说明）只插
+   骨架并带 `TODO(发版)` 标记，由人填；未填时严格闸门会拦（`--allow-pending` 是 bump 自己复检时用的降级）。
+4. **`npm publish` 不进脚本**：它是唯一不可逆的一步 —— 版本号一旦花掉收不回；把它放在「重写十几个文件」
+   旁边等于放大一次笔误的爆炸半径。它仍是两条显式命令，由 `bump` 打印，且**顺序固定为 发布 → 合并 →
+   打 tag**（反过来的话 main 上会挂着「已发布」而 registry 还没有）。
+5. **tag 一律 annotated**，由 `scripts/release.mjs tag` 创建：消息**写文件 + `-F` 传入**，建完
+   `git cat-file tag` 回读。理由是**踩过的坑**：`git tag -a v1.2.3 -m "…<反引号>@migor/agentia<反引号>…"`
+   里的反引号会被 shell 当**命令替换**执行 —— 消息里的词当场消失、bash 还会先打一行
+   “No such file or directory”，而 tag 照样创建成功。
+6. **打 tag 前核对「产物 ↔ 树」**：单源文档 `docs/usage-guide.md` 与 registry tarball 内
+   `dist/AGENTS.md` 的 sha256 必须相等；另加产物里的 `AGENTIA_VERSION`、CLI 包零 `@migor/*` 依赖、
+   `dist/inspector/` 在场。判据取单源文档，是因为它串起了这份文档被消费的四个面（不是逐文件 diff）。
+7. **存量 lightweight tag 用 `retag` 显式转换**（默认只演练，`--apply` 才真改）：本仓库最早五个 tag
+   （v0.2.2–v0.4.2）是 annotated，v0.5.0 起退成了 lightweight —— 所以这条是**回到仓库自己的老体例**，
+   不是引入新体例。脚本不自动改已推送的 tag（force-push 是外部可见动作）。
+
+**为什么闸门仍在 `prepublishOnly` 而不进 `verify-all`**：未发布窗口内 `AGENTIA_VERSION` 是**有意落后**的
+（包版本先行），放进主链会让每次本地运行与 PR 为一种有意状态变红。
+
+**门禁**：`tests/scripts/release-scripts.test.ts` —— 夹具是**合成**的（不拿当前树做快照，否则未发布窗口会让
+它假红），钉的是护栏本身：计数不符即中止且**零写盘**（用 `git status --porcelain` 为空作证）、版本号只能
+往前走、lock 的第三方版本号不被改、闸门能逐项点出不同步的那一面。变异电池 4/4 咬人。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

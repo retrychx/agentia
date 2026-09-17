@@ -61,6 +61,15 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   即可，**不需要 Anthropic key**。⚠️ 会真花 token ⇒ 不进 verify-all / CI）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
+├── scripts/release-surface.mjs  # **发布面清单（单源）**：一次发版要动哪些文件的哪个值 ——
+│                            #   18 项替换面（每项带 count 期望值 + 「漏了会怎样」）+ 3 项结构面；
+│                            #   闸门与 bump 共用这一份。`--list` 给人看、`--json` 给测试
+├── scripts/check-release.mjs  # 发版闸门：逐项断言「发布面 == 包版本」+「高于 npm 已发布版本」，
+│                            #   挂在**两包的 prepublishOnly**（不进 verify-all：未发布窗口内
+│                            #   AGENTIA_VERSION 有意落后）。`--offline` 跳网络、`--allow-pending` 降级骨架
+├── scripts/release.mjs      # 发版工具：`bump <x.y.z>`（逐项替换，带计数断言，不符即中止且不写盘）
+│                            #   / `tag <x.y.z>`（核对 registry 产物 ↔ 仓库树后打 **annotated** tag
+│                            #   + 建 Release）/ `retag <x.y.z>`（lightweight → annotated，默认只演练）
 ├── packages/
 │   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/report/harvest/diff/add），零运行时依赖
 │   │                        #   report = trace.jsonl → 调优报告；harvest = trace.jsonl → eval 用例骨架
@@ -180,13 +189,30 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   **不要另写第二份**：`tests/docs/usage-guide.test.ts` 会拿它里面的表格逐项对源码校验，改名/删字段立刻失败。
   三份副本都是**构建产物**（落在各自 `dist/`，已 gitignore），只拷不手写，因此不存在漂移。
 - **发布**：两包版本同步（@migor/agentia 与 @migor/cli），CLI 模板里的框架依赖版本跟着走。
-  这四个同步点（根 `package.json` / CLI `package.json` / `src/index.ts` 的 `AGENTIA_VERSION` /
-  `packages/cli/src/templates.ts` 的 pin）由 `scripts/check-release.mjs` 校验，挂在**两包的
-  `prepublishOnly`** 上 —— **不**进 `verify-all`：未发布窗口内 `AGENTIA_VERSION` 是**有意落后**的
-  （包版本先行），只有真发时才要求一致；不一致 `npm publish` 当场失败。
-  同脚本还有一条 **bump 闸门**：要发的版本必须高于 npm 已发布版本（查官方 registry，E404 放行）——
-  只验一致不验高低时，破坏性变更可能压在旧版本号上发出去（0.6.0 窗口真踩过）。
-  发版步骤：bump 四处 → `bash scripts/verify-all.sh` → 两包分别 `npm publish`（`prepublishOnly` 会先自检再 build）。
+  ⚠️ **发布面不是「两个 package.json」，也不是「四处」** —— 一次 bump 真实动到十几个文件：
+  `examples/` 的 `^旧版` pin（含两个 Dockerfile **注释**里那份）、`.github/ISSUE_TEMPLATE/*.yml`
+  的版本占位、README 版本行、`docs/roadmap.md` 状态行、`docs/spec.md` §11 进度链、CHANGELOG 的
+  compare 基线与链接引用、`package-lock.json` 的 version 字段、官网对渲染器的精确 pin。
+  清单**只有一份**：`scripts/release-surface.mjs`（`--list` 可查）。闸门 `scripts/check-release.mjs`
+  逐项断言「== 包版本」，bump `scripts/release.mjs bump` 逐项替换且**每项带计数断言**
+  （不符即中止、一个字节都不写）。闸门挂在**两包的 `prepublishOnly`** —— **不**进 `verify-all`：
+  未发布窗口内 `AGENTIA_VERSION` 是**有意落后**的（包版本先行），只有真发时才要求一致；
+  不一致 `npm publish` 当场失败。同处还有一条 **bump 闸门**：要发的版本必须高于 npm 已发布版本
+  （查官方 registry，E404 放行）—— 只验一致不验高低时，破坏性变更可能压在旧版本号上发出去。
+  - **发版步骤（顺序不能换）**：`node scripts/release.mjs bump <x.y.z>` → 填掉它标出的两个
+    `TODO(发版)`（CHANGELOG 正文 / spec §11 链说明）→ `bash scripts/verify-all.sh` → 开 PR 等必需
+    检查绿 → **先发布**（两包分别 `npm publish`；`prepublishOnly` 会先自检再 build）→ 合并 PR →
+    `node scripts/release.mjs tag <x.y.z> --title '一句话'`。**发布必须在合并之前**：反过来的话
+    main 上会挂着「已发布」而 registry 还没有，这个谎会一直挂到发出去为止。
+  - **tag 一律 annotated**（`release.mjs tag` 负责）。**不要用 `git tag -a … -m "<消息>"`**：
+    消息里全是反引号，shell 会把反引号内容当**命令替换**执行 —— 消息里的词当场消失、bash 先打一行
+    “No such file or directory”，而 tag 照样创建成功（本仓库真踩过）。脚本的做法是消息写文件 +
+    `-F` 传入，建完 `git cat-file tag` 回读。存量 lightweight tag（v0.5.0 / v0.6.0 / v0.6.1）要转
+    annotated 用 `node scripts/release.mjs retag <x.y.z>`（**默认只演练**，`--apply` 才真改；
+    它按哈希判据确认这个 tag 确实是当初发出去那版才动，force-push 已推送的 tag 是外部可见动作）。
+  - **打 tag 前会核对「registry 产物 ↔ 仓库树」**：单源文档 `docs/usage-guide.md` 与 tarball 内
+    `dist/AGENTS.md` 的 sha256 必须相等，另加产物里的 `AGENTIA_VERSION`、CLI 包零 `@migor/*` 依赖、
+    `dist/inspector/` 在场。不等就是「这棵树不是发出去那版」，直接拒绝打 tag。
 - **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
   构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。
   - **wrangler 钉死 `4.131.0`，不要改回裸 `npx wrangler`**：`latest`（4.131.1）依赖的 workerd 二进制
