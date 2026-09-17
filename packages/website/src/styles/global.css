@@ -252,17 +252,124 @@ code {
   position: relative;
   min-height: 100svh;
   display: flex;
+  /* 文案在上、trace 自播面板在下（原来是单块内容居中）。面板要落在品牌语之后、
+     折叠线附近 —— 它是「产品证据」，不是页脚装饰。 */
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 36px;
   text-align: center;
   overflow: hidden;
-  padding: 120px var(--gutter) 80px;
+  padding: 100px var(--gutter) 52px;
 }
-#orchestra {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+/* 首屏的 trace 自播：一块只读的「运行窗口」。
+   高度写死 + 内部滚动：span 逐条长出来时页面不能被推着跳（旧 canvas 是绝对定位，
+   完全没有这个问题 —— 换成文档流里的面板就得自己扛住高度变化）。 */
+.hero-demo {
+  position: relative;
+  z-index: 2;
+  width: min(100%, 980px);
+  background: #0c0c0e;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  text-align: left;
+  box-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.9);
+}
+.hero-demo-bar {
+  display: flex;
+  align-items: center;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 14px;
+}
+.hero-demo-bar i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--border-strong);
+  margin-right: 6px;
+}
+.hero-demo-bar em {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 12px;
+  color: var(--faint);
+  margin-left: 6px;
+}
+.hero-demo-replay {
+  margin-left: auto;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--steel);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition:
+    color 0.2s,
+    border-color 0.2s;
+}
+.hero-demo-replay:hover {
+  color: var(--ink);
+  border-color: var(--steel);
+}
+.hero-demo-replay.busy {
+  opacity: 0.5;
+}
+.hero-demo-tree {
+  height: 272px;
+  overflow: auto;
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  overscroll-behavior: contain;
+}
+.hero-demo-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  padding: 9px 14px;
+}
+.hero-demo-foot .hu {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.hero-demo-foot .hu i {
+  font-style: normal;
+  margin-right: 6px;
+}
+.hero-demo-foot .hu b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.hero-demo-foot .hu-note {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  opacity: 0.85;
+}
+@media (max-width: 860px) {
+  /* 窄屏：面板矮一点，让「文案 + 面板」仍能挤进一屏 */
+  .hero {
+    gap: 32px;
+    padding: 96px var(--gutter) 44px;
+  }
+  .hero-demo-tree {
+    height: 236px;
+    font-size: 11.5px;
+  }
+  .hero-demo-foot .hu-note {
+    display: none;
+  }
 }
 .hero-content {
   position: relative;
