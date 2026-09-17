@@ -2,9 +2,19 @@
 
 > 本文件是 **AI 辅助编码的权威入口**，也是人类速查表。
 > 仓库根部的 `AGENTS.md` 讲的是「怎么改这个仓库」；**本文件讲的是「怎么用这个框架」**。
-> 文中所有 API 名与选项名都由框架仓库的测试对着源码校验 —— 改名会立刻失败，不会静默过期。
 
 包名：`@migor/agentia`（框架）/ `@migor/cli`（命令行）。Node ≥ 18，ESM，TypeScript 7。
+
+**目录**
+- [0. 心智模型（先读这一段）](#0-心智模型先读这一段)
+- [1. 最小可运行示例](#1-最小可运行示例)
+- [2. 项目结构（CLI 约定）](#2-项目结构cli-约定)
+- [3. 装饰器 spec 字段速查](#3-装饰器-spec-字段速查)
+- [4. createApp 与 app.run 选项](#4-createapp-与-apprun-选项)
+- [5. 类型链路（这块决定「编辑器给不给提示」）](#5-类型链路这块决定编辑器给不给提示)
+- [6. 运行时 API](#6-运行时-api)
+- [7. 已知边界（如实标注，不要指望框架替你兜）](#7-已知边界如实标注不要指望框架替你兜)
+- [8. 常见错误](#8-常见错误)
 
 ---
 
@@ -275,7 +285,11 @@ Anthropic Messages API 逐字对齐（snake_case），并与 SDK 的对应类型
 
 ## 6. 运行时 API
 
-### `RunContext`（`RunContext.current()`，run 内任意异步上下文可取）
+### 6.1 运行时上下文与装配
+
+run 内取上下文（黑板 / `@Skill` 第二参）、把装饰器装配成 app、环境变量与 `.env` 的读法。
+
+#### `RunContext`（`RunContext.current()`，run 内任意异步上下文可取）
 
 | 成员 | 说明 |
 |---|---|
@@ -286,14 +300,14 @@ Anthropic Messages API 逐字对齐（snake_case），并与 SDK 的对应类型
 | `delete` | 删除键 |
 | `keys` | 当前全部键 |
 
-### `SkillContext`（`@Skill` 方法第二参）
+#### `SkillContext`（`@Skill` 方法第二参）
 
 | 成员 | 说明 |
 |---|---|
 | `model` | 本次技能的缺省模型 |
 | `llm` | 受限子运行：`await ctx.llm({ prompt })` / `{ messages, system, model, maxTokens, maxIterations }` |
 
-### 装配与执行
+#### 装配与执行
 
 | API | 说明 |
 |---|---|
@@ -309,7 +323,7 @@ Anthropic Messages API 逐字对齐（snake_case），并与 SDK 的对应类型
 | `isSuccessStopReason` | `end_turn` / `stop_sequence` 都算正常收尾 |
 | `resolveDefaultModel` | 显式 > `AGENTIA_MODEL` > `claude-opus-5` |
 
-### 环境变量与 `.env`（`loadEnvFile`）
+#### 环境变量与 `.env`（`loadEnvFile`）
 
 | API | 说明 |
 |---|---|
@@ -334,7 +348,11 @@ const app = await createApp({ ... });
 
 解析规则（刻意窄，够用就好）：`KEY=VALUE`，允许 `export ` 前缀与 `=` 两侧空白；`#` 整行注释；单引号内原样、双引号内认 `\n \r \t \" \\`；未加引号的值里 ` #` 起为行内注释。键名 `__proto__` **显式报错**（它会走原型 setter 被静默吞掉 —— 正是「以为配上了其实没配上」）。**不做变量展开、不合并续行**（需要就上专门的库）；既不像 `KEY=VALUE` 又不是注释的行**直接报错并指出行号** —— 静默跳过等于让你以为「配上了其实没配上」。
 
-### 宿主（换宿主不换语义）
+### 6.2 触发与宿主
+
+同一个 app 换宿主不换语义：HTTP handler、异步任务、定时、取消与并发闸门。
+
+#### 宿主（换宿主不换语义）
 
 | API | 说明 |
 |---|---|
@@ -349,7 +367,7 @@ const app = await createApp({ ... });
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；客户端结构面 `get` / `set` / `del` / `keys`（或 `scanIterator`），外加设 TTL 时必需的 `expire`。`set` **只传两参** —— 尾参的选项形状两家相反：ioredis 认位置参数 `('EX', n)`、node-redis 认对象 `{ EX: n }`，取任何一种都会在另一家上失效（ioredis 会把对象字符串化成 `"[object Object]"` 报语法错；**node-redis 的 `SET` 只声明三个形参，位置参数被静默丢弃**）。所以 TTL 一律走 `expire(key, seconds)`（两家同名同形）；设了 `ttlSeconds > 0` 却没给 `expire` 时**构造期抛错**，不静默丢掉 TTL |
 
-### HTTP 端点速查（`createHttpHandler` 的路由）
+#### HTTP 端点速查（`createHttpHandler` 的路由）
 
 | 端点 | 请求 | 响应 |
 |---|---|---|
@@ -375,7 +393,7 @@ const handler = createHttpHandler(callable, { runner });
 （**不随 npm 包发布** —— 包里只有 `dist/`、README、LICENSE 与本说明）：
 <https://github.com/retrychx/agentia/tree/main/examples/complete>
 
-### `createHttpHandler(app, opts?: HttpHandlerOptions)`
+#### `createHttpHandler(app, opts?: HttpHandlerOptions)`
 
 | 选项 | 说明 |
 |---|---|
@@ -409,7 +427,7 @@ process.on('SIGTERM', async () => {
 });
 ```
 
-### `GET /healthz` → `HealthResponse`
+#### `GET /healthz` → `HealthResponse`
 
 | 字段 | 说明 |
 |---|---|
@@ -420,7 +438,7 @@ process.on('SIGTERM', async () => {
 
 **不鉴权**（探针带不了凭据），且停机中也照回 200。非 `GET` 回 405。
 
-### 取消 / 重试 / 流式 / 并发闸门
+#### 取消 / 重试 / 流式 / 并发闸门
 
 | API | 说明 |
 |---|---|
@@ -434,35 +452,11 @@ process.on('SIGTERM', async () => {
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
 - **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。**超时判定只有一个裁判**：`toolTimeoutMs` 是唯一判据 —— 工具自带的超时（如 MCP 桥的 `timeoutMs`）在设了本项时**不参与**判定；反过来说，工具自判的超时（抛 `code='timeout'` 的错误）与引擎判的记**同一类账**（`errorKind='timeout'`），并同样回 `is_error`。
 
-### 观测
+### 6.3 上下文预算与成本
 
-| API | 说明 |
-|---|---|
-| `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递，抛错被吞 |
-| `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
-| `TraceRecorder` | 内存 recorder（一次 run 一个） |
-| `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项 `OtlpExporterOptions`：`endpoint` / `headers` / `serviceName` / `timeoutMs`（单次导出超时，缺省 10000，非正数 = 不限 —— 裸 fetch 无超时，collector 半开连接会让 run 收尾永久挂起；超时按导出失败处理，不击穿 run） |
-| `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
-| `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
-| `Score` | 质量评分：`{ name; value; source?; comment? }` —— LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 `value` 为 0–1（布尔结论用 0/1），`source` 记评分来源（eval 名 / `'human'` / judge 模型 id） |
-| `attachScore` | `attachScore(trace, score)`：把评分挂到 run 根 span（一条 `score` 事件，body 即 `Score`）。评分通常来自 run **之外**（跑完才评），所以走事件而非 span 字段；trace 找不到根 span 时静默忽略（观测不击穿业务） |
+长上下文怎么裁、成本怎么硬停 —— 两套独立旋钮，各自的选项表跟在对应小节后。
 
-**评分链路**（R7 质量闭环）：`attachScore` 写 run 根 `score` 事件 → OTLP 导出时译为 `gen_ai.evaluation.result`
-（`gen_ai.evaluation.name` / `.score.value`，`source` / `comment` 走自有 `agentia.score.*` 键）→
-`metricsSink` 聚合成 `agentia_score` 指标族（见 §6「指标」）。eval / 在线评估怎么用见 §6「evals」与「在线评估采样」。
-
-**OTLP 的 `gen_ai.*` 对齐**（R7，对齐 OTel GenAI semconv **v1.37**，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
-run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attributes 有 `session.id` 时另发 `gen_ai.conversation.id`）；
-`llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
-capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 是**裸能力名**）：`subagent` → `invoke_agent` + `gen_ai.agent.name`，`skill` → `execute_tool` + `gen_ai.tool.name`；
-`score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处，下游（Langfuse / Grafana / Datadog）按 1.37+ 识别这批键做 GenAI 专项视图。
-
-> **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
-> 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
-> `examples/observability/`。**完整的示例**（四类能力 + 三种触发 + 鉴权 + 全观测栈）在 `examples/complete/`；
-> 最小可交付示例（Dockerfile + compose）在 `examples/deploy/`。
-
-### 长上下文
+#### 长上下文
 
 | API | 说明 |
 |---|---|
@@ -478,7 +472,7 @@ capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 
 引擎在每条 run 开始时调一次，拿**本 run 专用**的实例（`createBudgetPolicy` 已实现它）；
 不实现的自定义策略按单例复用，状态跨 run（含并发 run）共享 —— 适合无状态策略，有状态请实现 `forRun`。
 
-### 成本硬管控（**别与上面的上下文预算混为一谈**）
+#### 成本硬管控（**别与上面的上下文预算混为一谈**）
 
 | API | 说明 |
 |---|---|
@@ -505,20 +499,20 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 
 选项字段（`TrimOptions` / `CompactOptions` / `BudgetPolicyOptions`）：
 
-### `TrimOptions`（`trimToolPairs` 的选项）
+#### `TrimOptions`（`trimToolPairs` 的选项）
 
 | 字段 | 说明 |
 |---|---|
 | `keepToolPairs` | 保留的最近工具**对数**（tool_use→tool_result）；缺省 1 |
 
-### `CompactOptions`（`compactMessages` 的选项）
+#### `CompactOptions`（`compactMessages` 的选项）
 
 | 字段 | 说明 |
 |---|---|
 | `keepRecent` | 保留的最近消息**条数**；缺省 20 |
 | `summarize` | 摘要器：输入被弃旧前缀的渲染文本，返回摘要（框架不替你造 token） |
 
-### `BudgetPolicyOptions`（`createBudgetPolicy` 的选项）
+#### `BudgetPolicyOptions`（`createBudgetPolicy` 的选项）
 
 | 字段 | 说明 |
 |---|---|
@@ -532,144 +526,39 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 
 > `keepRecent`（**消息条数**，compaction 用）与 `keepToolPairs`（**工具对数**，context editing 用）是两种单位，刻意分开命名 —— 别拿同一个值套过去。
 
-### 多模型 / 记忆 / 重放
+### 6.4 观测与调优
+
+trace 出去之后能干什么：指标、调用树面板、调优报告、生效配置快照、资产版本与会话标记。
+
+#### 观测
 
 | API | 说明 |
 |---|---|
-| `createAnthropicClient` | 默认 ModelClient（Anthropic）：自定义只传 `apiKey` / `baseURL`；框架**零运行时依赖**，不装厂商 SDK |
-| `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、cache token 恒 0） |
-| `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
-| `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用 |
-| `traceToMessages` | 把 trace 还原成 messages（重放基底） |
-| `forkMessages` | 分叉重放：在主循环第 `atTurn` 回合之前截断重放历史、拼上 `append` 新消息喂回 `app.run`（「从第 N 回合换个问法重跑」的基底，**不是续跑**） |
-| `diffTraces` | 两条 trace 的 A/B 比对（prompt / 模型实验）：run 级 summary + 逐 span 字段差；纯函数，llm.turn 配对**忽略模型名**，缺省忽略墙钟 |
-| `applyMiddleware` | 手动包裹配置菜单（装配层已自动做） |
+| `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递，抛错被吞 |
+| `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
+| `TraceRecorder` | 内存 recorder（一次 run 一个） |
+| `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项 `OtlpExporterOptions`：`endpoint` / `headers` / `serviceName` / `timeoutMs`（单次导出超时，缺省 10000，非正数 = 不限 —— 裸 fetch 无超时，collector 半开连接会让 run 收尾永久挂起；超时按导出失败处理，不击穿 run） |
+| `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
+| `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
+| `Score` | 质量评分：`{ name; value; source?; comment? }` —— LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 `value` 为 0–1（布尔结论用 0/1），`source` 记评分来源（eval 名 / `'human'` / judge 模型 id） |
+| `attachScore` | `attachScore(trace, score)`：把评分挂到 run 根 span（一条 `score` 事件，body 即 `Score`）。评分通常来自 run **之外**（跑完才评），所以走事件而非 span 字段；trace 找不到根 span 时静默忽略（观测不击穿业务） |
 
-### MCP 桥（MCP 是「工具来源」，不是新机制）
+**评分链路**：`attachScore` 写 run 根 `score` 事件 → OTLP 导出时译为 `gen_ai.evaluation.result`
+（`gen_ai.evaluation.name` / `.score.value`，`source` / `comment` 走自有 `agentia.score.*` 键）→
+`metricsSink` 聚合成 `agentia_score` 指标族（见 §6「指标」）。eval / 在线评估怎么用见 §6「evals」与「在线评估采样」。
 
-| API | 说明 |
-|---|---|
-| `mcpTools` | 把 MCP server 的 `tools/list` 映射成框架 `AgentTool[]`（进 `createApp({ tools })`） |
-| `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
-| `MCP_DEFAULT_TIMEOUT_MS` | 桥的**兜底**单次调用超时（60000 ms）—— 引擎设了 `toolTimeoutMs` 时**不参与**判定 |
+**OTLP 的 `gen_ai.*` 对齐**（对齐 OTel GenAI semconv **v1.37**，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
+run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attributes 有 `session.id` 时另发 `gen_ai.conversation.id`）；
+`llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
+capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 是**裸能力名**）：`subagent` → `invoke_agent` + `gen_ai.agent.name`，`skill` → `execute_tool` + `gen_ai.tool.name`；
+`score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处，下游（Langfuse / Grafana / Datadog）按 1.37+ 识别这批键做 GenAI 专项视图。
 
-- **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名（原名不含任何 ASCII 字母/数字/下划线时产物为空，如全 emoji 名）/ 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
-- **原名**：每次调用写进发起 turn 的两条 attribute —— `mcp.tool.<菜单名>`（每次调用各一条，并行调用互不覆盖，审计 / 回放靠它把菜单名还原成 server 认识的原名）与 `mcp.tool`（本次 turn **最近一次**的原名，兼容既有查询）。
-- **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的子集校验器在 `callTool` **之前**校验（非法入参根本不会发给 server，模型自己会改）。
-- **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了。
-- **超时**：**只有一个裁判**。引擎设了 `toolTimeoutMs` 时，桥的 `timeoutMs`（缺省 `MCP_DEFAULT_TIMEOUT_MS` = 60000）**不参与判定**；它只在「桥脱离引擎单用」或「引擎没设 `toolTimeoutMs`」时作为兜底。两条路径共用同一判定（`core/timeout.ts`：**看实测耗时，不看竞速**），超时都记 `errorKind='timeout'` + `is_error` 回模型、**不杀 run**。你自己写的工具要报超时，抛一个 `code === 'timeout'` 的错误即可（不必 import 框架的类）。
-- **连接器不在框架里**（守「零运行时依赖」）：stdio / StreamableHTTP 归独立可选包，或你自己接 SDK 后实现 `McpClientLike`。本仓库 `scripts/e2e-mcp.ts` 有一份最小连接器可参考。
+> **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
+> 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
+> `examples/observability/`。**完整的示例**（四类能力 + 三种触发 + 鉴权 + 全观测栈）在 `examples/complete/`；
+> 最小可交付示例（Dockerfile + compose）在 `examples/deploy/`。
 
-```ts
-// 任意实现了 listTools/callTool 的对象都能接（duck-typed，无需继承）
-const client: McpClientLike = myStdioConnector;
-const tools = await mcpTools(client, { server: 'time' }); // → mcp_time_get_current_time …
-
-// 与本地 @Tool 同池：同过中间件链、同进重名查重
-const app = createApp({ system, providers: [...], tools });
-```
-
-### `McpToolsOptions`（`mcpTools` 的选项）
-
-| 字段 | 说明 |
-|---|---|
-| `prefix` | 工具名前缀；缺省 `mcp_<server>_`（没给 `server` 时 `mcp_`）；`''` = 不加前缀（撞名自负） |
-| `server` | server 标识，只用于拼缺省前缀（不会发给 server） |
-| `timeoutMs` | 单次 `callTool` 超时（毫秒）；缺省 60000，非正数 = 不限 |
-
-### evals（把 mockClient 提升为一等能力）
-
-| API | 说明 |
-|---|---|
-| `scriptedClient` | 按脚本依次返回模型响应（**真把文本块经 `on('text')` 吐出去**）；脚本耗时报错 |
-| `defineEval` | 定义「用例 + 断言」，`run()` 返回 `EvalReport` |
-
-- **为什么需要**：单测覆盖的是框架语义，evals 覆盖的是**你的 agent 语义** —— 改 prompt / 换模型 / 加工具之后有没有回归，靠断言而不是人眼。
-- 断言源是既有 `Trace`：「先 `search` 才 `summarize`」这类顺序断言全从 trace 读，框架不为此新增埋点。
-- `run()` **不抛**（用例失败进报告，一次跑完能看到所有回归，而不是修一个跑一次）；只有「应用建不起来」才冒泡 —— 那是环境错误，不是回归。失败 case 带 `trace`，直接看现场。
-- `scriptedClient` 的步骤**在 `finalMessage()` 成功返回后才前进**：抛错的步骤（函数步骤 `throw` 模拟 429）会在重试时**重放同一步**，想验重试就这么写。
-- **用例结论自动落 score**（R7）：每个用例跑完，结论以 `{ name: 'eval', value: 0|1, source: eval 名, comment: 失败原因 }` 自动 `attachScore` 到该用例的 trace —— eval 的 trace 自带质量结论，下游 sink / `metricsSink` 可直接聚合「这个 eval 的通过率」（`app.run` 抛错拿不到 trace 时不挂）。
-
-```ts
-const ev = defineEval<{ summary: string }>({
-  name: 'doc-review',
-  app: () => createApp({ system: new SystemPrompt({ version: 'v3' }).add('role', R), providers: [...] }),
-  // 每 case 可带 opts（透传 app.run）：注入 resultSchema 就能断言 result.typed
-  cases: [{ name: '先检索再总结', input: '总结这份文档', client: scriptedClient([searchMsg, submitMsg]) }],
-  expect: (r, { trace }) => {
-    assert.equal(r.stopReason, 'end_turn');
-    const order = trace.spans.flatMap((s) => s.events)
-      .filter((e) => e.name === 'tool.input')
-      .map((e) => (e.body as { tool: string }).tool);
-    assert.deepEqual(order, ['search', 'summarize']); // 顺序断言从 trace 读
-  },
-});
-const report = await ev.run();
-if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
-```
-
-### 线上 trace 回流 eval 数据集（`agentia harvest`）
-
-线上事故 → 回归用例：CLI 把 trace 落盘文件翻成 eval 用例脚手架。
-
-```bash
-agentia harvest trace.jsonl                    # 全部记录 → 脚手架打到 stdout
-agentia harvest trace.jsonl --failed --limit 5 --out evals/harvested.ts
-agentia harvest trace.jsonl --out evals/harvested.ts --force   # 覆盖已存在的产物（默认拒绝）
-```
-
-- 输入同 `agentia report`：每行一个 JSON（裸 Trace，或含 `result.trace` / `trace` 的 TaskRecord，如 `FileTaskStore` 的导出）；`--failed` 只留失败记录。
-- 产物是**可粘贴进 eval 文件的用例字面量**：`client: scriptedClient([...])` 按 trace 的主循环 llm.turn 逐回合重建，`expect` 预填「主循环工具序列」的轨迹断言（文件顶部附跑法注释）。
-- `--out` 指向已存在的文件时**默认拒绝覆盖**（产物是要人工核对的脚手架，重跑一次就抹掉你改过的断言与 input）；要覆盖显式加 `--force`。
-- ⚠️ **脚手架不是成品，人工核对后再进 CI**：
-  - **trace 不记 assistant 文本**（llm.turn 只记 usage/事件），脚本里的 text 块是占位 `'[harvest] assistant 文本未入 trace'`；
-  - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本（要覆盖子 agent 请单独写 eval）；
-  - 预填的 `expect` 是从原 trace **抄录的实际轨迹** —— 发生过 ≠ 应该发生；
-  - `EvalCase` 没有 `expect` 字段，粘贴时把断言搬进 `defineEval({ expect })`（脚手架注释会教）。
-
-### prompt / 模型 A/B（trace diff 与分叉重放）
-
-同一份输入跑两条 run（换模型、换 `SystemPrompt` 版本、换 prompt 都行），用 `diffTraces` 比出**结构与成本差**；
-想「从第 3 回合换个问法重跑」，用 `forkMessages` 在分叉点截断、拼上新消息喂回 `app.run`：
-
-```ts
-import { diffTraces, forkMessages } from '@migor/agentia';
-
-// A/B：同输入，只换模型（或换 system 版本），各跑一条
-const a = await app.run(input, { model: 'claude-sonnet-5' });
-const b = await app.run(input, { model: 'claude-opus-5' });
-
-const diff = diffTraces(a.result.trace, b.result.trace);
-// diff.summary：status / totalUsage.* / 根 attributes 差 —— A/B 模型第一眼就看 attributes.model
-// diff.spans：逐 span 字段级差异，path 形如 run:main/llm.turn#0/capability:search
-if (!diff.equal) console.log(diff.summary, diff.spans);
-
-// 分叉重放：在主循环第 3 回合（0-based）之前截断，该回合及其后丢弃，换个问法继续
-const messages = forkMessages(a.result.trace, {
-  atTurn: 3, // 合法范围 0..主循环回合数-1，越界抛可读错误
-  append: [{ role: 'user', content: '换个思路：先给结论，再补证据。' }],
-});
-const c = await app.run(messages); // 起一条新 run，沿着分叉点前的真实 tool 历史继续
-```
-
-不落代码也可以直比两份 trace 导出：`agentia diff a.jsonl b.jsonl`（输入形态同 `agentia report`），
-打印 run 级 summary + 逐 span 差异，**有差异时退出码 1**（diff(1) 语义）——可直接进 CI 挡
-「换 prompt / 模型后轨迹漂移」。
-
-- **配对语义**（结构性配对，字段差异不影响配对）：llm.turn 按回合序配对、**忽略 span name** ——
-  name 是模型 id，而「换模型重跑」正是 A/B 主用例，按 name 配对会把两侧所有 turn 报成缺失；
-  模型差异降格为配对 turn 的 `name` 字段差。capability span 按 `kind:name` 配对
-  （`skill:foo` vs `skill:bar` 是不同能力，不该配上）。一侧多出的调用树记**一条缺侧记录**
-  （`SpanDiff.fields` 为空、`path` 照给），整支子树不再下钻。
-- **墙钟缺省不比**：`ignoreTiming` 缺省 true（A/B 不关心时序）；传 `false` 改比 span 时长
-  （`duration`），绝对时间戳永不比；`traceId` 是身份不是行为，同样永不比。
-- ⚠️ **有损边界（与 `traceToMessages` / harvest 同源）**：trace **不记 assistant 文本与 run 的
-  原始输入** —— 重放里 assistant 是标注占位（非逐字原文）、首尾说明性 user 是合成。
-  因此 `forkMessages` **不是「续跑」**：它产出的是一份喂回 `app.run` / `runAgent` 的 messages，
-  跑的是一条**新 run**，不是接着原 run 的循环位置。分叉的 blackboard 种子由调用方自带
-  （`app.run(messages, { blackboard: {…} })` —— trace 不记 blackboard）。
-
-### 指标（从 trace 派生）
+#### 指标（从 trace 派生）
 
 | API | 说明 |
 |---|---|
@@ -684,7 +573,7 @@ const c = await app.run(messages); // 起一条新 run，沿着分叉点前的�
   来自 `capability` span。**`@Prompt` 不建 span、无独立耗时，因此不产出能力指标**（如实缺省，不硬凑）。
 - **模型级** —— 按模型（`llm.turn` 的 span name）归因 turn 数 / token / 成本 / 耗时，并单独给出
   `model_unpriced_turns_total`（算不出成本的 turn 数 —— **成本护栏失效的显式信号**）。
-- **评分级**（R7）—— 来自 run 根 span 的 `score` 事件（`attachScore` 写入）：
+- **评分级** —— 来自 run 根 span 的 `score` 事件（`attachScore` 写入）：
   `agentia_score{name,source}` gauge 记**最近一次**值（分数不是累加量），`agentia_score_total{name,source}` counter 记条数；
   `snapshot().scores` 以 `name@source` 为键（source 缺省时裸 name）暴露 `{ value, count, sum }`（平均 = sum/count），
   OTLP metrics payload 同样带这两个家族，`reset()` 一并清空。
@@ -699,7 +588,7 @@ const c = await app.run(messages); // 起一条新 run，沿着分叉点前的�
   分位 gauge 与 histogram **必须不同名**（同名指标只允许一种 TYPE，混发会被 expfmt 判硬错误、整次 scrape 失败），
   故分位家族统一带 `_last` 后缀；capability / model 维度同理（`capability_duration_ms_last` / `model_duration_ms_last`）。
 
-### `MetricsSinkOptions`（`metricsSink` 的选项）
+#### `MetricsSinkOptions`（`metricsSink` 的选项）
 
 | 字段 | 说明 |
 |---|---|
@@ -715,7 +604,7 @@ const c = await app.run(messages); // 起一条新 run，沿着分叉点前的�
 | `maxCapabilities` | 能力标签基数上限（缺省 200）：超出后新能力归入 `capability="__other__"`（防标签爆炸）；非正数抛错 |
 | `buckets` | 直方图桶边界（毫秒，严格升序）；缺省 `DEFAULT_BUCKETS` |
 
-### `MetricsSink`（`metricsSink()` 的返回值）
+#### `MetricsSink`（`metricsSink()` 的返回值）
 
 | 成员 | 说明 |
 |---|---|
@@ -731,7 +620,7 @@ const c = await app.run(messages); // 起一条新 run，沿着分叉点前的�
 - **内存上限** ≈ `(1 + 能力数 + 模型数) × windowSize` —— 能力数由 `maxCapabilities` 封顶，长跑宿主不会被拖住。
 - `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
 
-### 调用树面板（`agentia dev` 的本地面板 / 官网 Playground）
+#### 调用树面板（`agentia dev` 的本地面板 / 官网 Playground）
 
 同一份 `@migor/trace-view` 渲染器，**面板 / Playground / `report` 的能力排行三处共用**，不各写一套。
 
@@ -743,7 +632,7 @@ const c = await app.run(messages); // 起一条新 run，沿着分叉点前的�
 - 入参折叠态的摘要被砍到 62 字符（4 个键 / 每值 21 字符）；**展开拿到的是原文**，不是那份摘要 ——
   本地面板与官网 Playground 两个宿主都是如此（两个宿主都不该只喂摘要，否则点开什么都没多出来）。
 
-### 调优报告（**哪个能力慢 / 贵 / 爱失败**）
+#### 调优报告（**哪个能力慢 / 贵 / 爱失败**）
 
 指标回答「整体怎么样」，报告回答「**该拧哪个旋钮**」：
 
@@ -786,7 +675,7 @@ const app = await createApp({ /* … */ sinks: [jsonl] });
 异步宿主更省事：把 `FileTaskStore` 的落盘文件直接喂给它 —— `TaskRecord` 里带 `result.trace`，
 `report` 认这种形态，不用另写 sink。
 
-### 生效配置快照（「这条 run 用了哪套旋钮」）
+#### 生效配置快照（「这条 run 用了哪套旋钮」）
 
 每个 run 的**根 span** 都带一组 `config.*` attributes（`config.maxTokens` / `config.maxCostUsd` /
 `config.retry.maxAttempts` / `config.contextPolicy.budgetTokens` / `config.priceOverrides` /
@@ -797,16 +686,161 @@ const app = await createApp({ /* … */ sinks: [jsonl] });
 函数型选项（`summarize` / `confirm` 之类）只记「配没配」，不记函数体。
 截断关掉时记的是 `'off'` 而不是 `false` —— 后者在日志/看板里会被读成「上限为 0」。
 
-### 提示词版本化与会话标记（run 根 attribute）
+#### 提示词版本化与会话标记（run 根 attribute）
 
 - `new SystemPrompt({ version: 'git-abc123' })` → 自动写到 **run 根 span 的 `system.version` attribute**：trace 里能查出「这个结果是哪个版本的提示词产出的」（换 prompt 前后对比、排查回归都靠它）。
 - 版本号怎么来（git sha / 语义版本 / 手工）由你决定 —— 框架**不做**版本库与回滚平台。
 - 单次 `app.run(..., { system })` 覆盖时，版本**跟当次那个 `SystemPrompt` 走**；`system` 传已拼好的 `SystemParam` 则无版本可记（不写空串冒充实有版本）。
 - 直连 `runAgent` / `executeRun` 时可用引擎级选项 `systemVersion` 显式给。
-- **`@Prompt` 资产版本**（R7）：`@Prompt({ version })` 声明后，装配期把菜单里全部带版本的 @Prompt 收集成 `{ 能力名: 版本 }` 表（与主菜单同一条收集路径，`toolSources` 收窄同样生效），每次 run 落 run 根 span 的 `prompts.versions` attribute（`name@ver` 逗号拼接、按名排序、空表不记）—— 质量回归能定位到具体资产版本。直连 `runAgent` 时用引擎级选项 `promptVersions` 显式给。
-- **会话标识**（R7 thread 维度）：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` 时用引擎级选项 `sessionId` 显式给。
+- **`@Prompt` 资产版本**：`@Prompt({ version })` 声明后，装配期把菜单里全部带版本的 @Prompt 收集成 `{ 能力名: 版本 }` 表（与主菜单同一条收集路径，`toolSources` 收窄同样生效），每次 run 落 run 根 span 的 `prompts.versions` attribute（`name@ver` 逗号拼接、按名排序、空表不记）—— 质量回归能定位到具体资产版本。直连 `runAgent` 时用引擎级选项 `promptVersions` 显式给。
+- **会话标识**：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` 时用引擎级选项 `sessionId` 显式给。
 
-### 在线评估采样（recipe，不是框架功能）
+### 6.5 集成
+
+换模型 / 接 MCP / 离线 eval / prompt 与模型的 A-B。
+
+#### 多模型 / 记忆 / 重放
+
+| API | 说明 |
+|---|---|
+| `createAnthropicClient` | 默认 ModelClient（Anthropic）：自定义只传 `apiKey` / `baseURL`；框架**零运行时依赖**，不装厂商 SDK |
+| `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、cache token 恒 0） |
+| `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
+| `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用 |
+| `traceToMessages` | 把 trace 还原成 messages（重放基底） |
+| `forkMessages` | 分叉重放：在主循环第 `atTurn` 回合之前截断重放历史、拼上 `append` 新消息喂回 `app.run`（「从第 N 回合换个问法重跑」的基底，**不是续跑**） |
+| `diffTraces` | 两条 trace 的 A/B 比对（prompt / 模型实验）：run 级 summary + 逐 span 字段差；纯函数，llm.turn 配对**忽略模型名**，缺省忽略墙钟 |
+| `applyMiddleware` | 手动包裹配置菜单（装配层已自动做） |
+
+#### MCP 桥（MCP 是「工具来源」，不是新机制）
+
+| API | 说明 |
+|---|---|
+| `mcpTools` | 把 MCP server 的 `tools/list` 映射成框架 `AgentTool[]`（进 `createApp({ tools })`） |
+| `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
+| `MCP_DEFAULT_TIMEOUT_MS` | 桥的**兜底**单次调用超时（60000 ms）—— 引擎设了 `toolTimeoutMs` 时**不参与**判定 |
+
+- **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名（原名不含任何 ASCII 字母/数字/下划线时产物为空，如全 emoji 名）/ 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
+- **原名**：每次调用写进发起 turn 的两条 attribute —— `mcp.tool.<菜单名>`（每次调用各一条，并行调用互不覆盖，审计 / 回放靠它把菜单名还原成 server 认识的原名）与 `mcp.tool`（本次 turn **最近一次**的原名，兼容既有查询）。
+- **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的子集校验器在 `callTool` **之前**校验（非法入参根本不会发给 server，模型自己会改）。
+- **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了。
+- **超时**：**只有一个裁判**。引擎设了 `toolTimeoutMs` 时，桥的 `timeoutMs`（缺省 `MCP_DEFAULT_TIMEOUT_MS` = 60000）**不参与判定**；它只在「桥脱离引擎单用」或「引擎没设 `toolTimeoutMs`」时作为兜底。两条路径共用同一判定（`core/timeout.ts`：**看实测耗时，不看竞速**），超时都记 `errorKind='timeout'` + `is_error` 回模型、**不杀 run**。你自己写的工具要报超时，抛一个 `code === 'timeout'` 的错误即可（不必 import 框架的类）。
+- **连接器不在框架里**（守「零运行时依赖」）：stdio / StreamableHTTP 归独立可选包，或你自己接 SDK 后实现 `McpClientLike`。本仓库 `scripts/e2e-mcp.ts` 有一份最小连接器可参考。
+
+```ts
+// 任意实现了 listTools/callTool 的对象都能接（duck-typed，无需继承）
+const client: McpClientLike = myStdioConnector;
+const tools = await mcpTools(client, { server: 'time' }); // → mcp_time_get_current_time …
+
+// 与本地 @Tool 同池：同过中间件链、同进重名查重
+const app = createApp({ system, providers: [...], tools });
+```
+
+#### `McpToolsOptions`（`mcpTools` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `prefix` | 工具名前缀；缺省 `mcp_<server>_`（没给 `server` 时 `mcp_`）；`''` = 不加前缀（撞名自负） |
+| `server` | server 标识，只用于拼缺省前缀（不会发给 server） |
+| `timeoutMs` | 单次 `callTool` 超时（毫秒）；缺省 60000，非正数 = 不限 |
+
+#### evals（把 mockClient 提升为一等能力）
+
+| API | 说明 |
+|---|---|
+| `scriptedClient` | 按脚本依次返回模型响应（**真把文本块经 `on('text')` 吐出去**）；脚本耗时报错 |
+| `defineEval` | 定义「用例 + 断言」，`run()` 返回 `EvalReport` |
+
+- **为什么需要**：单测覆盖的是框架语义，evals 覆盖的是**你的 agent 语义** —— 改 prompt / 换模型 / 加工具之后有没有回归，靠断言而不是人眼。
+- 断言源是既有 `Trace`：「先 `search` 才 `summarize`」这类顺序断言全从 trace 读，框架不为此新增埋点。
+- `run()` **不抛**（用例失败进报告，一次跑完能看到所有回归，而不是修一个跑一次）；只有「应用建不起来」才冒泡 —— 那是环境错误，不是回归。失败 case 带 `trace`，直接看现场。
+- `scriptedClient` 的步骤**在 `finalMessage()` 成功返回后才前进**：抛错的步骤（函数步骤 `throw` 模拟 429）会在重试时**重放同一步**，想验重试就这么写。
+- **用例结论自动落 score**：每个用例跑完，结论以 `{ name: 'eval', value: 0|1, source: eval 名, comment: 失败原因 }` 自动 `attachScore` 到该用例的 trace —— eval 的 trace 自带质量结论，下游 sink / `metricsSink` 可直接聚合「这个 eval 的通过率」（`app.run` 抛错拿不到 trace 时不挂）。
+
+```ts
+const ev = defineEval<{ summary: string }>({
+  name: 'doc-review',
+  app: () => createApp({ system: new SystemPrompt({ version: 'v3' }).add('role', R), providers: [...] }),
+  // 每 case 可带 opts（透传 app.run）：注入 resultSchema 就能断言 result.typed
+  cases: [{ name: '先检索再总结', input: '总结这份文档', client: scriptedClient([searchMsg, submitMsg]) }],
+  expect: (r, { trace }) => {
+    assert.equal(r.stopReason, 'end_turn');
+    const order = trace.spans.flatMap((s) => s.events)
+      .filter((e) => e.name === 'tool.input')
+      .map((e) => (e.body as { tool: string }).tool);
+    assert.deepEqual(order, ['search', 'summarize']); // 顺序断言从 trace 读
+  },
+});
+const report = await ev.run();
+if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
+```
+
+#### 线上 trace 回流 eval 数据集（`agentia harvest`）
+
+线上事故 → 回归用例：CLI 把 trace 落盘文件翻成 eval 用例脚手架。
+
+```bash
+agentia harvest trace.jsonl                    # 全部记录 → 脚手架打到 stdout
+agentia harvest trace.jsonl --failed --limit 5 --out evals/harvested.ts
+agentia harvest trace.jsonl --out evals/harvested.ts --force   # 覆盖已存在的产物（默认拒绝）
+```
+
+- 输入同 `agentia report`：每行一个 JSON（裸 Trace，或含 `result.trace` / `trace` 的 TaskRecord，如 `FileTaskStore` 的导出）；`--failed` 只留失败记录。
+- 产物是**可粘贴进 eval 文件的用例字面量**：`client: scriptedClient([...])` 按 trace 的主循环 llm.turn 逐回合重建，`expect` 预填「主循环工具序列」的轨迹断言（文件顶部附跑法注释）。
+- `--out` 指向已存在的文件时**默认拒绝覆盖**（产物是要人工核对的脚手架，重跑一次就抹掉你改过的断言与 input）；要覆盖显式加 `--force`。
+- ⚠️ **脚手架不是成品，人工核对后再进 CI**：
+  - **trace 不记 assistant 文本**（llm.turn 只记 usage/事件），脚本里的 text 块是占位 `'[harvest] assistant 文本未入 trace'`；
+  - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本（要覆盖子 agent 请单独写 eval）；
+  - 预填的 `expect` 是从原 trace **抄录的实际轨迹** —— 发生过 ≠ 应该发生；
+  - `EvalCase` 没有 `expect` 字段，粘贴时把断言搬进 `defineEval({ expect })`（脚手架注释会教）。
+
+#### prompt / 模型 A/B（trace diff 与分叉重放）
+
+同一份输入跑两条 run（换模型、换 `SystemPrompt` 版本、换 prompt 都行），用 `diffTraces` 比出**结构与成本差**；
+想「从第 3 回合换个问法重跑」，用 `forkMessages` 在分叉点截断、拼上新消息喂回 `app.run`：
+
+```ts
+import { diffTraces, forkMessages } from '@migor/agentia';
+
+// A/B：同输入，只换模型（或换 system 版本），各跑一条
+const a = await app.run(input, { model: 'claude-sonnet-5' });
+const b = await app.run(input, { model: 'claude-opus-5' });
+
+const diff = diffTraces(a.result.trace, b.result.trace);
+// diff.summary：status / totalUsage.* / 根 attributes 差 —— A/B 模型第一眼就看 attributes.model
+// diff.spans：逐 span 字段级差异，path 形如 run:main/llm.turn#0/capability:search
+if (!diff.equal) console.log(diff.summary, diff.spans);
+
+// 分叉重放：在主循环第 3 回合（0-based）之前截断，该回合及其后丢弃，换个问法继续
+const messages = forkMessages(a.result.trace, {
+  atTurn: 3, // 合法范围 0..主循环回合数-1，越界抛可读错误
+  append: [{ role: 'user', content: '换个思路：先给结论，再补证据。' }],
+});
+const c = await app.run(messages); // 起一条新 run，沿着分叉点前的真实 tool 历史继续
+```
+
+不落代码也可以直比两份 trace 导出：`agentia diff a.jsonl b.jsonl`（输入形态同 `agentia report`），
+打印 run 级 summary + 逐 span 差异，**有差异时退出码 1**（diff(1) 语义）——可直接进 CI 挡
+「换 prompt / 模型后轨迹漂移」。
+
+- **配对语义**（结构性配对，字段差异不影响配对）：llm.turn 按回合序配对、**忽略 span name** ——
+  name 是模型 id，而「换模型重跑」正是 A/B 主用例，按 name 配对会把两侧所有 turn 报成缺失；
+  模型差异降格为配对 turn 的 `name` 字段差。capability span 按 `kind:name` 配对
+  （`skill:foo` vs `skill:bar` 是不同能力，不该配上）。一侧多出的调用树记**一条缺侧记录**
+  （`SpanDiff.fields` 为空、`path` 照给），整支子树不再下钻。
+- **墙钟缺省不比**：`ignoreTiming` 缺省 true（A/B 不关心时序）；传 `false` 改比 span 时长
+  （`duration`），绝对时间戳永不比；`traceId` 是身份不是行为，同样永不比。
+- ⚠️ **有损边界（与 `traceToMessages` / harvest 同源）**：trace **不记 assistant 文本与 run 的
+  原始输入** —— 重放里 assistant 是标注占位（非逐字原文）、首尾说明性 user 是合成。
+  因此 `forkMessages` **不是「续跑」**：它产出的是一份喂回 `app.run` / `runAgent` 的 messages，
+  跑的是一条**新 run**，不是接着原 run 的循环位置。分叉的 blackboard 种子由调用方自带
+  （`app.run(messages, { blackboard: {…} })` —— trace 不记 blackboard）。
+
+### 6.6 横切缝（框架只给缝，不建子系统）
+
+以下五件事策略千差万别（正则 / 分类模型 / 外部审核 API / 你自己的配额口径），框架硬编码必错 —— 所以只给缝，每节给出可直接粘贴的拼法。
+
+#### 在线评估采样
 
 生产流量按 N% 采样跑 LLM-judge、把分数回挂 trace —— 用**现有 sink 机制**拼：采样（`examples/observability` 的 `sampleSink` 配方）+ 对抽中的 run 调一次 judge（一次 `app.run` 或裸 client 调用）+ `attachScore` 回挂 + `metricsSink` 聚合。框架不提供 judge 子系统 —— 评什么、用什么模型评、采样率多少，都是你的策略：
 
@@ -836,7 +870,7 @@ createApp({ /* … */ sinks: [onlineEval, metrics] }); // metrics 必须同链�
 - judge 本身的 run 也会产生 trace —— 给它单独一个 app / runName，或按 run 名在 judge sink 里跳过自己，避免「评估评估的评估」。
 - 成本自控：judge 调一次模型就是一份钱，采样率与 judge 模型档位是你的旋钮（judge 的 run 同样受 `maxCostUsd` 等护栏约束）。
 
-### 多租户配额（组合既有缝，不是子系统）
+#### 多租户配额
 
 框架不提供配额组件 —— 用 `middleware`（拦在能力调用前）+ `TraceSink`（收尾后记账）+ `BudgetGuard`（单次 run 上限）组合即可，存储与策略是你的事：
 
@@ -870,7 +904,7 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 - 拦下来的那次 run **仍然要记账**（模型的钱已经花了）—— 记账在 sink 里、拦截在 middleware 里，两者独立。
 - 被拦下的能力**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
 
-### 人工介入：审批闸门（缺口只在「跨进程挂起」，闸门现成）
+#### 人工审批闸门
 
 框架不做审批子系统，但**闸门**这一层已经具备 —— `middleware` 可以 `await` 决策再放行，
 引擎会等工具结果（`Promise.resolve(tool.run(...))`）：
@@ -900,7 +934,7 @@ createApp({ system, providers: [...], middleware: [requireApproval] });
 且 `traceToMessages` 重放**有损**（assistant 原文未记录）—— 拿它假装续跑只会拿到降级的上下文。
 要跨重启审批，就自己上工作流引擎（见 §7）。
 
-### 内容护栏（三处缝，不是子系统）
+#### 内容护栏
 
 和「多租户配额」同一个形状：策略千差万别（正则 / 分类模型 / 外部审核 API），框架硬编码必错，**只给缝**。
 
@@ -921,7 +955,7 @@ const callable = {
 };
 ```
 
-### 代码执行隔离（沙箱是工具的事，不是框架的）
+#### 代码执行隔离
 
 **框架从不执行模型生成的代码** —— `@Skill` 跑的是你写的方法体、`@Tool` 是你写的函数，
 模型输出只会变成文本 / `tool_result`。所以「要不要沙箱」等价于「你那个*代码执行工具*要不要隔离」：
@@ -950,7 +984,7 @@ const callable = {
 | `discover` 入口会回落 | 能力目录里源码与编译产物并存（`index.ts` + `index.js`）时，首选 `.ts` 加载失败会**回落 `.js` 并 warn** —— 命中的可能是**陈旧编译产物**（刚改过源码时注意）；全部候选都失败才抛错并列出各自原因 |
 | `asset()` 的 rel 必须是相对路径 | 带 scheme（`file:` / `https:` …）的 rel 会让 `new URL(rel, base)` 整个忽略 base（「以为读了能力目录、实际读了别处」），显式抛错；`../` 越出能力目录是**有意放行**（共享资产如 `../../shared/x.md` 是合法用法） |
 | 取消要传进客户端才有效 | 传 `signal` 后框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发）；不转发 `signal` 的自定义 `ModelClient` 只能「放弃等待」（请求在后台跑完、产物丢弃） |
-| 默认 client 的真端点验证范围 | `e2e:live` 跑在 DeepSeek 的 Anthropic **兼容**端点上；官方 Anthropic 端点的行为差异（thinking 细节、cache TTL 语义、新块型）目前只有本地假端点测试在守 —— 「mock 全绿发现不了厂商真实行为」是本框架自己记过的教训，接入官方端点前自己跑一遍 `npm run e2e:live` |
+| 默认 client 的真端点验证范围 | `e2e:live` 跑在 DeepSeek 的 Anthropic **兼容**端点上；官方 Anthropic 端点的行为差异（thinking 细节、cache TTL 语义、新块型）目前只有本地假端点测试在守 —— mock 全绿发现不了厂商真实行为 —— 接入官方端点前自己跑一遍 `npm run e2e:live` |
 | thinking 块「能收、不主动请求」 | 框架**从不**在请求里开 extended thinking；默认 client 能收拼 thinking 块（`signature_delta` 会累积），`redacted_thinking` 与未知块型**原样透传**不丢 —— 但官方 API 的 thinking 回灌要求带合法 `signature`，自定义 client 开 thinking 时自己验证这条链 |
 | 工具阶段的 abort 有盲区 | abort 只在三处被观察：**回合边界 / 在飞模型请求 / 重试退避 sleep**。没设 `toolTimeoutMs` 且工具挂死时，abort 之后 run 也不会返回（工具的 Promise 永不 settle）—— 挂死的工具要么设超时，要么自己读 `ToolRunContext.signal` |
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
@@ -961,12 +995,12 @@ const callable = {
 | 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
 | 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |
-| `maxCostUsd` 依赖价格表 | 模型不在价格表内（且未用 `priceOverrides` 覆盖）时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens`。**但失效不再静默**：turn 上会记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、可回调 `onUnpricedModel` |
+| `maxCostUsd` 依赖价格表 | 模型不在价格表内（且未用 `priceOverrides` 覆盖）时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens`。**失效会响**：turn 上会记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、可回调 `onUnpricedModel` |
 | 工具超时**不取消**工具 | `AgentTool.run` 没有 signal 参数，超时只是「不等了」；副作用可能已发生。想真停请让工具自己读 `ToolRunContext.signal` |
 | 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
 | 同 session 并发 run 要自行串行化 | `SessionStore` 是 **append-only**：并发写不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 共用同一 sessionId 时，各自追加的轮次可能交错成「连续两条 user」，下一轮 load 出来撞角色交替校验（400）。同一 session 的并发 run 请调用方自行串行化（每 session 一把锁 / 一条队列） |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
-| OpenAI 流式的上游故障不再装成功 | 流中 `error` 分片（上游把故障塞进 200 的流）与「流正常结束却无文本无 tool_calls」都**抛错**按失败处理 —— 不再静默映射成「成功空回复」（与非流式空 `choices` 的守卫同口径） |
+| OpenAI 流式的上游故障按失败处理 | 流中 `error` 分片（上游把故障塞进 200 的流）与「流正常结束却无文本无 tool_calls」都**抛错**按失败处理 —— 一律抛错按失败处理（与非流式空 `choices` 同一守卫） |
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；连接器（stdio / HTTP）不在框架内 |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判），两条路径**同判定、同账**（`errorKind='timeout'`） |
@@ -1016,14 +1050,3 @@ const callable = {
 | `metricsSink` 的数字一直是 0 | 没接进 `createApp({ sinks })`（或 `registerDefaultTraceSink`）—— 它靠 run 收尾投递，不自己埋点 |
 | `metricsSink({ export: 'otlp' })` 构造期报错 | 没给 `endpoint` —— OTLP 导出必须知道往哪发，响亮失败好过静默不导出；补上 `endpoint`（如 `http://localhost:4318`）即可。`windowSize` / `maxCapabilities` 非正数、`buckets` 非严格升序同理是构造期配置校验 |
 
----
-
-## 9. 提交前自检
-
-```bash
-npm run typecheck        # src 类型
-npm run typecheck:tests  # 测试目录类型（含类型断言测试）
-npm run test             # 单测（node:test）
-```
-
-框架仓库另有这些门禁：`npm run typecheck:types`（针对构建产物的类型测试）、`npm run e2e`（三步链：CLI 端到端 + `examples/complete` 与 `examples/deploy` 真起服务）、`npm run e2e:examples` / `npm run e2e:deploy`（单跑对应一步）、`npm run e2e:mcp`（真接一个 MCP server 走完「映射 → 菜单 → run」；无网时自动回落本地夹具 server）。

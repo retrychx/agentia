@@ -1474,6 +1474,11 @@ pre code {
 .docs-nav {
   position: sticky;
   top: 96px;
+  /* 导航自身可滚：18 条链接 + 4 个分组标签在 800px 高的笔记本视口里放不下，
+     而 sticky 元素不会被页面滚动带到（切掉的部分够不着）。 */
+  max-height: calc(100vh - 128px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-left: 1px solid var(--border);
 }
 .docs-nav a {
@@ -1501,6 +1506,17 @@ pre code {
   letter-spacing: 0.24em;
   color: var(--steel);
   padding: 0 0 10px 16px;
+}
+/* 导航分组标签（把 18 条平铺链接收成 4 组；分组只做视觉分隔，不参与 scrollspy —— 它不是 <a>） */
+.docs-nav .dn-group {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--steel);
+  padding: 14px 0 3px 16px;
+}
+.docs-nav .dn-title + .dn-group {
+  padding-top: 2px;
 }
 .docs-content section {
   margin-bottom: 72px;
@@ -1631,6 +1647,8 @@ pre code {
     display: flex;
     flex-wrap: wrap;
     gap: 4px 14px;
+    max-height: none;
+    overflow: visible;
     border-left: none;
     border-bottom: 1px solid var(--border);
     padding-bottom: 14px;
@@ -1640,6 +1658,10 @@ pre code {
     border-left: none;
   }
   .docs-nav .dn-title {
+    width: 100%;
+    padding-left: 0;
+  }
+  .docs-nav .dn-group {
     width: 100%;
     padding-left: 0;
   }
