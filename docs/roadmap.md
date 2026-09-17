@@ -208,7 +208,7 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   对照 Langfuse / LangSmith / OTel GenAI 后的取舍不变（框架内建 trace + 零后端导出，不学它们建看板/CMS）。
   **已落地**：
   - **score 一等公民**：`Score` + `attachScore`（run 根 `score` 事件，公共导出）；
-    `defineEval` 结论自动落 score（`{ name:'eval', value:0/1, source: eval 名 }`）；
+    `defineEval` 结论自动落 score（`{ name:'eval', value:0/1, source: eval 名, comment: 失败原因 }`）；
     metricsSink 聚合出 `agentia_score` / `agentia_score_total` 指标族 —— eval → trace → 监控一次打通；
   - **OTLP 属性对齐 OTel GenAI semconv v1.37**（additive 保留旧 `usage.*` 键；映射集中
     `integrations/otlp.ts` 单模块并钉住基准版本；score 译为 `gen_ai.evaluation.result`）；

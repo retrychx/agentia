@@ -81,25 +81,41 @@ export type RunInput =
   | MessageParam[]
   | { prompt?: string; text?: string; messages?: MessageParam[] };
 
+/**
+ * 任务入参不合法（形状 / 空值问题）—— **调用方的错**，transport 据此回 4xx。
+ *
+ * 为什么要单独一个类型：`runner.submit` 是同步的，入参校验失败与 store 故障
+ * （fs/sqlite/redis 抛错）从**同一个 catch** 出去。以前一律回 400 + 原始 message，
+ * 于是落库故障被报成「你参数写错了」，还把内部错误消息原样回给调用方 ——
+ * 绕过了 500/401 路径都遵守的 `exposeErrors` 策略。有了这个类型才分得开：
+ * 它 → 400 + 原因；其余 → 500 + 按策略决定要不要吐原文。
+ */
+export class TaskInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskInputError';
+  }
+}
+
 /** 把任意任务入参规范成 messages（首条缺省包成 user）。 */
 export function normalizeMessages(input: RunInput | unknown): MessageParam[] {
   if (typeof input === 'string') {
     // 空串与 []、{prompt:''} 一致报错：返回 [] 会带着空 messages 去调模型
-    if (!input) throw new Error('任务 messages 不能为空');
+    if (!input) throw new TaskInputError('任务 messages 不能为空');
     return [{ role: 'user', content: input }];
   }
   if (Array.isArray(input)) {
-    if (input.length === 0) throw new Error('任务 messages 不能为空');
+    if (input.length === 0) throw new TaskInputError('任务 messages 不能为空');
     return input as MessageParam[];
   }
   if (input && typeof input === 'object') {
     const o = input as { prompt?: unknown; text?: unknown; messages?: unknown };
     if (Array.isArray(o.messages)) {
-      if (o.messages.length === 0) throw new Error('任务 messages 不能为空');
+      if (o.messages.length === 0) throw new TaskInputError('任务 messages 不能为空');
       return o.messages as MessageParam[];
     }
     if (typeof o.prompt === 'string' && o.prompt) return [{ role: 'user', content: o.prompt }];
     if (typeof o.text === 'string' && o.text) return [{ role: 'user', content: o.text }];
   }
-  throw new Error(`无法识别为任务输入: ${JSON.stringify(input)?.slice(0, 200)}`);
+  throw new TaskInputError(`无法识别为任务输入: ${JSON.stringify(input)?.slice(0, 200)}`);
 }

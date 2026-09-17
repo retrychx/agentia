@@ -118,3 +118,47 @@ export async function withTimeout<T>(
     if (timer) clearTimeout(timer);
   }
 }
+
+/**
+ * 可被 signal 中断的 sleep（**单源**）。
+ *
+ * 合并两处逐字相同的实现：`engine/retry.ts` 的 `sleep`（重试退避期间收到取消就
+ * 不必再等）与 `integrations/anthropic.ts` 的 `interruptibleSleep`（client 层退避）。
+ * 那边此前自带一段「与 engine/retry.ts 的 sleep 同语义但不复用它 —— 分层约束：
+ * integrations 只能依赖 core」的注解：**正是那条约束把两份代码逼成了重复**，
+ * 所以下沉到 core 是让它们合一的唯一合法落点（见 spec §10 2026-09-17 ① 的单源化口径）。
+ *
+ * ⚠️ 只合并这个 sleep，**不合并退避计算器**：engine 是 ±20% 均匀抖动、client 是
+ * ±25% 且额外尊重 `retry-after`。函数体相同、策略不同 —— 合策略会真改行为。
+ *
+ * `abortMessage` 参数化而非统一：文案是**调用方语境**（引擎说「run 已被取消」，
+ * client 说「请求已被取消」），两者都会出现在用户眼前的报错里。为去重把两句话
+ * 改成一句，是拿可读性换整洁度。
+ *
+ * 抛的是 `name === 'AbortError'` 的错误（而非 `TimeoutError`）：取消不是超时，
+ * `engine/errors.ts` 按 `name` 把它归进「已中止」，`loop` 据此以 `aborted` 收尾。
+ */
+export function interruptibleSleep(
+  ms: number,
+  signal?: AbortSignal,
+  abortMessage = '已被取消',
+): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const abortError = (): Error => Object.assign(new Error(abortMessage), { name: 'AbortError' });
+    // 已中止：立即 reject（此处 timer 尚未创建，绝不能去 clear）
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    function onAbort(): void {
+      clearTimeout(timer);
+      reject(abortError());
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}

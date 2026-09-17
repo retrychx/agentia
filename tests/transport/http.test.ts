@@ -8,6 +8,7 @@ import { createHttpHandler } from '../../src/transport/http.js';
 import { AsyncRunner } from '../../src/transport/async.js';
 import type { AppCallable } from '../../src/transport/async.js';
 import type { MessageParam, TraceContext } from '../../src/index.js';
+import type { TaskStore } from '../../src/store/store.js';
 import type { AgentRunResult } from '../../src/engine/types.js';
 import { waitFor } from '../helpers.js';
 
@@ -371,6 +372,86 @@ describe('createHttpHandler', () => {
       });
       assert.equal(res.status, 500);
       assert.match((await readJson(res)).error, /ECONNREFUSED/);
+    } finally {
+      await close(server);
+    }
+  });
+
+  /**
+   * store 的 `save` 同步抛错 —— 模拟 sqlite/Redis 落库故障。
+   * `submit` 是同步门面，同步 store 的故障会直接抛出（异步 store 的走
+   * `async.ts:156` 的 `saved.catch`），所以这条链路上它与入参校验失败**共用同一个 catch**。
+   */
+  function failingStore(msg: string): TaskStore {
+    return {
+      save() {
+        throw new Error(msg);
+      },
+      get: () => undefined,
+      byIdempotency: () => undefined,
+      list: () => [],
+      clear: () => undefined,
+    };
+  }
+
+  it('POST /tasks store 落库失败 → 500 走 exposeErrors 策略，不是 400 + 内部原文', async () => {
+    const app = fakeApp();
+    const runner = new AsyncRunner(app, { store: failingStore('SQLITE_BUSY /data/tasks.db') });
+    const logged: unknown[][] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => void logged.push(a);
+    const server = createServer(createHttpHandler(app, { runner }));
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify({ input: 'hi' }),
+      });
+      // 落库故障是**服务端的错**：不能报成 400（「你参数写错了」）
+      assert.equal(res.status, 500);
+      const body = await readJson(res);
+      assert.equal(body.error, '内部错误');
+      assert.ok(!JSON.stringify(body).includes('SQLITE_BUSY'), '内部拓扑不得回给调用方');
+      assert.match(String((logged[0]?.[1] as Error)?.message), /SQLITE_BUSY/);
+    } finally {
+      console.error = orig;
+      await close(server);
+    }
+  });
+
+  it('POST /tasks store 落库失败 + exposeErrors:true → 500 回原文', async () => {
+    const app = fakeApp();
+    const runner = new AsyncRunner(app, { store: failingStore('SQLITE_BUSY /data/tasks.db') });
+    const server = createServer(createHttpHandler(app, { runner, exposeErrors: true }));
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify({ input: 'hi' }),
+      });
+      assert.equal(res.status, 500);
+      assert.match((await readJson(res)).error, /SQLITE_BUSY/);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('POST /tasks 入参非法 → 仍是 400 + 原因（别把调用方的错推给服务端）', async () => {
+    const app = fakeApp();
+    const runner = new AsyncRunner(app, { store: failingStore('不该被走到') });
+    const server = createServer(createHttpHandler(app, { runner }));
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify({ input: {} }),
+      });
+      // 校验在 `store.save` 之前：400 且带得回具体原因（这正是 TaskInputError 的用途）
+      assert.equal(res.status, 400);
+      assert.match((await readJson(res)).error, /无法识别为任务输入/);
     } finally {
       await close(server);
     }

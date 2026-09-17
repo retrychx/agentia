@@ -12,6 +12,8 @@ import type {
   ToolUseBlock,
   ToolUseBlockParam,
 } from '../core/message.js';
+import { textOf } from '../core/text.js';
+import { sseLines } from '../core/sse.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -44,6 +46,24 @@ export interface OpenAIClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * OpenAI 兼容端点错误：非 2xx 响应，或 200 流内嵌的 error 分片、被截断的流。
+ *
+ * **带数值 `status` 不是装饰** —— `engine/errors.ts` 的错误分类是鸭子类型，只认数值
+ * `status`（429 → rate_limit、5xx → server、其余 4xx → api）。此前本文件一律抛裸
+ * `Error`，于是所有失败都落 `unknown` + `retryable:false`，引擎层那 3 次重试
+ * **一次都不会发生**：DeepSeek 这类兼容端点吃一个 429 就整轮 run 失败。
+ * 与 `anthropic.ts` 的 `AnthropicApiError` 同形（那边一直是对的）。
+ */
+export class OpenAICompatApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'OpenAICompatApiError';
+    this.status = status;
+  }
+}
+
 export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient {
   const baseURL = (opts.baseURL ?? 'https://api.openai.com').replace(/\/+$/, '');
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -74,7 +94,10 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
             });
             if (!res.ok) {
               const body = await res.text();
-              throw new Error(`OpenAI 请求失败 ${res.status}: ${body.slice(0, 200)}`);
+              throw new OpenAICompatApiError(
+                res.status,
+                `OpenAI 请求失败 ${res.status}: ${body.slice(0, 200)}`,
+              );
             }
 
             // 内容协商：**按响应实际形态**决定怎么解析，而不是按我们请求了什么 ——
@@ -86,13 +109,17 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
               const data = (await res.json()) as OpenAIChatResponse;
               const message = toAnthropicMessage(data, params.model);
               // 非流式：完整文本一次性交给回调（与流式的最终结果一致）
-              const full = textOf(message);
+              // 分隔符 `''`：回落的原文本来就是一整段，拼回去要与流式累积的文本逐字一致
+              const full = textOf(message, '');
               if (full) for (const cb of textCallbacks) cb(full);
               return message;
             }
 
             if (!res.body) {
-              throw new Error('OpenAI 流式响应没有 body（端点声明了 event-stream 却没给流）');
+              throw new OpenAICompatApiError(
+                500,
+                'OpenAI 流式响应没有 body（端点声明了 event-stream 却没给流）',
+              );
             }
             return await readStream(res.body, params.model, textCallbacks);
           },
@@ -318,6 +345,20 @@ interface StreamAccumulator {
 }
 
 /**
+ * 流内 error 分片的 type/code → HTTP status。
+ *
+ * 与 `anthropic.ts` 的 `statusOfStreamError` 同款、同目的：兼容端点（DeepSeek 等）
+ * 常把限流/内部故障塞进 **HTTP 200** 的流里，不给非 2xx。不反推成 status，
+ * 引擎就无法识别这是可重试的限流，重试层照样不生效。
+ */
+function statusOfStreamError(err: { type?: string; code?: string | null }): number {
+  const key = `${err.type ?? ''} ${err.code ?? ''}`.toLowerCase();
+  if (key.includes('rate_limit') || key.includes('insufficient_quota') || key.includes('too_many'))
+    return 429;
+  return 500;
+}
+
+/**
  * 消费 `text/event-stream` 并组装成 Message。
  *
  * 关键点（每条都有对应单测）：
@@ -335,11 +376,15 @@ async function readStream(
   textCallbacks: Array<(delta: string) => void>,
 ): Promise<Message> {
   const acc: StreamAccumulator = { text: '', toolCalls: new Map() };
+  let sawDone = false;
   for await (const line of sseLines(body)) {
     if (!line.startsWith('data:')) continue; // 忽略 event: / id: / 注释 / 空行
     const payload = line.slice('data:'.length).trim();
     if (!payload) continue;
-    if (payload === '[DONE]') break;
+    if (payload === '[DONE]') {
+      sawDone = true;
+      break;
+    }
     let chunk: OpenAIStreamChunk;
     try {
       chunk = JSON.parse(payload) as OpenAIStreamChunk;
@@ -348,17 +393,37 @@ async function readStream(
     }
     if (chunk.error) {
       // 上游故障以错误分片下发（HTTP 仍是 200）—— 不抛出就会被组装成
-      // 「stop_reason=end_turn、content=[]、usage 全 0」的假成功，run 结论与真实相反
-      throw new Error(
-        `OpenAI 流式响应携带错误分片: ${chunk.error.message ?? JSON.stringify(chunk.error)}`,
+      // 「stop_reason=end_turn、content=[]、usage 全 0」的假成功，run 结论与真实相反。
+      // status 由分片的 type/code 反推：限流要让引擎认出来才谈得上重试。
+      throw new OpenAICompatApiError(
+        statusOfStreamError(chunk.error),
+        `OpenAI 流式响应携带错误分片: ${chunk.error.message ?? JSON.stringify(chunk.error)}` +
+          (chunk.error.code ? `（code=${chunk.error.code}）` : ''),
       );
     }
     applyChunk(acc, chunk, textCallbacks);
   }
-  if (!acc.text && acc.toolCalls.size === 0) {
-    // 流「正常」结束却什么都没累积到：与非流式 toAnthropicMessage 的空 choices 守卫同款 ——
-    // 上游故障（网关截断、协议不兼容）不得静默映射成成功空回复，抛出交 engine 按 error 收尾
-    throw new Error(
+  // 终止证据：收到 `[DONE]`，或拿到 finish_reason。二者皆无 = 流在上游/代理侧被提前关闭。
+  //
+  // 这一条**不能**挂在「累积为空」上（旧实现就是这么写的）：截断发生在已吐出半句话之后时，
+  // acc.text 非空 → 旧守卫不触发 → accumulatorToMessage 把 finish=undefined 映射成
+  // `end_turn` → **被截断的输出被当作正常收尾上报**，与模块头「上游故障绝不映射成成功」相反。
+  if (!sawDone && acc.finish == null) {
+    throw new OpenAICompatApiError(
+      500,
+      `OpenAI 流式响应被截断（未收到 [DONE]，也未收到 finish_reason；` +
+        `已累积 ${acc.text.length} 字符文本、${acc.toolCalls.size} 个工具调用）；` +
+        '响应不完整，按上游故障处理',
+    );
+  }
+  if (!acc.text && acc.toolCalls.size === 0 && mapStopReason(acc.finish, false) !== 'refusal') {
+    // 正常终止却什么都没累积到：与非流式 toAnthropicMessage 的空 choices 守卫同款 ——
+    // 上游故障（网关截断、协议不兼容）不得静默映射成成功空回复，抛出交 engine 按 error 收尾。
+    //
+    // 例外是 content_filter/refusal：那是**合法**的空回复（模型拒绝作答），非流式路径
+    // 同一个响应返回的是 stop_reason='refusal' —— 同一个响应不该在两条路径上两种结论。
+    throw new OpenAICompatApiError(
+      500,
       `OpenAI 流式响应为空（无 content、无 tool_calls，finish=${acc.finish ?? '缺失'}）；` +
         '响应无可用补全，按上游故障处理',
     );
@@ -444,34 +509,6 @@ function parseToolArgs(raw: string): unknown {
   }
 }
 
-/** 逐行读 SSE（OpenAI 每条事件都是一行 `data:`，不需要处理多行 payload） */
-async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx = buf.indexOf('\n');
-      while (idx >= 0) {
-        yield buf.slice(0, idx).replace(/\r$/, '');
-        buf = buf.slice(idx + 1);
-        idx = buf.indexOf('\n');
-      }
-    }
-    if (buf) yield buf.replace(/\r$/, '');
-  } finally {
-    // 提前 break（[DONE]）时释放读锁，否则流不会被回收
-    try {
-      await reader.cancel();
-    } catch {
-      /* 已结束/已取消 */
-    }
-  }
-}
-
 /** OpenAI chat.completions 响应 → Message */
 function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
   const choice = data.choices?.[0];
@@ -479,7 +516,8 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
     // 200 但 choices 为空/缺失：上游故障（兼容端点 bug、被网关截断）。
     // 不得静默映射成「成功」——空文本 + usage 全 0 + end_turn 会把一次上游故障
     // 记成正常收尾，run 结论与真实情况相反。抛出交 engine 按 error 收尾。
-    throw new Error(
+    throw new OpenAICompatApiError(
+      500,
       `OpenAI 兼容端点返回空 choices（id=${data.id ?? 'unknown'}）；响应无可用补全，按上游故障处理`,
     );
   }
@@ -514,14 +552,6 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
       cache_read_input_tokens: 0,
     },
   } as Message;
-}
-
-/** 取消息里的全部文本块（非流式路径一次性回调用） */
-function textOf(message: Message): string {
-  return message.content
-    .filter((b): b is TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
 }
 
 /**

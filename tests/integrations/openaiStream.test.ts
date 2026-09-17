@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ImageBlockParam, MessageParam, ToolUseBlock } from '../../src/index.js';
+import { classifyError } from '../../src/index.js';
 import { createOpenAIClient } from '../../src/integrations/openai.js';
 
 /** 把事件数组编成 SSE 报文（`[DONE]` 原样写） */
@@ -222,6 +223,67 @@ describe('OpenAI 适配器：真流式（C3）', () => {
       createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage(),
       /流式响应为空/,
     );
+  });
+
+  it('流内 error 分片带 code → 反推成数值 status（限流才谈得上重试）', async () => {
+    const cases: Array<[Record<string, unknown>, number]> = [
+      [{ message: 'rate limited', type: 'rate_limit_exceeded' }, 429],
+      [{ message: 'quota', code: 'insufficient_quota' }, 429],
+      [{ message: 'boom', type: 'server_error' }, 500],
+      [{ message: '没给 type/code' }, 500],
+    ];
+    for (const [error, expected] of cases) {
+      const { fetchImpl } = sseFetch(sseBody([{ error }, '[DONE]']));
+      const err = await createOpenAIClient({ fetchImpl })
+        .messages.stream(BASE)
+        .finalMessage()
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      assert.ok(err, '错误分片必须抛错');
+      assert.equal(
+        (err as { status?: number }).status,
+        expected,
+        `${String(error.code)} → ${expected}`,
+      );
+      assert.equal(
+        classifyError(err).type,
+        expected === 429 ? 'rate_limit' : 'server',
+        `${JSON.stringify(error)} 的分类`,
+      );
+      // code 一并带进文案：端点把限流塞在 200 的流里时，这行是唯一的线索
+      if (error.code) assert.match((err as Error).message, new RegExp(String(error.code)));
+    }
+  });
+
+  it('流被提前截断（已吐出半句、无 [DONE]、无 finish_reason）→ 抛错，不得报成 end_turn 成功', async () => {
+    // 旧守卫挂在「累积为空」上：截断发生在已吐出文本**之后**时 acc.text 非空 → 守卫不触发
+    // → finish 缺失被映射成 end_turn → 半句话被当成正常收尾上报。判据改成「既无 [DONE]
+    // 也无 finish_reason」才盖得住这一档。
+    const body = sseBody([{ choices: [{ delta: { content: '前半个句子' } }] }]); // 没有 [DONE]
+    const { fetchImpl } = sseFetch(body);
+    const err = await createOpenAIClient({ fetchImpl })
+      .messages.stream(BASE)
+      .finalMessage()
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    assert.ok(err, '截断必须抛错');
+    assert.match((err as Error).message, /被截断/);
+    assert.match((err as Error).message, /5 字符/, '文案带上已累积的量（诊断用）');
+    assert.equal((err as { status?: number }).status, 500, '上游故障 → 服务端错误');
+  });
+
+  it('finish_reason 到了就算终止证据：内容为空但属 refusal 时**不抛**（合法空回复）', async () => {
+    // 同一个响应不该在流式与非流式两条路径上两种结论：非流式 content_filter →
+    // stop_reason='refusal'（合法空回复，见 openai.test.ts 的映射用例）。
+    const body = sseBody([{ choices: [{ delta: {}, finish_reason: 'content_filter' }] }, '[DONE]']);
+    const { fetchImpl } = sseFetch(body);
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
+    assert.equal(msg.stop_reason, 'refusal');
+    assert.deepEqual(msg.content, []);
   });
 
   it('signal 被转发给 fetch（否则取消/超时中止不了在飞请求）', async () => {

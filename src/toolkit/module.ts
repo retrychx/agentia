@@ -7,7 +7,7 @@ import type { RunInvocationOptions } from '../engine/spec.js';
 import type { SessionStore } from '../runtime/session.js';
 import type { MemoryStore } from '../runtime/memory.js';
 import type { AgentRunResult } from '../engine/types.js';
-import type { TraceSink } from '../core/trace.js';
+import type { Trace, TraceSink } from '../core/trace.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
 import type { BlackboardKey } from '../core/blackboard.js';
@@ -145,6 +145,15 @@ export interface RunAppOptions<S extends JsonSchema = JsonSchema> extends RunInv
    * 是函数，因此**不在** transport 的 `RunInvocationOptions` 里（异步宿主不替你传）。
    */
   onUnpricedModel?: (info: { model: string; spanId: string }) => void;
+  /**
+   * trace 交给 sinks 之前的最后一笔账（R7 时序缝）：语义同 `ExecuteRunOptions.beforeFlush`
+   * —— `run.finish` 之后、`flushSinks` 之前调一次，用于挂上**拿到 run 结果才判得出**的结论。
+   * 典型（也是框架内唯一的）使用者是 `defineEval`：它的 score 必须在这个时点挂上，
+   * 否则 `metricsSink` 聚合时还看不到，eval 的通过率就进不了指标。
+   *
+   * 是函数，因此**不在** transport 的 `RunInvocationOptions` 里（异步宿主不替你传）。
+   */
+  beforeFlush?: (trace: Trace, result: AgentRunResult<SchemaType<S>>) => void | Promise<void>;
 }
 
 export interface AgentRunOutput<T = unknown> {
@@ -449,6 +458,9 @@ export class AgentApp {
       memory: opts.memory,
       rethrow: opts.rethrow,
       sinks: this.sinks,
+      // 冲刷前的最后一笔（见 RunAppOptions.beforeFlush）：per-run 字段原样透传 ——
+      // 与 sinks 不同，它**不是**应用级配置（defineEval 每个用例各挂各的结论）。
+      beforeFlush: opts.beforeFlush,
       contextInit: (ctx) => {
         if (seed) {
           // 种子键是运行期字符串，类型上无从与「用户声明的 Blackboard」对齐 ——

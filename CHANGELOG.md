@@ -7,6 +7,69 @@
 
 ## [Unreleased]
 
+### 修复（第六轮全量 review：「不报错地不干活」一次收口）
+
+- **OpenAI 兼容端点的引擎重试此前整体失效**：非 2xx 抛的是裸 `Error`（无结构化 `status`），
+  `classifyError` 一律归 `unknown + 不可重试` —— 兼容端点吃一个 429 就整轮 run 失败。
+  现在抛 `OpenAICompatApiError`（带数值 `status`，与 `AnthropicApiError` 同形；module 级导出，
+  不进公共面），429 → `rate_limit` 可重试；流内 `error` 分片（塞进 200 的流里的故障）按
+  `type`/`code` 反推 status（`rate_limit` / `insufficient_quota` / `too_many` → 429）。
+- **OpenAI 流式截断不再被记成成功**（**语义变更**）：终止判据从「累积为空」换成
+  「既无 `[DONE]` 也无 `finish_reason` ⇒ 上游故障」—— 此前截断发生在已吐出半句之后时，
+  半截输出被 `end_turn` 收尾上报。反向也对齐：正常终止但空的流若 `finish_reason=content_filter`
+  不再误抛，与非流式路径同样记 `refusal`。
+- **Anthropic 适配器的 usage 合并不再被显式 `null` 清零**：网关型端点的 `message_delta`
+  带 `input_tokens: null` 时，浅合并会把 `message_start` 的真实计量抹掉，该回合 input/cache
+  token 与 `costEstimate` 归零（`maxCostUsd` 护栏随之失效）。现在 `mergeUsage` 跳过
+  `null`/`undefined` —— 缺值的语义是「保持已有值」，不是「清空已有值」。
+- **`maxToolConcurrency` 的 (0,1) 小数不再静默丢弃全部工具**：`Math.floor(0.5) = 0` 曾意味着
+  零 worker、工具一次都不执行。现在正数一律至少 1 个 worker；run 根快照记**生效的整数**
+  （不限记 `'off'`，不再把 `NaN` / `-1` 写进 trace）。
+- **`.env` 引号值 + 行内注释不再把字面引号写进值**：`A="sk-..." # prod` 曾被解析成含引号的
+  `"sk-..."`（每个请求 401，文件看上去完全正确）。引号判定改为「扫到闭合引号为止，其后只允许
+  空白或 `#` 注释」；未闭合 / 有残留回退未加引号分支，不猜。
+- **`toolTimeoutMs` 现在透传给子 agent / skill 的子循环**：此前嵌套 run 里工具**永不超时**，
+  且 MCP 桥找不到引擎预算会另起 60s 兜底 —— 双计时器 + 双账本。
+- **MCP 桥裁判判据改为 `!= null`**（**语义变更**）：显式 `toolTimeoutMs: 0`（引擎表态「不限」）
+  时桥不再自作主张判 60s —— 说了不限就该不限。
+- **异步任务的崩溃恢复不再可能重复派发**：`resumePending` 认领时**先落库再派发** —— 此前认领
+  只改内存，对 `list()` 返回反序列化新对象的 store（sqlite/redis），窗口内第二次扫描会把
+  同进程正在跑的任务再派发一遍（重复执行、重复副作用、重复花费）。
+- **优雅停机不再可能永不返回**：`handler.drain({ timeoutMs })` 在 deadline 已过时直接返回
+  `false`，不再把「已到点」透传给 `0 = 不限` 的语义（SIGTERM 容器被强杀、在飞任务硬切）。
+- **显式 `undefined` 不再覆盖重试缺省**：`{ maxAttempts: undefined }` 这类透传组装曾把重试
+  静默关闭（快照记 0，像用户主动关的）/ 让退避算出 `NaN`。现在显式 `undefined` 回落缺省。
+- **静态 `@Prompt` 不再被同名实例方法静默撞掉**：静态扫描改为按**解析后的菜单名**去重，
+  实例↔静态真重名交给装配期抛「菜单能力重名」（对齐 spec §7「重名即抛」）。
+- **`tool_use_no_blocks` 收尾现在带结构化 `error`**（`type:'agent_error'`）—— 此前该分支
+  `status:'failed'` 但 `result.error` 是 `undefined`，HTTP body / 任务记录里看不出为什么失败。
+- **`POST /tasks` 的 store 落库故障不再回 400 + 内部原文**：新增 `TaskInputError`（module 级，
+  不进公共面）区分「调用方参数错」（400 + 原因）与「服务端故障」（500 + 走 `exposeErrors`
+  策略）；读 body 期间开始停机的竞态回 503。
+- **长上下文压缩不再切出孤儿 `tool_result`**：`compactMessages` 的切点校验换成「保留段工具
+  自洽」—— 非相邻工具对（tool_use 与 tool_result 中间隔着普通消息）此前会切出孤儿块、下一次
+  请求被 API 400；退无可退时照 `trimToolPairs` 先例整体放弃本次压缩。
+
+### 新增（质量闭环收尾 + 指标基数封顶）
+
+- **`beforeFlush(trace, result)`**（`RunAppOptions` / `ExecuteRunOptions`，可选）：sinks 冲刷
+  **之前**的最后一笔 —— 「拿到 run 结果才判得出的结论」（典型是 `defineEval` 的 score）在这个
+  时点挂上，`metricsSink` 才聚合得到。**此前 eval 的 score 挂在冲刷之后，永远进不了
+  `agentia_score` 指标族**（usage-guide / roadmap 承诺的「eval → trace → 监控」链路是断的）。
+  宿主漏透传该字段时 `defineEval` 退回「跑完再断言」：断言照做，不误报全挂，只是分数进不了指标。
+- **`metricsSink` 三个维度的键空间都封顶**：新增 `maxModels`（缺省 50）/ `maxScores`（缺省 200），
+  与 `maxCapabilities` 同口径 —— 超限键折叠进 `__other__`（**量不丢，只丢标签粒度**），
+  snapshot 新增 `droppedModels` / `droppedScores`（各自最多记账 1024 个不同键，满了以后是下界）。
+  此前 `models` / `scores` 无上限，与 usage-guide 承诺的内存上界不符。
+
+### 重构（内部去重下沉 core，公共面不变）
+
+- `sseLines` / `percentile` / `capabilityKindOf` / `textOf` / 可中断 `sleep` 各只剩一份
+  （`src/core/{sse,stats,trace,text,timeout}.ts`）—— `integrations` 只准依赖 `core`，core 是让
+  两处重复合一的唯一合法落点。`textOf(message, separator)` 三个调用点各传各的原值，行为零变化；
+  两份 backoff（引擎 ±20% 均匀抖动 vs client ±25% 且尊重 `retry-after`）**刻意不合并** ——
+  合并即改行为。
+
 ### 新增（trace 跨进程关联：`traceparent` → run 根 span links）
 
 - **入站链路上下文**：`RunInvocationOptions.traceContext`（`{ traceId, spanId? }`）与 HTTP 请求头

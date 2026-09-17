@@ -150,6 +150,13 @@ export function subagentToTool(
           // 成本护栏透传（C1）：预算是整条 run（含子 agent）的口径，子循环每回合也检查
           maxTotalTokens: ctx.maxTotalTokens,
           maxCostUsd: ctx.maxCostUsd,
+          // 超时裁判权透传（spec §10 2026-09-17 ①）：这是 ToolRunContext 上**唯一**一件
+          // 「主循环注入、嵌套能力必须往下交」的东西（其余可选字段都已在上面）。
+          // 漏了它的后果不是「少一层保险」而是**反的**：子循环里 args.toolTimeoutMs 为
+          // undefined → withTimeout(p, 0) 直接返回原 promise（core/timeout.ts：`!(t > 0)`）
+          // = 永不超时；同时 MCP 桥找不到引擎预算，又起自己的 60s 兜底计时器 ——
+          // 双计时器 + 双账本，正是单源化那轮声称已消除的状态。
+          toolTimeoutMs: ctx.toolTimeoutMs,
         });
         recorder.setAttribute(capabilityId, 'stop_reason', loop.stopReason);
 

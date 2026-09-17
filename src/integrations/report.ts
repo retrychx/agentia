@@ -1,4 +1,6 @@
-import type { Span, Trace, Usage } from '../core/trace.js';
+import { capabilityKindOf } from '../core/trace.js';
+import type { Trace, Usage } from '../core/trace.js';
+import { percentile } from '../core/stats.js';
 
 /**
  * Agentia —— 调优报告（G1）。
@@ -85,13 +87,6 @@ function usageTotal(u: Usage): number {
   return u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
 }
 
-/** Prometheus 式「最近 rank」分位，与 metricsSink 同口径 */
-function percentile(sorted: readonly number[], q: number): number {
-  if (sorted.length === 0) return 0;
-  const rank = Math.ceil(q * sorted.length);
-  return sorted[Math.min(Math.max(rank, 1), sorted.length) - 1]!;
-}
-
 function durationReport(samples: readonly number[]): DurationReport {
   if (samples.length === 0) return { total: 0, max: 0, p50: 0, p95: 0 };
   const sorted = [...samples].sort((a, b) => a - b);
@@ -117,12 +112,6 @@ interface CapabilityAcc {
   durations: number[];
   tokens: Usage | null;
   costUsd: number | null;
-}
-
-function capabilityKindOf(span: Span): string {
-  if (span.attributes.skill !== undefined) return 'skill';
-  if (span.attributes.subagent !== undefined) return 'subagent';
-  return 'capability';
 }
 
 /** 从一条 Trace 生成报告（纯函数） */

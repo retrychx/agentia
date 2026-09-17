@@ -15,8 +15,15 @@ export async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   if (items.length === 0) return results;
+  // 正数一律至少 1 个 worker：`Math.floor` 会把 (0,1) 区间的小数压成 0，而 width=0 意味着
+  // `fn` **一次都不调**、results 全是 undefined，调用方却拿到一个「成功」的空结果 ——
+  // 工具被静默丢弃，run 照常收尾。`maxToolConcurrency: cpus().length / 8` 这类比例写法
+  // 在多核数小于 8 的机器上正落在 (0,1)。
+  // 非正/非有限（0、-1、±Infinity、NaN）仍按上方文档视为「不限」。
   const width =
-    Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), items.length) : items.length;
+    Number.isFinite(limit) && limit > 0
+      ? Math.min(Math.max(1, Math.floor(limit)), items.length)
+      : items.length;
   // 取号自增在同步段完成（`next++` 在读 item 之前），所以 worker 之间不会重号。
   let next = 0;
   const worker = async (): Promise<void> => {

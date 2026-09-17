@@ -163,6 +163,9 @@ export function skillToTool(
             // 成本护栏透传（C1）：预算是整条 run（含子循环）的口径，子循环每回合也检查
             maxTotalTokens: ctx.maxTotalTokens,
             maxCostUsd: ctx.maxCostUsd,
+            // 超时裁判权透传（spec §10 2026-09-17 ①）：同 subagent.ts —— 漏了它，
+            // 子循环退化成「永不超时」，且 MCP 桥会另起 60s 兜底，回到双计时器/双账本。
+            toolTimeoutMs: ctx.toolTimeoutMs,
           });
           if (!isSuccessStopReason(loop.stopReason)) {
             const report = `skill "${name}".llm ${loop.stopReason}: ${(

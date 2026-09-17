@@ -348,8 +348,14 @@ function runConfigSnapshot(
   if (options.maxTotalTokens != null) out['config.maxTotalTokens'] = options.maxTotalTokens;
   if (options.maxCostUsd != null) out['config.maxCostUsd'] = options.maxCostUsd;
   if (options.toolTimeoutMs != null) out['config.toolTimeoutMs'] = options.toolTimeoutMs;
+  // 非正 / 非有限值在 `mapWithConcurrency` 里一律等于「不限并发」，但原样记进 trace 会写成
+  // `NaN`（过不了 JSON/OTLP 序列化，到看板上是 null）或 `-1`（读起来像「卡在负数个并发」）。
+  // 记**生效的**整数（`floor` 且至少 1，见 `concurrency.ts`），不限则同 `maxEventChars` 记 'off'。
   if (options.maxToolConcurrency != null)
-    out['config.maxToolConcurrency'] = options.maxToolConcurrency;
+    out['config.maxToolConcurrency'] =
+      Number.isFinite(options.maxToolConcurrency) && options.maxToolConcurrency > 0
+        ? Math.max(1, Math.floor(options.maxToolConcurrency))
+        : 'off';
   // 事件截断关掉时记 'off' 而不是 false：`maxEventChars: false` 在日志/看板里
   // 容易被读成「上限为 0」，'off' 一句话说清是**没有上限**
   if (options.maxEventChars != null)

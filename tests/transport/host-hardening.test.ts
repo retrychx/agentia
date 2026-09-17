@@ -507,6 +507,47 @@ describe('B2 优雅停机（drain）', () => {
     }
   });
 
+  it('截止已过 → 立即 false，不得把「已到点」透传成「不限」（否则优雅停机永不返回）', async () => {
+    // 这条盯的是 `drain` 里算「剩余时间」的那次减法：0 在 async.ts 的 `drain` 里被读作
+    // **不限**（一直等），而「deadline 已过」的剩余时间恰好是 0 —— 透传下去等于把
+    // 「已经到点了」说成「不限」：优雅停机永不返回、也永不报 false，SIGTERM 的容器
+    // 只能在宽限期后被强杀，在飞任务硬切。
+    //
+    // 时钟前跳来构造：drain 内部第一次读 `Date.now()` 是算 deadline（放行），
+    // 第二次读就是 left（+1 小时 ⇒ 必然为负）。不靠毫秒抖动赌概率。
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const app = fakeApp({
+      run: async () => {
+        await gate;
+        return { run: { runId: 'r-1', status: 'succeeded' as const }, result: fakeResult('ok') };
+      },
+    });
+    const { server, base, handler } = await listen(app);
+    const realNow = Date.now;
+    let reads = 0;
+    try {
+      await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'a' }) });
+      await waitFor(() => handler.runner.inFlight === 1, 'submit 的任务应已受理并在飞');
+      Date.now = () => {
+        reads++;
+        return realNow() + (reads > 1 ? 3_600_000 : 0);
+      };
+      // 加个上界：修之前它会以「不限」一直挂着（测试会永久卡住，看不到失败原因）
+      const verdict = await Promise.race([
+        handler.drain({ timeoutMs: 30 }),
+        new Promise((r) => setTimeout(() => r('hang'), 500)),
+      ]);
+      assert.equal(verdict, false, '已到点就自己认账，不交给下游按「0 = 不限」去猜');
+    } finally {
+      Date.now = realNow;
+      release();
+      await close(server);
+    }
+  });
+
   it('收口长连 SSE：drain 会关掉仍挂着的流，并中止对应 run（不再后台空烧 token）', async () => {
     let started!: () => void;
     const begun = new Promise<void>((r) => {

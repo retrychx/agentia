@@ -63,6 +63,48 @@ describe('parseEnvText（.env 解析）', () => {
     assert.equal(parsed.F, '', '空值是合法值，不是「没有这个键」');
   });
 
+  it('引号值 + 行内注释：只剥注释，**字面引号必须剥掉**', () => {
+    // 旧判定是 `startsWith('"') && endsWith('"')`：`A="sk-x" # prod` 的结尾是注释不是引号，
+    // 于是掉进未加引号分支 —— 只剥掉 ` # prod`，把 `"sk-x"`（**含字面引号**）写进
+    // process.env。密钥带着引号发出去 → 每个请求 401，而 .env 文件看上去完全正确。
+    const parsed = parseEnvText(
+      [
+        'A="sk-x" # prod 的密钥',
+        "B='sk-y'  # 单引号同理",
+        'C="sk-z"#紧贴的注释也认（闭合引号后只允许空白或 #）',
+        'D="a # b" # 引号内的 # 不是注释',
+      ].join('\n'),
+    );
+    assert.equal(parsed.A, 'sk-x');
+    assert.equal(parsed.B, 'sk-y');
+    assert.equal(parsed.C, 'sk-z');
+    assert.equal(parsed.D, 'a # b');
+  });
+
+  it('引号值：空引号、未识别转义、转义反斜杠、未闭合 / 引号后有残留', () => {
+    const parsed = parseEnvText(
+      [
+        'EMPTY_D=""',
+        "EMPTY_S=''",
+        'EMPTY_C="" # 空值也带注释',
+        'ESC="a\\qb"',
+        'BS="c:\\\\"',
+        'UNCLOSED="没闭合',
+        'RESIDUE="x" y',
+      ].join('\n'),
+    );
+    assert.equal(parsed.EMPTY_D, '');
+    assert.equal(parsed.EMPTY_S, '');
+    assert.equal(parsed.EMPTY_C, '');
+    // 只认 `\n \r \t \" \\`，其余原样保留（别把 Windows 路径的 `\q` 吃掉）
+    assert.equal(parsed.ESC, 'a\\qb');
+    assert.equal(parsed.BS, 'c:\\');
+    // 未闭合 = 没配引号，回退旧行为原样返回（含字面引号）—— 刻意不猜
+    assert.equal(parsed.UNCLOSED, '"没闭合');
+    // 闭合引号后有非注释残留（`"x" y`）同样回退，不当成引号值
+    assert.equal(parsed.RESIDUE, '"x" y');
+  });
+
   it('CRLF 与 BOM（Windows 记事本存过的文件）不影响第一个键', () => {
     const parsed = parseEnvText('\uFEFFA=1\r\nB=2\r\n');
     assert.deepEqual(parsed, { A: '1', B: '2' });

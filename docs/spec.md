@@ -1524,6 +1524,139 @@ canvas 中心区采样 `ink≈3,600`、8/8 采样值互不相同（确实在动�
 e2e：`scripts/e2e-examples.ts` 的 `/run` 步骤带真 `traceparent` 头并断言 run 根 links
 （真 HTTP 栈 + 真装配，不只单测）。
 
+### 2026-09-18 ①：第六轮全量 review —— 把「功能静默失效」一次收口
+
+**背景**：对 `src/` 58 文件 / 11,338 行 + tests + packages 做第六轮全量 review（前五轮：`a706ded`
+/ `19b33a6` / `bded0a1` / 两轮发布后更正）。产出 10 条正式发现 + 6 条超上限确认项。**病灶与第五轮
+同型**：绝大多数不是「算错」而是**不报错地不干活**（配置写错、错误形态不对、超时裁判权没交接），
+说明上一轮只清了症状、没除根。逐条取证后的共同形态：**失败被记账成成功，或配置被静默忽略**。
+
+**取证（每条都跑到了「现状 → 后果」）**：
+
+1. `integrations/openai.ts` 非 2xx 抛裸 `Error`（无 `status`）⇒ `classifyError` 的鸭子类型读不到数值
+   status ⇒ 全部落 `type:'unknown'` + `retryable:false` ⇒ **引擎那 3 次重试一次都不发生**：DeepSeek
+   这类兼容端点吃一个 429 就整轮 run 失败。流内错误分片（HTTP 200）同样丢 `code`。
+2. `engine/concurrency.ts` 的 `Math.floor(limit)` 把 `(0,1)` 的小数压成 0 ⇒ 零 worker ⇒ `fn` 一次
+   都不调、`results` 全 `undefined`，调用方却拿到「成功」的空结果 ⇒ **工具被静默丢弃**。
+   `maxToolConcurrency: cpus().length / 8`（文档推荐的写法）在 <8 核机器上正落在这个区间。
+3. `toolkit/env.ts` 的引号判定 `startsWith('"') && endsWith('"')` 被行内注释打断 ⇒
+   `A="sk-..." # prod` 把**含字面引号**的值写进 `process.env` ⇒ 每个请求 401，而 `.env` 看着完全正确。
+4. `openai.ts` 的流截断守卫挂在「累积为空」上 ⇒ 截断发生在**已吐出半句话之后**时不触发 ⇒ 半截输出
+   被 `end_turn` 收尾上报；而合法的 `content_filter`（无 content）反被当成上游故障 —— 同一个响应在
+   流式与非流式两条路径上得到两种结论。
+5. `anthropic.ts` 的 `usage = {...usage, ...event.usage}`：`RawUsage` 允许显式 `null`，于是
+   `message_delta` 的 null **覆盖** `message_start` 的真实值，末尾 `?? 0` 再归零 ⇒ 该回合
+   input/cache token 与 `costEstimate` 一起塌成 0，**`maxCostUsd` 护栏随之失效**。
+6. `toolkit/subagent.ts` / `skill.ts` 漏了 `toolTimeoutMs: ctx.toolTimeoutMs` —— 它是
+   `ToolRunContext` 9 个字段里唯一一件「主循环注入、两个嵌套能力都没下传」的。后果不是「少一层保险」
+   而是**反的**：子循环里 `withTimeout(p, 0)` 直接返回原 promise（`core/timeout.ts` 的 `!(t > 0)`）
+   = 永不超时，同时 MCP 桥找不到引擎预算、又起自己的 60s 兜底 = **双计时器 + 双账本**，正是
+   2026-09-17 ① 声称已消除的状态。
+7. `transport/http.ts` 把 `remaining() === 0`（deadline 已过）当「不限」传给 `runner.drain`，而
+   `async.ts` 的 `timeoutMs <= 0` 语义是**无限等** ⇒ 优雅停机永不返回、SIGTERM 宽限期后被强杀。
+8. `transport/async.ts` 的 `#redispatch` 只在内存改 `status`/`ownerId`，真正落库晚于
+   `#acquireSlot`：对 `list()` 返回**反序列化新对象**的 store（sqlite/redis），窗口内第二次
+   `resumePending()` 能通过 `ownerId` 过滤、把同进程正在跑的任务再派发一遍 ⇒ 重复执行、重复副作用、
+   重复花费。`InMemoryTaskStore` 因存对象引用掩盖了它（既有用例只测内存版）。
+9. `engine/retry.ts` 的 `{...DEFAULT_RETRY, ...o}` 让**显式 `undefined`** 覆盖默认（tsconfig 未开
+   `exactOptionalPropertyTypes`，`{ maxAttempts: cfg.retries }` 这类透传组装能带着 undefined 过类型
+   检查）⇒ 重试被静默关闭（快照记成 0，看着像用户主动关的）/ `backoffDelay` 返回 NaN。
+10. `toolkit/prompt.ts` 的静态 `@Prompt` 去重用**实例方法 key** 播种 ⇒ 静态资产被按 key 跳过而静默
+    丢弃，且 `module.ts` 按**菜单名**查重永远看不到它（丢的正是「本来不可能重名」的那类资产）。
+
+**决定（分四组）**：
+
+**A. 静默失效 —— 一律改成「响亮地失败或响亮地记账」**
+
+1. `openai.ts` 新增 `OpenAICompatApiError`（带 `readonly status`，鸭子类型即可被 `classifyError` 认），
+   非 2xx 与截断响应都经它抛出；流内错误分片按 `type`/`code` 反推 status（含
+   `rate_limit`/`insufficient_quota`/`too_many` → 429），并把 `code` 带进文案。
+2. `mapWithConcurrency`：正数一律 `Math.max(1, Math.floor(limit))`；非正/非有限仍视为不限。公开入口
+   的快照同批收口 —— `config.maxToolConcurrency` 记**生效的整数**，不限记 `'off'`（同 `maxEventChars`
+   约定）：`NaN` 过不了 JSON/OTLP 序列化（到看板是 null），`-1` 读起来像「卡在负数个并发」。
+3. `.env` 引号值改为「扫到闭合引号为止」：闭合引号之后只允许空白或 `#` 注释，未闭合/有残留则回退
+   未加引号分支（**刻意不猜**）。
+4. 流截断判据换成「既无 `[DONE]` 也无 `finish_reason` = 上游故障」；空载荷守卫加 `refusal` 豁免，
+   与非流式 `mapStopReason` 对齐。**语义变更**。
+5. `mergeUsage(base, delta)` 跳过 `null`/`undefined`：缺值的语义是「保持已有值」，不是「清空已有值」。
+6. `toolTimeoutMs` 下传两个嵌套能力（子 agent / skill 的 `runAgentScoped`）。**裁判权**语义。
+7. drain：有限 deadline 且已过 → 直接 `false`，不把「已到点」透传给「0 = 不限」。
+8. `#redispatch` 认领时**先 `await store.save(rec)` 再派发**（签名保持 `number | Promise<number>`，
+   它已在 `.then()` 里被调用，不必强制 async）。
+9. `resolveRetry` merge 前用 `definedOnly` 剔除显式 `undefined`。
+10. 静态 `@Prompt` 改为按**解析后的菜单名**去重（仅供父子类静态覆写用）；实例↔静态真重名交给
+    `module.ts` 抛「菜单能力重名」—— 对齐 §3「装配期统一查重、重名即抛」。
+
+**B. 上限、结构化 error 与那处「缝」**
+
+11. `metrics.ts` 三个维度的**键空间都封顶**（`dropped` Set 改计数器；`maxModels`/`maxScores` 新增，
+    默认 50 / 200；超限折叠进既有的 `__other__` 桶）。上限是给**内存**封顶，不是给**账本**封顶 ——
+    turn/token/条数照记，只损失标签粒度；snapshot 增 `droppedModels`/`droppedScores`。
+12. `turn.ts` 的 `tool_use_no_blocks` 补齐结构化 `error`（`type:'agent_error'`），兑现
+    `loop.ts` 的「非正常收尾都带结构化 error」不变量 —— 此前该分支 `status:'failed'` 但
+    `result.error === undefined`，HTTP body 与任务记录里看不出**为什么**失败。
+13. `POST /tasks` 的 store 落库故障改走与 500 同一套 `exposeErrors` 策略（不再 400 + 内部原文）；
+    并补一条「停机闸门与 `submit` 之间隔着 `await parseJsonBody`」的 503 分支（新增
+    `TaskInputError` 区分「调用方参数错」与「服务端故障」）。
+14. **`beforeFlush` 缝**（本轮唯一的公共面新增）：`ExecuteRunOptions` / `RunAppOptions` 增可选
+    `beforeFlush(trace, result)`，在 `run.finish` 之后、`flushSinks` **之前**调一次，可 await、抛错被
+    吞（同 sink / 记忆回写：收尾动作失败不得击穿 run）。理由：`flushSinks` 发生在 `executeRun` 内部，
+    `defineEval` 的结论若在 `app.run()` 返回后才挂，`metricsSink` 早在 `export()` 那一刻聚完账 ——
+    分数**永远进不了指标**，而 usage-guide 承诺「eval 的 trace 自带质量结论、可直接聚合通过率」。
+    判官必须拿到 `result`（它存在早于冲刷），所以缝的位置只能是这里，不能是「run 之后的钩子」或
+    「异步 gate」（后者会与 `app.run` 的调用栈死锁）。`defineEval` 另有鸭子类型兜底：宿主漏透传时
+    断言照做（不误报「全挂」），只是分数进不了指标。
+15. `compactMessages` 的 cut 校验改成「tail 内每个 `tool_result` 的 id 都能在 tail 内找到对应
+    `tool_use`」—— 非相邻工具对（`tool_use(A) @k`、user 文本 `@k+1`、`tool_result(A) @k+2`）此前会切出
+    孤儿 `tool_result` ⇒ API 400。退无可退时照 `trimToolPairs` 先例整体放弃压缩。
+16. **去重重构**：`sseLines` → `src/core/sse.ts`；`percentile` / `capabilityKindOf` →
+    `src/core/stats.ts` / `core/trace.ts`；`textOf` 三份两种语义 → `src/core/text.ts` 的
+    `textOf(message, separator)`，三个调用点**各传各的原值，行为零变化**；可中断 `sleep` 下沉
+    `core/timeout.ts`（abort 文案参数化，`engine` 是 `'run 已被取消'`、`anthropic` 是 `'请求已被取消'`）。
+    这些下沉不是整洁度：`integrations` 只准依赖 `core`，所以 `core/` 是让那两份合一的**唯一**合法落点。
+    **两份 backoff 刻意不合并**并在原地写明理由：`engine/retry.ts` 是 ±20% 均匀抖动，
+    `anthropic.ts` 的 `backoffMs` 是 ±25% 且优先尊重 `retry-after`（秒数 + HTTP-date）—— 合并即改行为。
+17. MCP 桥的判据由 `engineBudget > 0` 改为 `!= null`：`toolTimeoutMs: 0` 的文档语义是「引擎不设超时」，
+    那同样是**引擎的表态**。用 `> 0` 的话，用户显式写下不限、桥却自作主张判 60s —— 与
+    「一次调用只有一个裁判」相反，也把「说了不限」变成假的。**语义变更**。
+18. `docs/roadmap.md` 的 score 形状补上 `comment` 字段（实现会条件附加，usage-guide 已写）。
+
+**代价（如实记）**：
+
+- **公共面新增两处**（用户已批准）：`RunAppOptions`/`ExecuteRunOptions` 的 `beforeFlush`（可选，不传
+  行为不变）；metrics 的 `maxModels`/`maxScores` 与 snapshot 的 `droppedModels`/`droppedScores`
+  （**新增**键，既有键的形状不变）。`docs/usage-guide.md` 与官网 `api.html` 已同步。
+- **`dropped*` 计数自身封顶 1024**（`MAX_DROPPED_TRACKING`），超出后它是**下界**：计划里写的
+  「零语义损失」只对上限之内的键空间成立，超出部分连「丢了多少」都只能是下界。已写进注释与
+  `usage-guide` 的取值说明。
+- **`tool_use_no_blocks` 现在带 `result.error`**：该分支一直是 `status:'failed'`，按
+  `result.error === undefined` 分流「是不是失败」的调用方不受影响；把它当唯一判据的日志会多一行。
+- **`RawUsage` 与 `MessageUsage` 没有拉齐**（原计划提到）：两者是**不同层**的语义 —— 前者是原始分片、
+  允许显式 `null` 表示「这次不报」，后者是归一后的产物（`?? 0` 已兜过底）。拉齐会同时弄错一头，
+  已在 `anthropic.ts` 就地写明「别把它们拉齐」。
+- `#redispatch` 未强制改成 `async`；`textOf` 落在 `src/core/text.ts` 而非 `core/message.ts`
+  （`message.ts` 是纯类型层，加运行时函数会把它从类型模块变成实现模块）；`TaskInputError` 是
+  **module 级** export，**不**进 `src/index.ts`（进了就触发官网 API 页的反向全覆盖要求）。
+
+**门禁**：`tests/integrations/openai.test.ts`（非 2xx 带 status → `classifyError` 分类 + 429 真触发引擎
+重试的闭环）、`tests/integrations/openaiStream.test.ts`（错误分片反推 status / 截断必抛 / `refusal`
+不抛）、`tests/engine/concurrency.test.ts`（`(0,1)` 小数仍有 1 个 worker + 快照记生效整数）、
+`tests/toolkit/env.test.ts`（引号 + 行内注释 / 未闭合 / 残留）、`tests/integrations/anthropic.test.ts`
+（`message_delta` 的 null 不清真实值）、`tests/toolkit/subagent.test.ts` 与 `skill.test.ts`
+（`ctx.toolTimeoutMs` → 子循环按超时记账）、`tests/transport/host-hardening.test.ts`（截止已过 → 立即
+false，时钟前跳构造，不赌毫秒）、`tests/transport/async.test.ts`（异步 store 下 `resumePending`
+不重复执行）、`tests/engine/retry.test.ts`（显式 undefined 回落缺省）、`tests/toolkit/prompt-versions.test.ts`
+（静态资产不丢 / 真重名交装配期抛）、`tests/integrations/metrics.test.ts`（三个维度封顶 + 折叠后账总量
+不变 + 标签不被切成乱码）、`tests/engine/loop.test.ts`（`tool_use_no_blocks` 带结构化 error）、
+`tests/transport/http.test.ts`（store 故障走 `exposeErrors`）、`tests/eval/defineEval.test.ts`
+（score 在冲刷前落定 → `metricsSink` 真聚合得到 + 宿主漏透传的兜底）、
+`tests/engine/trimming.test.ts`（非相邻工具对不切出孤儿 `tool_result`）、
+`tests/integrations/mcp.test.ts`（引擎显式 `toolTimeoutMs: 0` ⇒ 桥不自判）、
+`tests/core/sse-text-stats.test.ts`（下沉三件套的语义对拍）。
+每条修复都用「临时把修复废掉 ⇒ 新用例必须变红」验过判别力，再从备份还原。
+e2e：`npm run e2e`（CLI / EXAMPLES / DEPLOY 三关全绿）、`npm run e2e:mcp`（真第三方 MCP server → 桥 →
+菜单 → 真跑一轮，metrics 输出里可见 `droppedModels`/`droppedScores`）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

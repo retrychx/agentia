@@ -66,6 +66,9 @@ export interface EvalDefinition<T = unknown> {
   /**
    * 断言。抛错 = 该用例失败（`assert` 原生就够用，不引断言库）。
    * 返回 Promise 也行（要读外部系统时）。
+   *
+   * 注：断言跑在**本次 run 的 `RunContext` 之内**（必须在 sinks 冲刷前出结论，见下），
+   * 因此断言里 `RunContext.current()` 读得到这次 run。
    */
   expect: (r: AgentRunResult<T>, ctx: EvalContext) => void | Promise<void>;
 }
@@ -93,26 +96,54 @@ export function defineEval<T = unknown>(
         const label = c.name ?? `case#${i + 1}`;
         const messages: MessageParam[] = [{ role: 'user', content: c.input }];
         let report: EvalCaseReport = { name: label, ok: false };
-        try {
-          const { result } = await app.run(messages, { ...c.opts, client: c.client });
-          const typed = result as AgentRunResult<T>;
-          // 先落 stopReason/trace 再断言：断言失败时报告里仍带着「跑出来长什么样」
-          report = { name: label, ok: true, stopReason: result.stopReason, trace: result.trace };
-          await def.expect(typed, { trace: result.trace });
-        } catch (e) {
-          report = { ...report, ok: false, error: messageOf(e) };
-        }
         // R7 质量闭环：用例结论挂成 trace 根 span 的 score 事件 —— eval 的 trace 自带
         // 质量结论，下游 TraceSink / metrics 可直接聚合「这个 eval 的通过率」。
         // 拿得到 trace 才挂：app.run 抛错（环境错误）时无 trace 可挂，跳过。
-        if (report.trace) {
-          attachScore(report.trace, {
+        const attach = (trace: Trace): void => {
+          attachScore(trace, {
             name: 'eval',
             value: report.ok ? 1 : 0,
             source: def.name,
             ...(report.error !== undefined ? { comment: report.error } : {}),
           });
+        };
+        // 本用例是否走了「冲刷前钩子」（见下）—— 决定结论在哪里落定
+        let hooked = false;
+        try {
+          const { result } = await app.run(messages, {
+            ...c.opts,
+            client: c.client,
+            // ⚠️ 断言与挂分**必须在 sinks 冲刷之前**做完：`flushSinks` 发生在
+            // `executeRun` 内部，等 `app.run` 返回再 `attachScore`，`metricsSink`
+            // 早已在 `export()` 那一刻聚完账 —— 分数永远进不了指标，而
+            // usage-guide / roadmap 都承诺了「eval 的 trace 可直接聚合通过率」。
+            // 而「这轮对不对」只有拿到 result 才判得出，所以断言也只能在这里做。
+            beforeFlush: async (trace, r) => {
+              hooked = true;
+              // 先落 stopReason/trace 再断言：断言失败时报告里仍带着「跑出来长什么样」
+              report = { name: label, ok: true, stopReason: r.stopReason, trace };
+              try {
+                await def.expect(r as AgentRunResult<T>, { trace });
+              } catch (e) {
+                // 断言失败 = 用例失败，不是 run 失败 —— 必须在这里收住，不能让它
+                // 从钩子里飞出去（那会把一次正常的 run 打成 failed）
+                report = { ...report, ok: false, error: messageOf(e) };
+              }
+              attach(trace);
+            },
+          });
+          if (!hooked) {
+            // 兜底：应用不认 `beforeFlush`（自定义实现漏透传 opts 字段）时退回
+            // 「跑完再断言」——断言与报告行为不变，只是这条 trace 的 score 挂在冲刷
+            // 之后（指标聚合看不到它）。比重写成「所有用例都失败」诚实得多。
+            const typed = result as AgentRunResult<T>;
+            report = { name: label, ok: true, stopReason: result.stopReason, trace: result.trace };
+            await def.expect(typed, { trace: result.trace });
+          }
+        } catch (e) {
+          report = { ...report, ok: false, error: messageOf(e) };
         }
+        if (!hooked && report.trace) attach(report.trace); // 正常路径已在钩子里挂过，不重复挂
         cases.push(report);
       }
 

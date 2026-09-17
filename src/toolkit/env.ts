@@ -65,17 +65,51 @@ export function parseEnvText(text: string): Record<string, string> {
 
 function parseValue(raw: string): string {
   const v = raw.trim();
-  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
-    return v
-      .slice(1, -1)
-      .replace(/\\([nrt"\\])/g, (_m, c: string) =>
-        c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c,
-      );
-  }
-  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1);
+  // 引号值：扫到**闭合引号**为止，其后只允许空白或行内注释。
+  //
+  // 不能用 `v.startsWith('"') && v.endsWith('"')` 判定 —— `A="x" # 注释` 的结尾是
+  // 注释不是引号，那样会掉进未加引号分支，只剥掉 ` # 注释` 而把 `"x"`（**含字面引号**）
+  // 原样写进 process.env：密钥带着引号发出去、每个请求 401，而 .env 文件看上去完全正确。
+  // 这正是本文件开头「静默跳过 = 以为配上了其实没配上」要防的那类事。
+  const quoted = matchQuoted(v);
+  if (quoted !== null) return quoted;
   // 未加引号：` #` 起为行内注释（`#` 紧贴值不当作注释，避免吃掉含 # 的 token）
   const hash = v.search(/\s#/);
   return (hash === -1 ? v : v.slice(0, hash)).trim();
+}
+
+/** 双引号内的转义：只认 `\n \r \t \" \\`，其余（如 `\q`）原样保留 */
+function unescapeDouble(s: string): string {
+  return s.replace(/\\([nrt"\\])/g, (_m, c: string) =>
+    c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c,
+  );
+}
+
+/**
+ * `v` 以引号开头且能扫到闭合引号时，返回引号**内层**（双引号解转义）；否则返回 null，
+ * 交给未加引号分支。
+ *
+ * 闭合引号之后只允许空白或 `#` 行内注释 —— 还有别的残留（`A="x" y`）当作「没配引号」，
+ * 回退旧行为原样返回，不猜。
+ */
+function matchQuoted(v: string): string | null {
+  const quote = v[0];
+  if (quote !== '"' && quote !== "'") return null;
+  let i = 1;
+  while (i < v.length) {
+    // 双引号内 `\"` 不算闭合（单引号内无转义，与原实现一致）
+    if (quote === '"' && v[i] === '\\') {
+      i += 2;
+      continue;
+    }
+    if (v[i] === quote) break;
+    i++;
+  }
+  if (i >= v.length) return null; // 未闭合
+  const rest = v.slice(i + 1).trim();
+  if (rest !== '' && !rest.startsWith('#')) return null;
+  const inner = v.slice(1, i);
+  return quote === '"' ? unescapeDouble(inner) : inner;
 }
 
 /**

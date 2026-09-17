@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { MessageParam, ToolParam } from '../../src/index.js';
-import { executeRun } from '../../src/index.js';
+import { classifyError, executeRun } from '../../src/index.js';
 import type { AgentTool } from '../../src/index.js';
 import { createOpenAIClient } from '../../src/integrations/openai.js';
 import { toolUseMsg, endTurnMsg, mockClient } from '../helpers.js';
@@ -284,6 +284,54 @@ describe('createOpenAIClient', () => {
         return true;
       },
     );
+  });
+
+  it('非 2xx 的错误**带数值 status** → classifyError 认得出速率限制 / 服务端故障（重试的前提）', async () => {
+    // 修复前一律抛裸 Error（无 status）：classifyError 的鸭子类型读不到数值 status，
+    // 所有失败都落 type:'unknown' + retryable:false —— 引擎层那 3 次重试**一次都不发生**，
+    // DeepSeek 这类兼容端点吃一个 429 就整轮 run 失败。
+    const cases: Array<[number, string, string, boolean]> = [
+      [429, 'rate_limit', 'rate_limit', true],
+      [503, 'server', 'server', true],
+      [400, 'api', 'api', false],
+    ];
+    for (const [status, label, type, retryable] of cases) {
+      const { fetchImpl } = fakeFetch([{ status, body: 'nope' }]);
+      const client = createOpenAIClient({ fetchImpl });
+      const err = await client.messages
+        .stream({ model: 'm', max_tokens: 1, messages: [] })
+        .finalMessage()
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      assert.ok(err, `${label} ${status} 应当抛错`);
+      const cls = classifyError(err);
+      assert.equal(cls.type, type, `${label}：${status} → ${type}`);
+      assert.equal(cls.retryable, retryable, `${label}：${status} 的 retryable`);
+      assert.equal((err as { status?: number }).status, status, `${label}：错误对象自身带 status`);
+    }
+  });
+
+  it('429 → 引擎重试真的发生（用例闭环：客户端给出的 status 一路传到引擎重试层）', async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      { status: 429, body: 'slow down' },
+      { body: chatResponse({}) }, // 第二次成功
+    ]);
+    const retries: number[] = [];
+    const { result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client: createOpenAIClient({ fetchImpl }),
+      retry: {
+        maxAttempts: 2,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+        onRetry: (i) => retries.push(i.attempt),
+      },
+    });
+    assert.equal(result.stopReason, 'end_turn', '重试后成功收尾');
+    assert.equal(requests.length, 2, '第一次 429 被重试');
+    assert.deepEqual(retries, [1], '重试计数进 onRetry');
   });
 
   it('与 mockClient 同脚本对比：可直接喂给 executeRun 跑通一轮工具调用', async () => {

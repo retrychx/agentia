@@ -14,12 +14,12 @@
 import type {
   Message,
   MessageParam,
-  TextBlock,
   ToolInputSchema,
   ToolParam,
   ToolResultBlockParam,
   ToolUseBlock,
 } from '../core/message.js';
+import { textOf as coreTextOf } from '../core/text.js';
 import type {
   AgentTool,
   JsonSchema,
@@ -433,23 +433,27 @@ export function resolveStopReason(message: Message, maxTokens: number): StopReso
   const toolUses = message.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
   if (toolUses.length === 0) {
     // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
-    // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开，
-    // 后者保留已产出的文本并挂一条可诊断的 error（run 仍按失败收尾）。
+    // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开。
+    //
+    // **两种都属非正常收尾，都必须挂结构化 error** —— engine/loop.ts 的不变量是
+    // 「非正常收尾都带结构化 error」（与 budget_exceeded / refusal / max_iterations 同口径）。
+    // 此前只有 unknown_stop_reason 带 error，tool_use_no_blocks 不带：run 以
+    // status:'failed' 收尾、result.error 却是 undefined，HTTP body 与任务记录里
+    // 看不出「为什么失败」，只能看到一句 stopReason 字符串。
     const stopReason =
       message.stop_reason === 'tool_use' ? 'tool_use_no_blocks' : 'unknown_stop_reason';
     return {
       kind: 'finish',
       stopReason,
       finalText: textOf(message),
-      ...(stopReason === 'unknown_stop_reason'
-        ? {
-            error: {
-              type: 'agent_error',
-              message: `模型返回了未识别的 stop_reason: ${String(message.stop_reason)}`,
-              retryable: false,
-            },
-          }
-        : {}),
+      error: {
+        type: 'agent_error',
+        message:
+          stopReason === 'tool_use_no_blocks'
+            ? '模型以 stop_reason=tool_use 收尾，但响应里没有任何 tool_use 块（畸形响应）'
+            : `模型返回了未识别的 stop_reason: ${String(message.stop_reason)}`,
+        retryable: false,
+      },
     };
   }
   return { kind: 'tools', toolUses };
@@ -625,11 +629,16 @@ function toApiTool(t: AgentTool): ToolParam {
   };
 }
 
+/**
+ * 取消息里的全部文本块（引擎侧口径：**多块按 `\n` 连接** —— 多文本块是模型分段的
+ * 输出，拼成 `finalText` 要保住分段）。
+ *
+ * 实现单源在 `core/text.ts`（2026-09-17 去重）：两个适配器的「非流式回落路径」各有
+ * 一份逐字相同的实现，只差连接符。这里保留同名包装，是为了让 loop.ts 与测试既有的
+ * 大量调用点零改动，同时把「引擎用 `\n`」这个选择钉在一处。
+ */
 export function textOf(message: Message): string {
-  return message.content
-    .filter((b): b is TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
+  return coreTextOf(message, '\n');
 }
 
 /**

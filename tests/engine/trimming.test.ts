@@ -184,6 +184,56 @@ describe('长上下文策略', () => {
     assert.ok(JSON.stringify(out).includes('t1'), '工具对未被切散');
     assert.ok(!JSON.stringify(out).includes('SUM'), '没有插入摘要');
   });
+
+  /**
+   * 工具块完整性：每个 tool_result 的 id 都能在它**之前**找到对应 tool_use。
+   * 这是 API 的硬要求（孤儿 tool_result = 下一次请求 400），两条压缩路径都必须满足。
+   */
+  function assertNoOrphanToolResults(msgs: MessageParam[]): void {
+    const seen = new Set<string>();
+    for (const m of msgs) {
+      if (typeof m.content === 'string') continue;
+      // 收窄成结构形状读两个字段即可（内容块联合里有 UnknownContentBlockParam，直接读会报错）
+      for (const b of m.content as Array<{ type?: string; id?: string; tool_use_id?: string }>) {
+        if (b.type === 'tool_use' && b.id !== undefined) seen.add(b.id);
+        if (b.type === 'tool_result') {
+          const id = b.tool_use_id ?? '';
+          assert.ok(seen.has(id), `孤儿 tool_result: ${id}`);
+        }
+      }
+    }
+  }
+
+  it('compactMessages：工具对非相邻（cut 跨过 tool_use）→ 不切出孤儿 tool_result', async () => {
+    // tool_use(A) @1 与 tool_result(A) @3 中间夹了一条普通 user 文本。cut=2 正落在那条
+    // 文本上 —— 它自己不是 tool_result，所以「只看 messages[cut]」的旧判据放行，@3 的
+    // tool_result 留成保留段里的孤儿块（呼应它的 tool_use 已折进摘要）。
+    const msgs: MessageParam[] = [
+      { role: 'user', content: 'u0' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'A', name: 'x', input: {} }] },
+      { role: 'user', content: '夹在中间的普通文本' },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'A', content: 'r' }] },
+      { role: 'assistant', content: 'a4' },
+      { role: 'assistant', content: 'a5' },
+    ];
+    const out = await compactMessages(msgs, { keepRecent: 4, summarize: () => 'SUM' });
+    assertNoOrphanToolResults(out);
+    assert.ok(JSON.stringify(out).includes('SUM'), 'cut 退到 1 即可自洽，压缩照做');
+    assert.ok(JSON.stringify(out).includes('"A"'), 'tool_use 与它的 tool_result 同在保留段');
+  });
+
+  it('compactMessages：孤儿 tool_result 的 tool_use 在索引 0 → 放弃压缩', async () => {
+    const msgs: MessageParam[] = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'A', name: 'x', input: {} }] },
+      { role: 'user', content: '夹在中间的普通文本' },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'A', content: 'r' }] },
+      { role: 'assistant', content: 'a3' },
+    ];
+    // 初始 cut=1 已是不丢消息的下界，仍不自洽 ⇒ 原样返回（同「退到 0 才能保住工具对」）
+    const out = await compactMessages(msgs, { keepRecent: 3, summarize: () => 'SUM' });
+    assert.equal(out, msgs, '放弃压缩：原样返回（含数组引用）');
+    assertNoOrphanToolResults(out);
+  });
 });
 
 describe('增量 token 计数（createTokenCounter，预算策略的快路径）', () => {

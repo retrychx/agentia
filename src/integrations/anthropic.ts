@@ -5,6 +5,9 @@ import type {
   TextBlock,
   ToolUseBlock,
 } from '../core/message.js';
+import { textOf } from '../core/text.js';
+import { sseLines } from '../core/sse.js';
+import { interruptibleSleep } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -108,7 +111,8 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
             const ctype = res.headers.get('content-type') ?? '';
             if (!ctype.includes('event-stream')) {
               const message = (await res.json()) as Message;
-              const full = textOf(message);
+              // 分隔符 `''`：回落的原文本来就是一整段，拼回去要与流式累积的文本逐字一致
+              const full = textOf(message, '');
               if (full) for (const cb of textCallbacks) cb(full);
               return message;
             }
@@ -164,7 +168,7 @@ async function postWithRetries(
   for (let attempt = 0; ; attempt++) {
     if (attempt > 0) {
       // 退避期间被中止：以 AbortError 收场（与引擎的 sleep 同语义）
-      await interruptibleSleep(backoffMs(attempt, retryAfter), signal);
+      await interruptibleSleep(backoffMs(attempt, retryAfter), signal, '请求已被取消');
       retryAfter = null;
     }
     let res: Response;
@@ -196,6 +200,12 @@ async function postWithRetries(
 /**
  * 退避毫秒：`retry-after`（秒数或 HTTP-date）优先；否则指数退避
  * `min(500 × 2^(attempt-1), 8000)` ±25% 抖动（attempt 从 1 起 = 第一次重试）。
+ *
+ * ⚠️ **不要**与 `engine/retry.ts` 的 `backoffDelay` 合并（2026-09-17 去重时明确留下的
+ * 例外）。旁边的 `interruptibleSleep` 已经下沉到 core 共享，但退避计算器不能跟着走 ——
+ * 两者形似而策略不同，合一就是改行为：本函数 ±25% 固定抖动、且**优先尊重 `retry-after`**
+ * （限流窗口是上游说了算，框架不该拿自己的指数曲线去猜）；那个是 ±jitter（缺省 ±20%）
+ * 的均匀抖动、底数与上限来自 `RetryOptions`，且它在引擎层（client 放弃之后的兜底重试）。
  */
 function backoffMs(attempt: number, retryAfter: string | null): number {
   if (retryAfter) {
@@ -207,31 +217,6 @@ function backoffMs(attempt: number, retryAfter: string | null): number {
   }
   const base = Math.min(500 * 2 ** Math.max(0, attempt - 1), 8000);
   return Math.round(base * (0.75 + Math.random() * 0.5));
-}
-
-/**
- * 可被 signal 中断的 sleep。
- * 与 `engine/retry.ts` 的 sleep 同语义但不复用它 —— 分层约束：integrations 只能依赖 core。
- */
-function interruptibleSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    const abortError = (): Error =>
-      Object.assign(new Error('请求已被取消'), { name: 'AbortError' });
-    if (signal?.aborted) {
-      reject(abortError());
-      return;
-    }
-    function onAbort(): void {
-      clearTimeout(timer);
-      reject(abortError());
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 /**
@@ -267,12 +252,39 @@ function composeSignal(
 
 // —— SSE 消费与 Message 组装 ——
 
-/** message_start / message_delta 携带的 usage（字段按端点回报透传，缺省 0 在组装时补） */
+/**
+ * message_start / message_delta 携带的 usage（字段按端点回报透传，缺省 0 在组装时补）。
+ *
+ * 四个字段都建模成 `number | null` **是有意的**，与 `core/message.ts` 的 `MessageUsage`
+ * （input/output 必填非 null）不矛盾：这里是**线路形态**（厂商/网关可能显式回 null，
+ * 表示「这次不报」），那边是**归一后的产物**（`?? 0` 已兜过底）。两层语义不同，
+ * 别把它们「拉齐」—— 拉齐会同时弄错一头。
+ */
 interface RawUsage {
   input_tokens?: number | null;
   output_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+}
+
+/**
+ * 并入 message_delta 的累计 usage：**跳过 null/undefined**。
+ *
+ * `{ ...base, ...delta }` 在这里是错的：RawUsage 的字段允许显式 `null`，
+ * 浅合并会让 delta 里的 null **覆盖** base 已经拿到的真实数字。真实场景（网关/代理型
+ * 端点）：message_start 报 `input_tokens: 7 / cache_read: 3`，随后的 message_delta 只带
+ * `{ output_tokens: 9, input_tokens: null, cache_*: null }` —— 浅合并把四项全清成 null，
+ * 末尾的 `?? 0` 再归零，于是该回合 input/cache token 与 costEstimate 一起塌成 0，
+ * trace 汇总、buildRunReport、maxCostUsd 护栏跟着一起少算。
+ *
+ * 缺值的正确语义是「保持已有值」，不是「清空已有值」。
+ */
+function mergeUsage(base: RawUsage, delta: RawUsage): RawUsage {
+  const out: RawUsage = { ...base };
+  for (const [k, v] of Object.entries(delta)) {
+    if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
+  }
+  return out;
 }
 
 /** 流式分片（`data:` 行的 payload；事件类型在 payload 的 `type` 字段，不在 `event:` 行） */
@@ -419,8 +431,9 @@ async function readAnthropicStream(
         const d = event.delta;
         if (d?.stop_reason) stopReason = d.stop_reason;
         if (d?.stop_sequence !== undefined) stopSequence = d.stop_sequence;
-        // message_delta 的 usage 是累计口径（output_tokens 为累计值，cache 计量在此回报）
-        if (event.usage) usage = { ...usage, ...event.usage };
+        // message_delta 的 usage 是累计口径（output_tokens 为累计值，cache 计量在此回报）。
+        // 走 mergeUsage 而非浅合并：显式 null 不得清掉 message_start 已拿到的真实值。
+        if (event.usage) usage = mergeUsage(usage, event.usage);
         break;
       }
       case 'error': {
@@ -503,40 +516,4 @@ function parseToolInput(raw: string): unknown {
   } catch {
     return raw;
   }
-}
-
-/** 逐行读 SSE（每条事件都是一行 `data:`，不需要处理多行 payload；与 openai.ts 同款） */
-async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx = buf.indexOf('\n');
-      while (idx >= 0) {
-        yield buf.slice(0, idx).replace(/\r$/, '');
-        buf = buf.slice(idx + 1);
-        idx = buf.indexOf('\n');
-      }
-    }
-    if (buf) yield buf.replace(/\r$/, '');
-  } finally {
-    // 提前 break（abort 等）时释放读锁，否则流不会被回收
-    try {
-      await reader.cancel();
-    } catch {
-      /* 已结束/已取消 */
-    }
-  }
-}
-
-/** 取消息里的全部文本块（非流式回落路径一次性回调用） */
-function textOf(message: Message): string {
-  return message.content
-    .filter((b): b is TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
 }

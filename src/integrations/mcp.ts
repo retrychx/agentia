@@ -186,12 +186,16 @@ export async function mcpTools(
           input && typeof input === 'object' && !Array.isArray(input)
             ? (input as Record<string, unknown>)
             : {};
-        // 裁判权（2026-09-17，见 spec §10 2026-09-17 ①）：引擎设了工具预算时，桥**不启动自己的计时器** ——
+        // 裁判权（2026-09-17，见 spec §10 2026-09-17 ①）：引擎**表过态**时，桥不启动自己的计时器 ——
         // 两个计时器判同一件事，只会得到两种账（桥那份曾被记成 error(unknown)/errorKind=threw），
-        // 而且桥的纯竞速还会把超了预算的调用记成成功。`timeoutMs` 退化为兜底（脱离引擎单用 /
-        // 引擎没设 toolTimeoutMs 时生效）。
+        // 而且桥的纯竞速还会把超了预算的调用记成成功。`timeoutMs` 退化为兜底（只在脱离引擎单用、
+        // 或引擎压根没设 toolTimeoutMs 时生效）。
+        //
+        // 判据是 `!= null` 而**不是** `> 0`：`toolTimeoutMs: 0` 的文档语义是「引擎不设超时」，
+        // 那同样是引擎的表态。用 `> 0` 的话，用户显式写下 0（不限），桥却自作主张判 60s ——
+        // 与「一次调用只有一个裁判」相反：说了不限就该不限。
         const engineBudget = ctx?.toolTimeoutMs;
-        if (engineBudget != null && engineBudget > 0) {
+        if (engineBudget != null) {
           return client.callTool(original, args);
         }
         return withDeadline(client.callTool(original, args), timeoutMs, original);
