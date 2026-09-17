@@ -83,6 +83,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   src/fragments/*.html 页面正文（?raw 注入）、src/scripts/ 客户端脚本
 └── docs/                # spec.md（锁定决策）、roadmap.md（方向与状态）、
                          # usage-guide.md（**使用者向唯一说明**：CLI 项目 AGENTS.md 与官网 llms.txt 的单源）
+                         # 根目录 CHANGELOG.md 是发布史与迁移指南（随 npm 包自动发布，免 files 登记）
 ```
 
 ## 硬约定

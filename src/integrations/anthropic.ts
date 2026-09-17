@@ -19,9 +19,9 @@ import type { ModelClient } from '../core/tool.js';
  * RequestOptions 里认 signal，放 body 里会被静默丢弃，在飞 run 中止失效、
  * 超时后继续烧 token；实测对照见 docs/spec.md §10 的 2026-09-14 ③）。
  *
- * 重试语义与 SDK 缺省对齐（maxRetries=2：429 / 5xx / 连接错误，指数退避，
- * 尊重 `retry-after` 响应头）。引擎层另有一层重试兜底（`engine/retry.ts`），
- * 两层关系与 SDK 时代一致。
+ * 重试语义与 SDK 缺省对齐（maxRetries=2：408 / 409 / 429 / 5xx / 连接错误，
+ * 指数退避，尊重 `retry-after` 响应头）。引擎层另有一层重试兜底
+ * （`engine/retry.ts`），两层关系与 SDK 时代一致。
  *
  * 兼容端点（如 DeepSeek 的 Anthropic 兼容端点）换 baseURL 即可；非官方端点的
  * 兼容性靠调用方保证，本实现不发明额外的鉴权形态。
@@ -33,7 +33,7 @@ export interface AnthropicClientOptions {
   /** 缺省读环境变量 `ANTHROPIC_BASE_URL`，再缺省 `https://api.anthropic.com`（兼容端点 / 网关） */
   baseURL?: string;
   /**
-   * 单次请求的重试次数（不含首次尝试；429 / 5xx / 连接错误）。缺省 2，与 SDK 缺省一致。
+   * 单次请求的重试次数（不含首次尝试；408 / 409 / 429 / 5xx / 连接错误）。缺省 2，与 SDK 缺省一致。
    * 引擎层另有外层重试（`RunAgentOptions.retry`），两层叠加最多
    * `(1 + maxRetries) × maxAttempts` 次请求 —— 建议二选一调。
    */
@@ -46,6 +46,10 @@ export interface AnthropicClientOptions {
   /**
    * 历史遗留：SDK 时代其余键原样透传给 SDK 构造参数；自研化后**不再消费**，
    * 保留索引签名只为旧代码编译不炸。多余键静默忽略。
+   * 此处的索引签名是**有意**的 —— 与 `core/message.ts` 兜底成员「绝不加索引签名」
+   * 方向相反但场景不同：那是会被赋值/收窄的公共消息类型（带索引签名会让 SDK 的
+   * interface 块类型赋不进来），这里是构造参数对象，不存在被赋值侧的
+   * assignability 问题。别照着一边去改另一边。
    */
   [key: string]: unknown;
 }
@@ -133,9 +137,15 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
 
 // —— 请求与重试（SDK 缺省语义的手写等价）——
 
-/** 可重试的 HTTP 状态：429 与 5xx（SDK 还重试 408/409，这里按规格只对齐 429/5xx） */
+/**
+ * 可重试的 HTTP 状态：408 / 409 / 429 / 5xx —— 与 SDK 缺省一致。
+ * 注意这是 **client 内重试**这一层；重试耗尽（或本就不重试）后抛出的
+ * `AnthropicApiError` 由 `engine/errors.ts` 的鸭子分类另行归类（408/409 落
+ * api/不可重试、429 落 rate_limit、5xx 落 server）—— 那是「这次失败怎么记账、
+ * 引擎外层要不要再来一轮」的语义，两层各司其职，不互相替代。
+ */
 function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
+  return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
 /**
@@ -281,6 +291,10 @@ interface StreamEvent {
     signature?: string;
     id?: string;
     name?: string;
+    /** redacted_thinking 块的数据载体（不透明字符串，原样透传，不解读） */
+    data?: string;
+    /** 未知块型的其余字段：原样保留进累积器，随 finalMessage 透出（不丢） */
+    [key: string]: unknown;
   };
   delta?: {
     type?: string;
@@ -306,6 +320,12 @@ interface BlockAcc {
   name: string;
   /** tool_use 的 input：JSON 字符串分片，stop 后整体 parse */
   partialJson: string;
+  /**
+   * 非 text/tool_use/thinking 的块（redacted_thinking 与一切未知块型）：
+   * content_block_start 的原始块对象原样携带，finalMessage 原样透出 ——
+   * 正是 `core/message.ts` 的 UnknownContentBlock 兜底成员的设计用途。
+   */
+  raw?: Record<string, unknown>;
 }
 
 /**
@@ -314,13 +334,15 @@ interface BlockAcc {
  * | 事件 | 动作 |
  * |---|---|
  * | message_start | 拿 id / model / 初始 usage |
- * | content_block_start | 按 index 建块累积器（text / tool_use / thinking） |
- * | content_block_delta | text_delta → 拼文本并触发 on('text')；input_json_delta → 拼 partialJson；thinking/signature_delta → 拼 thinking 块 |
+ * | content_block_start | 按 index 建块累积器：text / tool_use / thinking 收拼；redacted_thinking 与未知块型原样携带（透出时不丢） |
+ * | content_block_delta | text_delta → 拼文本并触发 on('text')；input_json_delta → 拼 partialJson；thinking_delta → 拼 thinking；signature_delta → 累积进 thinking 块的 signature |
  * | content_block_stop | 无动作（块按 index 累积，无需收尾） |
  * | message_delta | stop_reason / stop_sequence + 累计 usage 合并（后者覆盖前者出现的字段） |
  * | message_stop / ping | 结束 / 忽略 |
  * | error | 抛 AnthropicApiError（类型映射 status：rate_limit→429、overloaded→529、其余→500） |
  *
+ * thinking 块只做「收拼 + signature 累积 + redacted/未知块原样透传」——
+ * 框架**从不主动请求 extended thinking**，这些是端点自己开了之后的兜底不丢。
  * 与非流式 `toAnthropicMessage`（openai.ts）的空 choices 守卫同款：
  * 整条流走完都没见 message_start = 上游故障，**抛出**而不是组装成
  * 「stop_reason=null、content=[]、usage 全 0」的假成功。
@@ -358,8 +380,9 @@ async function readAnthropicStream(
       }
       case 'content_block_start': {
         const cb = event.content_block ?? {};
-        blocks[event.index ?? blocks.length] = {
-          type: cb.type ?? 'text',
+        const type = cb.type ?? 'text';
+        const acc: BlockAcc = {
+          type,
           text: typeof cb.text === 'string' ? cb.text : '',
           thinking: typeof cb.thinking === 'string' ? cb.thinking : '',
           signature: typeof cb.signature === 'string' ? cb.signature : '',
@@ -367,6 +390,12 @@ async function readAnthropicStream(
           name: typeof cb.name === 'string' ? cb.name : '',
           partialJson: '',
         };
+        // redacted_thinking（数据在 `data` 字段）与一切未知块型：原始块对象
+        // 原样携带 —— 不丢成空文本块，finalMessage 原样透出
+        if (type !== 'text' && type !== 'tool_use' && type !== 'thinking') {
+          acc.raw = { ...cb, type };
+        }
+        blocks[event.index ?? blocks.length] = acc;
         break;
       }
       case 'content_block_delta': {
@@ -428,6 +457,10 @@ async function readAnthropicStream(
         thinking: b.thinking,
         signature: b.signature,
       } as unknown as ContentBlock);
+    } else if (b.raw) {
+      // redacted_thinking / 未知块型：原样透出（UnknownContentBlock 兜底成员承载，
+      // 无需为它新增具体类型 —— `data` 等字段跟着原始对象走，消费方自行收窄读取）
+      content.push(b.raw as unknown as ContentBlock);
     } else {
       content.push({ type: 'text', text: b.text } as TextBlock);
     }

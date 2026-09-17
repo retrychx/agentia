@@ -946,6 +946,8 @@ const callable = {
 | `discover` 入口会回落 | 能力目录里源码与编译产物并存（`index.ts` + `index.js`）时，首选 `.ts` 加载失败会**回落 `.js` 并 warn** —— 命中的可能是**陈旧编译产物**（刚改过源码时注意）；全部候选都失败才抛错并列出各自原因 |
 | `asset()` 的 rel 必须是相对路径 | 带 scheme（`file:` / `https:` …）的 rel 会让 `new URL(rel, base)` 整个忽略 base（「以为读了能力目录、实际读了别处」），显式抛错；`../` 越出能力目录是**有意放行**（共享资产如 `../../shared/x.md` 是合法用法） |
 | 取消要传进客户端才有效 | 传 `signal` 后框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发）；不转发 `signal` 的自定义 `ModelClient` 只能「放弃等待」（请求在后台跑完、产物丢弃） |
+| 默认 client 的真端点验证范围 | `e2e:live` 跑在 DeepSeek 的 Anthropic **兼容**端点上；官方 Anthropic 端点的行为差异（thinking 细节、cache TTL 语义、新块型）目前只有本地假端点测试在守 —— 「mock 全绿发现不了厂商真实行为」是本框架自己记过的教训，接入官方端点前自己跑一遍 `npm run e2e:live` |
+| thinking 块「能收、不主动请求」 | 框架**从不**在请求里开 extended thinking；默认 client 能收拼 thinking 块（`signature_delta` 会累积），`redacted_thinking` 与未知块型**原样透传**不丢 —— 但官方 API 的 thinking 回灌要求带合法 `signature`，自定义 client 开 thinking 时自己验证这条链 |
 | 工具阶段的 abort 有盲区 | abort 只在三处被观察：**回合边界 / 在飞模型请求 / 重试退避 sleep**。没设 `toolTimeoutMs` 且工具挂死时，abort 之后 run 也不会返回（工具的 Promise 永不 settle）—— 挂死的工具要么设超时，要么自己读 `ToolRunContext.signal` |
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
 | 框架不自动读 .env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外，框架自己不去翻环境变量，也不读 `.env`；要读就在启动代码里调 `loadEnvFile()`（脚手架已内置那行），**真实环境变量优先**于文件 |

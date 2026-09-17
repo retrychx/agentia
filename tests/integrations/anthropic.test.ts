@@ -15,7 +15,7 @@ import { waitFor } from '../helpers.js';
  * 守的「缝」：① 返回值满足 `ModelClient` 结构面（构造期不触网）；
  * ② SSE 分片 → on('text') / finalMessage 的组装语义（text / tool_use / usage / stop_reason）；
  * ③ **signal 真到传输层**（abort 后在飞请求必须断开）；
- * ④ 重试语义与 SDK 缺省对齐（429/5xx 重试、400 不重试、retry-after 被尊重）；
+ * ④ 重试语义与 SDK 缺省对齐（408/409/429/5xx 重试、400 不重试、retry-after 被尊重）；
  * ⑤ 上游把错误塞进 200 流（type=error 事件）必须抛出而不是组装成假成功。
  */
 
@@ -273,7 +273,151 @@ describe('SSE 组装：分片 → on(text) 与 finalMessage', () => {
   });
 });
 
-describe('重试 parity（SDK 缺省语义：429/5xx/连接错误，尊重 retry-after）', () => {
+describe('thinking 与未知块型（收拼 + signature 累积 + 原样透传）', () => {
+  const MESSAGE_START = {
+    type: 'message_start',
+    message: {
+      id: 'msg_t',
+      type: 'message',
+      role: 'assistant',
+      model: 'm',
+      content: [],
+      usage: { input_tokens: 5, output_tokens: 1 },
+    },
+  };
+  const MESSAGE_END = [
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 6 },
+    },
+    { type: 'message_stop' },
+  ];
+
+  it('thinking 块：thinking_delta 收拼、signature_delta 累积进 signature', async () => {
+    const events = [
+      MESSAGE_START,
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '先想' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '再想' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'sig-1' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: '-2' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      ...MESSAGE_END,
+    ];
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      assert.equal(final.content.length, 1);
+      const block = final.content[0] as { type: string; thinking: string; signature: string };
+      assert.equal(block.type, 'thinking');
+      assert.equal(block.thinking, '先想再想');
+      assert.equal(block.signature, 'sig-1-2', 'signature_delta 分片必须累积拼接');
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('redacted_thinking 块（数据在 data 字段）原样透出，不丢成空文本块', async () => {
+    const events = [
+      MESSAGE_START,
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'redacted_thinking', data: 'EmwKAhgBEgy3Hc' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '答' } },
+      { type: 'content_block_stop', index: 1 },
+      ...MESSAGE_END,
+    ];
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      assert.equal(final.content.length, 2);
+      assert.deepEqual(
+        final.content[0],
+        { type: 'redacted_thinking', data: 'EmwKAhgBEgy3Hc' },
+        'redacted_thinking 必须原样在 finalMessage 里',
+      );
+      assert.deepEqual(final.content[1], { type: 'text', text: '答' });
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('未知新块型（假想的 web_search_result）原样透传，额外字段不丢', async () => {
+    const events = [
+      MESSAGE_START,
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'web_search_result',
+          url: 'https://example.com',
+          snippets: ['a', 'b'],
+        },
+      },
+      { type: 'content_block_stop', index: 0 },
+      ...MESSAGE_END,
+    ];
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      assert.deepEqual(
+        final.content[0],
+        { type: 'web_search_result', url: 'https://example.com', snippets: ['a', 'b'] },
+        '未知块型与其全部字段必须原样透传',
+      );
+    } finally {
+      await ep.close();
+    }
+  });
+});
+
+describe('重试 parity（SDK 缺省语义：408/409/429/5xx/连接错误，尊重 retry-after）', () => {
+  // 408/409 与 SDK 缺省对齐：client 内重试；耗尽后才轮到引擎分类（408/409 落 api/不可重试）
+  for (const status of [408, 409] as const) {
+    it(`${status}（带 retry-after: 0）→ 重试后成功`, async () => {
+      const ep = await fakeEndpoint((hits, res) => {
+        if (hits === 1) {
+          res.writeHead(status, { 'retry-after': '0', 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'request_failed', message: `HTTP ${status}` } }));
+        } else {
+          writeSse(res, textEvents('好', '了'));
+        }
+      });
+      try {
+        const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+        const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+        assert.equal(ep.hits(), 2, `第一次 ${status} 后必须重试一次`);
+        assert.equal(final.stop_reason, 'end_turn');
+      } finally {
+        await ep.close();
+      }
+    });
+  }
+
   it('429（带 retry-after: 0）→ 重试后成功', async () => {
     const ep = await fakeEndpoint((hits, res) => {
       if (hits === 1) {
