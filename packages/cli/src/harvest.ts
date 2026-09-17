@@ -6,9 +6,11 @@
  * trace 的 llm.turn 重建），汇总成一个 eval TS 脚手架写到 --out（缺省 stdout）。
  *
  * ⚠️ 用例骨架生成器与框架侧 `src/eval/harvest.ts` 的 `harvestEvalCase` **同源同形** ——
- * CLI 零运行时依赖、不能 import 框架，此处是逐行移植（packages/cli/test/harvest.test.mjs
- * 里有一条「与框架产物逐字一致」的对拍，改生成格式必须两边同步）。
+ * CLI 零运行时依赖、不能 import 框架，此处是去类型移植（正文逐行相同，另有 3 处空值兜底：
+ * `trace.spans ?? []`、`startedAt ?? 0` ×2）。**产物**逐字一致由
+ * packages/cli/test/harvest.test.mjs 的对拍守着（改生成格式必须两边同步）。
  */
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { extractTrace } from './report.js';
 
@@ -240,7 +242,9 @@ function toRow(v: unknown, index: number): HarvestRow | null {
   };
 }
 
-const USAGE = '用法：agentia harvest <trace.jsonl> [--out <file.ts>] [--failed] [--limit N]';
+/** 用法串（cli.ts 的子命令 `--help` 也从这里取，避免两处各写一份） */
+export const USAGE =
+  '用法：agentia harvest <trace.jsonl> [--out <file.ts>] [--force] [--failed] [--limit N]';
 
 function renderEvalFile(opts: {
   file: string;
@@ -288,11 +292,14 @@ export async function harvestCommand(args: string[]): Promise<number> {
   let file: string | undefined;
   let out: string | undefined;
   let onlyFailed = false;
+  let force = false;
   let limit: number | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     if (a === '--failed') {
       onlyFailed = true;
+    } else if (a === '--force') {
+      force = true;
     } else if (a === '--out') {
       out = args[i + 1];
       if (out === undefined) throw new Error(`--out 需要一个文件参数\n${USAGE}`);
@@ -357,6 +364,11 @@ export async function harvestCommand(args: string[]): Promise<number> {
   if (out === undefined) {
     process.stdout.write(content);
   } else {
+    // 产物是「人工核对后再进 CI」的脚手架，它的价值恰恰在用户手改过的断言与 input 上：
+    // 重跑一次就静默抹掉等于毁掉那份人工成果，所以默认拒绝覆盖（要覆盖显式 --force）。
+    if (!force && existsSync(out)) {
+      throw new Error(`${out} 已存在（产物需人工核对，默认不覆盖）；要覆盖请加 --force\n${USAGE}`);
+    }
     await writeFile(out, content, 'utf8');
     console.log(
       `已写出 ${out}：${picked.length} 个用例骨架` +

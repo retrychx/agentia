@@ -15,6 +15,31 @@
   `start`（`node dist/main.js`），tsconfig 带 `rootDir`/`outDir`；e2e-cli 新增 4d 步
   真跑这条链（emit + 资产拷贝 + dist 产物断言）。
 
+### 修复（第四轮 review：文档面错到「照抄就坏」+ 边界条件）
+
+- **`app.run` 支持 `memory`（新增选项，非破坏）**：官网手写页与单源指南一直用
+  `app.run(messages, { memory })` 演示跨 run 记忆，但 `RunAppOptions` 里**没有**这个字段
+  —— 照抄的代码 TS 直接报「对象字面量只能指定已知属性」，硬绕过去则运行期**静默不生效**
+  （记忆从不水合、也不回写）。现在与 `session` 完全对称：`app.run` 也水合/回写，
+  边界同样只在程序内（store 不可序列化，不进 transport 的 `RunInvocationOptions`）。
+- **`compactMessages` 不再劈开「工具对在索引 0」的历史**：回退循环的 `cut > 1` 让它停在 1
+  时，`tool_use` 被折进摘要、尾部留下**孤立 `tool_result`**（并与摘要构成连续两条 `user`）
+  —— 正是该函数 docstring 明说不产出的两种形态，下一次请求会被 API 400 拒。
+  现在回退到 1 仍落在 `tool_result` 上就**放弃本次压缩**（原样返回）。
+- **`agentia create` 撞同名普通文件**：此前 `readdirSync` 抛原始 `ENOTDIR` 栈（栈里全是
+  `node:fs` 内部帧），那句「目录已存在且非空」的友好文案根本轮不到；现在先判路径类型。
+- **子命令 `--help`**：`agentia report --help` 此前把 `--help` 当文件名去读，报
+  `读不到文件 --help（ENOENT）`；现在 8 个子命令都回自己的用法串（与 `fail()` 共用同一份常量）。
+- **`agentia harvest --out` 默认不覆盖**：产物是「人工核对后再进 CI」的脚手架，重跑一次会
+  静默抹掉你手改过的断言与 input；目标已存在时报错，要覆盖显式加 `--force`。
+- **`agentia report` 缺 CLI 资源时的报错**：`dist/inspector/summary.js` 缺失时给出人话 +
+  补救动作（此前是原始 `ERR_MODULE_NOT_FOUND`，路径全在 dist 内部，用户读不出该做什么）。
+- **文档面形状**：官网 `docs.html` 与单源 `usage-guide.md` 的「出参护栏」示例读的是
+  `out.finalText`，而 run 输出是 `{ run, result }` —— 判断恒为 `undefined`、**护栏恒不触发**，
+  页面上却像在生效；改为 `out.result.finalText`，并新增定向守卫
+  `tests/docs/run-output-shape.test.ts`（手写片段此前没有任何东西在编译它）。
+  `tests/docs/api-page.test.ts` 的行匹配器同时放宽（`<tr class="…">` 此前整行静默跳过）。
+
 ### 修复（发布面与证据可核性）
 
 - **CHANGELOG 进 npm 包**：npm 的「总是包含」只覆盖 README/LICENSE（实测 `npm pack` 不含

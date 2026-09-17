@@ -139,9 +139,11 @@ function parseTables(md: string): Table[] {
       current = undefined;
       continue;
     }
-    const row = /^<tr><td>(.*?)<\/td>/.exec(line);
+    // ⚠️ `<tr>` 上允许带属性：此前只认 `<tr><td>`，写成 `<tr class="…"><td>` 会整行跳过
+    //（导出表有反向全覆盖兜着，但「X 选项」表的成员校验没有行级兜底 —— 静默漏检）。
+    const row = /^<tr\b(?:(?!<tr\b).)*?<td>(.*?)<\/td>/.exec(line);
     if (!row) {
-      if (!line.startsWith('<tr>')) current = undefined;
+      if (!/^<tr\b/.test(line)) current = undefined;
       continue;
     }
     const names = decode(row[1])

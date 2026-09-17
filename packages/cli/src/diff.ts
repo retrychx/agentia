@@ -322,7 +322,8 @@ function pushEventDiffs(out: DiffEntry[], x: SpanEvent[], y: SpanEvent[]): void 
 
 /* ── 命令本体：两个 JSONL 各取第一条 trace → diff → 人读输出 ──────────────────── */
 
-const USAGE = '用法：agentia diff <a.jsonl> <b.jsonl>';
+/** 用法串（cli.ts 的子命令 `--help` 也从这里取，避免两处各写一份） */
+export const USAGE = '用法：agentia diff <a.jsonl> <b.jsonl>';
 
 /** 逐行 JSON.parse + extractTrace（同 harvest），取第一条可提取的 trace；坏行跳过计数 */
 async function readFirstTrace(file: string): Promise<{ trace: Trace; badLines: number }> {

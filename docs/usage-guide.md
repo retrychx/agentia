@@ -192,6 +192,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
 | `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**，回给模型的 tool_result 永远完整 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
+| `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 
 返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`。
 
@@ -613,10 +614,12 @@ if (!report.ok) console.error(report.cases.filter((c) => !c.ok));
 ```bash
 agentia harvest trace.jsonl                    # 全部记录 → 脚手架打到 stdout
 agentia harvest trace.jsonl --failed --limit 5 --out evals/harvested.ts
+agentia harvest trace.jsonl --out evals/harvested.ts --force   # 覆盖已存在的产物（默认拒绝）
 ```
 
 - 输入同 `agentia report`：每行一个 JSON（裸 Trace，或含 `result.trace` / `trace` 的 TaskRecord，如 `FileTaskStore` 的导出）；`--failed` 只留失败记录。
 - 产物是**可粘贴进 eval 文件的用例字面量**：`client: scriptedClient([...])` 按 trace 的主循环 llm.turn 逐回合重建，`expect` 预填「主循环工具序列」的轨迹断言（文件顶部附跑法注释）。
+- `--out` 指向已存在的文件时**默认拒绝覆盖**（产物是要人工核对的脚手架，重跑一次就抹掉你改过的断言与 input）；要覆盖显式加 `--force`。
 - ⚠️ **脚手架不是成品，人工核对后再进 CI**：
   - **trace 不记 assistant 文本**（llm.turn 只记 usage/事件），脚本里的 text 块是占位 `'[harvest] assistant 文本未入 trace'`；
   - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本（要覆盖子 agent 请单独写 eval）；
@@ -911,7 +914,7 @@ const callable = {
   name: app.name,
   async run(msgs, opts) {
     const out = await app.run(redactInput(msgs), opts);      // 入参护栏
-    if (flagged(out.finalText)) throw new Error('输出被护栏拦下'); // 出参护栏
+    if (flagged(out.result.finalText)) throw new Error('输出被护栏拦下'); // 出参护栏
     return out;
   },
 };

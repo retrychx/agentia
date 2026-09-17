@@ -168,6 +168,22 @@ describe('长上下文策略', () => {
     assert.ok(!JSON.stringify(out).includes('u0'), 'u0 已被摘要替换');
     assert.ok(JSON.stringify(out).includes('t9'), '工具对整对保留、未被切散');
   });
+
+  it('compactMessages：退到 0 才能保住工具对时 → 放弃压缩（不造孤立 tool_result）', async () => {
+    // 工具对落在索引 0/1，且 length === keepRecent + 1 → 初始 cut = 1，再退一步就是
+    // 「一条不丢、只多贴一段摘要」。修复前 while 的 `cut > 1` 让它停在 1：tool_use 折进
+    // 摘要、尾部留下没有 tool_use 的 tool_result，且与摘要（user）构成连续两条 user ——
+    // 两条都是本函数 docstring 明说不产出的形态。
+    const msgs: MessageParam[] = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'x', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r' }] },
+      { role: 'assistant', content: 'a2' },
+    ];
+    const out = await compactMessages(msgs, { keepRecent: 2, summarize: () => 'SUM' });
+    assert.equal(out, msgs, '放弃压缩：原样返回（含数组引用）');
+    assert.ok(JSON.stringify(out).includes('t1'), '工具对未被切散');
+    assert.ok(!JSON.stringify(out).includes('SUM'), '没有插入摘要');
+  });
 });
 
 describe('增量 token 计数（createTokenCounter，预算策略的快路径）', () => {
