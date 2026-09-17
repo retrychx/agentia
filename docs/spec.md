@@ -1238,6 +1238,27 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   未采纳项及理由：`agentLoop` 未拆新文件（动分层 ALLOWED 集合，收益不抵成本）；
   executeOneTool 的 submit_result 分支未再拆（共享局部态）。
 
+- 2026-09-17：**第四轮 review（文档面 + 边界条件）**—— 逐条回源码核实后修，全部带回归用例：
+  ① **`app.run` 补 `memory` 选项**（公共 API 增项，非破坏）：`RunAppOptions` 与实际能力不一致 ——
+  官网 `docs.html` 与单源 `usage-guide.md` 都写 `app.run(messages, { memory })`，而该字段只存在于
+  `ExecuteRunOptions`；`session` 早已转发、`memory` 漏了，属漏项而非设计取舍（两者同为
+  「store 实例不可序列化 ⇒ 只在程序内可用」的边界）。修法 = 按 `session` 同款转发 + 用例
+  `tests/runtime/memory.test.ts`（水合 + 回写两条断言，变异自证：去掉转发即红）。
+  ② **`compactMessages` 回退边界差一**：`while (cut > 1 …)` 在「工具对的 `tool_use` 在索引 0、
+  且 `length === keepRecent + 1`」时停于 `cut = 1` ⇒ 摘要吃掉 `tool_use`、尾部留孤立
+  `tool_result`（且与摘要构成连续两条 `user`），下一次请求 400 —— 两条都违反该函数自己的
+  docstring 承诺。**行为变更**：这种历史改为**放弃压缩、原样返回**（宁可少压一次）。
+  ③ **CLI 错误路径三处**：`create` 撞同名普通文件从裸 `ENOTDIR` 栈改为可读报错；
+  8 个子命令支持 `--help`（此前被当成文件名去读，且用法串三处重复 → 收成常量单源）；
+  `harvest --out` 默认**拒绝覆盖**已存在产物（新增 `--force`）——产物是人工核对的脚手架，
+  静默覆盖等于毁掉那份人工成果。
+  ④ **文档面形状守卫**：新增 `tests/docs/run-output-shape.test.ts` —— `.finalText` 的接收方
+  必须是 `result`（`AgentRunOutput = { run, result }`）。这类手写代码片段此前**没有任何门禁**
+  （api.html 只被表格守卫盯着），两处 `out.finalText` 因此活过多轮全绿；`api-page.test.ts` 的
+  行匹配器同时放宽（带属性的 `<tr>` 不再整行静默跳过）。
+  证据：6 处修复各配一条回归用例，**变异电池 6/6 咬人**（逐条改坏 → 只跑对应用例 → 全红）；
+  全链 `verify-all.sh` 8/8。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { executeRun } from '../../src/index.js';
+import { createApp, executeRun, SystemPrompt } from '../../src/index.js';
 import type { AgentTool } from '../../src/index.js';
 import { RunContext } from '../../src/index.js';
 import { InMemoryMemoryStore } from '../../src/runtime/memory.js';
@@ -47,6 +47,35 @@ describe('MemoryStore 跨 run 记忆', () => {
 
     assert.equal(run.status, 'succeeded');
     assert.ok(JSON.stringify(seen[1]).includes('北京'), '工具读到了水合的记忆值');
+  });
+
+  it('app.run 同一条缝：memory 选项在 run 前水合、收尾回写（与 session 一致的程序内边界）', async () => {
+    // 官网手写文档一直用 `app.run(messages, { memory })` 演示记忆 —— 这条用例把那个承诺
+    // 变成可执行的：`memory` 与 `session` 一样要能经 app.run 传下去（此前 app.run 只转发
+    // session，memory 在 RunAppOptions 里根本不存在，文档里的写法静默失效）。
+    const store = new InMemoryMemoryStore();
+    store.save({ city: '上海' });
+    const app = createApp({
+      name: 'mem-app',
+      system: new SystemPrompt().add('role', 'r', true),
+      tools: [readTool('city'), writeTool('count', 7)],
+    });
+
+    // 水合：工具经 RunContext 读到 store 里的值
+    const hydrated = mockClient([toolUseMsg('read_key', {}), endTurnMsg('ok')]);
+    await app.run([{ role: 'user', content: 'go' }], {
+      client: hydrated.client,
+      memory: { store, keys: ['city'] },
+    });
+    assert.ok(JSON.stringify(hydrated.seen[1]).includes('上海'), 'app.run 的水合生效');
+
+    // 回写：run 收尾把 blackboard 当前值 save 回 store
+    const flushing = mockClient([toolUseMsg('write_key', {}), endTurnMsg('ok')]);
+    await app.run([{ role: 'user', content: 'go' }], {
+      client: flushing.client,
+      memory: { store, keys: ['count'] },
+    });
+    assert.deepEqual({ ...store.load(['count']) }, { count: 7 }, 'app.run 的回写生效');
   });
 
   it('run 结束回写：blackboard 当前值 save 回 store，下一次 run 可读到', async () => {

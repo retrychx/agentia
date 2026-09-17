@@ -44,12 +44,15 @@ export function extractTrace(v: unknown): TraceLike | null {
 }
 
 /** 打印一张按总耗时降序的能力排行（跨多行记录时按能力合并） */
+/** 用法串（cli.ts 的子命令 `--help` 也从这里取，避免两处各写一份） */
+export const USAGE = '用法：agentia report <trace.jsonl>';
+
 export async function reportCommand(args: string[]): Promise<number> {
   const file = args[0];
   // 失败一律**抛错**（而不是就地设 process.exitCode）—— 本命令是异步的，
   // 就地设的 exitCode 会被 cli.ts 末尾那句 `process.exitCode = main(...)` 覆盖成 0。
   if (file === undefined || args.length > 1) {
-    throw new Error('用法：agentia report <trace.jsonl>');
+    throw new Error(USAGE);
   }
 
   let raw: string;
@@ -80,9 +83,20 @@ export async function reportCommand(args: string[]): Promise<number> {
   }
 
   // 聚合口径与 inspector 面板 / 官网 playground 同源（构建期拷进来的 trace-view 产物）
-  const { summarizeTrace } = (await import(
-    new URL('./inspector/summary.js', import.meta.url).href
-  )) as { summarizeTrace: (t: unknown) => SummaryRow[] };
+  // 这份聚合实现由 packages/cli/scripts/copy-assets.mjs 在构建期从 trace-view 产物拷进来。
+  // 缺它只可能是「装坏了」或「直接跑未构建的源码」—— 原始 ERR_MODULE_NOT_FOUND 里全是
+  // dist 内部路径，用户读不出该做什么，故换成带补救动作的报错。
+  let summarizeTrace: (t: unknown) => SummaryRow[];
+  try {
+    ({ summarizeTrace } = (await import(
+      new URL('./inspector/summary.js', import.meta.url).href
+    )) as { summarizeTrace: (t: unknown) => SummaryRow[] });
+  } catch (e) {
+    throw new Error(
+      `缺少 CLI 资源（inspector/summary.js）：${(e as Error).message}；` +
+        '请重装 @migor/cli 或重新构建（npm run build:cli）',
+    );
+  }
 
   const merged = new Map<string, SummaryRow>();
   let okRuns = 0;

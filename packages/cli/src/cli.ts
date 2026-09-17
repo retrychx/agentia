@@ -7,9 +7,9 @@ import { RegistryError } from './registry.js';
 import { devServer } from './dev.js';
 import { doctor } from './doctor.js';
 import { addPackage } from './add.js';
-import { reportCommand } from './report.js';
-import { harvestCommand } from './harvest.js';
-import { diffCommand } from './diff.js';
+import { reportCommand, USAGE as REPORT_USAGE } from './report.js';
+import { harvestCommand, USAGE as HARVEST_USAGE } from './harvest.js';
+import { diffCommand, USAGE as DIFF_USAGE } from './diff.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
 
@@ -28,6 +28,25 @@ const USAGE = `agentia —— Agentia 框架命令行工具
 
 name 规则：小写字母开头的小写 kebab-case（如 hello、doc-reviewer）
 `;
+
+// 各子命令自己的用法串 —— 同时供 fail() 与「子命令级 --help」使用（单源，不写两遍）。
+// report / harvest / diff 的用法串在各自模块里（那里本来就有），此处 import 复用。
+const CREATE_USAGE = '用法：agentia create <name> [--dir <parent>]';
+const G_USAGE = `用法：agentia g <type> <name>（type: ${CAPABILITY_TYPES.join(' | ')}）`;
+const ADD_USAGE = '用法：agentia add <pkg>（npm 包名或本地包路径）';
+
+/** 子命令 → 自己的用法串。`--help` 落在子命令上时打它。 */
+const SUB_USAGE: Record<string, string | undefined> = {
+  create: CREATE_USAGE,
+  g: G_USAGE,
+  generate: G_USAGE,
+  dev: '用法：agentia dev',
+  doctor: '用法：agentia doctor',
+  report: REPORT_USAGE,
+  harvest: HARVEST_USAGE,
+  diff: DIFF_USAGE,
+  add: ADD_USAGE,
+};
 
 function fail(message: string): number {
   console.error(`错误：${message}`);
@@ -48,6 +67,14 @@ function main(argv: string[]): number {
     return 0;
   }
 
+  // 子命令级 --help：此前 `agentia report --help` 会把 --help 当成「要读的文件名」，
+  // 用户拿到的是 ENOENT 而不是该命令的用法（report / harvest / diff 尤其需要）。
+  const subUsage = SUB_USAGE[command];
+  if (subUsage !== undefined && (rest[0] === '--help' || rest[0] === '-h')) {
+    console.log(subUsage);
+    return 0;
+  }
+
   if (command === 'create') {
     const name = rest[0];
     let parent: string | undefined;
@@ -60,7 +87,7 @@ function main(argv: string[]): number {
         return fail(`未知参数：${rest[i]}`);
       }
     }
-    if (name === undefined) return fail('缺少项目名，用法：agentia create <name> [--dir <parent>]');
+    if (name === undefined) return fail(`缺少项目名，${CREATE_USAGE}`);
     if (!checkName(name)) {
       return fail(`非法项目名「${name}」：需匹配小写 kebab-case（如 my-app）`);
     }
@@ -70,7 +97,7 @@ function main(argv: string[]): number {
   if (command === 'g' || command === 'generate') {
     const [type, name, ...extra] = rest;
     if (type === undefined || name === undefined || extra.length > 0) {
-      return fail(`用法：agentia g <type> <name>（type: ${CAPABILITY_TYPES.join(' | ')}）`);
+      return fail(G_USAGE);
     }
     if (!isCapabilityType(type)) {
       return fail(`未知能力类型「${type}」，可选：${CAPABILITY_TYPES.join(' | ')}`);
@@ -127,7 +154,7 @@ function main(argv: string[]): number {
   if (command === 'add') {
     const [pkg, ...extra] = rest;
     if (pkg === undefined || extra.length > 0) {
-      return fail('用法：agentia add <pkg>（npm 包名或本地包路径）');
+      return fail(ADD_USAGE);
     }
     try {
       return addPackage(pkg);

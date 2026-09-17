@@ -5,6 +5,7 @@ import { SystemPrompt } from '../runtime/systemPrompt.js';
 import { executeRun } from '../runtime/run.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import type { SessionStore } from '../runtime/session.js';
+import type { MemoryStore } from '../runtime/memory.js';
 import type { AgentRunResult } from '../engine/types.js';
 import type { TraceSink } from '../core/trace.js';
 import { Container } from '../container/container.js';
@@ -129,6 +130,16 @@ export interface RunAppOptions<S extends JsonSchema = JsonSchema> extends RunInv
    * transport 的 `RunInvocationOptions` 里 —— 异步宿主不会替你传它）。
    */
   session?: { store: SessionStore; id: string };
+  /**
+   * 跨 run 记忆（R4）：语义同 `ExecuteRunOptions.memory` —— run 开始把
+   * `store.load(keys)` 水合进 blackboard（用户种子优先，同名 key 不被覆盖），
+   * 收尾（成功/失败两条路径）把这些 key 的当前值写回。
+   *
+   * 与 `session`（对话历史）正交，可同时用；边界也与它相同：只在程序内直接
+   * `app.run` 时可用（store 实例不可序列化，因此**不在** transport 的
+   * `RunInvocationOptions` 里 —— 异步宿主不会替你传它）。
+   */
+  memory?: { store: MemoryStore; keys: string[] };
   /**
    * 未定价模型回调（单次覆盖应用级）；见 `RunAgentOptions.onUnpricedModel`。
    * 是函数，因此**不在** transport 的 `RunInvocationOptions` 里（异步宿主不替你传）。
@@ -427,6 +438,7 @@ export class AgentApp {
       // 无版本表的 app 传 undefined，engine 空表不记。
       promptVersions: this.promptVersions,
       session: opts.session,
+      memory: opts.memory,
       rethrow: opts.rethrow,
       sinks: this.sinks,
       contextInit: (ctx) => {

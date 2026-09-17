@@ -1,5 +1,5 @@
 /** create 命令：生成 Agentia 项目脚手架 */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -56,6 +56,14 @@ export function createProject(name: string, parent: string | undefined): number 
     return 1;
   }
 
+  // 路径存在但不是目录时 readdirSync 会抛原始 ENOTDIR（栈里全是 node:fs 内部帧），
+  // 下面那句友好文案根本轮不到 —— 先判类型（`agentia create my-app` 而 my-app 是
+  // 个文件是常见手误）。
+  if (existsSync(dir) && !statSync(dir).isDirectory()) {
+    console.error(`错误：${dir} 已存在且不是目录`);
+    process.exitCode = 1;
+    return 1;
+  }
   if (existsSync(dir) && readdirSync(dir).length > 0) {
     console.error(`错误：目录 ${dir} 已存在且非空`);
     process.exitCode = 1;

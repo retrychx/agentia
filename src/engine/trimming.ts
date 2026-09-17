@@ -267,6 +267,11 @@ export async function compactMessages(
   while (cut > 1 && cut < messages.length && isToolResultMessage(messages[cut])) {
     cut -= 1;
   }
+  // 回退到 1 仍落在 tool_result 上 ⇒ 这对的 tool_use 在索引 0，再退一步就是「一条不丢、
+  // 只多贴一段摘要」。此处放弃本次压缩：把这对劈开（tool_use 折进摘要、tool_result 留在
+  // 尾部）会同时破掉另外两条承诺 —— 尾部开头的孤立 tool_result 让下一次请求被 API 400
+  // 拒绝，且它与摘要（user）构成连续两条 user。
+  if (isToolResultMessage(messages[cut])) return messages;
 
   const prefix = messages.slice(0, cut);
   const tail = messages.slice(cut);

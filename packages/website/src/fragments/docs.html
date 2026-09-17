@@ -567,7 +567,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
   name: app.name,
   <span class="kw">async</span> <span class="fn">run</span>(msgs, opts) {
     <span class="kw">const</span> out = <span class="kw">await</span> app.<span class="fn">run</span>(<span class="fn">redactInput</span>(msgs), opts);   <span class="cm">// 入参护栏</span>
-    <span class="kw">if</span> (<span class="fn">flagged</span>(out.finalText)) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">'输出被护栏拦下'</span>); <span class="cm">// 出参护栏</span>
+    <span class="kw">if</span> (<span class="fn">flagged</span>(out.result.finalText)) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">'输出被护栏拦下'</span>); <span class="cm">// 出参护栏</span>
     <span class="kw">return</span> out;
   },
 };</code></pre></div>
