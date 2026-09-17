@@ -42,6 +42,7 @@ try {
     'src/main.ts',
     'src/registry.ts',
     'src/tools/hello/index.ts',
+    'scripts/copy-assets.mjs',
     'AGENTS.md',
   ]) {
     assert(existsSync(join(proj, f)), `create 缺文件: ${f}`);
@@ -188,6 +189,46 @@ try {
     [join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.check.json'],
     { cwd: proj, stdio: 'inherit' },
   );
+
+  // —— 4d) 生产构建链真跑一遍：脚手架承诺的 `npm run build` = tsc 出 dist + 资产跟随拷贝。
+  // 此前脚手架只有 dev/typecheck，没有 build/start —— 「拿去部署」第一步就断（外部 review
+  // 抓出；且 asset() 按文件位置解析，.md 不拷进 dist 时生产形态必坏）。这里用同一 overlay
+  // 思路真 emit（typeRoots 指向仓库 @types；outDir/rootDir 来自生成物 tsconfig 本身），
+  // 再跑生成物自己的 copy-assets，断言 dist 产物与 .md 资产都就位。
+  writeFileSync(
+    join(proj, 'tsconfig.build.json'),
+    `${JSON.stringify(
+      {
+        extends: './tsconfig.json',
+        compilerOptions: { typeRoots: [join(repoRoot, 'node_modules', '@types')] },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  execFileSync(
+    process.execPath,
+    [join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.build.json'],
+    { cwd: proj, stdio: 'inherit' },
+  );
+  execFileSync(process.execPath, [join(proj, 'scripts', 'copy-assets.mjs')], {
+    cwd: proj,
+    stdio: 'inherit',
+  });
+  for (const f of [
+    'dist/main.js',
+    'dist/prompts/style-guide/asset.md',
+    'dist/subagents/doc-reviewer/system.md',
+  ]) {
+    assert(existsSync(join(proj, f)), `生产构建缺产物: ${f}（npm run build 的承诺没兑现）`);
+  }
+  // 脚手架 package.json 的 scripts 承诺（build/start 都在，用户拿到的是完整打包链）
+  const scaffoldPkg = JSON.parse(readFileSync(join(proj, 'package.json'), 'utf8')) as {
+    scripts: Record<string, string>;
+  };
+  for (const s of ['dev', 'build', 'start', 'typecheck']) {
+    assert(typeof scaffoldPkg.scripts[s] === 'string', `脚手架 package.json 缺 scripts.${s}`);
+  }
 
   // —— 5) 发现机制：discoverProviders（四分类目录数组，顺序即装配顺序）——
   const capabilityDirs = ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'].map((d) =>
