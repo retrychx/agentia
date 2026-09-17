@@ -336,7 +336,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   裸工具直进主菜单，且与装饰器能力**完全同等** —— 同过中间件链、同进重名查重（**不是旁路**，两条用例分别钉住）。
   **语义**：名字 = `prefix + 归一化原名`（非 `[A-Za-z0-9_]` → `_`，连续分隔符收成一个；缺省 `mcp_<server>_`，
   没给 `server` 时 `mcp_`）；归一化后**空名 / 撞名 / 超 64 字符一律装配期抛错**（不静默改名 —— 那会得到一个
-  调不回去的名字）；**原名**每次调用写进发起 turn 的 `mcp.tool` attribute（审计 / 回放要还原它才能回调 server）；
+  调不回去的名字）；**原名**每次调用写进发起 turn 的 `mcp.tool.<菜单名>` attribute（每次一条，并行调用互不覆盖；另留 `mcp.tool` 记最近一次，兼容既有查询）—— 审计 / 回放要还原它才能回调 server；
   `inputSchema` 原样透传（engine 的子集校验器在 `callTool` 之前先校验）；`callTool` 抛错 → 该条 `is_error`
   且**不杀 run**；**协议层 `isError: true` 框架看不见 —— 必须由连接器转成抛错**（否则模型以为成功）。
   桥自带 `timeoutMs`（缺省 60000）= **放弃等待**（拿不到 server 侧取消句柄），与 engine 的 `toolTimeoutMs`
@@ -1115,7 +1115,7 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   键优先、experimental 键补齐 agent 语义，下游（Datadog / Axiom 等）已按 1.37+ 识别这批键。
   约定仍在漂移（此前 v1.37 就把 `gen_ai.system` 改 `gen_ai.provider.name`），故**全部映射集中在
   `otlp.ts` 的 `genAiAttributes` / `mapEvent` 两处**，升级基准版本只改本模块。`score` 事件译为
-  `gen_ai.evaluation.result`；`source` / `comment` 是 semconv 未定义的维度，走自有
+  `gen_ai.evaluation.result`（维度名用 semconv 的 `gen_ai.evaluation.name`，**不是** `gen_ai.evaluation.score.name` —— 后者不存在）；`source` / `comment` 是 semconv 未定义的维度，走自有
   `agentia.score.*` 键，不占用 gen_ai.* 命名空间。
   **③ `prompts.versions` 拼接形态**：`PromptSpec.version` 声明后，装配期沿主菜单同一条收集路径
   （`toolSources` 收窄同样生效）收集 `{ 最终菜单名: 版本 }` 表，engine 拼成 **`name@ver` 逗号串、
@@ -1258,6 +1258,27 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   行匹配器同时放宽（带属性的 `<tr>` 不再整行静默跳过）。
   证据：6 处修复各配一条回归用例，**变异电池 6/6 咬人**（逐条改坏 → 只跑对应用例 → 全红）；
   全链 `verify-all.sh` 8/8。
+
+- 2026-09-17：**第五轮 review（全覆盖缺陷清扫）** —— 三轮子代理候选逐条回源码 / 探针核实后修，
+  三条 MAJOR **同时**实证 + 修好 + 加真路径用例：
+  ① **`app.run` 漏转发 `signal`**（`RunInvocationOptions` 17 个字段只漏这一个；TS 因继承不报错）：
+  HTTP 断开 / `drain` / `AsyncRunner.runTimeoutMs` 三处取消静默失效。根因是**「假边界挡住真边界」**：
+  三处宿主测试都用**假 app** 断言「signal 交到了 app」，真 `AgentApp` → engine 那一跳无人测。
+  修法：补 `signal: opts.signal` + 用例（已中止的 signal ⇒ `aborted` 且不打模型）。
+  ② **OTLP `spanId` 宽度**：两种 id 共用一个 `hexId`（32 hex），而 OTLP 要求 span id 16 hex。
+  修法：`traceHex` / `spanHex` 分开；既有用例把错宽度写成了期望，一并纠正。
+  ③ **OTLP 能力 span 的 `gen_ai.*` 从未发出**：按 `name.startsWith('subagent:')` 判类型，
+  而生产是裸名 + `attributes.subagent` / `skill`（另三个消费者都读 attributes）。**错形状还被抄进
+  四处测试夹具**（otlp / harvest / tracer / trace-diff），所以一直是绿的。修法：改读 attributes +
+  夹具改生产形状。同一批还修了 `gen_ai.evaluation.score.name`（不存在，应为
+  `gen_ai.evaluation.name`，以真 semconv 包取键名证据）、`costEstimate` 原型链 → NaN、
+  `mcpTools` 的 description 类型防御与 `mcp.tool.<菜单名>` 并行不覆盖、
+  `combineSignals` 同源去重、`session.append` 展开传参、`harvest` 缺 tool 伪造 `unknown` 与注释注入、
+  `replay` 数组型 input。
+  证据：13 处修复**变异电池 13/13 咬人**（含一次「M12 没咬住」→ 查出是**我的用例断言写错**，
+  改成按行首判后咬人）；`verify-all.sh` 8/8；派生产物同一 sha。
+  **教训（写进本仓库口径）**：凡「宿主/消费方测试用假实现」的边界，必须有一条走**真实现**的用例 ——
+  三条 MAJOR 全部活在这类缝里。
 
 ## 11. 开放项
 

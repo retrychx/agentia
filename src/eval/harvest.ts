@@ -43,16 +43,21 @@ interface ToolInputEvent {
 
 /** 取某回合的 tool.input 事件并规整（engine 记账：input 已是截断后的字符串） */
 function toolInputsOf(turn: Span): ToolInputEvent[] {
-  return turn.events
-    .filter((e) => e.name === 'tool.input')
-    .map((e) => {
-      const b = (e.body ?? {}) as Record<string, unknown>;
-      return {
-        tool: typeof b.tool === 'string' ? b.tool : 'unknown',
-        toolUseId: typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined,
-        input: b.input === undefined ? undefined : stringifySafe(b.input),
-      };
+  const out: ToolInputEvent[] = [];
+  for (const e of turn.events) {
+    if (e.name !== 'tool.input') continue;
+    const b = (e.body ?? {}) as Record<string, unknown>;
+    // 缺 `tool` 的事件**跳过**，不回填占位名：伪造的 'unknown' 会在生成的脚本里变成一个
+    // 真的（且断言必然通过的）工具调用 —— 骨架自我自洽、永不报错，比缺一条更坏。
+    // 引擎在 turn.ts 里恒写 `tool: use.name`，所以这条只对手写/外来 trace 生效。
+    if (typeof b.tool !== 'string') continue;
+    out.push({
+      tool: b.tool,
+      toolUseId: typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined,
+      input: b.input === undefined ? undefined : stringifySafe(b.input),
     });
+  }
+  return out;
 }
 
 /** 入参还原：尝试 JSON.parse 回对象，失败（或非 object）包 {_raw}（tool_use.input 必须是 object） */
@@ -101,9 +106,14 @@ function lastUserText(messages: MessageParam[] | undefined): string | null {
  * eval 做「生成物可解析」验证，也可以原样粘进 .ts 文件。所有嵌入值一律走
  * JSON.stringify（入参里可能有反引号 / `${`，不能让它们击穿生成物语法）。
  */
+/** 注释里只放单行：外来 trace 的 name/source/traceId 含换行会击穿生成物的注释语法 */
+function oneLine(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ');
+}
+
 export function harvestEvalCase(input: HarvestEvalCaseInput): string {
   const { trace } = input;
-  const name = input.name ?? `harvest-${trace.traceId}`;
+  const name = oneLine(input.name ?? `harvest-${trace.traceId}`);
 
   // 只取直属 run 根的 llm.turn（子 agent 的嵌套回合挂在 capability span 下，不走主循环脚本）
   const mainTurns = trace.spans
@@ -140,7 +150,7 @@ export function harvestEvalCase(input: HarvestEvalCaseInput): string {
   const userText = lastUserText(input.messages);
 
   const head: string[] = [
-    `// ┄┄ harvest 用例骨架：${name}（trace ${trace.traceId}${input.source ? `，来源 ${input.source}` : ''}）┄┄`,
+    `// ┄┄ harvest 用例骨架：${name}（trace ${oneLine(trace.traceId)}${input.source ? `，来源 ${oneLine(input.source)}` : ''}）┄┄`,
     '// ⚠️ 脚手架，不是成品 —— 人工核对后再进 CI：',
     '//   · trace 不记 assistant 文本（llm.turn 只记 usage/事件），脚本里的 text 块是占位；',
   ];

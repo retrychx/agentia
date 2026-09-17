@@ -58,16 +58,25 @@ interface ToolInputEvent {
 }
 
 function toolInputsOf(turn: SpanLike): ToolInputEvent[] {
-  return (turn.events ?? [])
-    .filter((e) => e.name === 'tool.input')
-    .map((e) => {
-      const b = (e.body ?? {}) as Record<string, unknown>;
-      return {
-        tool: typeof b.tool === 'string' ? b.tool : 'unknown',
-        toolUseId: typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined,
-        input: b.input === undefined ? undefined : stringifySafe(b.input),
-      };
+  const out: ToolInputEvent[] = [];
+  for (const e of turn.events ?? []) {
+    if (e.name !== 'tool.input') continue;
+    const b = (e.body ?? {}) as Record<string, unknown>;
+    // 缺 `tool` 的事件**跳过**，不回填占位名（与框架侧 src/eval/harvest.ts 逐字同步）：
+    // 伪造的 'unknown' 会在生成的脚本里变成一个真的（且断言必然通过的）工具调用。
+    if (typeof b.tool !== 'string') continue;
+    out.push({
+      tool: b.tool,
+      toolUseId: typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined,
+      input: b.input === undefined ? undefined : stringifySafe(b.input),
     });
+  }
+  return out;
+}
+
+/** 注释里只放单行：外来 trace 的 name/source/traceId 含换行会击穿生成物的注释语法 */
+function oneLine(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ');
 }
 
 function parseToolInput(raw: string | undefined): unknown {
@@ -121,7 +130,7 @@ export interface HarvestCaseArgs {
 /** 与框架侧 harvestEvalCase 逐字同形的生成器（见文件头注释的对拍测试） */
 export function harvestEvalCase(input: HarvestCaseArgs): string {
   const { trace } = input;
-  const name = input.name ?? `harvest-${trace.traceId}`;
+  const name = oneLine(input.name ?? `harvest-${trace.traceId}`);
 
   const spans = trace.spans ?? [];
   const mainTurns = spans
@@ -157,7 +166,7 @@ export function harvestEvalCase(input: HarvestCaseArgs): string {
   const userText = lastUserText(input.messages);
 
   const head: string[] = [
-    `// ┄┄ harvest 用例骨架：${name}（trace ${trace.traceId}${input.source ? `，来源 ${input.source}` : ''}）┄┄`,
+    `// ┄┄ harvest 用例骨架：${name}（trace ${oneLine(trace.traceId ?? '')}${input.source ? `，来源 ${oneLine(input.source)}` : ''}）┄┄`,
     '// ⚠️ 脚手架，不是成品 —— 人工核对后再进 CI：',
     '//   · trace 不记 assistant 文本（llm.turn 只记 usage/事件），脚本里的 text 块是占位；',
   ];

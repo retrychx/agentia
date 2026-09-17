@@ -7,6 +7,34 @@
 
 ## [Unreleased]
 
+### 修复（第五轮 review：三条「功能静默失效」+ 一批边界）
+
+- **`app.run` 丢掉 `signal`（取消全线失效）**：运行期入参是逐字段手抄进 `executeRun` 的，
+  唯独漏了从 `RunInvocationOptions` 继承来的 `signal`（TS 不报错）。后果是**三处宿主与三份文档
+  都假设的取消全都不生效**：HTTP 客户端断开不中止、`drain` 收口只关流不灭 run、
+  `AsyncRunner.runTimeoutMs` 只 race 掉结果而在飞请求继续烧 token。已补上转发 +
+  真 `AgentApp` 路径的回归用例（宿主侧测试用的是**假 app**，正好绕过了这一跳）。
+- **OTLP 的 `spanId` 宽度错**（`otlp.ts`）：内部 UUID（32 hex）被原样当作 span id，
+  而 OTLP 契约里 span id 是 8 字节（**16 hex**，trace id 才是 32）—— 真 collector 会判
+  `invalid span_id` 拒收或截断。已按两种宽度分开转换。
+- **OTLP 对能力 span 一条 `gen_ai.*` 都不发**：`genAiAttributes` 按 `span.name.startsWith('subagent:')`
+  判类型，而生产代码写的是**裸能力名 + `attributes.subagent` / `skill`**（metrics / report /
+  trace-view 三个消费者都读 attributes，只有这里读前缀）⇒ 子 agent 的 `gen_ai.agent.name`、
+  skill 的 `gen_ai.tool.name` 在生产里从未发出。已改为读 attributes，并把测试夹具改成生产形状。
+- **`gen_ai.evaluation.score.name` 不是 semconv 键**（真实 key 是 `gen_ai.evaluation.name`）——
+  已修正并同步文档（实测 `@opentelemetry/semantic-conventions` 全量键名里无前者）。
+- **`costEstimate` 命中原型链 → NaN**：模型名恰为 `constructor` / `toString` 时
+  `pricing[model]` 拿到函数（真值）而 `.in` 为 undefined ⇒ 成本 NaN，`maxCostUsd` 的
+  `NaN > x` 恒 false 而静默失效，NaN 还会进 trace / OTLP。改为 `Object.hasOwn` 查找。
+- **`mcpTools` 两处**：外部 server 的 `description` 不是 string 时装配期崩 `TypeError`
+  （同循环里 name / inputSchema 都有类型防御）；`mcp.tool` 单值 attribute 在同回合并行调多个
+  MCP 工具时互相覆盖 ⇒ 新增 `mcp.tool.<菜单名>`，审计 / 回放不再丢原名。
+- **`combineSignals` 同源重复时残留监听器**（去重后走单源快路径）；
+  **`session.append` 展开传参的 12 万项 RangeError**（同 `replaceMessages` 已规避过的坑）；
+  **`harvest` 把缺 `tool` 的事件回填成 `'unknown'`**（会在生成物里造出一个真的、且断言必然
+  通过的工具调用 —— 骨架自我自洽、永不报错）与**注释行裸插 name / source**（含换行即破产物）；
+  **`replay` 放行数组型 `tool_use.input`**（API 要求对象）。
+
 ### 新增
 
 - **脚手架补齐生产构建链**：`agentia create` 生成的项目此前只有 `dev`/`typecheck`，没有

@@ -256,6 +256,9 @@ const traceLegacy = {
       events: [
         { time: 11, name: 'tool.input', body: { tool: 'translate', input: 'not-json{' } },
         { time: 12, name: 'tool.input', body: { tool: 'search' } },
+        // 缺 tool 字段：两边都必须**跳过**这条（回填 'unknown' 会造出一个真的、
+        // 且断言必然通过的工具调用 —— 骨架自我自洽、永不报错）
+        { time: 13, name: 'tool.input', body: { tool_use_id: 'tu_orphan' } },
       ],
     }),
   ],

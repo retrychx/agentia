@@ -62,9 +62,17 @@ function toValue(v: string | number | boolean): OtlpValue {
   return Number.isInteger(v) ? { intValue: String(v) } : { doubleValue: v };
 }
 
-/** 内部 UUID → OTLP hex（去掉 '-' 即 32 位小写 hex） */
-function hexId(id: string): string {
+/**
+ * 内部 UUID → OTLP hex。**两种 id 宽度不同，不能共用**：
+ * OTLP 契约里 trace id 是 16 字节（32 位 hex）、span id 是 8 字节（16 位 hex，
+ * 父 span 同）。内部一律用 UUID（32 位 hex），直接原样发出去会让 collector 判
+ * `invalid span_id`（拒收）或按前 16 位截断 —— 故 span 侧必须截到 16 位。
+ */
+function traceHex(id: string): string {
   return id.replaceAll('-', '');
+}
+function spanHex(id: string): string {
+  return id.replaceAll('-', '').slice(0, 16);
 }
 
 /** ms → string 纳秒（epoch 毫秒 ×1e6 > 2^53，必须 BigInt，double 直接乘会丢精度） */
@@ -94,17 +102,19 @@ function genAiAttributes(span: Span): OtlpAttribute[] {
       );
     }
   } else if (span.kind === 'capability') {
-    // subagent 是一次嵌套 agent 调用（invoke_agent）；skill 对外语义是「执行一件工具」（execute_tool）
-    if (span.name.startsWith('subagent:')) {
-      attrs.push(
-        str('gen_ai.operation.name', 'invoke_agent'),
-        str('gen_ai.agent.name', span.name.slice('subagent:'.length)),
-      );
-    } else if (span.name.startsWith('skill:')) {
-      attrs.push(
-        str('gen_ai.operation.name', 'execute_tool'),
-        str('gen_ai.tool.name', span.name.slice('skill:'.length)),
-      );
+    // subagent 是一次嵌套 agent 调用（invoke_agent）；skill 对外语义是「执行一件工具」（execute_tool）。
+    // ⚠️ 类型与名字都从 **attributes** 取（`subagent` / `skill`，见 toolkit/subagent.ts:119、
+    // skill.ts:128），**不要**按 span.name 的前缀判 —— 生产里 capability span 的 name 是**裸能力名**
+    // （`recorder.begin('capability', name, …)`），而 metrics.ts / report.ts / trace-view 三个消费者
+    // 全部读 attributes。此前这里判 `name.startsWith('subagent:')`，于是**生产环境一条 gen_ai.* 都
+    // 没发出去**（子 agent 的 agent.name / skill 的 tool.name 全缺），而单测夹具自己造了带前缀的
+    // 形状、把这个错藏了好几轮。
+    const subagent = span.attributes.subagent;
+    const skill = span.attributes.skill;
+    if (typeof subagent === 'string') {
+      attrs.push(str('gen_ai.operation.name', 'invoke_agent'), str('gen_ai.agent.name', subagent));
+    } else if (typeof skill === 'string') {
+      attrs.push(str('gen_ai.operation.name', 'execute_tool'), str('gen_ai.tool.name', skill));
     }
   }
   return attrs;
@@ -156,7 +166,9 @@ function mapEvent(e: SpanEvent) {
         : {};
     const attributes: OtlpAttribute[] = [];
     if (typeof body.name === 'string') {
-      attributes.push({ key: 'gen_ai.evaluation.score.name', value: { stringValue: body.name } });
+      // semconv 里「评分维度名」是 `gen_ai.evaluation.name`（与 .score.value/.score.label 配对）；
+      // `gen_ai.evaluation.score.name` **不存在**（实测 @opentelemetry/semantic-conventions 全量键名里没有）。
+      attributes.push({ key: 'gen_ai.evaluation.name', value: { stringValue: body.name } });
     }
     if (typeof body.value === 'number' && Number.isFinite(body.value)) {
       // 语义是 double：整型分也发 doubleValue，避免后端按 int64 解析丢掉「分数」类型
@@ -182,9 +194,9 @@ function mapEvent(e: SpanEvent) {
 
 function mapSpan(span: Span) {
   return {
-    traceId: hexId(span.traceId),
-    spanId: hexId(span.spanId),
-    ...(span.parentSpanId ? { parentSpanId: hexId(span.parentSpanId) } : {}),
+    traceId: traceHex(span.traceId),
+    spanId: spanHex(span.spanId),
+    ...(span.parentSpanId ? { parentSpanId: spanHex(span.parentSpanId) } : {}),
     name: span.name,
     kind: 1, // SPAN_KIND_INTERNAL
     startTimeUnixNano: nanos(span.startedAt),

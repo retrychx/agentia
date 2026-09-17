@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAgent, buildPricing, DEFAULT_PRICING } from '../../src/index.js';
+// 内部模块（刻意不进公共导出面）
+import { costEstimate } from '../../src/engine/usage.js';
 import type { AgentTool, Trace } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg, U } from '../helpers.js';
 
@@ -247,3 +249,15 @@ describe('G3 生效配置快照（run 根 config.* attributes）', () => {
 
 /** helpers.U 的固定用量，供本文件断言使用（避免魔数散落） */
 assert.deepEqual({ i: U.input_tokens, o: U.output_tokens }, { i: 10, o: 5 });
+
+describe('costEstimate 的价格表查找', () => {
+  it('模型名撞 Object.prototype（constructor / toString）→ 判未定价，而不是 NaN', () => {
+    // `pricing[model]` 命中原型链时 p 是个函数（真值）而 p.in/p.out 为 undefined ⇒ 成本 NaN；
+    // NaN 会流进 trace/OTLP，且 `NaN > maxCostUsd` 恒 false ⇒ 成本护栏静默失效。
+    const usage = { inputTokens: 1000, outputTokens: 500 } as never;
+    for (const m of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__']) {
+      assert.equal(costEstimate(m, usage), undefined, `${m} 应判「未定价」`);
+    }
+    assert.equal(costEstimate('nope', usage), undefined, '普通未知模型仍是 undefined');
+  });
+});

@@ -88,3 +88,24 @@ describe('combineSignals（中断源合成）', () => {
     assert.equal(getEventListeners(host.signal, 'abort').length, 0);
   });
 });
+
+describe('combineSignals 的监听器生命周期', () => {
+  it('同一个源传两次 → 只挂一个监听，摘除后不残留', () => {
+    // 残留会让宿主级长寿 signal 上按任务数累积监听器（闭包一起滞留）——
+    // 正是这段代码声称要防的 MaxListenersExceededWarning。
+    const a = new AbortController();
+    const b = new AbortController();
+    // 同源混在多源里：去重后 a 只挂一个监听；不去重则挂两个，而摘除表按源建（后者覆盖前者）
+    // ⇒ 触发后残留一个监听（闭包一起滞留），正是这段代码要防的累积。
+    const c = combineSignals(a.signal, a.signal, b.signal);
+    assert.equal(getEventListeners(a.signal, 'abort').length, 1, '同源应去重成一个监听');
+    a.abort();
+    assert.equal(c.aborted, true);
+    assert.equal(getEventListeners(a.signal, 'abort').length, 0, '触发并摘除后不得残留');
+    assert.equal(getEventListeners(b.signal, 'abort').length, 0, '其余源上的监听也应摘干净');
+
+    // 纯同源两个参数 → 退化成单源快路径（直接复用，不在源上挂任何监听）
+    const d = combineSignals(a.signal, a.signal);
+    assert.equal(d, a.signal);
+  });
+});
