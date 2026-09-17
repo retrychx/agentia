@@ -98,9 +98,10 @@ function userFacingFiles(): string[] {
     if (existsSync(p) && SCAN_EXT.has(extname(p))) out.push(p);
   };
 
-  // 仓库根：README + npm 包描述
+  // 仓库根：README + npm 包描述 + 变更日志
   addFile(join(repoRoot, 'README.md'));
   addFile(join(repoRoot, 'package.json'));
+  addFile(join(repoRoot, 'CHANGELOG.md'));
 
   // 单源文档 + 可观测配方
   addFile(join(repoRoot, 'docs/usage-guide.md'));
