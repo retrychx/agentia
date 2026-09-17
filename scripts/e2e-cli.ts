@@ -28,6 +28,7 @@ const assert = (cond: boolean, msg: string): void => {
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const cliPath = join(repoRoot, 'packages', 'cli', 'dist', 'cli.js');
 const tmp = mkdtempSync(join(tmpdir(), 'agentia-cli-'));
+const npmCache = mkdtempSync(join(tmpdir(), 'agentia-npm-cache-'));
 const cli = (args: string[], cwd: string): string =>
   execFileSync(process.execPath, [cliPath, ...args], { cwd, encoding: 'utf8' });
 
@@ -246,12 +247,17 @@ try {
 
   // —— 8) 发布物完整性：CHANGELOG.md 必须在两个 npm 包里（npm 的「总是包含」只覆盖
   // README/LICENSE，CHANGELOG 不在其列 —— 曾因 files 只写 dist 漏发，外部 review 抓出）——
+  // npm cache 走临时目录：runner / 沙箱的 ~/.npm 属主异常（EPERM）会把环境问题误判成
+  // 代码问题（外部 review 真踩到），门禁不该依赖宿主 npm 缓存的健康。
   for (const [label, dir] of [
     ['@migor/agentia', repoRoot],
     ['@migor/cli', join(repoRoot, 'packages', 'cli')],
   ] as const) {
     const packed = JSON.parse(
-      execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: dir, encoding: 'utf8' }),
+      execFileSync('npm', ['pack', '--dry-run', '--json', '--cache', npmCache], {
+        cwd: dir,
+        encoding: 'utf8',
+      }),
     ) as Array<{ files: Array<{ path: string }> }>;
     const paths = packed[0]!.files.map((f) => f.path);
     assert(
@@ -278,4 +284,5 @@ try {
   );
 } finally {
   rmSync(tmp, { recursive: true, force: true });
+  rmSync(npmCache, { recursive: true, force: true });
 }
