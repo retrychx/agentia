@@ -116,6 +116,26 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
   rethrow?: boolean;
   /** trace 出口（观测）：run 收尾后逐个投递；sink 抛错被吞，不影响 run */
   sinks?: TraceSink[];
+  /**
+   * trace 交给 sinks **之前**的最后一笔账（`run.finish` 之后、`flushSinks` 之前调一次，
+   * 可 await；抛错被吞 —— 同 sink / 记忆回写：收尾动作失败不得击穿 run）。
+   *
+   * 为什么必须留这个缝：有些结论**只有拿到 run 的结果才算得出来**（断言这一轮到底对不对、
+   * 跑一次判官比一比），而 `flushSinks` 发生在 run 内部 —— 等 `app.run()` 返回后再
+   * `attachScore`，sink 早已把这条 trace 消化完（`metricsSink` 的聚合发生在 `export()`
+   * 那一刻），分数永远进不了指标，与 `usage-guide.md`「eval 的 trace 自带质量结论、
+   * 可直接聚合通过率」的承诺不符。
+   *
+   * 与「把判官写进 sink 里」（usage-guide §6 的采样配方）的分工：那个适合**读 trace
+   * 就够**的判断（sink 里 await 判官即可，顺序上仍在 metricsSink 之前）；本钩子适合
+   * **拿不到 `result` 就无从判断**的。`defineEval`（`src/eval/defineEval.ts`）的 score
+   * 是后者，也是框架内唯一的使用者。
+   *
+   * ⚠️ 只在**正常结束**的路径调用（`run.finish` 之后）。`runAgent` 之外的环节抛错
+   * （contextInit、意外异常）走 catch 分支 —— 那里没有 typed result，也没人需要在这条
+   * 路径挂分（eval 在该路径连 trace 都不保留）。
+   */
+  beforeFlush?: (trace: Trace, result: AgentRunResult<SchemaType<S>>) => void | Promise<void>;
 }
 
 /**
@@ -168,6 +188,9 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       if (session && run.status === 'succeeded') {
         await appendSession(session, options.messages, result.finalText);
       }
+      // 冲刷前把「run 之后才算得出的结论」挂上 trace（见 beforeFlush 的注释）。
+      // 位置很关键：必须在 flushSinks **之前**，否则 sink 看不到它。
+      await runBeforeFlush(options.beforeFlush, result.trace, result);
       await flushSinks(options.sinks, result.trace);
       return { run, result };
     } catch (e) {
@@ -236,6 +259,23 @@ async function appendSession(
     ]);
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * 冲刷前钩子：让调用方在 sinks 看到 trace 之前补最后一笔（见 `beforeFlush`）。
+ * 抛错被吞 —— 与 `flushSinks` 同款防护：收尾动作失败不得击穿 run。
+ */
+async function runBeforeFlush<S extends JsonSchema>(
+  hook: ((trace: Trace, result: AgentRunResult<SchemaType<S>>) => void | Promise<void>) | undefined,
+  trace: Trace,
+  result: AgentRunResult<SchemaType<S>>,
+): Promise<void> {
+  if (!hook) return;
+  try {
+    await hook(trace, result);
+  } catch {
+    /* ignore：收尾动作失败不影响 run */
   }
 }
 

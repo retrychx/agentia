@@ -284,6 +284,9 @@ export class AsyncRunner {
    * （running 视为进程中断）。返回重派数量（异步 store 下返回 Promise<number>）。
    * 幂等键去重照常生效。
    *
+   * **认领先落库、再派发**（见 `#redispatch`）；异步 store 的认领落库失败会让本方法
+   * reject —— 宁可让调用方看见「续跑没做」，也不要静默放出一批会被重复执行的任务。
+   *
    * 多进程共用一个 store 时靠 `ownerId` 区分他我：
    * - 本进程的记录一律跳过（它还在本进程内存里跑，重派 = 跑两遍）；
    * - `staleAfterMs > 0` 时，startedAt/createdAt 距今不足该值的他进程记录也跳过
@@ -298,7 +301,20 @@ export class AsyncRunner {
     return this.#redispatch(listed, staleAfterMs);
   }
 
-  #redispatch(recs: TaskRecord[], staleAfterMs: number): number {
+  /**
+   * 重新派发前**必须**先把 `ownerId` 认领落库 —— 否则「认领」只是内存里的一个记号。
+   *
+   * 病灶：此前这里只改内存里的 `status`/`ownerId` 就 `void #execute(rec)`，真正的 save
+   * 要等到 `#executeInner`（还在 `#acquireSlot` 之后）。对 sqlite/redis 这类 `list()`
+   * 返回**反序列化新对象**的 store，这段窗口里再调一次 `resumePending()` 读到的仍是旧
+   * ownerId，`:305` 的过滤失效 → 同一个任务被再派发一次 → `app.run` 重复执行，副作用
+   * 与花费翻倍。`InMemoryTaskStore` 存的是对象引用，恰好掩盖了这个问题。
+   *
+   * 返回类型刻意保持 `number | Promise<number>`：同步 store 的 save 是同步的，认领当场
+   * 落地，返回数字（`submit`/`list` 那套「同步 store 保持同步门面」的约定不变）；只有
+   * 真出现 thenable 才升级成 Promise，等所有认领落库后再统一派发。
+   */
+  #redispatch(recs: TaskRecord[], staleAfterMs: number): number | Promise<number> {
     const now = Date.now();
     const pending = recs.filter((r) => {
       if (r.status !== 'queued' && r.status !== 'running') return false;
@@ -309,12 +325,21 @@ export class AsyncRunner {
       }
       return true;
     });
+
+    const claims: Promise<void>[] = [];
     for (const rec of pending) {
       rec.status = 'queued'; // 重新入队，由 #execute 统一推进
       rec.ownerId = this.ownerId; // 认领：此后本进程的记录不再被（自己）重派
-      void this.#execute(rec);
+      const saved = this.store.save(rec);
+      if (isThenable(saved)) {
+        // 落库失败则**不派发**：认领没落地，派发等于把上面那个重复执行的窗口重新打开
+        claims.push(Promise.resolve(saved).then(() => void this.#execute(rec)));
+      } else {
+        void this.#execute(rec);
+      }
     }
-    return pending.length;
+    if (claims.length === 0) return pending.length;
+    return Promise.all(claims).then(() => pending.length);
   }
 
   /**

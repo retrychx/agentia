@@ -52,7 +52,14 @@ describe('mapWithConcurrency（C2）', () => {
   });
 
   it('limit 非正 / 非有限 / 超过条数 → 一律视为不限', async () => {
-    for (const limit of [0, -1, Number.POSITIVE_INFINITY, Number.NaN, 99]) {
+    for (const limit of [
+      0,
+      -1,
+      Number.NEGATIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+      99,
+    ]) {
       let live = 0;
       let peak = 0;
       await mapWithConcurrency([1, 2, 3], limit, async () => {
@@ -63,6 +70,32 @@ describe('mapWithConcurrency（C2）', () => {
         return null;
       });
       assert.equal(peak, 3, `limit=${limit} 应不限并发`);
+    }
+  });
+
+  it('(0,1) 区间的小数 → 至少 1 个 worker（`floor` 压成 0 会静默丢掉全部工具）', async () => {
+    // 零 worker ⇒ `fn` 一次都不调、results 全是 undefined、调用方却拿到「成功」的空结果：
+    // 工具被静默丢弃而 run 照常收尾。`maxToolConcurrency: cpus().length / 8` 这类比例写法
+    // 在多核数 < 8 的机器上正落在这个区间（cpus()=4 → 0.5）。
+    for (const limit of [0.5, 0.9, 1 / 8]) {
+      const seen: number[] = [];
+      let live = 0;
+      let peak = 0;
+      const out = await mapWithConcurrency([1, 2, 3], limit, async (n) => {
+        seen.push(n);
+        live++;
+        peak = Math.max(peak, live);
+        await sleep(5);
+        live--;
+        return n * 10;
+      });
+      assert.deepEqual(out, [10, 20, 30], `limit=${limit}：每个输入都必须有结果`);
+      assert.deepEqual(
+        seen.sort((a, b) => a - b),
+        [1, 2, 3],
+        `limit=${limit}：每个输入都必须被跑过`,
+      );
+      assert.equal(peak, 1, `limit=${limit}：下限是 1 个 worker`);
     }
   });
 
@@ -138,6 +171,29 @@ describe('工具级超时 / 并发闸门接进主循环（C2）', () => {
     };
     assert.equal(await runWith(2), 2, '设了闸门就该卡在 2');
     assert.equal(await runWith(undefined), 6, '不设闸门保持全并行（旧行为）');
+  });
+
+  it('闸门值记进 run 根 `config.maxToolConcurrency`：记生效的整数，不限记 off', async () => {
+    // 原样透传会把 `NaN` 写进 span attributes（JSON/OTLP 序列化后是 null，看板上无从解释），
+    // 把 `-1` 写成「卡在负数个并发」。语义上它们都等于「不限」，就该同 `maxEventChars` 记 'off'。
+    const attrOf = async (limit: number | undefined): Promise<unknown> => {
+      const { client } = mockClient([endTurnMsg('done')]);
+      const { result } = await executeRun({
+        messages: [{ role: 'user', content: 'go' }],
+        client,
+        ...(limit === undefined ? {} : { maxToolConcurrency: limit }),
+      });
+      return result.trace.spans.find((s) => s.kind === 'run')?.attributes[
+        'config.maxToolConcurrency'
+      ];
+    };
+    assert.equal(await attrOf(2), 2, '正整数原样');
+    assert.equal(await attrOf(1.5), 1, '小数记真正生效的整数（floor，且至少 1）');
+    assert.equal(await attrOf(0.5), 1, '(0,1) 小数生效宽度是 1，不是 0');
+    assert.equal(await attrOf(0), 'off', '0 = 不限（见 maxEventChars 同款约定）');
+    assert.equal(await attrOf(-3), 'off');
+    assert.equal(await attrOf(Number.NaN), 'off');
+    assert.equal(await attrOf(undefined), undefined, '没配就不记（与「配了不限」可区分）');
   });
 
   it('工具抛错仍不中断 run（与超时同一语义，回归保护）', async () => {

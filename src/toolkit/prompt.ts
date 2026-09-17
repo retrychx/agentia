@@ -98,24 +98,32 @@ export function collectPromptEntries(instance: object): CollectedPrompts {
   // 静态方法：沿构造函数原型链（含父类静态 @Prompt），Reflect.ownKeys 含 symbol key。
   // target 取**最外层**构造函数：子类「未装饰地 override」静态方法时调用走子类实现
   //（与实例侧 override 语义一致）；只看自身属性会把父类静态资产静默丢掉。
-  const seen = new Set<string | symbol>(found.map((f) => f.key));
+  //
+  // 静态这一侧**不拿实例 key 播种 seen**：ctor 上的静态方法与原型上的实例方法是两处
+  // 独立资产，key 撞了不代表同一个东西。以前拿实例 key 播种，`static brand()` 撞上
+  // 实例 `brand()` 时静态资产被静默丢弃 —— 丢的恰恰是本来不可能重名的资产，而
+  // `module.ts` 按**菜单名**查重永远看不到它。真正的实例↔静态重名交给 module.ts 抛
+  // 「菜单能力重名」（spec §7：装配期统一查重、重名即抛），不在这里悄悄吞掉。
+  //
+  // 去重口径 = **解析后的菜单名**（而非方法 key）：父子类「改了方法名但同菜单名」的
+  // 静态也算覆写。沿链从最外层 ctor 往上走，所以子类先占据该名字。
+  const seenKeys = new Set<string | symbol>();
+  const seenNames = new Set<string>();
   const root: unknown = (instance as { constructor?: unknown }).constructor;
   let ctor = root;
   while (typeof ctor === 'function' && ctor !== Function.prototype) {
     const rec = ctor as unknown as Record<string | symbol, unknown>;
     for (const key of Reflect.ownKeys(rec)) {
-      if (seen.has(key)) continue;
+      if (seenKeys.has(key)) continue;
       const desc = Object.getOwnPropertyDescriptor(rec, key);
       if (!desc || typeof desc.value !== 'function') continue;
       const spec = promptSpecs.get(desc.value as Function);
       if (!spec) continue; // 未装饰的 override 不标 seen，父类静态 spec 继续生效
-      seen.add(key);
-      pushTool(
-        capabilityName(spec, key, '@Prompt'),
-        root as Record<string | symbol, unknown>,
-        key,
-        spec,
-      );
+      const name = capabilityName(spec, key, '@Prompt');
+      if (seenNames.has(name)) continue; // 子类已占据该菜单名 → 父类静态视为被覆写
+      seenKeys.add(key);
+      seenNames.add(name);
+      pushTool(name, root as Record<string | symbol, unknown>, key, spec);
     }
     ctor = Object.getPrototypeOf(ctor);
   }

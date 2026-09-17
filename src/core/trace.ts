@@ -154,6 +154,24 @@ export function attachScore(trace: Trace, score: Score): void {
 }
 
 /**
+ * 能力 span 的类型标签：`attributes.skill` 有值 → `'skill'`，`attributes.subagent` 有值
+ * → `'subagent'`，否则 `'capability'`（`SpanKind` 的第三个取值，也是 span 的 kind）。
+ *
+ * 放在本文件（而不是各出口里）：`skill` / `subagent` 这两个 attribute 名是
+ * `toolkit/skill.ts`、`toolkit/subagent.ts` 与本类型之间的共同契约 —— 判定写在契约
+ * 定义处，两个出口（`metrics.ts` 的指标 label、`report.ts` 的能力排行）只消费结论。
+ * 此前两处各有一份同形实现，加起来是**同一件事的三个定义**。
+ *
+ * 返回 `string` 而非 `CapabilityType`：`'capability'` 不在 `CapabilityType`
+ * （那是「菜单四类能力」的口径）里，两者刻意不混。
+ */
+export function capabilityKindOf(span: Span): string {
+  if (span.attributes.skill !== undefined) return 'skill';
+  if (span.attributes.subagent !== undefined) return 'subagent';
+  return 'capability';
+}
+
+/**
  * trace 出口：run 收尾（成功或失败）后，框架把【完整 Trace】交给每个 sink。
  * sink 抛错由框架吞掉，绝不影响 run 结果（与 memory 回写同款防护）。
  * 形状与 OtlpExporter 一致 —— createOtlpExporter() 的返回值天然满足本接口。

@@ -242,6 +242,26 @@ export function trimToolPairs(messages: MessageParam[], opts: TrimOptions = {}):
   return out;
 }
 
+/**
+ * 从 `cut` 切到尾的保留段是否**工具自洽**：段内每个 `tool_result` 的 id 都能在它
+ * **之前**的段内消息里找到对应 `tool_use`。自洽 ⇒ 切出来的尾部不会带着孤儿 tool_result
+ * 去请求 API。
+ *
+ * 为什么不复用 `toolBlocksPaired`：那个要求**严格相邻**（tool_use 的下一条必须覆盖它的
+ * 全部结果），是 `trimToolPairs` 的保守前置条件 —— 拿它当这里的判据会把「工具对非相邻但
+ * 完全合法」的历史也判成不可压缩。这里只关心 id 在不在段内。
+ */
+function tailToolSelfContained(messages: MessageParam[], cut: number): boolean {
+  const seen = new Set<string>();
+  for (let i = cut; i < messages.length; i++) {
+    for (const id of toolUseIds(messages[i])) seen.add(id);
+    for (const id of toolResultIds(messages[i])) {
+      if (!seen.has(id)) return false; // 呼应它的 tool_use 落在摘要里 → 尾段孤儿
+    }
+  }
+  return true;
+}
+
 export interface CompactOptions {
   /** 保留的最近消息条数；缺省 20 */
   keepRecent?: number;
@@ -252,7 +272,9 @@ export interface CompactOptions {
 /**
  * compaction：把 messages 里“除最近 keepRecent 条”的旧前缀做摘要，替换成一段
  * 摘要消息，尾部保留。产出保证：
- * - 不拆散 (assistant tool_use → user tool_result) 对 —— cut 落到对中间时整体后移；
+ * - **保留段工具自洽** —— 段内每个 tool_result 都能在段内之前找到对应 tool_use
+ *   （cut 落到对中间、或跨过非相邻对的 tool_use 时，cut 整体后退）；退无可退宁可
+ *   放弃本次压缩也不切出孤儿块；
  * - 角色交替合法 —— 尾段首条是普通 user 时摘要并入之；否则摘要以 user 角色放最前。
  */
 export async function compactMessages(
@@ -263,15 +285,18 @@ export async function compactMessages(
   if (messages.length <= keepRecent) return messages;
 
   let cut = messages.length - keepRecent;
-  // cut 若落在一对 tool_result 的开头（前一条是带 tool_use 的 assistant），整对后移进保留段
-  while (cut > 1 && cut < messages.length && isToolResultMessage(messages[cut])) {
+  // 判据是「保留段工具自洽」，不是「cut 那条不是 tool_result」—— 后者默认了工具对相邻。
+  // 非相邻时（`tool_use(A) @k`、普通 user 文本 `@k+1`、`tool_result(A) @k+2`，cut 落在
+  // k+1）cut 自己是普通文本，却把 k+2 的 tool_result 留成了尾段孤儿 → 下一次请求被
+  // API 以 400 拒绝。每退一步就多把一条消息让进保留段，直到自洽（退到 1 为止）。
+  while (cut > 1 && !tailToolSelfContained(messages, cut)) {
     cut -= 1;
   }
-  // 回退到 1 仍落在 tool_result 上 ⇒ 这对的 tool_use 在索引 0，再退一步就是「一条不丢、
-  // 只多贴一段摘要」。此处放弃本次压缩：把这对劈开（tool_use 折进摘要、tool_result 留在
+  // 退到 1 仍不自洽 ⇒ 那些 tool_result 的 tool_use 在索引 0，再退一步就是「一条不丢、
+  // 只多贴一段摘要」。此处放弃本次压缩：把工具对劈开（tool_use 折进摘要、tool_result 留在
   // 尾部）会同时破掉另外两条承诺 —— 尾部开头的孤立 tool_result 让下一次请求被 API 400
   // 拒绝，且它与摘要（user）构成连续两条 user。
-  if (isToolResultMessage(messages[cut])) return messages;
+  if (!tailToolSelfContained(messages, cut)) return messages;
 
   const prefix = messages.slice(0, cut);
   const tail = messages.slice(cut);

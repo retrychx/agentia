@@ -5,10 +5,18 @@ import {
   createApp,
   defineEval,
   executeRun,
+  metricsSink,
   scriptedClient,
   SystemPrompt,
 } from '../../src/index.js';
-import type { AgentRunResult, JsonSchema, Trace } from '../../src/index.js';
+import type {
+  AgentApp,
+  AgentRunResult,
+  JsonSchema,
+  MessageParam,
+  RunAppOptions,
+  Trace,
+} from '../../src/index.js';
 import { endTurnMsg, toolUseMsg } from '../helpers.js';
 
 const OBJ: JsonSchema = { type: 'object', properties: {} };
@@ -273,5 +281,74 @@ describe('defineEval 自动 score（R7 质量闭环）', () => {
     for (const c of report.cases) {
       assert.deepEqual(scoresOf(c.trace!), [{ name: 'eval', value: 1, source: 'all-pass' }]);
     }
+  });
+
+  it('score 在 sinks 冲刷前落定 → metricsSink 真的聚合得到（下游可算通过率）', async () => {
+    // 这一条是本组的存在理由：`flushSinks` 发生在 `executeRun` 内部，结论若在
+    // `app.run()` 返回后才挂，`metricsSink` 早在 `export()` 那一刻聚完账 —— 分数
+    // 永远进不了指标，而 usage-guide 承诺「eval 的 trace 自带质量结论、可直接聚合通过率」。
+    const metrics = metricsSink();
+    const app = () =>
+      createApp({
+        name: 'eval-app',
+        system: new SystemPrompt().add('role', 'r'),
+        providers: [],
+        sinks: [metrics],
+      });
+    const report = await defineEval<unknown>({
+      name: 'metrics-eval',
+      app,
+      cases: [
+        { name: '过', input: 'a', client: scriptedClient([endTurnMsg('ok')]) },
+        { name: '挂', input: 'b', client: scriptedClient([endTurnMsg('bad')]) },
+      ],
+      expect: (r) => {
+        assert.equal(r.finalText, 'ok');
+      },
+    }).run();
+    assert.equal(report.ok, false);
+
+    const scores = metrics.snapshot().scores;
+    const acc = scores['eval@metrics-eval'];
+    assert.ok(acc, `指标里应有 eval 的评分维度，实际只有 ${JSON.stringify(Object.keys(scores))}`);
+    assert.equal(acc.count, 2, '两个用例各记一条');
+    assert.equal(acc.value, 0, '最近一条是失败的用例');
+  });
+
+  it('兜底：自定义 app 漏透传 beforeFlush → 断言照做（不误报「全挂」），只是分数进不了指标', async () => {
+    const metrics = metricsSink();
+    const real = createApp({
+      name: 'eval-app',
+      system: new SystemPrompt().add('role', 'r'),
+      providers: [],
+      sinks: [metrics],
+    });
+    const ev = defineEval<unknown>({
+      name: 'forgetful-eval',
+      app: () =>
+        ({
+          name: 'forgetful',
+          // 模拟包装层把不认识的 opts 字段丢掉（宿主转发、自定义 app 都可能）
+          run: (m: MessageParam[], o?: RunAppOptions) => {
+            const { beforeFlush: _dropped, ...rest } = o ?? {};
+            return real.run(m, rest);
+          },
+        }) as unknown as AgentApp, // 只实现用得到的那部分 —— 鸭子类型
+      cases: [{ input: 'a', client: scriptedClient([endTurnMsg('ok')]) }],
+      expect: () => {},
+    });
+
+    const report = await ev.run();
+    // 断言确实跑了（若没有兜底，钩子没被调用 → report 停在初始的 ok:false，
+    // 一个「全挂」的报告会让人去查 agent，而问题其实在宿主）
+    assert.equal(report.ok, true, report.cases[0]?.error ?? '');
+    assert.deepEqual(scoresOf(report.cases[0]!.trace!), [
+      { name: 'eval', value: 1, source: 'forgetful-eval' },
+    ]);
+    assert.deepEqual(
+      metrics.snapshot().scores,
+      {},
+      '晚挂的分数进不了指标（兜底代价，已记在注释里）',
+    );
   });
 });

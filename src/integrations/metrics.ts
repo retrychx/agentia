@@ -1,4 +1,6 @@
-import type { Span, Trace, TraceSink } from '../core/trace.js';
+import { capabilityKindOf } from '../core/trace.js';
+import type { Trace, TraceSink } from '../core/trace.js';
+import { percentile } from '../core/stats.js';
 
 /**
  * Agentia —— 指标（D3 → 可观测下沉 E2/E3/E4/E5）。
@@ -78,14 +80,26 @@ export interface MetricsSnapshot {
   tokens: number;
   /** 累计成本估算（美元）；模型不在价格表内时该 run 不计入（见 usage.ts） */
   costUsd: number;
-  /** 能力维度（`labelMode:'none'` 时为空对象） */
+  /**
+   * 能力维度（`labelMode:'none'` 时为空对象）。超 `maxCapabilities` 的键折叠在
+   * `'__other__'` —— 该桶照常累加，所以这里的**总量**不受上限影响。
+   */
   capabilities: Record<string, CapabilityMetrics>;
-  /** 模型维度 */
+  /** 模型维度；超 `maxModels` 的键折叠在 `'__other__'`（同上：总量不丢） */
   models: Record<string, ModelMetrics>;
-  /** 评分维度（key 为 `name@source`，source 缺省时裸 name；无评分时为空对象） */
+  /**
+   * 评分维度（key 为 `name@source`，source 缺省时裸 name；无评分时为空对象）；
+   * 超 `maxScores` 的键折叠在 `'__other__'`。
+   */
   scores: Record<string, ScoreMetrics>;
-  /** 因 `maxCapabilities` 上限被归入 `__other__` 的不同能力数（未开启上限时为 0） */
+  /** 因 `maxCapabilities` 上限被归入 `__other__` 的不同能力数 */
   droppedCapabilities: number;
+  /** 因 `maxModels` 上限被归入 `__other__` 的不同模型数 */
+  droppedModels: number;
+  /** 因 `maxScores` 上限被归入 `__other__` 的不同评分维度数 */
+  droppedScores: number;
+  // 注：三个计数各自最多记账 1024 个不同键，满了以后是**下界**（那已是键空间失控的
+  // 量级，报警够用）。要精确值就得为无界键空间留一本无界的账 —— 与设上限的初衷相反。
 }
 
 export interface MetricsSinkOptions {
@@ -120,7 +134,10 @@ export interface MetricsSinkOptions {
    * 时长分位保留的样本数（环形窗口，缺省 1024，**run / 能力 / 模型各自独立**）。
    * 分位是**窗口内精确值**而非全历史近似 —— 长跑宿主不会被无界数组拖住内存，
    * 代价是分位只反映最近这么多条样本（这也是监控想要的）。
-   * 注意：每个能力/模型各持一个窗口 → 内存上限 ≈ (1 + 能力数 + 模型数) × windowSize。
+   *
+   * 注意：每个能力/模型各持一个窗口，所以 windowSize 只是**系数**；真正封住内存的是
+   * 三个基数上限（`maxCapabilities` / `maxModels` / `maxScores`）—— 上限 **×** 窗口
+   * 才是常驻内存的上界，缺一个都是无界（见 `maxModels` 的注释）。
    */
   windowSize?: number;
   /** 指标名前缀，缺省 `agentia_` */
@@ -137,6 +154,23 @@ export interface MetricsSinkOptions {
    * 超出后新能力归入 `capability="__other__"` —— 用户可定义任意多工具，裸打标签会打爆 Prometheus。
    */
   maxCapabilities?: number;
+  /**
+   * 模型维度基数上限（缺省 50）。超出后新模型归入 `"__other__"`
+   * —— `model` 是 per-run 可覆盖的（`app.run(m, { model })`），
+   * 上游把版本号/日期拼进模型 id（`claude-x-20260101`）时键会无界增长；
+   * 而每个模型键都持一个 `windowSize` 环形窗口 + 一个直方图 → **无上限 = 无界内存**。
+   *
+   * 折叠**只丢标签粒度，不丢量**：`__other__` 桶照常累加 turn / token / 成本，
+   * `snapshot().models` 的总量仍然对得上。被折叠的不同模型数见 `snapshot().droppedModels`。
+   */
+  maxModels?: number;
+  /**
+   * 评分维度基数上限（缺省 200）。评分键是 `name@source`（`attachScore` 的 name × source），
+   * eval 名若由调用方拼出来（带时间戳/用例名）同样是无界键 → 同上折叠进 `"__other__"`。
+   * 折叠后 gauge 语义（最近一次值）保留，只是不再区分是哪个评分维度；
+   * 条数 / 总和照常累加，被折叠的不同评分维度数见 `snapshot().droppedScores`。
+   */
+  maxScores?: number;
   /** 时长直方图的桶边界（毫秒，升序）；缺省见 DEFAULT_BUCKETS */
   buckets?: readonly number[];
 }
@@ -155,13 +189,62 @@ export interface MetricsSink extends TraceSink {
 
 const DEFAULT_WINDOW = 1024;
 const DEFAULT_MAX_CAPABILITIES = 200;
+/** 模型 id 实际就那么几个，默认给 50 已经很宽（够覆盖多版本并存的灰度期） */
+const DEFAULT_MAX_MODELS = 50;
+/** 评分维度 = `name@source`，一个应用的 eval 个数是有限的，默认与能力同宽 */
+const DEFAULT_MAX_SCORES = 200;
 /** 缺省时长桶（毫秒）：覆盖"工具几十毫秒 → run 几十秒"的常见区间 */
 export const DEFAULT_BUCKETS: readonly number[] = [
   25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000,
 ];
 
-/** 超过 maxCapabilities 后的兜底标签 */
-const OTHER_CAPABILITY = '__other__';
+/** 超过基数上限后新键的兜底标签（能力 / 模型 / 评分三个维度共用） */
+const OTHER_LABEL = '__other__';
+
+/**
+ * 折叠计数最多记这么多个**不同**键（每个维度各一本）。计数只用于报警「基数爆了」，
+ * 不值得为它留一本无界的账 —— 那等于把上限又拆掉一角。正常上限（50~200）下这个数
+ * 远够用：真要记满，说明键空间已经失控，此时「≥1024」和精确值一样能说明问题。
+ */
+const MAX_DROPPED_TRACKING = 1024;
+
+/**
+ * 标签基数配额：三个维度共用的「有界键空间」。
+ *
+ * 键第一次出现且在额度内 → 分到自己的标签（**永远认自己**，不会时而被折叠时而不折叠）；
+ * 超限 → 归入 `OTHER_LABEL`。
+ *
+ * 被折叠的键记进 `over`，只为回答「多少个**不同**的键被折叠了」；这本账自身也有界
+ * （`MAX_DROPPED_TRACKING`），满了以后 `dropped` 是下界。
+ */
+class KeyBudget {
+  private readonly assigned = new Set<string>();
+  private readonly over = new Set<string>();
+
+  constructor(private readonly max: number) {}
+
+  /** 取键的标签：额度内原样返回，超限返回 `OTHER_LABEL` */
+  take(key: string): string {
+    if (this.assigned.has(key)) return key;
+    if (this.assigned.size < this.max) {
+      this.assigned.add(key);
+      return key;
+    }
+    if (this.over.size < MAX_DROPPED_TRACKING) this.over.add(key);
+    return OTHER_LABEL;
+  }
+
+  /** 被折叠的**不同**键数（记满 `MAX_DROPPED_TRACKING` 后为下界） */
+  get dropped(): number {
+    return this.over.size;
+  }
+
+  /** 清空配额（`reset()` 用）—— 与 `capabilities` / `models` / `scores` 三张表同步清 */
+  reset(): void {
+    this.assigned.clear();
+    this.over.clear();
+  }
+}
 
 /**
  * 时长统计：环形窗口（算窗口内精确分位）+ 累积直方图（算可聚合的 bucket）。
@@ -207,12 +290,15 @@ class DurationStat {
     return this.ring.length;
   }
 
-  /** 窗口内精确分位（Prometheus 的 quantile 语义：取第 ceil(q·n) 个样本） */
+  /**
+   * 窗口内精确分位（Prometheus 的 quantile 语义：取第 ceil(q·n) 个样本）。
+   * 算法单源在 `core/stats.ts` —— 与 `report.ts` 的时长 p50/p95 必须同口径，
+   * 否则同一条 trace 在看板与报告里会有两个 p95。
+   */
   percentile(q: number): number {
     if (this.ring.length === 0) return 0;
     const sorted = [...this.ring].sort((a, b) => a - b);
-    const rank = Math.ceil(q * sorted.length);
-    return sorted[Math.min(Math.max(rank, 1), sorted.length) - 1]!;
+    return percentile(sorted, q);
   }
 
   /** 累积 bucket 计数（长度 = bounds+1，末位为 +Inf = count）—— Prometheus 文本语义 */
@@ -268,15 +354,19 @@ function runDurationMs(trace: Trace): number | undefined {
   return root.endedAt - root.startedAt;
 }
 
-/** 能力 span 的类型标签：`attributes.skill` → 'skill'，`attributes.subagent` → 'subagent'，否则 'capability' */
-function capabilityKindOf(span: Span): string {
-  if (span.attributes.skill !== undefined) return 'skill';
-  if (span.attributes.subagent !== undefined) return 'subagent';
-  return 'capability';
-}
-
 function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * 评分键 → 指标标签。键有两种形态：**折叠桶**（`__other__`，整个键就是标签，不含 `\t`）
+ * 与正常的 `name\tsource`（source 缺省为 ''）。两个出口（Prometheus 文本 / OTLP）共用一处
+ * 解码 —— 各切各的必然有一处把折叠桶切成乱码。
+ */
+function scoreLabels(key: string): { name: string; source: string } {
+  if (key === OTHER_LABEL) return { name: OTHER_LABEL, source: '' };
+  const tab = key.indexOf('\t');
+  return { name: key.slice(0, tab), source: key.slice(tab + 1) };
 }
 
 export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
@@ -295,6 +385,14 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   const maxCapabilities = opts.maxCapabilities ?? DEFAULT_MAX_CAPABILITIES;
   if (!(maxCapabilities > 0)) {
     throw new Error(`metricsSink: maxCapabilities 必须为正数，收到 ${opts.maxCapabilities}`);
+  }
+  const maxModels = opts.maxModels ?? DEFAULT_MAX_MODELS;
+  if (!(maxModels > 0)) {
+    throw new Error(`metricsSink: maxModels 必须为正数，收到 ${opts.maxModels}`);
+  }
+  const maxScores = opts.maxScores ?? DEFAULT_MAX_SCORES;
+  if (!(maxScores > 0)) {
+    throw new Error(`metricsSink: maxScores 必须为正数，收到 ${opts.maxScores}`);
   }
   const labelMode = opts.labelMode ?? 'capability';
   const buckets = opts.buckets ?? DEFAULT_BUCKETS;
@@ -319,10 +417,10 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   const models = new Map<string, ModelAcc>();
   /** 评分累加器：key = `${name}\t${source}`（source 缺省 ''；\t 不会出现在正常评分名里，做天然分隔符） */
   const scores = new Map<string, ScoreMetrics>();
-  /** 已分配独立标签的能力键（超 maxCapabilities 后新键归 __other__） */
-  const assignedCapabilities = new Set<string>();
-  /** 被归入 __other__ 的不同能力键 */
-  const dropped = new Set<string>();
+  // 三个维度的键空间都封在这些配额里 —— 没有它们，三张 Map 与各自的时长窗口都是无界的
+  const capBudget = new KeyBudget(maxCapabilities);
+  const modelBudget = new KeyBudget(maxModels);
+  const scoreBudget = new KeyBudget(maxScores);
 
   const newCapability = (): CapabilityAcc => ({
     calls: 0,
@@ -332,18 +430,11 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     costUsd: null,
   });
 
-  /** 能力标签分配：labelMode 决定粒度，maxCapabilities 决定基数上限 */
+  /** 能力标签分配：labelMode 决定粒度，capBudget 决定基数上限 */
   const labelFor = (kind: string, name: string): string | null => {
     if (labelMode === 'none') return null;
     if (labelMode === 'kind') return kind;
-    const key = `${kind}:${name}`;
-    if (assignedCapabilities.has(key)) return key;
-    if (assignedCapabilities.size >= maxCapabilities) {
-      dropped.add(key);
-      return OTHER_CAPABILITY;
-    }
-    assignedCapabilities.add(key);
-    return key;
+    return capBudget.take(`${kind}:${name}`);
   };
 
   const accumulate = (trace: Trace): void => {
@@ -370,7 +461,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         if (typeof body.name !== 'string') continue;
         if (typeof body.value !== 'number' || !Number.isFinite(body.value)) continue;
         const source = typeof body.source === 'string' ? body.source : '';
-        const key = `${body.name}\t${source}`;
+        const key = scoreBudget.take(`${body.name}\t${source}`);
         const acc = scores.get(key) ?? { value: 0, count: 0, sum: 0 };
         acc.value = body.value; // gauge 语义：覆盖为最近一次
         acc.count++;
@@ -404,7 +495,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         continue;
       }
       if (span.kind === 'llm.turn') {
-        const model = span.name;
+        const model = modelBudget.take(span.name);
         const acc = models.get(model) ?? {
           turns: 0,
           tokens: 0,
@@ -468,9 +559,12 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     }
     const scoreOut: Record<string, ScoreMetrics> = {};
     for (const [key, acc] of scores) {
-      const tab = key.indexOf('\t');
-      const name = key.slice(0, tab);
-      const source = key.slice(tab + 1);
+      // 折叠桶没有 `name@source` 可黏（也不该有），原样以 `__other__` 出
+      if (key === OTHER_LABEL) {
+        scoreOut[OTHER_LABEL] = { ...acc };
+        continue;
+      }
+      const { name, source } = scoreLabels(key);
       scoreOut[source === '' ? name : `${name}@${source}`] = { ...acc };
     }
     return {
@@ -483,7 +577,9 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       capabilities: capabilityOut,
       models: modelOut,
       scores: scoreOut,
-      droppedCapabilities: dropped.size,
+      droppedCapabilities: capBudget.dropped,
+      droppedModels: modelBudget.dropped,
+      droppedScores: scoreBudget.dropped,
     };
   };
 
@@ -685,8 +781,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       const counterSamples: string[] = [];
       for (const key of [...scores.keys()].sort()) {
         const acc = scores.get(key)!;
-        const tab = key.indexOf('\t');
-        const l = `{name="${escLabel(key.slice(0, tab))}",source="${escLabel(key.slice(tab + 1))}"}`;
+        const { name, source } = scoreLabels(key);
+        const l = `{name="${escLabel(name)}",source="${escLabel(source)}"}`;
         gaugeSamples.push(`${p}score${l} ${acc.value}`);
         counterSamples.push(`${p}score_total${l} ${acc.count}`);
       }
@@ -812,8 +908,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     }
     for (const key of [...scores.keys()].sort()) {
       const acc = scores.get(key)!;
-      const tab = key.indexOf('\t');
-      const attrs = [strAttr('name', key.slice(0, tab)), strAttr('source', key.slice(tab + 1))];
+      const { name, source } = scoreLabels(key);
+      const attrs = [strAttr('name', name), strAttr('source', source)];
       metrics.push(gauge(`${p}score`, acc.value, '最近一次评分', attrs));
       metrics.push(sum(`${p}score_total`, acc.count, '评分条数', attrs));
     }
@@ -894,8 +990,9 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       capabilities.clear();
       models.clear();
       scores.clear();
-      assignedCapabilities.clear();
-      dropped.clear();
+      capBudget.reset();
+      modelBudget.reset();
+      scoreBudget.reset();
     },
   };
 }

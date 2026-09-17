@@ -171,6 +171,57 @@ describe('SSE 组装：分片 → on(text) 与 finalMessage', () => {
     }
   });
 
+  it('message_delta 里的显式 null **不得**清掉 message_start 的真实计量（浅合并是错的）', async () => {
+    // 网关/代理型端点的真实形态：message_start 报全量，随后的 message_delta 只带
+    // output_tokens，input/cache 三项显式给 null。`{...base, ...delta}` 会把四项全清成 null，
+    // 末尾的 `?? 0` 再归零 → 该回合 input/cache token 与 costEstimate 一起塌成 0，
+    // maxCostUsd 护栏随之失效（花超了也不拦）。缺值的语义是「保持已有值」。
+    const events = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_3',
+          type: 'message',
+          role: 'assistant',
+          model: 'm',
+          content: [],
+          stop_reason: null,
+          usage: {
+            input_tokens: 12,
+            output_tokens: 1,
+            cache_creation_input_tokens: 5,
+            cache_read_input_tokens: 7,
+          },
+        },
+      },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '好' } },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: {
+          output_tokens: 9,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+        },
+      },
+      { type: 'message_stop' },
+    ];
+    const ep = await fakeEndpoint((_h, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      assert.equal(final.usage.input_tokens, 12, 'null 不得覆盖 message_start 的真实值');
+      assert.equal(final.usage.cache_creation_input_tokens, 5);
+      assert.equal(final.usage.cache_read_input_tokens, 7);
+      assert.equal(final.usage.output_tokens, 9, '真给了新值的字段照常覆盖');
+    } finally {
+      await ep.close();
+    }
+  });
+
   it('tool_use 块从 input_json_delta 分片（跨分片的半截 JSON）正确组装', async () => {
     const events = [
       {

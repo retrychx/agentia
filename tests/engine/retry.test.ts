@@ -26,6 +26,34 @@ describe('RetryOptions 归一（resolveRetry）', () => {
     assert.equal(r.maxDelayMs, DEFAULT_RETRY.maxDelayMs);
   });
 
+  it('显式 undefined 的字段 → 回落到缺省值（「没给」与「给了个 undefined」不是一回事）', () => {
+    // tsconfig 未开 exactOptionalPropertyTypes，所以 `{ maxAttempts: cfg.retries }` 这类
+    // spread/透传组装出来的配置能带着 undefined 过类型检查、一路抵达这里。旧写法
+    // `{...DEFAULT_RETRY, ...o}` 会让 undefined **覆盖**默认值：
+    //  - maxAttempts 变 undefined → `!(undefined >= 1)` 成立 → **重试被静默关闭**，
+    //    而 run 根快照记 config.retry.maxAttempts: 0（看着像用户主动关的）；
+    //  - baseDelayMs 变 undefined → backoffDelay 每次算出 NaN，退避失效、trace 里
+    //    `llm.retry.delayMs` 记 NaN。
+    const r = resolveRetry({
+      maxAttempts: undefined,
+      baseDelayMs: undefined,
+      maxDelayMs: undefined,
+      jitter: undefined,
+    });
+    assert.ok(r, '不得被静默关闭');
+    assert.equal(r.maxAttempts, DEFAULT_RETRY.maxAttempts);
+    assert.equal(r.baseDelayMs, DEFAULT_RETRY.baseDelayMs);
+    assert.equal(r.maxDelayMs, DEFAULT_RETRY.maxDelayMs);
+    assert.equal(r.jitter, DEFAULT_RETRY.jitter);
+    // 退避算得出来（NaN 会从这里冒出来）
+    assert.equal(backoffDelay(2, { ...r, jitter: 0 }), DEFAULT_RETRY.baseDelayMs * 2);
+
+    // 混合：显式 undefined 只回落到缺省，不牵连同一对象里的真实值
+    const mixed = resolveRetry({ maxAttempts: undefined, baseDelayMs: 10 })!;
+    assert.equal(mixed.maxAttempts, DEFAULT_RETRY.maxAttempts);
+    assert.equal(mixed.baseDelayMs, 10);
+  });
+
   it('缺省 isRetryable 走 classifyError：429 可重试、普通错误不可', () => {
     const r = resolveRetry(undefined)!;
     // 鸭子类型分类：任何带数值 status=429 的错误都可重试（不限于 SDK 错误类）

@@ -14,6 +14,40 @@ class SyncThrowOnTerminalStore extends InMemoryTaskStore {
   }
 }
 
+/**
+ * 模拟 sqlite/redisStore 这类**异步** store：方法返回 Promise，且 `list()` 交出的
+ * 是**反序列化后的新对象**（改它不入库）。这正是 `#redispatch` 那个重复执行窗口的
+ * 必要条件 —— `InMemoryTaskStore` 存的是对象引用，恰好把问题掩盖了。
+ */
+class AsyncCopyStore implements TaskStore {
+  readonly #byTask = new Map<string, TaskRecord>();
+  readonly #byKey = new Map<string, string>();
+
+  async save(rec: TaskRecord): Promise<void> {
+    this.#byTask.set(rec.taskId, { ...rec });
+    if (rec.idempotencyKey) this.#byKey.set(rec.idempotencyKey, rec.taskId);
+  }
+  async get(taskId: string): Promise<TaskRecord | undefined> {
+    const r = this.#byTask.get(taskId);
+    return r ? { ...r } : undefined;
+  }
+  async byIdempotency(key: string): Promise<TaskRecord | undefined> {
+    const id = this.#byKey.get(key);
+    return id ? this.get(id) : undefined;
+  }
+  async list(): Promise<TaskRecord[]> {
+    return [...this.#byTask.values()].map((r) => ({ ...r }));
+  }
+  async clear(): Promise<void> {
+    this.#byTask.clear();
+    this.#byKey.clear();
+  }
+  /** 测试用：直接塞一条初始记录（不走 save） */
+  seed(rec: TaskRecord): void {
+    this.#byTask.set(rec.taskId, { ...rec });
+  }
+}
+
 function fakeApp(fn?: () => Promise<void>): AppCallable & { calls: number } {
   const app = {
     name: 'fake',
@@ -190,6 +224,40 @@ describe('AsyncRunner', () => {
     assert.equal(store2.get('task_old')!.status, 'queued');
     assert.equal(store2.get('task_fresh')!.status, 'running', '不动的记录保持原状');
     await runner2.awaitTask('task_old');
+  });
+
+  it('resumePending：认领先落库再派发 —— 异步 store 下重复扫不会重复执行', async () => {
+    const store = new AsyncCopyStore();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const app = fakeApp(() => gate);
+    // concurrency=1 + 先占住槽位：认领的任务会停在 queued，重复派发的窗口因此可确定复现
+    const runner = new AsyncRunner(app, { store, concurrency: 1 });
+    runner.submit('block');
+    await waitFor(() => app.calls === 1, '占位任务应已开跑');
+
+    store.seed({
+      taskId: 'task_other',
+      status: 'running', // 他进程死在半路，留给本进程续跑
+      spec: { messages: [{ role: 'user', content: 'x' }] },
+      createdAt: Date.now(),
+      ownerId: 'p999-otherproc',
+    });
+
+    assert.equal(await runner.resumePending(), 1);
+    // ⚠️ 认领必须**此刻已落库** —— 那是「第二次扫不再认领」的唯一依据
+    // （修复前只在内存改 ownerId，store 里仍是 p999-otherproc）
+    assert.equal((await store.get('task_other'))!.ownerId, runner.ownerId);
+    assert.equal((await store.get('task_other'))!.status, 'queued');
+
+    // 窗口内再扫一次：认领已落地 → 不重派（修复前返回 1 → app.run 被跑第二遍）
+    assert.equal(await runner.resumePending(), 0);
+
+    release();
+    await runner.awaitTask('task_other');
+    assert.equal(app.calls, 2, '占位 1 次 + 续跑 1 次；重复派发会是 3 次');
   });
 
   it('runTimeoutMs：超时任务标 failed 并回收槽位（底层执行无法真正取消）', async () => {

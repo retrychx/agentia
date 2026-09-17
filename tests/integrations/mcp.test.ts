@@ -233,6 +233,30 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
     assert.equal(out.errorKind, undefined);
   });
 
+  it('单一裁判：引擎显式设 toolTimeoutMs:0（不限）⇒ 桥也不得自作主张判 60s', async () => {
+    // 判据是 `!= null` 而不是 `> 0`：`0` 的文档语义是「引擎不设超时」，那同样是引擎的
+    // **表态**。用 `> 0` 的话，用户显式写下不限、桥却拿自己的 timeoutMs 判一次
+    // —— 与「一次调用只有一个裁判」正相反，也把「说了不限」变成假的。
+    const mcp = fakeMcp([{ name: 'slow', inputSchema: OBJ }], async () => {
+      await new Promise((r) => setTimeout(r, 150)); // 远超桥的 20ms
+      return { content: [{ type: 'text', text: 'late-but-ok' }] };
+    });
+    const tools = await mcpTools(mcp.client, { server: 's', timeoutMs: 20 });
+    const { client } = mockClient([toolUseMsg('mcp_s_slow', {}), endTurnMsg('done')]);
+    const result = await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      tools,
+      client,
+      toolTimeoutMs: 0, // 引擎表态：不限
+    });
+
+    const out = toolOutput(result.trace);
+    assert.equal(out.ok, true, '说了不限就该不限（旧行为：桥拿自己的 20ms 判超时）');
+    assert.equal(out.errorKind, undefined);
+    assert.match(String(out.content), /late-but-ok/);
+    assert.equal(result.stopReason, 'end_turn');
+  });
+
   it('单一裁判：超的是引擎预算时，记的是引擎的账（timeout 文案也是引擎的）', async () => {
     const mcp = fakeMcp([{ name: 'hang', inputSchema: OBJ }], () => new Promise(() => {}));
     const tools = await mcpTools(mcp.client, { server: 's', timeoutMs: 5000 }); // 桥更长，同样不该抢

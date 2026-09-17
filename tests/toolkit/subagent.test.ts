@@ -36,10 +36,13 @@ function researcherCapability(over: Partial<SubAgentCapability['spec']> = {}): S
 }
 
 /** 模拟主 agent 运行中的调用现场（engine 注入的 ToolRunContext） */
-function makeCtx(client: ToolRunContext['client']) {
+function makeCtx(
+  client: ToolRunContext['client'],
+  over: Partial<ToolRunContext> = {},
+): { ctx: ToolRunContext; recorder: TraceRecorder } {
   const recorder = new TraceRecorder();
   const rootId = recorder.begin('run', 'test.run', null);
-  const ctx: ToolRunContext = { client, recorder, parentSpanId: rootId };
+  const ctx: ToolRunContext = { client, recorder, parentSpanId: rootId, ...over };
   return { ctx, recorder };
 }
 
@@ -169,6 +172,45 @@ describe('预算护栏透传子 agent 循环（C1：预算是整条 run 的口�
     // 主循环回合入口的再判也在 run 根留下痕迹
     const root = result.trace.spans.find((s) => s.kind === 'run')!;
     assert.ok(root.events.some((e) => e.name === 'budget.exceeded'));
+  });
+
+  it('工具超时口径透传子循环：子 agent 里的慢工具按超时记账，不得「永不超时」', async () => {
+    // `toolTimeoutMs` 是 ToolRunContext 上唯一一件「主循环注入、嵌套能力必须往下交」的东西。
+    // 漏了它不是「少一层保险」而是**反的**：子循环里 `args.toolTimeoutMs` 为 undefined
+    // → `withTimeout(p, 0)` 直接返回原 promise（core/timeout.ts 的 `!(t > 0)`）= 永不超时；
+    // 同时 MCP 桥找不到引擎预算，又起自己的 60s 兜底 = 双计时器 + 双账本。
+    //
+    // 直接喂一个带 toolTimeoutMs 的 ctx（engine 注入的现场）：这里要隔离的正是
+    // 「ctx → 子循环」这一段，跑整条 run 的话外层那个 20ms 会先把 researcher 自己掐掉。
+    let slowFinished = 0;
+    const slow: AgentTool = {
+      name: 'slow',
+      description: 'd',
+      inputSchema: { type: 'object', properties: {} },
+      run: () =>
+        new Promise((res) =>
+          setTimeout(() => {
+            slowFinished++;
+            res('late');
+          }, 200),
+        ),
+    };
+    const { client } = mockClient([
+      toolUseMsg('slow', {}, 's1'), // 子 agent 第一回合调慢工具
+      endTurnMsg('调研报告'), // 超时不影响子循环跑完
+    ]);
+    const { ctx, recorder } = makeCtx(client, { toolTimeoutMs: 20 });
+    const tool = subagentToTool(researcherCapability({ tools: ['slow'] }), () => [slow]);
+    assert.equal(await tool.run({ task: 't' }, ctx), '调研报告');
+
+    const capability = recorder.snapshot('ok').spans.find((s) => s.kind === 'capability')!;
+    const subTurn = recorder
+      .snapshot('ok')
+      .spans.find((s) => s.kind === 'llm.turn' && s.parentSpanId === capability.spanId)!;
+    const out = subTurn.events.find((e) => e.name === 'tool.output')!;
+    assert.equal((out.body as { ok: boolean }).ok, false, '子 agent 里的超时必须记成失败');
+    assert.equal((out.body as { errorKind: string }).errorKind, 'timeout');
+    assert.equal(slowFinished, 0, '超时是硬的：慢工具不得事后把结果写回');
   });
 
   it('子循环不超支时照常交回报告（透传不影响正常路径）', async () => {

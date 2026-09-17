@@ -675,3 +675,92 @@ describe('R7 评分（score 事件）聚合', () => {
     assert.equal(/agentia_score/.test(m.render()), false);
   });
 });
+
+describe('基数上限（内存上界：三个维度的键空间都得封住）', () => {
+  /** 造一个 llm.turn span —— 凑模型键空间用 */
+  function turnSpan(spanId: string, model: string, inputTokens: number): Span {
+    return {
+      spanId,
+      traceId: 't-rich',
+      parentSpanId: 'root-1',
+      kind: 'llm.turn',
+      name: model,
+      startedAt: 1000,
+      endedAt: 1010,
+      status: 'ok',
+      usage: { inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      attributes: {},
+      events: [],
+    };
+  }
+
+  it('maxModels：超限模型归 __other__，**turn 与 token 不丢账**（丢的只是标签粒度）', () => {
+    const m = metricsSink({ maxModels: 1 });
+    const t = richTrace(); // claude-opus-5：2 turns / 155 tokens
+    t.spans.push(turnSpan('turn-3', 'gpt-5', 7), turnSpan('turn-4', 'gpt-5-mini', 11));
+    m.export(t);
+
+    const s = m.snapshot();
+    assert.equal(s.models['claude-opus-5']!.turns, 2, '首个模型保住自己的标签');
+    assert.equal(s.models.__other__!.turns, 2, '后两个模型折进同一桶');
+    assert.equal(s.droppedModels, 2, '记「多少个不同的模型被折叠了」');
+    // 上限是给内存封顶的，不是给账本封顶的：总量必须对得上
+    const turns = Object.values(s.models).reduce((a, x) => a + x.turns, 0);
+    assert.equal(turns, 4, '折叠后 turn 总数不变');
+    assert.match(m.render(), /^agentia_model_turns_total\{model="__other__"\} 2$/m);
+  });
+
+  it('maxScores：超限评分键归 __other__，条数照记；标签不得被切成乱码', () => {
+    const m = metricsSink({ maxScores: 1 });
+    const t = traceOf({ durationMs: 5 });
+    attachScore(t, { name: 'a', value: 1, source: 's1' }); // 唯一分到标签的
+    attachScore(t, { name: 'b', value: 1, source: 's2' });
+    attachScore(t, { name: 'c', value: 0 }); // 无 source：折叠后也不该与前面混同
+    m.export(t);
+
+    const s = m.snapshot();
+    assert.equal(s.scores['a@s1']!.count, 1);
+    assert.equal(s.scores.__other__!.count, 2, '被折叠的两条照记');
+    assert.equal(s.scores.__other__!.value, 0, 'gauge 语义保留：最近一次的值');
+    assert.equal(s.droppedScores, 2);
+    // 折叠桶键里没有 \t，按 `name\tsource` 硬切会切出 `__other_` / 整键 —— 两个出口都得解码对
+    assert.match(m.render(), /^agentia_score\{name="__other__",source=""\} 0$/m);
+  });
+
+  it('未超限时折叠桶不出现（上限不是「一定要用满」）', () => {
+    const m = metricsSink();
+    m.export(richTrace());
+    const s = m.snapshot();
+    assert.equal('__other__' in s.models, false);
+    assert.equal('__other__' in s.scores, false);
+    assert.deepEqual(
+      [s.droppedCapabilities, s.droppedModels, s.droppedScores],
+      [0, 0, 0],
+      '未折叠时三个计数都是 0',
+    );
+  });
+
+  it('reset 一并清掉配额与折叠计数（否则上限算「用过了」，下一轮全被折叠）', () => {
+    const m = metricsSink({ maxModels: 1 });
+    const t = richTrace();
+    t.spans.push(turnSpan('turn-3', 'gpt-5', 7));
+    m.export(t);
+    assert.equal(m.snapshot().droppedModels, 1);
+
+    m.reset();
+    const s = m.snapshot();
+    assert.deepEqual(s.models, {});
+    assert.equal(s.droppedModels, 0);
+
+    // 配额也一并归零：重置后同一个模型键仍能分到自己的标签
+    m.export(t);
+    assert.equal(m.snapshot().models['claude-opus-5']!.turns, 2);
+    assert.equal(m.snapshot().droppedModels, 1);
+  });
+
+  it('非法上限（0 / 负数 / NaN）构造期抛错 —— 归零会让所有键都进折叠桶', () => {
+    assert.throws(() => metricsSink({ maxModels: 0 }), /maxModels/);
+    assert.throws(() => metricsSink({ maxScores: -1 }), /maxScores/);
+    assert.throws(() => metricsSink({ maxScores: Number.NaN }), /maxScores/);
+  });
+});

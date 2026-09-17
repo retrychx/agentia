@@ -56,16 +56,38 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal(result.trace.status, 'error');
   });
 
-  it('stop_reason=tool_use 但无可执行块：tool_use_no_blocks + 保留文本', async () => {
+  it('stop_reason=tool_use 但无可执行块：tool_use_no_blocks + 保留文本 + 结构化 error', async () => {
     const { client } = mockClient([
       {
         ...rawMsg('tool_use', '想调工具但块是空的'),
         content: [{ type: 'text', text: '想调工具但块是空的' }],
       },
     ]);
-    const { result } = await executeRun({ messages: [{ role: 'user', content: 'go' }], client });
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+    });
     assert.equal(result.stopReason, 'tool_use_no_blocks');
     assert.equal(result.finalText, '想调工具但块是空的');
+    // 不变量（与 unknown_stop_reason / budget_exceeded / refusal / max_iterations 同口径）：
+    // 「非正常收尾都带结构化 error」。此前这条分支的 result.error 是 undefined ——
+    // run 以 status:'failed' 收尾，而 HTTP body / 任务记录里只看得到一句 stopReason
+    // 字符串，看不出**为什么**失败。
+    assert.equal(run.status, 'failed');
+    assert.equal(result.trace.status, 'error');
+    assert.equal(result.error?.type, 'agent_error');
+    assert.equal(result.error?.retryable, false);
+    assert.match(result.error?.message ?? '', /tool_use/);
+
+    // 两条分支的原因不同，文案也必须不同：都写成「未识别的 stop_reason」等于把
+    // 「模型吐了个畸形响应」误报成「框架不认识这个 stop_reason」
+    const { client: other } = mockClient([rawMsg('model_context_window_exceeded', 'x')]);
+    const { result: unknown } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client: other,
+    });
+    assert.equal(unknown.stopReason, 'unknown_stop_reason');
+    assert.notEqual(result.error?.message, unknown.error?.message);
   });
 
   it('畸形 inputSchema：只废掉该工具调用（is_error 回模型），run 不因此失败', async () => {

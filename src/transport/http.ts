@@ -5,7 +5,7 @@ import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
 import { AsyncRunner } from './async.js';
 import type { AppCallable } from './async.js';
 import { sseWriter } from './sse.js';
-import { normalizeMessages } from '../engine/spec.js';
+import { TaskInputError, normalizeMessages } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import type { TaskRecord } from '../store/store.js';
 import type { RunStatus } from '../core/run.js';
@@ -348,13 +348,21 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
     draining = true; // 先拒新单，再等存量
     const timeoutMs = drainOpts.timeoutMs ?? 0;
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
-    const remaining = (): number =>
-      deadline === Number.POSITIVE_INFINITY ? 0 : Math.max(0, deadline - Date.now());
 
-    // 异步任务：排在 waitQueue 里的也一并等（它们的记录在 store 里，超时未跑完则下次启动续跑）
-    const tasksDrained = await runner.drain(
-      deadline === Number.POSITIVE_INFINITY ? {} : { timeoutMs: remaining() },
-    );
+    // 异步任务：排在 waitQueue 里的也一并等（它们的记录在 store 里，超时未跑完则下次启动续跑）。
+    //
+    // ⚠️「不限」与「已到点」不能混为一谈：async.ts 的 drain 把 `timeoutMs <= 0` 读作
+    // **不限**（一直等），而「剩余时间」在 deadline 已过时恰好是 0 —— 直接把 remaining()
+    // 透传下去，等于把「已经到点了」说成「不限」：优雅停机永不返回、也永不报 false，
+    // SIGTERM 的容器只能在宽限期后被强杀，在飞任务硬切。已到点就自己认账（false），
+    // 不交给下游按「0 = 不限」去猜。
+    let tasksDrained: boolean;
+    if (deadline === Number.POSITIVE_INFINITY) {
+      tasksDrained = await runner.drain({});
+    } else {
+      const left = deadline - Date.now();
+      tasksDrained = left > 0 ? await runner.drain({ timeoutMs: left }) : false;
+    }
     // 同步 /run（含 SSE 流）也在 inFlightRuns 里计数 —— 同样给到 deadline
     const runsDrained = inFlightRuns === 0 || (await waitUntil(() => inFlightRuns === 0, deadline));
     // 收口：超时仍挂着的 SSE 流强制关闭。closeSse 会同时 abort 对应 run
@@ -530,7 +538,22 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
             source: 'http',
           });
         } catch (e) {
-          sendJson(res, 400, { error: errMessage(e) });
+          // `submit` 是同步的：入参校验失败与 store 落库故障从同一个 catch 出去。
+          // 前者是调用方的错（400 + 原因），后者是服务端的错 —— 必须走与 500 路径同一套
+          // `exposeErrors` 策略，否则一次磁盘/Redis 故障会被报成「你参数写错了」，
+          // 并把内部错误消息原样回给调用方（500/401 路径都不这么干）。
+          if (e instanceof TaskInputError) {
+            sendJson(res, 400, { error: errMessage(e) });
+            return;
+          }
+          // 上面的停机闸门与 `submit` 之间隔着一次 `await parseJsonBody`：读 body 期间
+          // drain 可能刚开始，此时 submit 抛「正在优雅停机」。这是 503 而不是 500 ——
+          // 调用方应该退避重试，跟闸门本身回的是同一句话。
+          if (runner.isDraining) {
+            sendShuttingDown(req, res);
+            return;
+          }
+          sendInternalError(res, e);
           return;
         }
         sendJson(res, 202, rec);
