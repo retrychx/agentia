@@ -262,6 +262,17 @@ code {
   overflow: hidden;
   padding: 100px var(--gutter) 52px;
 }
+/* 背景层：主 agent 调度能力的节点脉冲网络。它**不是**首屏的主角 ——
+   主角是下面那块 trace 自播面板（产品证据），这层只提供纵深。
+   所以三项都压过一档（Opacity 0.6 / 脉冲概率减半 / 视差减弱，见 site.js 里的注释）：
+   两个都在动的画面里，背景要退半步，否则两处动效互相抢注意力。 */
+#orchestra {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.6;
+}
 /* 首屏的 trace 自播：一块只读的「运行窗口」。
    高度写死 + 内部滚动：span 逐条长出来时页面不能被推着跳（旧 canvas 是绝对定位，
    完全没有这个问题 —— 换成文档流里的面板就得自己扛住高度变化）。 */
