@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CAPABILITY_DIR_LIST,
+  copyAssetsMjs,
   emptyRegistryTemplate,
   mainTs,
   projectDotEnv,
@@ -66,6 +67,7 @@ export function createProject(name: string, parent: string | undefined): number 
   write(dir, 'tsconfig.json', projectTsconfig());
   write(dir, 'src/main.ts', mainTs(name));
   write(dir, 'src/tools/hello/index.ts', toolIndexTs('hello'));
+  write(dir, 'scripts/copy-assets.mjs', copyAssetsMjs());
   write(dir, REGISTRY_PATH, emptyRegistryTemplate());
   write(dir, 'README.md', projectReadme(name));
   write(dir, '.gitignore', projectGitignore());
@@ -91,6 +93,8 @@ export function createProject(name: string, parent: string | undefined): number 
   npm install
   把 API key 填进 .env（已生成，且已被 .gitignore 忽略）
   npm run dev
+
+生产构建：npm run build && npm start（tsc → dist/，.md 资产由 scripts/copy-assets.mjs 跟随拷贝）
 
 目录约定：src/tools/ · src/skills/ · src/prompts/ · src/subagents/（一能力一文件夹）
 

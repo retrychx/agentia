@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **脚手架补齐生产构建链**：`agentia create` 生成的项目此前只有 `dev`/`typecheck`，没有
+  打包工具（连模板自己的 .env 注释都引用了不存在的 `npm start`）。现在生成
+  `build`（tsc → `dist/` + `scripts/copy-assets.mjs` 跟随拷贝 .md 文本资产）与
+  `start`（`node dist/main.js`），tsconfig 带 `rootDir`/`outDir`；e2e-cli 新增 4d 步
+  真跑这条链（emit + 资产拷贝 + dist 产物断言）。
+
 ### 修复（发布面与证据可核性）
 
 - **CHANGELOG 进 npm 包**：npm 的「总是包含」只覆盖 README/LICENSE（实测 `npm pack` 不含

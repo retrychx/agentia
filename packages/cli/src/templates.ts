@@ -78,6 +78,8 @@ export function projectPackageJson(name: string): string {
       type: 'module',
       scripts: {
         dev: 'tsx src/main.ts',
+        build: 'tsc -p tsconfig.json && node scripts/copy-assets.mjs',
+        start: 'node dist/main.js',
         typecheck: 'tsc --noEmit -p tsconfig.json',
       },
       dependencies: { '@migor/agentia': '^0.6.0' },
@@ -101,6 +103,11 @@ export function projectTsconfig(): string {
         moduleResolution: 'NodeNext',
         lib: ['ES2022'],
         strict: true,
+        // 编译产物落 dist/（npm run build → npm start 跑 dist/main.js）；
+        // .md 文本资产由 scripts/copy-assets.mjs 跟随同相对路径拷过去
+        // （asset(import.meta.url, './x.md') 按**文件位置**解析，.md 必须跟着 .js 走）
+        rootDir: 'src',
+        outDir: 'dist',
         // 框架零运行时依赖（不再有厂商 SDK 经传递链把 @types/node 带进编译程序），
         // node 全局类型必须显式声明
         types: ['node'],
@@ -191,6 +198,13 @@ ANTHROPIC_API_KEY=sk-ant-...
 npm run dev -- "你的问题"
 \`\`\`
 
+## 构建与生产运行
+
+\`\`\`bash
+npm run build   # tsc → dist/ + .md 文本资产跟随拷贝（asset() 按文件位置解析，必须跟着 .js 走）
+npm start -- "你的问题"   # 跑编译产物 dist/main.js（部署/Docker 用这条）
+\`\`\`
+
 也可以用环境变量（适合 CI / 容器）——**真实环境变量优先，不会被 \`.env\` 覆盖**：
 
 \`\`\`bash
@@ -229,6 +243,37 @@ ANTHROPIC_API_KEY=
 # 可选
 # ANTHROPIC_BASE_URL=https://api.anthropic.com
 # AGENTIA_MODEL=claude-opus-5
+`;
+}
+
+/** 脚手架的 scripts/copy-assets.mjs：把 src 下的 .md 文本资产拷进 dist/（同相对路径） */
+export function copyAssetsMjs(): string {
+  return `// 把能力文件夹里的 .md 文本资产拷进 dist/（与编译产物同相对路径）。
+// asset(import.meta.url, './x.md') 按**文件位置**解析，所以 .md 必须跟着 .js 走。
+import { cpSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = fileURLToPath(new URL('.', import.meta.url));
+const srcDir = join(here, '..', 'src');
+const outDir = join(here, '..', 'dist');
+
+function walk(dir) {
+  const out = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...walk(p));
+    else if (e.name.endsWith('.md')) out.push(p);
+  }
+  return out;
+}
+
+let n = 0;
+for (const f of walk(srcDir)) {
+  cpSync(f, join(outDir, f.slice(srcDir.length + 1)));
+  n++;
+}
+console.log(\`[copy-assets] \${n} 个 .md 资产 → dist/\`);
 `;
 }
 
