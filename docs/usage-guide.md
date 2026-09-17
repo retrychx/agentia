@@ -187,6 +187,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `client` | 注入 `ModelClient`（换 OpenAI 兼容端点等） |
 | `onText` | 文本增量回调（SSE/终端） |
 | `signal` | `AbortSignal`：中止则在飞请求被取消，run 以 `stopReason='aborted'` 收尾（算失败） |
+| `traceContext` | 入站链路上下文 `{ traceId, spanId? }`：触发本次 run 的上游 span 记成 run 根的一条 `links`（不改 `traceId == runId`）。HTTP 宿主认 `traceparent` 头，自动填 —— 见 §6「跨进程关联」 |
 | `blackboard` | 预置黑板种子（配 `Blackboard` 声明合并有键补全） |
 | `contextPolicy` | 单次覆盖上下文策略 |
 | `retry` | 单次覆盖重试策略：`false` 关闭，或 `{ maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参（只重试「本次尝试尚未产出文本」的可重试失败） |
@@ -536,7 +537,8 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 |---|---|
 | `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递，抛错被吞 |
 | `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
-| `TraceRecorder` | 内存 recorder（一次 run 一个） |
+| `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
+| `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项 `OtlpExporterOptions`：`endpoint` / `headers` / `serviceName` / `timeoutMs`（单次导出超时，缺省 10000，非正数 = 不限 —— 裸 fetch 无超时，collector 半开连接会让 run 收尾永久挂起；超时按导出失败处理，不击穿 run） |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
@@ -557,6 +559,36 @@ capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 
 > 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
 > `examples/observability/`。**完整的示例**（四类能力 + 三种触发 + 鉴权 + 全观测栈）在 `examples/complete/`；
 > 最小可交付示例（Dockerfile + compose）在 `examples/deploy/`。
+
+#### 跨进程关联（这条 run 是谁触发的）
+
+一次 run 仍是一条**自洽**的 trace（`traceId == runId` 的 1:1 不变量不变），但可以用一条 **link**
+把它接回上游 —— 触发它的那个 span（网关请求 / 队列消息 / 另一个服务）记在 run 根 span 的 `links` 上，
+OTLP 导出时就是标准的 **span links**，后端能把因果边画出来。
+
+**入站两种给法**：
+
+| 场景 | 写法 |
+|---|---|
+| HTTP 宿主（网关 / 消费者通过 HTTP 打过来） | 请求头 `traceparent: 00-<32位trace>-<16位span>-01`（W3C）—— `createHttpHandler` 自动解析，`POST /run` 与 `POST /tasks` 都认；**畸形头静默当作没有上游**，不会打 400 |
+| 程序内直接调 `app.run` / `runner.submit` | `options.traceContext: { traceId, spanId? }` —— 也可写 `parseTraceparent(头值)` 自己解析 |
+
+**队列消费者（Kafka / RabbitMQ / SQS）的形态**：拿消息键当 `idempotencyKey`，把消息里带的
+`traceparent` 一并传进去 —— 它随 `spec.options` 落进 `TaskRecord`，所以**另一个进程
+`resumePending` 接着跑的那次 run 也带得上**，关联不断链：
+
+```ts
+// 消费者回调里（不要 await run 跑完：位移提交点与 run 终态不是一个时刻，重复靠幂等键兜）
+runner.submit(msg.value, {
+  idempotencyKey: msg.key,
+  options: { traceContext: parseTraceparent(msg.headers.traceparent) },
+});
+```
+
+异步任务可以在 `POST /tasks` 的 body 里显式给 `options.traceContext`，它优先于 `traceparent` 头。
+
+> **只做入站**：框架**不生成**出站 `traceparent`（运行中没有「当前 span」这个概念，硬造一个会是假的
+> spanId，比不做更糟）。要从 run 往外传，用结果里的 `runId`（== `traceId`）拼你自己的头，见 §7 已知边界。
 
 #### 指标（从 trace 派生）
 
@@ -1017,6 +1049,7 @@ const callable = {
 | `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
 | 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace 不记 assistant 文本与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
+| 链路关联只做**入站** | `traceContext` / `traceparent` 头只把**上游**接进来（run 根的 `links`）；框架**不生成**出站 `traceparent` —— 运行中没有「当前 span」可导出，硬造会给出假 spanId。要从 run 往外传，用 `result.trace.traceId`（== `runId`）自行拼头。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工介入只到「闸门」 | `middleware` 能 `await` 审批决策再放行；**跨进程挂起/续跑框架不做** —— `RunStatus` 无「待批准」态、循环位置不落库，`traceToMessages` 重放有损，不能拿它假装续跑（要跨重启审批请上工作流引擎）|
 | 内容护栏不给实现 | 同「配额」：只给缝（入参包 `app.run` / 工具前 `middleware` / 出参包返回值或 `sinks`），策略（正则 / 分类器 / 外部 API）是你的 |

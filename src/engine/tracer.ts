@@ -4,6 +4,7 @@ import type {
   SpanError,
   SpanId,
   SpanKind,
+  SpanLink,
   SpanStatus,
   Trace,
   TraceId,
@@ -119,6 +120,17 @@ export class TraceRecorder {
     if (span) span.attributes[key] = value;
   }
 
+  /**
+   * 给 span 记一条跨 trace 的链路引用（入站触发来源，见 `core/trace.ts` 的 `TraceContext`）。
+   * 未知 span 静默忽略 —— 与 `event` / `setAttribute` 同一条容错规则（观测不击穿业务）。
+   */
+  addLink(id: SpanId, link: SpanLink): void {
+    const span = this.index.get(id);
+    if (!span) return;
+    if (!span.links) span.links = [];
+    span.links.push(link);
+  }
+
   snapshot(status: SpanStatus): Trace {
     if (!this.rootSpanId) throw new Error('run root not started');
     const totalUsage: Usage = {
@@ -148,13 +160,16 @@ export class TraceRecorder {
     return {
       traceId: this.traceId,
       rootSpanId: this.rootSpanId,
-      // span 浅拷 + attributes/events 拷一层：快照交付后仍在记账的残尾（如超时工具的
+      // span 浅拷 + attributes/events/links 拷一层：快照交付后仍在记账的残尾（如超时工具的
       // 后台事件）会继续 push 进 recorder 持有的数组 —— 不拷贝就会事后变异已交付的 trace。
-      // （不递归深拷：事件 body 本身记账后不再被框架改写）
+      // （不递归深拷：事件 body 与 link 记账后不再被框架改写）
+      // links 用「有才拷」：没有 link 的 span 交付后不该多出 `links: undefined` 这个键
+      // （见 core/trace.ts 的注释 —— 缺席与空数组是同一件事，别制造第三种形态）。
       spans: this.spans.map((s) => ({
         ...s,
         attributes: { ...s.attributes },
         events: [...s.events],
+        ...(s.links ? { links: [...s.links] } : {}),
       })),
       status,
       totalUsage,

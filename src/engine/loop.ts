@@ -197,6 +197,15 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   }
   // 会话标识（R7 thread 维度）：多轮 run 按 session 聚合；OTLP 侧映射 gen_ai.conversation.id
   if (options.sessionId) recorder.setAttribute(rootId, 'session.id', options.sessionId);
+  // 入站链路（spec §9.2 跨进程关联）：把「谁触发了这次 run」记成 run 根的一条 link。
+  // 与 `traceId == runId` 共存 —— 上游是被**链接**而不是被继承成父 span，所以本 run
+  // 的树永远自洽（上游采样掉/已结束都不影响），因果关系仍然可查。见 core/trace.ts。
+  if (options.traceContext) {
+    recorder.addLink(rootId, {
+      traceId: options.traceContext.traceId,
+      ...(options.traceContext.spanId ? { spanId: options.traceContext.spanId } : {}),
+    });
+  }
   // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
   // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
   // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。

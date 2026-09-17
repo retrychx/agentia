@@ -433,9 +433,13 @@ try {
   assert(unauthorized.status === 401, `无凭据应 401，实际 ${unauthorized.status}`);
 
   // —— 3) 同步 /run：主 agent → 选能力（echo）→ 出结果 ——
+  // 顺带带上 W3C `traceparent`（入站链路，C）：真实验证「头 → run 根 links」这条跨进程关联路径，
+  // 而不只是单测里过一遍（e2e 的价值就在于走真 HTTP 栈、真装配）。
+  const UP_TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const UP_SPAN = '00f067aa0ba902b7';
   const runRes = await fetch(`${base}/run`, {
     method: 'POST',
-    headers: auth,
+    headers: { ...auth, traceparent: `00-${UP_TRACE}-${UP_SPAN}-01` },
     body: JSON.stringify({ prompt: '回显 ping' }),
   });
   assert(runRes.status === 200, `POST /run 应 200，实际 ${runRes.status}`);
@@ -444,9 +448,15 @@ try {
     status?: string;
     stopReason?: string;
     finalText?: string;
+    trace?: { spans: Array<{ kind: string; links?: Array<{ traceId: string; spanId?: string }> }> };
   };
   assert(runBody.status === 'succeeded', `status=${runBody.status}`);
   assert(runBody.stopReason === 'end_turn', `stopReason=${runBody.stopReason}`);
+  const rootLinks = runBody.trace?.spans.find((s) => s.kind === 'run')?.links;
+  assert(
+    rootLinks?.length === 1 && rootLinks[0].traceId === UP_TRACE && rootLinks[0].spanId === UP_SPAN,
+    `traceparent 头应记成 run 根的一条 link，实际 ${JSON.stringify(rootLinks)}`,
+  );
   assert(
     (runBody.finalText ?? '').includes('已回显'),
     `finalText 应是假端点给的收尾文本，实际 ${JSON.stringify(runBody.finalText)}`,

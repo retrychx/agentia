@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { createHttpHandler } from '../../src/transport/http.js';
 import { AsyncRunner } from '../../src/transport/async.js';
 import type { AppCallable } from '../../src/transport/async.js';
-import type { MessageParam } from '../../src/index.js';
+import type { MessageParam, TraceContext } from '../../src/index.js';
 import type { AgentRunResult } from '../../src/engine/types.js';
 import { waitFor } from '../helpers.js';
 
@@ -477,6 +477,97 @@ describe('createHttpHandler', () => {
       assert.match(res.headers.get('content-type') ?? '', /application\/json/);
       const body = await readJson(res);
       assert.equal(body.status, 'succeeded');
+    } finally {
+      await close(server);
+    }
+  });
+});
+
+describe('入站链路：traceparent 头（spec §9.2 跨进程关联）', () => {
+  const TP = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+  const WANT: TraceContext = {
+    traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+    spanId: '00f067aa0ba902b7',
+  };
+
+  /** 记录每次 run 收到的 traceContext —— 断言的是「宿主把它交到了 app.run」这一跳 */
+  function capture(seen: (TraceContext | undefined)[]): AppCallable {
+    return {
+      name: 'capture',
+      async run(_messages, opts) {
+        seen.push(opts?.traceContext);
+        return { run: { runId: 'r-1', status: 'succeeded' }, result: fakeResult('ok') };
+      },
+    };
+  }
+
+  it('POST /run：traceparent 头解析后传进 app.run', async () => {
+    const seen: (TraceContext | undefined)[] = [];
+    const { server, base } = await start(capture(seen));
+    try {
+      const res = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', traceparent: TP },
+        body: JSON.stringify({ text: 'hi' }),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(seen, [WANT]);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('POST /run：畸形 / 缺 traceparent 头 → 不打 400，也不给上游上下文', async () => {
+    const seen: (TraceContext | undefined)[] = [];
+    const { server, base } = await start(capture(seen));
+    try {
+      const bad = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', traceparent: 'not-a-traceparent' },
+        body: JSON.stringify({ text: 'hi' }),
+      });
+      assert.equal(bad.status, 200, '畸形头不该影响业务请求');
+      const none = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hi' }),
+      });
+      assert.equal(none.status, 200);
+      assert.deepEqual(seen, [undefined, undefined]);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('POST /tasks：traceparent 头落进 TaskRecord.spec.options（跨进程续跑也带得上）', async () => {
+    const app = fakeApp();
+    const { server, base } = await start(app);
+    try {
+      const submit = await fetch(`${base}/tasks`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', traceparent: TP },
+        body: JSON.stringify({ input: 'hi' }),
+      });
+      assert.equal(submit.status, 202);
+      const rec = await readJson(submit);
+      assert.deepEqual(rec.spec.options.traceContext, WANT);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('POST /tasks：body 显式给的 traceContext 优先于 traceparent 头', async () => {
+    const app = fakeApp();
+    const { server, base } = await start(app);
+    try {
+      const explicit: TraceContext = { traceId: 'e'.repeat(32) };
+      const submit = await fetch(`${base}/tasks`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', traceparent: TP },
+        body: JSON.stringify({ input: 'hi', options: { traceContext: explicit } }),
+      });
+      const rec = await readJson(submit);
+      assert.deepEqual(rec.spec.options.traceContext, explicit);
     } finally {
       await close(server);
     }

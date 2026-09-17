@@ -350,4 +350,30 @@ describe('createOtlpExporter', () => {
       await close(server);
     }
   });
+  it('span links：上游链路映射成 OTLP links（宽度规则同 parentSpanId），无 link 不发键', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const exporter = createOtlpExporter({ endpoint: base });
+      const trace = sampleTrace();
+      const upTrace = randomUUID();
+      const upSpan = randomUUID();
+      // ① 完整 link（trace + span）② 只有 trace 粒度（无 spanId 键）
+      trace.spans[0].links = [{ traceId: upTrace, spanId: upSpan }, { traceId: upTrace }];
+      await exporter.export(trace);
+
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      assert.deepEqual(spans[0].links, [
+        {
+          traceId: upTrace.replaceAll('-', ''),
+          // OTLP 的 span_id 是 8 字节：内部 UUID 必须截到 16 位，否则 collector 整条拒收
+          spanId: upSpan.replaceAll('-', '').slice(0, 16),
+        },
+        { traceId: upTrace.replaceAll('-', '') },
+      ]);
+      // 空数组会让部分后端把 span 标成「有链路」—— 没 link 的 span 不发这个键
+      assert.equal('links' in spans[1], false);
+    } finally {
+      await close(server);
+    }
+  });
 });

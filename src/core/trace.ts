@@ -43,6 +43,55 @@ export interface SpanEvent {
   body: unknown;
 }
 
+/**
+ * 触发来源的链路上下文（跨进程 / 跨服务关联，spec §9.2）。
+ *
+ * 语义是**入站**的：调用方（HTTP 网关、队列消费者、上游服务）把它自己的 span 标识
+ * 传进来，本次 run 的根 span 会把它记成一条 `SpanLink` 指回去 —— 于是「这条 run 是被
+ * 谁触发的」在两个系统之间可查。
+ *
+ * ⚠️ **不改变 `traceId == runId` 的 1:1 不变量**：run 仍是自己的一棵新树，上游只是被
+ * **链接**、不是被**继承**成父 span。所以一次 run 的调用树永远自洽（不依赖上游是否
+ * 还在、是否被采样掉），而因果关系仍然成立。
+ */
+export interface TraceContext {
+  /** 上游 trace id：32 位 hex（W3C traceparent）或 UUID（带 '-'）两种形态都接受 */
+  traceId: string;
+  /** 上游 span id（16 位 hex）；缺省表示只知道 trace 粒度、没有具体 span */
+  spanId?: string;
+}
+
+/**
+ * 一条链路引用：指向**另一个** trace 里的 span（OTLP 的 span links 同语义）。
+ * v1 只在 run 根 span 上写入（来源是 `RunInvocationOptions.traceContext`）。
+ */
+export interface SpanLink {
+  traceId: TraceId;
+  spanId?: SpanId;
+}
+
+/** W3C traceparent：`<2位版本>-<32位trace>-<16位span>-<2位flags>`，全小写 hex */
+const TRACEPARENT_RE = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+
+/**
+ * 解析 W3C `traceparent` 头（spec §9.2 的「header 语义」）。这是入站唯一的字符串形态
+ * —— 宿主从 HTTP 头 / 队列消息属性里取到它，直接交给 `RunInvocationOptions.traceContext`。
+ *
+ * **非法或缺失一律返回 `undefined`**（调用方据此当作「没有上游上下文」继续跑）：
+ * 链路关联是观测行为，不该因为一个畸形头把业务请求打成 400。被拒的形态有：
+ * 版本 `ff`（W3C 保留为非法）、trace/span id 全零、位宽不符、大小写之外的畸形。
+ * 版本号非 `00` 时按 W3C「兼容未来」规则接受（只认前四段语义）。
+ */
+export function parseTraceparent(value: string | null | undefined): TraceContext | undefined {
+  if (!value) return undefined;
+  const m = TRACEPARENT_RE.exec(value.trim().toLowerCase());
+  if (!m) return undefined;
+  const [, version, traceId, spanId] = m;
+  if (version === 'ff') return undefined;
+  if (/^0+$/.test(traceId) || /^0+$/.test(spanId)) return undefined;
+  return { traceId, spanId };
+}
+
 export interface Span {
   spanId: SpanId;
   traceId: TraceId;
@@ -53,6 +102,12 @@ export interface Span {
   endedAt?: number;
   status: SpanStatus;
   error?: SpanError;
+  /**
+   * 跨 trace 的链路引用（v1 只出现在 run 根 span 上，见 `TraceContext`）。
+   * 缺席（而不是空数组）表示「没有上游上下文」—— 与 links 为空的 span 是同一件事，
+   * 不要据此区分「没传」和「传了但为空」。
+   */
+  links?: SpanLink[];
   /**
    * usage —— 语义按 kind 区分：
    * - `llm.turn`：该次模型往返的**自身计量**，是 Trace.totalUsage 的唯一来源；

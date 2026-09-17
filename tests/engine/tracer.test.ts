@@ -105,4 +105,33 @@ describe('TraceRecorder', () => {
     const later = r.snapshot('ok');
     assert.equal(later.spans.find((s) => s.spanId === turn)!.events.length, 1);
   });
+  it('addLink：只落指定 span；未知 span 静默；无 link 的 span 不带该字段', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const turn = r.begin('llm.turn', 'model-x', root);
+    r.addLink('nope', { traceId: 'ignored' }); // 未知 span 静默（观测不击穿业务）
+    r.addLink(root, { traceId: 'up-stream-trace', spanId: 'up-stream-span' });
+    r.end(turn, {
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    });
+    r.end(root);
+
+    const trace = r.snapshot('ok');
+    const rootSpan = trace.spans.find((s) => s.spanId === root)!;
+    assert.deepEqual(rootSpan.links, [{ traceId: 'up-stream-trace', spanId: 'up-stream-span' }]);
+    // 没记 link 的 span：字段缺席（不是空数组 —— 见 core/trace.ts 的注释）
+    assert.equal('links' in trace.spans.find((s) => s.spanId === turn)!, false);
+  });
+
+  it('snapshot 的 links 是拷贝：交付后追加 link 不变异已交付的 trace', () => {
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    r.addLink(root, { traceId: 'first' });
+    const delivered = r.snapshot('ok');
+
+    r.addLink(root, { traceId: 'late' });
+
+    assert.equal(delivered.spans[0].links?.length, 1, '已交付的 snapshot 不得被事后变异');
+    assert.equal(r.snapshot('ok').spans[0].links?.length, 2, 'recorder 视角要看到迟到的那条');
+  });
 });
