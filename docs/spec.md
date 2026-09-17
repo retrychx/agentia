@@ -1752,7 +1752,9 @@ openai 打 1 次（引擎层那一次）。两侧各自的测试都通过，因�
   → v0.6.2（第六轮全量 review 收口：16 条「静默失效」修复 + `beforeFlush` 时序缝
   （eval 分数进指标）+ metrics 三维度基数封顶 + traceparent 入站关联；**无破坏性变更**，
   两处语义变更见 CHANGELOG）；
-  `AGENTIA_VERSION = '0.6.2'`。决策均见 §10。
+  → v0.6.3（守卫注册表 + 三个新架构守卫 + 适配器对拍矩阵；`exactOptionalPropertyTypes`
+  迁移完成；OpenAI 适配器补客户端内层重试与 anthropic 对称；**无破坏性变更**）；
+  `AGENTIA_VERSION = '0.6.3'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

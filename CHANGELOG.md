@@ -5,7 +5,11 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.6.3] - 2026-09-18
+
+> 本版主题：把第六轮 16 条的共同根因（「约定写在文档里、但没有门禁」）收口 ——
+> 守卫注册表 + 三个新架构守卫 + 适配器对拍矩阵；`exactOptionalPropertyTypes` 全量迁移；
+> OpenAI 适配器补齐客户端内层重试（与 anthropic 对称）。**无破坏性变更**。
 
 ### 新增（守卫基建 + 适配器对齐）
 
@@ -364,7 +368,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/retrychx/agentia/releases/tag/v0.6.3
 [0.6.2]: https://github.com/retrychx/agentia/releases/tag/v0.6.2
 [0.6.1]: https://github.com/retrychx/agentia/releases/tag/v0.6.1
 [0.6.0]: https://github.com/retrychx/agentia/releases/tag/v0.6.0
