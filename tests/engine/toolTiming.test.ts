@@ -67,6 +67,24 @@ describe('E1 工具级时序（tool.output 事件带 durationMs / ok / errorKind
     assert.ok(dur >= 4 && dur <= 500, `durationMs 应覆盖工具内部 5ms 等待，实际 ${dur}`);
   });
 
+  it('工具自判超时（抛 code="timeout"）→ 记 errorKind=timeout，不落成 threw/unknown', async () => {
+    // 契约（见 core/timeout.ts）：任何 `code === 'timeout'` 的错误都归超时账 ——
+    // 「谁判的超时」不再改变 trace 的归类（此前桥自判的超时落成 error(unknown) + threw）。
+    const tool: AgentTool = {
+      name: 'echo',
+      description: 'echo',
+      inputSchema: SCHEMA,
+      run: async () => {
+        throw Object.assign(new Error('上游连接超时'), { code: 'timeout' });
+      },
+    };
+    const result = await runWith(tool);
+    const body = toolOutputEvent(result.trace);
+    assert.equal(body.ok, false);
+    assert.equal(body.errorKind, 'timeout');
+    assert.match(String(body.content), /^error\(timeout\): 上游连接超时$/);
+  });
+
   it('工具抛错：ok=false + errorKind=threw，且 run 不失败（is_error 回模型）', async () => {
     const tool: AgentTool = {
       name: 'echo',

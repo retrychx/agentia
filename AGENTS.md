@@ -13,7 +13,8 @@
 agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── src/
 │   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验、
-│   │                        #   RunStatus/RunMeta、Blackboard 类型族、Message 消息类型族），零依赖
+│   │                        #   RunStatus/RunMeta、Blackboard 类型族、Message 消息类型族、
+│   │                        #   超时原语 timeout.ts —— 引擎与 MCP 桥**共用一份**，见 §10 2026-09-17 ①），零依赖
 │   ├── engine/              # 运行时内核：agent loop、trace 记账、长上下文裁剪(trimming)、
 │   │                        #   预算策略(policy)、错误分类、replay、run 调用契约
 │   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)

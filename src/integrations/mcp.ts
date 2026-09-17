@@ -1,3 +1,4 @@
+import { TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 
 /**
@@ -52,9 +53,14 @@ export interface McpToolsOptions {
   /** server 标识，只用于拼缺省前缀（不会发给 server） */
   server?: string;
   /**
-   * 单次 `callTool` 超时（毫秒），缺省 60000；非正数 = 不限。
-   * 超时**不杀 run**：该条 tool_result 记 `is_error` 回模型（与 engine 的
-   * `toolTimeoutMs` 同语义，只是这里由桥自己兜 —— 双保险，谁短谁生效）。
+   * **兜底**单次 `callTool` 超时（毫秒），缺省 60000；非正数 = 不限。
+   *
+   * ⚠️ 语义（见 spec §10 2026-09-17 ①）：**引擎设了 `toolTimeoutMs` 时本项不参与判定** ——
+   * 一次调用只有一个裁判，否则同一件事会有两个计时器、两种账。它只在两种情况生效：
+   * ① 桥脱离引擎单用（直接 `tool.run(...)`，没有 ctx）；② 引擎没设 `toolTimeoutMs`。
+   *
+   * 超时**不杀 run**：该条 tool_result 记 `is_error`、`errorKind='timeout'` 回模型。
+   * 与 engine 的 `toolTimeoutMs` **同判定、同账目**（共用 `core/timeout.ts` 的实测耗时兜底）。
    */
   timeoutMs?: number;
 }
@@ -76,35 +82,24 @@ function normalizeToolName(raw: string): string {
   return cleaned;
 }
 
-/** 超时哨兵：区分「超时」与「工具恰好返回了 undefined」（同 engine 的 TIMED_OUT） */
-const TIMED_OUT = Symbol('agentia.mcp.timed-out');
-
 /**
- * 给一次 MCP 调用套超时。⚠️ 与 engine 的 `withTimeout` 同样是**放弃等待**而非取消 ——
+ * 给一次 MCP 调用套超时。⚠️ 与引擎的工具超时同样是**放弃等待**而非取消 ——
  * MCP 的 `notifications/cancelled` 属于连接器职责，桥这一层拿不到取消句柄。
+ *
+ * 实现是 `core/timeout.ts` 共享原语的**薄封装**（2026-09-17 单源化，见 spec §10 2026-09-17 ①）：
+ * 「一次调用只有一个预算判定」在引擎与桥之间只允许有一份实现。此前桥自带一份**纯竞速**
+ * 版本，于是 2026-09-14 的「超时是硬的」收紧只落进引擎，桥继续把**超预算**的调用记成成功。
  *
  * 转导导出（module 级，**不进公共面**）只为可测：`tests/timeoutLiveness.test.ts` 拿它验
  * 「截止计时器不得 unref」—— 那是「被 await 的超时到底会不会触发」的唯一分界点。
  */
 export async function withDeadline<T>(p: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  if (!(timeoutMs > 0)) return p;
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    const raced = await Promise.race([
-      p,
-      new Promise<typeof TIMED_OUT>((resolve) => {
-        timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
-        // ⚠️ 不 unref：同 engine 的 `withTimeout` —— 它的触发是「这个 await 得以结束」的条件。
-        // unref 过它 ⇒ 空事件循环下进程先退出，挂起的 MCP 调用让整段代码静默消失。
-      }),
-    ]);
-    if (raced === TIMED_OUT) {
-      throw new Error(`MCP 工具 "${label}" 调用超时（超过 ${timeoutMs}ms）`);
-    }
-    return raced;
-  } finally {
-    if (timer) clearTimeout(timer);
+  const out = await withTimeout(p, timeoutMs);
+  if (out === TIMED_OUT) {
+    // 类型化超时（code='timeout'）⇒ 引擎记 errorKind='timeout'，与它自己判的超时同一类账。
+    throw new TimeoutError(`MCP 工具 "${label}" 调用超时（超过 ${timeoutMs}ms）`);
   }
+  return out;
 }
 
 /**
@@ -191,6 +186,14 @@ export async function mcpTools(
           input && typeof input === 'object' && !Array.isArray(input)
             ? (input as Record<string, unknown>)
             : {};
+        // 裁判权（2026-09-17，见 spec §10 2026-09-17 ①）：引擎设了工具预算时，桥**不启动自己的计时器** ——
+        // 两个计时器判同一件事，只会得到两种账（桥那份曾被记成 error(unknown)/errorKind=threw），
+        // 而且桥的纯竞速还会把超了预算的调用记成成功。`timeoutMs` 退化为兜底（脱离引擎单用 /
+        // 引擎没设 toolTimeoutMs 时生效）。
+        const engineBudget = ctx?.toolTimeoutMs;
+        if (engineBudget != null && engineBudget > 0) {
+          return client.callTool(original, args);
+        }
         return withDeadline(client.callTool(original, args), timeoutMs, original);
       },
     });

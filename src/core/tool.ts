@@ -123,6 +123,17 @@ export interface ToolRunContext {
    */
   priceOverrides?: Record<string, ModelPricing>;
   /**
+   * 本次工具调用的**引擎侧预算**（毫秒）= 本次 run 的 `RunAgentOptions.toolTimeoutMs`；
+   * undefined / 非正 = 引擎不设超时。
+   *
+   * 存在的意义是**划定裁判权**：工具（尤其带自己计时器的桥，见 `integrations/mcp.ts`）
+   * 据此知道「这次调用的超时由引擎判」，从而不再启动第二个计时器 —— 两个计时器判同一件事，
+   * 只会得到两种账（桥那份曾被记成 `error(unknown)` + `errorKind=threw`，见 spec §10 2026-09-17 ①）。
+   *
+   * ⚠️ 它是本次调用的**配置值**，不是「剩余时间」。
+   */
+  toolTimeoutMs?: number;
+  /**
    * trace 事件正文的截断上限（见 `RunAgentOptions.maxEventChars`）。嵌套能力
    * （@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去，否则**同一棵调用树
    * 上会出现两种截断口径** —— 主 agent 的工具结果看得见全文、子 agent 的却被截断，
