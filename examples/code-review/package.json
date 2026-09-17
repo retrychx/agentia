@@ -1,0 +1,21 @@
+{
+  "name": "agentia-code-review-example",
+  "private": true,
+  "type": "module",
+  "description": "Agentia 产品验证示例：代码评审 agent 服务 —— 四类能力编排 + 结构化报告 + trace/成本产出（离线确定性 demo 与真模型两种跑法）",
+  "scripts": {
+    "demo": "tsx src/demo.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "demo:dist": "node dist/demo.js"
+  },
+  "dependencies": {
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}

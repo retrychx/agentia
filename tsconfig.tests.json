@@ -16,7 +16,8 @@
     "scripts",
     "examples/observability/src",
     "examples/complete/src",
-    "examples/deploy/src"
+    "examples/deploy/src",
+    "examples/code-review/src"
   ],
   "exclude": ["node_modules", "dist", "tests/fixtures/capabilities-loadfail", "tests/types"]
 }
