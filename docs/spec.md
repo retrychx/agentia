@@ -1668,7 +1668,10 @@ e2e：`npm run e2e`（CLI / EXAMPLES / DEPLOY 三关全绿）、`npm run e2e:mcp
   （零运行时依赖）/ examples/code-review 真实案例；**含破坏性变更，迁移指南见 CHANGELOG**）
   → v0.6.1（超时归一类账：`span.error.type` 的 `connection` → `timeout`，**重试行为不变**；
   MCP 超时单源化；对外文档面清理）；
-  `AGENTIA_VERSION = '0.6.1'`。决策均见 §10。
+  → v0.6.2（第六轮全量 review 收口：16 条「静默失效」修复 + `beforeFlush` 时序缝
+  （eval 分数进指标）+ metrics 三维度基数封顶 + traceparent 入站关联；**无破坏性变更**，
+  两处语义变更见 CHANGELOG）；
+  `AGENTIA_VERSION = '0.6.2'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
