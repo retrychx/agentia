@@ -43,6 +43,9 @@
 - **零运行时依赖达成**：`@anthropic-ai/sdk` 退出 dependencies（留 devDependencies 只为类型
   兼容门禁）；`npm i @migor/agentia` 不再连带任何运行时依赖。
 - 官网文档站新增「场景指南」区（HTTP 服务上线 / 监控 / 离线评测与回流 / A/B / HITL）。
+- **`examples/code-review/` 真实案例**：代码评审 agent 服务（四类能力 + 能力级 tools 路径 +
+  预算护栏 + 自定义 file sink 产 trace.jsonl），离线 demo（scriptedClient）与真模型两种跑法；
+  已用真端点实跑并在 README 记录真实 token/成本/trace 数据（验证证据）。
 
 ### 修复
 

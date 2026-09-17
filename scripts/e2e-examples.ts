@@ -1,16 +1,17 @@
-// 示例端到端验证：`examples/complete` 按它 README 里写的方式**真起服务、真跑三种触发**。
+// 示例端到端验证：`examples/complete` 按它 README 里写的方式**真起服务、真跑三种触发**；
+// `examples/code-review` 真构建并跑它的**离线确定性 demo**（scriptedClient 剧本，零网络）。
 //
 // 为什么要有这一条：`examples/complete` 被 usage-guide / 项目 README 指着说「完整可跑写法见
 // examples/complete/」，但它此前只被 `typecheck:tests` 覆盖 —— 全仓**没有任何门禁真跑过**它
 // （`examples/` 下 0 个测试）。这条把「文档承诺可跑」变成「门禁证明可跑」。
 //
-// 不联网：模型侧用本脚本内置的假 OpenAI 兼容端点（真 SSE，逐分片），只走 127.0.0.1。
-// 于是哪怕没有 ANTHROPIC_API_KEY / 无网机器，也能验完 README「试试端点」那一节的全部命令。
+// 不联网：complete 的模型侧用本脚本内置的假 OpenAI 兼容端点（真 SSE，逐分片）；
+// code-review 的 demo 模式根本不需要模型端点（scriptedClient）。只走 127.0.0.1。
 //
 // 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,6 +22,7 @@ const assert = (cond: boolean, msg: string): void => {
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const exampleDir = join(repoRoot, 'examples', 'complete');
 const obsPkgDir = join(repoRoot, 'examples', 'observability');
+const codeReviewDir = join(repoRoot, 'examples', 'code-review');
 
 /** 假 OpenAI 兼容端点的记录（断言「能力真的被执行」靠它，而不是靠自己读响应文本） */
 interface FakeProviderObserved {
@@ -166,6 +168,7 @@ function ensureLinks(): void {
     // 示例应用：要能解析框架本体与本地小包
     [join(exampleDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     [join(exampleDir, 'node_modules', '@migor', 'agentia-observability'), obsPkgDir],
+    [join(codeReviewDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     // 本地小包**自己也要能构建** —— CI 上没有它的 node_modules，不建的话 `tsc -p` 会
     // 报「Cannot find module '@migor/agentia'」+「Cannot find name 'process'」
     // （@types/node 沿目录树上溯到仓库根即可解析，只有 @migor 需要这一步）
@@ -289,6 +292,110 @@ async function pollTask(
   }
 }
 
+/** code-review demo 产出的 trace 里本脚本要断言的最小形状（只声明用到的字段） */
+interface CodeReviewSpan {
+  spanId: string;
+  kind: string;
+  name: string;
+  events: Array<{ name: string; body: unknown }>;
+}
+
+/**
+ * `examples/code-review` 的离线 demo 验证（README「npm run demo」一节的可执行版本）：
+ * 真构建（tsc + copy-assets）→ 跑 dist/demo.js（exit≠0 时 execFileSync 直接抛）→
+ * 断言 stdout 摘要与 out/ 产物（trace.jsonl 的 capability span / llm.turn 数 / score 事件 /
+ * token 口径，report.json 的结构化结论）。
+ *
+ * demo 是**确定性**的（scriptedClient 8 步剧本）：token 数与成本数字钉死断言，
+ * 任何框架侧记账口径的变化都会在这里响亮失败 —— 这正是「产品验证」要的效果。
+ */
+function verifyCodeReview(): Record<string, unknown> {
+  execFileSync(join(repoRoot, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'], {
+    cwd: codeReviewDir,
+    stdio: 'inherit',
+  });
+  execFileSync(process.execPath, ['scripts/copy-assets.mjs'], {
+    cwd: codeReviewDir,
+    stdio: 'inherit',
+  });
+
+  // 剥掉模型侧 env：本机 export 过 AGENTIA_MODEL / ANTHROPIC_* 时，demo 的数字会随之变 ——
+  // 确定性验证必须在自己控制的环境里跑
+  const env = { ...process.env };
+  delete env.AGENTIA_MODEL;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_BASE_URL;
+  const out = execFileSync(process.execPath, ['dist/demo.js'], {
+    cwd: codeReviewDir,
+    env,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+
+  assert(out.includes('stopReason=end_turn'), `demo 应正常收尾，实际 stdout:\n${out}`);
+  assert(out.includes('整体定级 high'), `结论应定级 high，实际 stdout:\n${out}`);
+  assert(
+    out.includes('估算成本：$0.002796'),
+    `demo 的成本行是确定性数字（25600 入 / 1180 出 × deepseek-v4-flash 定价），实际 stdout:\n${out}`,
+  );
+
+  const tracePath = join(codeReviewDir, 'out', 'trace.jsonl');
+  assert(existsSync(tracePath), 'demo 应产出 out/trace.jsonl');
+  const lines = readFileSync(tracePath, 'utf8').trim().split('\n');
+  assert(lines.length === 1, `一次 run 一行 trace，实际 ${lines.length} 行`);
+  const trace = JSON.parse(lines[0]) as {
+    rootSpanId: string;
+    spans: CodeReviewSpan[];
+    totalUsage: { inputTokens: number; outputTokens: number; costEstimate?: number };
+  };
+
+  const capabilities = trace.spans
+    .filter((s) => s.kind === 'capability')
+    .map((s) => s.name)
+    .sort();
+  assert(
+    JSON.stringify(capabilities) === JSON.stringify(['security_scan', 'summarize']),
+    `应有 subagent/skill 两个 capability span，实际 ${JSON.stringify(capabilities)}`,
+  );
+  const turns = trace.spans.filter((s) => s.kind === 'llm.turn').length;
+  assert(turns === 8, `llm.turn 应 8 个（主 5 + 子 agent 2 + skill 1），实际 ${turns}`);
+
+  const root = trace.spans.find((s) => s.spanId === trace.rootSpanId);
+  const score = root?.events.find((e) => e.name === 'score')?.body as
+    | { name?: string; value?: number }
+    | undefined;
+  assert(
+    score?.name === 'fixture_coverage' && score?.value === 1,
+    `根 span 应有 fixture_coverage=1 的 score 事件（种子问题全命中），实际 ${JSON.stringify(score)}`,
+  );
+  assert(
+    trace.totalUsage.inputTokens === 25_600 && trace.totalUsage.outputTokens === 1_180,
+    `totalUsage 口径变了：${JSON.stringify(trace.totalUsage)}`,
+  );
+  assert(
+    trace.totalUsage.costEstimate === 0.002796,
+    `priceOverrides 定价应算出 $0.002796，实际 ${JSON.stringify(trace.totalUsage.costEstimate)}`,
+  );
+
+  const report = JSON.parse(readFileSync(join(codeReviewDir, 'out', 'report.json'), 'utf8')) as {
+    riskLevel?: string;
+    findings?: unknown[];
+  };
+  assert(
+    report.riskLevel === 'high' && report.findings?.length === 5,
+    `report.json 应是 5 条发现 + high 定级，实际 ${JSON.stringify(report).slice(0, 200)}`,
+  );
+
+  return {
+    demoExit: 0,
+    spans: trace.spans.length,
+    llmTurns: turns,
+    capabilities,
+    score: `${score!.name}=${score!.value}`, // 上面已断言存在
+    costUsd: trace.totalUsage.costEstimate,
+  };
+}
+
 const fake = await startFakeProvider();
 let example: Awaited<ReturnType<typeof startExample>> | undefined;
 try {
@@ -406,6 +513,9 @@ try {
     `应走排空分支，实际尾部 ${example.stdout().slice(-300)}`,
   );
 
+  // —— 8) code-review 示例：离线 demo 真跑 + 产物断言（见 verifyCodeReview）——
+  const codeReview = verifyCodeReview();
+
   console.log('E2E-EXAMPLES PASS');
   console.log(
     JSON.stringify(
@@ -419,6 +529,7 @@ try {
         idempotentDedupe: again.taskId === queued.taskId,
         metricsHasCapabilitySamples: true,
         shutdownExitCode: code,
+        codeReview,
       },
       null,
       2,
