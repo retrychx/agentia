@@ -73,8 +73,10 @@ import Lenis from 'lenis';
       time += 0.016;
       ctx.clearRect(0, 0, W, H);
 
-      const px = (mouseX - 0.5) * 18;
-      const py = (mouseY - 0.5) * 14;
+      /* 视差减弱（原 18 / 14）：首屏现在有两处动效，背景的跟随要退半步。
+         见 global.css 的 #orchestra 注释 —— 三项压缩是一组，别只调其中一项。 */
+      const px = (mouseX - 0.5) * 10;
+      const py = (mouseY - 0.5) * 8;
       const pos = nodes.map((n) => ({
         x: n.x + px * n.depth + Math.sin(time * 0.7 + n.phase) * (n.hub ? 0 : 5),
         y: n.y + py * n.depth + Math.cos(time * 0.6 + n.phase) * (n.hub ? 0 : 5),
@@ -91,7 +93,8 @@ import Lenis from 'lenis';
       }
 
       // 脉冲
-      if (Math.random() < 0.06) spawnPulse();
+      // 脉冲概率减半（原 0.06）：它现在是背景层，不该跟 trace 面板抢眼睛
+      if (Math.random() < 0.03) spawnPulse();
       pulses = pulses.filter((p) => p.t <= 1 && p.t >= 0);
       for (const p of pulses) {
         p.t += p.speed * p.dir;

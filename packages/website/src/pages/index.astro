@@ -3,6 +3,8 @@
 // 页面外壳（head/nav/footer）由 Base 统一提供。
 import Base from '../layouts/Base.astro';
 import content from '../fragments/index.html?raw';
+// 首屏 trace 自播用的调用树样式 —— 与 playground 页同一份（渲染器抽在 @migor/trace-view）
+import '@migor/trace-view/style.css';
 
 const footerLinks = [
     { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
@@ -15,5 +17,6 @@ const footerLinks = [
 
   <script>
     import '../scripts/site.js';
+    import '../scripts/hero-trace.js';
   </script>
 </Base>

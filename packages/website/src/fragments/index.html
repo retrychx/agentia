@@ -29,6 +29,26 @@
         <span><b>0</b> 反射</span>
       </div>
     </div>
+
+    <!-- 首屏的产品证据：一次 run 的 trace 调用树自播（复用 @migor/trace-view 渲染器与
+         playground 同一份场景脚本）。文案说 trace 是「核心」，那首屏就该把它演出来 →
+         取代了此前那层通用节点网络 canvas（不说这个框架的任何独特之处）。
+         标明「录制回放」：它不是实时调用，别让访客误以为是 live。 -->
+    <aside class="hero-demo" aria-label="trace 调用树：一次 run 的录制回放">
+      <div class="hero-demo-bar">
+        <i></i><i></i><i></i>
+        <em>run · 审查一份文档</em>
+        <button type="button" class="hero-demo-replay" id="hero-replay">重播</button>
+      </div>
+      <div class="hero-demo-tree" id="hero-trace"></div>
+      <div class="hero-demo-foot">
+        <span class="hu"><i>input</i><b id="hero-in">0</b></span>
+        <span class="hu"><i>output</i><b id="hero-out">0</b></span>
+        <span class="hu"><i>成本估算</i><b id="hero-cost">$0.0000</b></span>
+        <span class="hu-note">录制回放 · 数据即框架自身产出的 trace（runId == traceId）</span>
+      </div>
+    </aside>
+
     <div class="scroll-hint" aria-hidden="true"><span></span></div>
   </header>
 
