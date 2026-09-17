@@ -5,7 +5,26 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.6.1] - 2026-09-17
+
+### 文档（对外文案不再暴露内部流程；使用说明按用途重排）
+
+> 随包发布的 `dist/AGENTS.md`（单源即 `docs/usage-guide.md`，也是 `agentia create` 写进新项目的
+> 那份）一并更新 —— 装上本版即可看到，不必等下一次发版。
+
+- **删掉讲本仓库自身流程的内容**：`§9 提交前自检`（它列的是本仓库门禁 —— `typecheck:tests` /
+  `test` / `e2e` 三步链 —— 而脚手架生成的项目并没有这些 script，照抄必然失败）、前言里
+  「文中 API 名由框架仓库的测试对着源码校验」句，以及散在正文里的内部路线图代号（`（R7）`）。
+- **相对上一版的措辞改成陈述句**：「不再混进 connection」「不再静默映射成成功」这类只有用过旧版
+  才读得懂的写法，改为直接陈述现状。
+- **结构**：加顶层目录；「运行时 API」的 33 个子节按用途拆成六组（运行时上下文与装配 / 触发与宿主 /
+  上下文预算与成本 / 观测与调优 / 集成 / 横切缝）；「框架只给缝、不建子系统」的口径集中到一处讲，
+  不再逐个标题辩白。
+- 官网（不随 npm 包发布）：API 页 `classifyError` 措辞、docs 页侧栏按用途分组、以及**滚到页面底部时
+  末条导航不高亮**的修复。
+- `@migor/trace-view`（不单独发布，随 CLI 构建期拷贝）README 补齐漏写的 `rawArg` 导出，
+  并加一份「README 必须覆盖导出面」的守卫防再漏。
+
 
 ### 变更（超时有了自己的 `errorType`：`connection` → `timeout`）
 
@@ -218,7 +237,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/retrychx/agentia/releases/tag/v0.6.1
 [0.6.0]: https://github.com/retrychx/agentia/releases/tag/v0.6.0
 [0.5.0]: https://github.com/retrychx/agentia/releases/tag/v0.5.0
 [0.4.2]: https://github.com/retrychx/agentia/releases/tag/v0.4.2

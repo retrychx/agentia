@@ -1394,8 +1394,10 @@ firstTurnError={type:'connection', message:'Anthropic 请求超过 100ms', retry
   → v0.4.2（发布后更正：Redis 的 TTL 在 node-redis 上静默失效）
   → v0.5.0（R7 质量闭环：`Score`/`attachScore`、gen_ai.* 对齐、trace 回流 eval、prompt·session 上 trace）
   → v0.6.0（trace diff / 分叉重放 / canCall 能力级路径 / 默认 client 自研化 + 公共类型自有化
-  （零运行时依赖）/ examples/code-review 真实案例；**含破坏性变更，迁移指南见 CHANGELOG**）；
-  `AGENTIA_VERSION = '0.6.0'`。决策均见 §10。
+  （零运行时依赖）/ examples/code-review 真实案例；**含破坏性变更，迁移指南见 CHANGELOG**）
+  → v0.6.1（超时归一类账：`span.error.type` 的 `connection` → `timeout`，**重试行为不变**；
+  MCP 超时单源化；对外文档面清理）；
+  `AGENTIA_VERSION = '0.6.1'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
