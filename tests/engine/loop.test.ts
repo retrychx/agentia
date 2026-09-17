@@ -5,7 +5,7 @@ import { executeRun } from '../../src/index.js';
 import type { JsonSchema, MessageParam, Span } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 // 内部工具（刻意不进公共导出面，故不走 index.js）
-import { replaceMessages } from '../../src/engine/loop.js';
+import { replaceMessages } from '../../src/engine/turn.js';
 // 真吐文本的脚本化 client（eval 公共面）：onText 链路按真实路径走
 import { scriptedClient } from '../../src/eval/scripted.js';
 

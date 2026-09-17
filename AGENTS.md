@@ -98,7 +98,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     与 runtime **共用**的类型，早先放在 runtime 逼出了 `store → runtime` 这条未声明的兄弟层
     依赖 —— 已按「纯数据去 core、共用入参契约去 engine」下沉（类型导入也计入分层，虽运行期擦除）。
 - **内部工具不进公共面**：跨模块/测试要用的 helper 可以做 **module 级 export**（如 `engine/trimming.ts` 的
-  `createTokenCounter`、`engine/loop.ts` 的 `replaceMessages`），但**不要**加进 `src/index.ts` ——
+  `createTokenCounter`、`engine/turn.ts` 的 `replaceMessages`），但**不要**加进 `src/index.ts` ——
   一旦进了公共导出面，`tests/docs/api-page.test.ts` 的反向全覆盖就会要求官网 API 页同步，
   而那些是纯内部实现细节。
 - **零运行时依赖（2026-09-17 达成）**：`@anthropic-ai/sdk` 已退入 devDependencies —— 公共消息类型
