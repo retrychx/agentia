@@ -13,8 +13,11 @@
  *   4. `packages/cli/src/templates.ts` 的框架依赖 pin —— 漏 bump 则新项目装到旧框架
  *   5. `packages/trace-view` 的 version ↔ `packages/website` 对它的 pin
  *      —— 漏 bump 则官网 playground / CLI inspector 渲染器版本漂移
+ * 另有一条 **bump 闸门**：要发的版本必须高于 npm 已发布版本（只验一致不验高低时，
+ * 破坏性变更可能压在旧版本号上发出去）。查官方 registry；E404（首发）放行。
  */
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,6 +60,37 @@ if (sitePin !== tvVersion) {
   );
 }
 
+// 6. bump 闸门：要发的版本必须**高于** npm 已发布版本 —— 只验一致不验高低时，
+// 破坏性变更可能压在旧版本号上发出去（覆盖语义混乱）。挂 prepublishOnly（发布必有网络）。
+{
+  const cmp = (a, b) => {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    }
+    return 0;
+  };
+  let published = null;
+  try {
+    published = execFileSync(
+      'npm',
+      ['view', '@migor/agentia', 'version', '--registry=https://registry.npmjs.org'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+  } catch (e) {
+    const stderr = String(e?.stderr ?? e);
+    if (!stderr.includes('E404')) {
+      problems.push(`查询 npm 已发布版本失败（发布需要网络）：${stderr.slice(0, 200)}`);
+    } // E404 = 从未发布过（首发），放行
+  }
+  if (published && cmp(version, published) <= 0) {
+    problems.push(
+      `要发的版本 ${version} 不高于 npm 已发布的 ${published} —— 先 bump 再发（破坏性变更走 minor）`,
+    );
+  }
+}
+
 if (problems.length) {
   console.error(`发版自检未通过（根包版本 ${version}）：`);
   for (const p of problems) console.error(`  ✗ ${p}`);
@@ -66,6 +100,4 @@ if (problems.length) {
   process.exit(1);
 }
 
-console.log(
-  `发版自检通过：${version}（根包 / CLI 包 / AGENTIA_VERSION / 脚手架 pin / trace-view↔官网 pin 五处一致）`,
-);
+console.log(`发版自检通过：${version}（五处同步点一致 + 高于 npm 已发布版本）`);

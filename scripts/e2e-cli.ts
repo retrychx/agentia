@@ -244,6 +244,22 @@ try {
   });
   assert(app2.tools.length === 5, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
 
+  // —— 8) 发布物完整性：CHANGELOG.md 必须在两个 npm 包里（npm 的「总是包含」只覆盖
+  // README/LICENSE，CHANGELOG 不在其列 —— 曾因 files 只写 dist 漏发，外部 review 抓出）——
+  for (const [label, dir] of [
+    ['@migor/agentia', repoRoot],
+    ['@migor/cli', join(repoRoot, 'packages', 'cli')],
+  ] as const) {
+    const packed = JSON.parse(
+      execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: dir, encoding: 'utf8' }),
+    ) as Array<{ files: Array<{ path: string }> }>;
+    const paths = packed[0]!.files.map((f) => f.path);
+    assert(
+      paths.includes('CHANGELOG.md'),
+      `${label} 的 npm 包里没有 CHANGELOG.md（files: ${JSON.stringify(paths.slice(0, 5))}…）`,
+    );
+  }
+
   console.log('E2E-CLI PASS');
   console.log(
     JSON.stringify(

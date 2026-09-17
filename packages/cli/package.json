@@ -7,7 +7,8 @@
     "agentia": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "repository": "retrychx/agentia",
   "homepage": "https://agentia-web.pages.dev",

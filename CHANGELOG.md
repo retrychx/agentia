@@ -5,6 +5,17 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 修复（发布面与证据可核性）
+
+- **CHANGELOG 进 npm 包**：npm 的「总是包含」只覆盖 README/LICENSE（实测 `npm pack` 不含
+  CHANGELOG）——根包 `files` 登记 + CLI 包构建期拷贝到包根，`e2e-cli` 新增两包 pack 内容断言。
+- **bump 闸门**：`check-release.mjs` 新增「要发的版本必须高于 npm 已发布版本」（查官方
+  registry，E404 首发放行）——此前只验四处一致、不验高低。
+- **code-review 证据签入**：真跑 trace 与报告落 `examples/code-review/evidence/`（此前 `out/`
+  被 gitignore，README 的数字无从核）；README 表格数字全部改为可从产物复核的值。
+
 ## [0.6.0] - 2026-09-17
 
 ### 破坏性变更与迁移
@@ -117,6 +128,7 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.0...HEAD
 [0.6.0]: https://github.com/retrychx/agentia/releases/tag/v0.6.0
 [0.5.0]: https://github.com/retrychx/agentia/releases/tag/v0.5.0
 [0.4.2]: https://github.com/retrychx/agentia/releases/tag/v0.4.2

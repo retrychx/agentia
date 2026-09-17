@@ -76,12 +76,21 @@ src/
 
 ## 真实运行证据
 
-> 2026-09-17 用 DeepSeek 的 Anthropic 兼容端点真跑（`npm start`，对照 `out/trace.jsonl` 与 stdout）；
-> fixture 种了 5 处问题，模型全命中并多发现 2 处真实问题（时序侧信道、共享可变状态）。
+> 2026-09-17 用 DeepSeek 的 Anthropic 兼容端点真跑（`npm start`）。**产物随仓库签入**
+> （`evidence/` 目录——`out/` 是每次运行的临时产物、被 gitignore；`evidence/` 是选定
+> 一次的留档），下表每个数字都可用产物核实：
+> `agentia report evidence/real-run-2026-09-17.trace.jsonl`，或直接数 span/事件。
 
 | 模型 | 主循环回合 | 总 token（入/出/缓存读） | 估算成本 | trace 规模 | 结论 |
 |---|---|---|---|---|---|
-| deepseek-v4-flash | 5 | 7588 / 5893 / 23168 | $0.00217 | 15 span / 55 事件 | 7 个问题（critical 2 / major 4 / minor 1），定级 high |
+| deepseek-v4-flash | 5 | 5528 / 4572 / 23424 | $0.001699 | 16 span / 65 事件 | 7 个问题（critical 2 / major 3 / minor 2），定级 high |
+
+- `evidence/real-run-2026-09-17.trace.jsonl` —— 完整调用树（13 个 llm.turn：主循环 5 +
+  security_scan 子 agent 与 summarize skill 的嵌套回合 8）
+- `evidence/real-run-2026-09-17.report.json` —— 结构化评审报告（7 条 findings 逐条含
+  文件/行号/严重度/修复建议，可自行核对 fixture 源码）
+- fixture 种了 5 处问题，模型全命中并多发现 2 处真实问题（`auth.ts:9` 明文+非常量时间
+  比较的时序侧信道、失败路径不可诊断）——见 report.json 的 findings 与摘要
 
 真跑与 demo（离线剧本）走**完全相同的装配与引擎链路**，只有模型 client 不同——这正是
 「替掉模型，绝不替掉被测的框架链路」的实证。
