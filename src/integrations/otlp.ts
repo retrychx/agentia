@@ -197,6 +197,18 @@ function mapSpan(span: Span) {
     traceId: traceHex(span.traceId),
     spanId: spanHex(span.spanId),
     ...(span.parentSpanId ? { parentSpanId: spanHex(span.parentSpanId) } : {}),
+    // 跨 trace 链路（spec §9.2）：触发本次 run 的上游 span 映射成 OTLP span links。
+    // 宽度规则与 parentSpanId 同一条：OTLP 的 span_id 是 8 字节（16 位 hex），
+    // 内部 UUID 必须截断，否则 collector 判 invalid span_id 整条拒收。
+    // 没有 link 时**不发这个键**（空数组会让部分后端把 span 标成「有链路」）。
+    ...(span.links && span.links.length > 0
+      ? {
+          links: span.links.map((l) => ({
+            traceId: traceHex(l.traceId),
+            ...(l.spanId ? { spanId: spanHex(l.spanId) } : {}),
+          })),
+        }
+      : {}),
     name: span.name,
     kind: 1, // SPAN_KIND_INTERNAL
     startTimeUnixNano: nanos(span.startedAt),

@@ -2,6 +2,7 @@ import type { MessageParam } from '../core/message.js';
 import type { ModelClient, ModelPricing } from '../core/tool.js';
 import type { AgentTool } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
+import type { TraceContext } from '../core/trace.js';
 import type { ContextPolicy } from './types.js';
 import type { RetryOptions } from './retry.js';
 
@@ -32,6 +33,15 @@ export interface RunInvocationOptions {
   retry?: RetryOptions | false;
   /** 幂等键：异步宿主的 at-least-once 去重依据 */
   idempotencyKey?: string;
+  /**
+   * 入站链路上下文（spec §9.2 跨进程关联）：触发本次 run 的上游 span 记成 run 根的一条
+   * `links`。宿主侧两种给法 —— HTTP 头 `traceparent`（W3C，`createHttpHandler` 自动解析）
+   * 或直接给 `{ traceId, spanId? }`。走异步宿主时它随 `spec.options` 落进 `TaskRecord`，
+   * 所以 `resumePending` 续跑的那次 run 也带得上（跨进程关联不断链）。
+   *
+   * 不改 `traceId == runId` —— run 仍是自己的新树，见 `core/trace.ts` 的 `TraceContext`。
+   */
+  traceContext?: TraceContext;
   /** 硬失败是否抛出；缺省 true（异步宿主置 false 落 failed 记录） */
   rethrow?: boolean;
   /** 覆盖整份工具菜单（裸工具同样过应用装配的中间件链 —— 不是旁路，见 toolkit/module） */

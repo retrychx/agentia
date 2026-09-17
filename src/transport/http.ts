@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SpanError, Trace } from '../core/trace.js';
+import { parseTraceparent } from '../core/trace.js';
 import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
 import { AsyncRunner } from './async.js';
 import type { AppCallable } from './async.js';
@@ -301,6 +302,15 @@ function sendShuttingDown(req: IncomingMessage, res: ServerResponse): void {
   sendJson(res, 503, { error: '服务正在优雅停机，不再接受新任务' });
 }
 
+/**
+ * 读单个请求头。Node 对重复头给数组（`traceparent` 语义上只该有一个）——
+ * 取第一个即可，多余的忽略。
+ */
+function headerValue(req: IncomingMessage, name: string): string | undefined {
+  const v = req.headers[name];
+  return Array.isArray(v) ? v[0] : v;
+}
+
 export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {}): HttpHandler {
   const runner = opts.runner ?? new AsyncRunner(app);
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
@@ -433,6 +443,10 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
         res.once('close', onClose);
         // 内容协商：`Accept: text/event-stream` → SSE 逐帧下发；否则一元 JSON（旧行为逐字不变）
         const wantsSse = String(req.headers.accept ?? '').includes('text/event-stream');
+        // 入站链路（spec §9.2）：W3C `traceparent` 头 → run 根的 links。
+        // 畸形/缺头一律静默当作「没有上游上下文」（parseTraceparent 统一判定）——
+        // 链路是观测行为，不该因为一个坏头把业务请求打成 400。
+        const traceContext = parseTraceparent(headerValue(req, 'traceparent'));
         try {
           if (wantsSse) {
             const sse = sseWriter(res, {
@@ -459,6 +473,7 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
                 rethrow: false,
                 signal: runAc.signal,
                 onText: (delta) => sse.event('text.delta', { text: delta }),
+                traceContext,
               });
               sse.event('run.end', toHttpBody(out));
             } catch (e) {
@@ -471,7 +486,11 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
             return;
           }
           // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 status/error 字段返回 200
-          const out = await app.run(messages, { rethrow: false, signal: runAc.signal });
+          const out = await app.run(messages, {
+            rethrow: false,
+            signal: runAc.signal,
+            traceContext,
+          });
           sendJson(res, 200, toHttpBody(out));
         } finally {
           res.off('close', onClose);
@@ -497,11 +516,17 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
           return;
         }
         const submitBody = body as TaskSubmitBody;
+        // 入站链路（spec §9.2）：body 显式给的 `options.traceContext` 优先，否则取
+        // `traceparent` 头。它随 `spec.options` 落进 TaskRecord —— 所以**跨进程续跑**
+        // 的那次 run（另一个进程 `resumePending` 接着跑）也带得上，关联不断链。
+        const submitTrace = parseTraceparent(headerValue(req, 'traceparent'));
         let rec: TaskRecord;
         try {
           rec = runner.submit(submitBody.input, {
             idempotencyKey: submitBody.idempotencyKey,
-            options: submitBody.options,
+            options: submitBody.options?.traceContext
+              ? submitBody.options
+              : { ...submitBody.options, traceContext: submitTrace },
             source: 'http',
           });
         } catch (e) {

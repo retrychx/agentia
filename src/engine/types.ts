@@ -1,6 +1,6 @@
 import type { CacheControl, MessageParam } from '../core/message.js';
 import type { AgentTool, JsonSchema, ModelClient, ModelPricing } from '../core/tool.js';
-import type { SpanError, Trace } from '../core/trace.js';
+import type { SpanError, Trace, TraceContext } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
 
 /**
@@ -95,6 +95,12 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   /** 中断信号：中止则本回合结束后以 stopReason='aborted' 收尾（不抛异常） */
   signal?: AbortSignal;
   runName?: string;
+  /**
+   * 入站链路上下文（spec §9.2 跨进程关联）：触发本次 run 的上游 span 记成 run 根的
+   * 一条 `links` —— 队列消费者 / HTTP 网关 / 上游服务据此把两个系统的 trace 接起来。
+   * 不改 `traceId == runId`，run 仍是自己的新树（见 `core/trace.ts` 的 `TraceContext`）。
+   */
+  traceContext?: TraceContext;
   /** 上下文预算策略：每回合发送前可编辑/压缩消息（compaction / context editing） */
   contextPolicy?: ContextPolicy;
   /**

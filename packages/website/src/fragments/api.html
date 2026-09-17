@@ -24,7 +24,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>201</b> 个导出</span>
+          <span class="api-chip"><b>204</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -57,13 +57,15 @@
             <tr><td>ToolRunContext</td><td><code>{ client; recorder; parentSpanId; signal? }</code></td><td>engine 调用每个工具时注入的执行上下文，供子能力把嵌套 span 挂进当前 trace；signal 由工具自行决定是否尊重。</td></tr>
             <tr><td>RecorderBackend</td><td><code>begin / end / event / setAttribute / snapshot</code></td><td>TraceRecorder 面向子能力的最小记账面（core 不依赖 engine）。</td></tr>
             <tr><td>Trace</td><td><code>{ traceId; rootSpanId; spans: Span[]; status; totalUsage }</code></td><td>一次 run == 一条 trace（traceId == runId）；totalUsage 只累加 llm.turn span（capability 的 usage 是子孙聚合，仅供展示）。</td></tr>
-            <tr><td>Span</td><td><code>{ spanId; parentSpanId; kind; name; startedAt; endedAt?; status; error?; usage?; attributes; events }</code></td><td>调用树节点；capability 名为 <code>${capabilityType}:${capabilityName}</code>，llm.turn 名为模型 id。</td></tr>
+            <tr><td>Span</td><td><code>{ spanId; parentSpanId; kind; name; startedAt; endedAt?; status; error?; usage?; links?; attributes; events }</code></td><td>调用树节点；capability 名为 <code>${capabilityType}:${capabilityName}</code>，llm.turn 名为模型 id。<code>links</code> 是跨 trace 链路（v1 只出现在 run 根，见 <code>TraceContext</code>）；没记 link 的 span **没有这个键**（不是空数组）。</td></tr>
             <tr><td>Usage</td><td><code>{ inputTokens; outputTokens; cacheReadTokens; cacheCreationTokens; costEstimate? }</code></td><td>span 聚合用量；成本由 token × 单价表估算。</td></tr>
             <tr><td>SpanKind</td><td><code>'run' | 'capability' | 'llm.turn'</code></td><td>span 层级：整次运行 / 能力调用（仅 skill 与 subagent 建）/ 每次模型往返。普通工具与 @Prompt 只记 turn 上的事件，不建 span。</td></tr>
             <tr><td>CapabilityType</td><td><code>'tool' | 'skill' | 'prompt' | 'subagent'</code></td><td>四类能力，共用命名空间。</td></tr>
             <tr><td>SpanEvent</td><td><code>{ time; name; body }</code></td><td>span 上的结构化事件（如 tool.input / tool.output / compaction / budget.exceeded）。</td></tr>
             <tr><td>SpanError</td><td><code>{ type; message; retryable }</code></td><td>错误分类；retryable 标记 429 / 5xx / 网络类可安全重试（重试逻辑消费它）。</td></tr>
             <tr><td>SpanStatus / SpanId / TraceId</td><td><code>'ok' | 'error'</code> / <code>string</code> / <code>string</code></td><td>基础类型别名。</td></tr>
+            <tr><td>TraceContext / SpanLink</td><td><code>{ traceId: string; spanId?: string }</code> / <code>{ traceId; spanId? }</code></td><td><strong>跨进程 / 跨服务关联</strong>：调用方（网关 / 队列消费者 / 上游服务）把它自己的 span 标识作为 <code>RunInvocationOptions.traceContext</code> 传进来，本次 run 的根 span 记成一条 <code>SpanLink</code>（OTLP 导出即标准 span links）。<strong>不改 <code>traceId == runId</code></strong> —— run 仍是自己的新树，上游是被链接而不是被继承，所以调用树永远自洽、因果仍可查。</td></tr>
+            <tr><td>parseTraceparent</td><td><code>(value: string | null | undefined) → TraceContext | undefined</code></td><td>解析 W3C <code>traceparent</code> 头（<code>00-&lt;32位trace&gt;-&lt;16位span&gt;-01</code>）成 <code>TraceContext</code>。非法 / 缺失 / 版本 <code>ff</code> / 全零 id / 位宽不符一律返回 <code>undefined</code>（不抛）：链路是观测行为，不该把业务请求打成 400。<code>createHttpHandler</code> 在 <code>POST /run</code> 与 <code>POST /tasks</code> 上自动用它。</td></tr>
             <tr><td>TraceSink</td><td><code>{ export(trace) → void | Promise&lt;void&gt; }</code></td><td>trace 出口：run 收尾（成功 / 失败）都投递，sink 抛错被吞、不影响 run。OTLP 导出器与 <code>metricsSink()</code> 都天然满足它。</td></tr>
             <tr><td>Score</td><td><code>{ name; value; source?; comment? }</code></td><td>质量评分（R7 质量闭环）：LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 value 为 0–1（布尔结论用 0/1），source 记评分来源（eval 名 / 'human' / judge 模型 id）。</td></tr>
             <tr><td>attachScore</td><td><code>(trace: Trace, score: Score) → void</code></td><td>把评分挂到 trace 根 span（一条 <code>score</code> 事件，body 即 Score）；评分通常来自 run 之外，故走事件而非 span 字段。出口映射：OTLP 译为 <code>gen_ai.evaluation.result</code>，metricsSink 聚合为 <code>agentia_score</code> 指标族。</td></tr>

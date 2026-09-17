@@ -140,7 +140,12 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   「改写为内置拦截器」的 dogfooding 设想经评审放弃（capability span 生命周期与模型调用
   纠缠在 loop 内，强行外置反而割裂），见 §10 2026-09-11 R1 条。能力调用层的拦截由
   装配层的 `CapabilityMiddleware` 洋葱链承担，与 trace 记账是两条独立的缝。
-- 异步化后：trace 上下文要跨队列传播 —— v1 同步先把 header 语义定好，实现后置（仍开放）。
+- **跨进程关联已落地（2026-09-17，见 §10）**：入站 `traceparent` 头（W3C）或
+  `RunInvocationOptions.traceContext` → run 根的一条 **span link**（`SpanLink`），OTLP 导出映射为
+  span links。形态选 link 而**不是**继承上游 traceId —— `traceId == runId` 的 1:1 不变量不变，
+  run 永远是自洽的一棵新树。**出站传播仍开放**：缺的前置件是「`RunContext` 暴露当前 span」，
+  在它之前只能编出假 spanId。队列宿主侧已验证：`traceContext` 随 `spec.options` 落进
+  `TaskRecord`，所以另一个进程 `resumePending` 续跑的那次 run 也带得上。
 
 ### 9.3 产出与导出
 
@@ -1470,6 +1475,54 @@ canvas 是手写的、**一行库都不引**（删它省的是每帧全屏重绘
 9 个宽度无横向溢出；`reduced-motion` 下加载即终态；首屏内入场元素 `opacity` 全为 1；
 **`/playground` 与改动前逐字对拍相同**（10 行树 / 11 个终端块 / 计数器 / 菜单高亮）；
 canvas 中心区采样 `ink≈3,600`、8/8 采样值互不相同（确实在动）、backing 尺寸 == CSS 尺寸（不糊）。
+
+**2026-09-17 ⑤ —— trace 跨进程关联：入站 `traceparent` → run 根 span links**
+
+**要解决的问题**：定位（§1）说「**trace 决定你敢不敢上线**」，而审计的第一要求是**能追溯来源**。
+此前一条 trace 是孤岛：看不到「这次 run 是被哪个网关请求 / 哪条队列消息触发的」，
+审计链在服务边界上断掉。
+
+**决策（形态）**：用 **OTLP 风格的 span link**，**不是**父 span。入站给一个
+`TraceContext { traceId, spanId? }`（HTTP 宿主认 W3C `traceparent` 头），run 根记一条 `links`；
+`traceId == runId` 的 1:1 不变量**不变**。三条理由：
+① 继承上游 traceId 会让一次 run 的调用树**依赖上游是否还活着 / 是否被采样掉**，树就不再自洽；
+② 审计要的是「可查的因果」，不是「同一个 traceId」—— `links` 正是 OTLP 为跨 trace 因果定义的；
+③ 跨服务时上游通常在另一进程、另一套采样策略下，继承会把两个系统的采样决策绑死。
+
+**决策（只做入站，出站如实不做）**：框架**不生成**出站 `traceparent`。运行中没有「当前 span」
+这个概念（`RunContext` 只有 `runId` 与 blackboard），要生成就得替调用方编一个 spanId —— 那是**假数据**，
+后端会据此挂出一棵错的树，比不做更糟。出站的前置件是「`RunContext` 暴露当前 span」，列为后续项。
+
+**为什么先做这条**（同批候选 B 增量 trace 出口 / A 无损档 / D 属性面）：
+只有 C 被定位**直接要求**（审计 = 可追溯来源）。B 兑现的是长任务进度可见性，属**宿主 / 服务能力**
+那条线（它解锁的是被后置两次的 `GET /tasks/:id/stream`），不该当观测方向排期；A 是已发布功能
+（replay / fork / harvest）的保真度债，触发条件是「有人抱怨重放结果不一致」；D 不是产品决策，
+随碰到该模块的 PR 顺手补。而 spec §9.4 的开放问题里，只有这条是**连语义都没定**的
+（§9.2 原文「v1 先把 header 语义定好，实现后置（仍开放）」，而全仓 `traceparent` 零命中）。
+
+**关键实现选择**：
+- `parseTraceparent` 对非法头**返回 `undefined` 而不抛、不打 400** —— 与「sink 抛错被吞」同一条口径：
+  链路是观测行为，一个畸形头不该把业务请求打成 400。被拒形态：版本 `ff`、trace/span 全零、
+  位宽不符、非 hex；版本非 `00` 按 W3C 前向兼容接受。
+- 通道选 **HTTP 头**而非 body 字段：`POST /run` 的 body 是 `RunInput`（改形状即破坏性变更），
+  且 W3C 头是既有网关 / OTel 自动化的通用形态。`POST /tasks` 另外允许 body 里的
+  `options.traceContext` 显式覆盖（JSON 调用方方便），优先级：body > 头。
+- HTTP 宿主**两条路径都要带**（SSE 与一元）：只给一元路径传 = SSE 场景静默丢链路
+  （与仓库里 `signal` 曾静默掉那次同型的坑）。
+- **`AsyncRunner` 零改动**：`traceContext` 在 `spec.options` 里，随 `TaskRecord` 落库 ——
+  所以另一个进程 `resumePending` 续跑的那次 run 也带得上。这正是**队列消费者**的场景
+  （`runner.submit(input, { idempotencyKey: msg.key, options: { traceContext } })`），
+  也是为什么「框架内建 Kafka 集成」没必要：缝已经够。
+- `snapshot()` 对 `links` 也拷一层（同 attributes / events 的既有规则），
+  且「**没记 link 的 span 没有 `links` 键**」—— 不制造 `undefined` 与 `[]` 两种空形态。
+
+**门禁**：`tests/engine/traceLink.test.ts` 5 条（link 落点 / 无 `spanId` 时不带该键 / 不传则无该字段 /
+**`app.run` 透传这一跳** / 只落 run 根）、`tests/engine/tracer.test.ts` 2 条（`addLink` + snapshot 拷贝）、
+`tests/transport/http.test.ts` 4 条（`/run` 头 → `app.run`、畸形头不打 400、`/tasks` 落
+`TaskRecord.spec.options`、body 优先于头）、`tests/integrations/otlp.test.ts` 1 条
+（links 的 hex 宽度规则 + 无 link 不发键）、`parseTraceparent` 4 组边界；
+e2e：`scripts/e2e-examples.ts` 的 `/run` 步骤带真 `traceparent` 头并断言 run 根 links
+（真 HTTP 栈 + 真装配，不只单测）。
 
 ## 11. 开放项
 

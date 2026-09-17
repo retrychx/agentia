@@ -425,6 +425,9 @@ export class AgentApp {
       // 而三处宿主测试都用**假 app** 断言「signal 交到了 app」，真 AgentApp 这一跳无人测。
       signal: opts.signal,
       runName: this.name,
+      // 入站链路（spec §9.2）：宿主给的触发来源上下文原样进引擎 —— 与 signal 同一条
+      // 「契约字段必须原样透传」的规则（漏掉这一行 = traceparent 头解析出来了却没人用）。
+      traceContext: opts.traceContext,
       idempotencyKey: opts.idempotencyKey,
       contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
       retry: opts.retry ?? this.base.retry,

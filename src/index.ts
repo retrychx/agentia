@@ -8,14 +8,16 @@ export type {
   SpanError,
   SpanId,
   SpanKind,
+  SpanLink,
   SpanStatus,
   TraceId,
+  TraceContext,
   TraceSink,
   CapabilityType,
   Usage,
   Score,
 } from './core/trace.js';
-export { attachScore } from './core/trace.js';
+export { attachScore, parseTraceparent } from './core/trace.js';
 export type {
   AgentTool,
   JsonSchema,

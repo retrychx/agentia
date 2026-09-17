@@ -5,6 +5,32 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 新增（trace 跨进程关联：`traceparent` → run 根 span links）
+
+- **入站链路上下文**：`RunInvocationOptions.traceContext`（`{ traceId, spanId? }`）与 HTTP 请求头
+  `traceparent`（W3C）现在会记成 run 根 span 的一条 **`links`**（新类型 `SpanLink`），
+  `createOtlpExporter` 映射为 OTLP **span links** —— 于是「这条 run 是被谁触发的」在跨进程 / 跨服务
+  时也可查。**不改 `traceId == runId` 的 1:1 不变量**：run 仍是自洽的一棵新树，上游是被**链接**
+  而不是被**继承**成父 span（理由与取舍见 `docs/spec.md` §10 2026-09-17 ⑤）。
+- 新增 `parseTraceparent(value)` 导出：把 `traceparent` 头解析成 `TraceContext`。
+  **非法 / 缺失 / 版本 `ff` / 全零 id / 位宽不符一律返回 `undefined`**（不抛）——
+  链路是观测行为，不该把业务请求打成 400。`createHttpHandler` 在 `POST /run` 与 `POST /tasks`
+  上自动用它；`POST /tasks` 的 body 里显式给的 `options.traceContext` 优先于该头。
+- **异步宿主零改动即继承**：`traceContext` 随 `spec.options` 落进 `TaskRecord`，所以另一个进程
+  `resumePending` 续跑的那次 run 也带得上（队列消费者场景）。
+- `TraceRecorder.addLink()` 记为公共能力；没记 link 的 span **没有 `links` 键**（不是空数组）。
+- **已知边界（如实标注）**：只做**入站** —— 框架不生成出站 `traceparent`（运行中没有「当前 span」
+  可导出，硬造会给出假 spanId）；link 只落 run 根，不自动跨进程传播（队列场景由调用方把
+  `traceContext` 传下去）。
+
+### 文档
+
+- `docs/usage-guide.md`：新增「跨进程关联」小节（含队列消费者配方与「只做入站」的边界）、
+  `app.run` 选项表补 `traceContext`、已知边界补一条；官网 API 页补 `TraceContext` / `SpanLink` /
+  `parseTraceparent` 三行并把 `Span.links` 写进签名。
+
 ## [0.6.1] - 2026-09-17
 
 ### 文档（对外文案不再暴露内部流程；使用说明按用途重排）
