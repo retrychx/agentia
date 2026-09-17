@@ -1244,10 +1244,10 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   ⇒ 发布进度：v0.2.2（2026-09-14，框架包 + CLI 包，scope 为 `@migor/*`）→ v0.3.0（`.env` 一等入口）
   → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）
   → v0.4.2（发布后更正：Redis 的 TTL 在 node-redis 上静默失效）
-  → v0.5.0（R7 质量闭环：`Score`/`attachScore`、gen_ai.* 对齐、trace 回流 eval、prompt·session 上 trace）；`AGENTIA_VERSION = '0.5.0'`。
-  main 上未发布（随下一版本走）：trace diff 与分叉重放（`diffTraces` / `forkMessages` / CLI `agentia diff`，2026-09-16）、
-  canCall 能力级能力边（`'token/能力名'` 路径语法，2026-09-16）、默认 client 自研化 + 公共类型自有化
-  （零运行时依赖达成，2026-09-17）—— 决策均见 §10；`AGENTIA_VERSION` 按约定发版时才同步。
+  → v0.5.0（R7 质量闭环：`Score`/`attachScore`、gen_ai.* 对齐、trace 回流 eval、prompt·session 上 trace）
+  → v0.6.0（trace diff / 分叉重放 / canCall 能力级路径 / 默认 client 自研化 + 公共类型自有化
+  （零运行时依赖）/ examples/code-review 真实案例；**含破坏性变更，迁移指南见 CHANGELOG**）；
+  `AGENTIA_VERSION = '0.6.0'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

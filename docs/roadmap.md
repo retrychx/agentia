@@ -1,6 +1,6 @@
 # Agentia —— Roadmap
 
-状态：v0.5.0 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）+ **`.env` 一等配置入口**（`loadEnvFile`，脚手架生成 `.env`）+ **trace 事件正文可展开**（`maxEventChars` 开关 + 两个宿主都真展开）+ **深度审查修复轮**（40+ 处：可观测出口 / 异构环境 / 预算透传子 agent / CLI inspector XSS / 部署 e2e）+ **发布后更正**（Redis 的 TTL 在 node-redis 上静默失效、e2e-deploy 端口 TOCTOU flake）。**main 上未发布（随下一版本走）**：R7 收尾的 trace diff 与分叉重放（`diffTraces` / `forkMessages` / CLI `agentia diff`）+ canCall 能力级能力边（`'token/能力名'`）+ 文档站场景指南区 + **默认 client 自研化与公共类型自有化（运行时零依赖达成）** + **`examples/code-review` 真实案例**（DeepSeek 真端点实跑，README 带真实 token/成本/trace 数据）+ 外部 review 两轮修复批（Windows spawn / agentLoop 拆分 / CHANGELOG 与迁移指南）。本文档记录规划与落地状态，后续方向见文末「R7」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
+状态：v0.6.0 已发布（`@migor/agentia` + `@migor/cli`），R1–R6 已全部落地；本轮完成全量评审修复 + `src/` 目录重构 + 官网响应式 + **官网迁移到 Astro 构建型静态站** + 分层守卫测试 + 官网正式化与动效 + **性能深度审计**（token 估算超线性 / SSE 背压 / `awaitTask` 事件化）+ **工具超时收紧为硬保证** + **真 API 集成验证**（并修掉默认 client 从不转发 `signal`）+ **`.env` 一等配置入口**（`loadEnvFile`，脚手架生成 `.env`）+ **trace 事件正文可展开**（`maxEventChars` 开关 + 两个宿主都真展开）+ **深度审查修复轮**（40+ 处：可观测出口 / 异构环境 / 预算透传子 agent / CLI inspector XSS / 部署 e2e）+ **发布后更正**（Redis 的 TTL 在 node-redis 上静默失效、e2e-deploy 端口 TOCTOU flake）。本文档记录规划与落地状态，后续方向见文末「R7」。原文如下（各 R 标题后的 ✅ 为对应版本落地标记）。
 与 `docs/spec.md`（已锁定决策）互补：spec 记录"已经怎么定的"，本文记录"接下来往哪走"。
 
 ## R1 —— 中间件（拦截器链）✅
