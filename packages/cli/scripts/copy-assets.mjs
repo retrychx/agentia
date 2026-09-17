@@ -39,3 +39,8 @@ cpSync(guide, join(cliRoot, 'dist', 'AGENTS.md'));
 console.log(
   '[cli] inspector 资源就位：dist/inspector/ + dist/inspector-page.html；AI 说明：dist/AGENTS.md',
 );
+
+/* 根 CHANGELOG.md 随 CLI 包发布（npm 的「总是包含」只覆盖 README/LICENSE，
+ * CHANGELOG 不在其列 —— 实测 npm pack 不含它）。拷到包根（不是 dist/），
+ * 已进 .gitignore（构建产物，单源是仓库根那份）。 */
+cpSync(join(cliRoot, '..', '..', 'CHANGELOG.md'), join(cliRoot, 'CHANGELOG.md'));

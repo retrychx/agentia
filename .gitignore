@@ -6,3 +6,6 @@ dist/
 .DS_Store
 .env
 .env.local
+
+# CLI 包的 CHANGELOG.md 是构建产物（copy-assets 从仓库根拷贝，随包发布）
+packages/cli/CHANGELOG.md

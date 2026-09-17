@@ -83,7 +83,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   src/fragments/*.html 页面正文（?raw 注入）、src/scripts/ 客户端脚本
 └── docs/                # spec.md（锁定决策）、roadmap.md（方向与状态）、
                          # usage-guide.md（**使用者向唯一说明**：CLI 项目 AGENTS.md 与官网 llms.txt 的单源）
-                         # 根目录 CHANGELOG.md 是发布史与迁移指南（随 npm 包自动发布，免 files 登记）
+                         # 根目录 CHANGELOG.md 是发布史与迁移指南（npm 的「总是包含」不含它：
+                         #   根包靠 files 登记，CLI 包靠构建期拷贝到包根 —— e2e-cli 有 pack 断言守着）
 ```
 
 ## 硬约定
@@ -182,6 +183,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   `packages/cli/src/templates.ts` 的 pin）由 `scripts/check-release.mjs` 校验，挂在**两包的
   `prepublishOnly`** 上 —— **不**进 `verify-all`：未发布窗口内 `AGENTIA_VERSION` 是**有意落后**的
   （包版本先行），只有真发时才要求一致；不一致 `npm publish` 当场失败。
+  同脚本还有一条 **bump 闸门**：要发的版本必须高于 npm 已发布版本（查官方 registry，E404 放行）——
+  只验一致不验高低时，破坏性变更可能压在旧版本号上发出去（0.6.0 窗口真踩过）。
   发版步骤：bump 四处 → `bash scripts/verify-all.sh` → 两包分别 `npm publish`（`prepublishOnly` 会先自检再 build）。
 - **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
   构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。

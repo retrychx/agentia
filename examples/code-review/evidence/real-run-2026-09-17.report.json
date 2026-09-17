@@ -1,0 +1,55 @@
+{
+  "findings": [
+    {
+      "file": "src/auth.ts",
+      "line": 6,
+      "severity": "critical",
+      "title": "硬编码管理员口令",
+      "detail": "ADMIN_PASSWORD = 'admin123' 直接写死在源码中，进版本库即泄露，且无法按环境轮换。任何读到仓库的人均可直接用 admin/admin123 登录。修复：从环境变量或密钥管理服务（KMS/Vault）按环境注入，禁止明文入库。"
+    },
+    {
+      "file": "src/upload.ts",
+      "line": 11,
+      "severity": "critical",
+      "title": "路径穿越：用户入参直接拼接文件路径",
+      "detail": "saveUpload 的 name 来自用户请求且未做任何校验，join(UPLOAD_DIR, name) 后直接 writeFile。传 name='../../etc/cron.d/pwn' 即可越出 /var/uploads 写任意路径，造成任意文件写入/提权。修复：用 path.basename + 白名单正则约束文件名，resolve 后校验最终路径仍以 UPLOAD_DIR 前缀开头，并限定扩展名。"
+    },
+    {
+      "file": "src/auth.ts",
+      "line": 14,
+      "severity": "major",
+      "title": "MD5 无盐哈希存储口令",
+      "detail": "createHash('md5').update(password) 无盐做口令存储，MD5 已被证明可被 GPU/彩虹表秒破（且无逐用户盐值，同口令哈希相同）。修复：改用 argon2id 或 bcrypt（自带随机盐、可调成本因子）。"
+    },
+    {
+      "file": "src/config.ts",
+      "line": 7,
+      "severity": "major",
+      "title": "关闭 TLS 证书校验（rejectUnauthorized: false）",
+      "detail": "上游 https://api.internal.example.com 的 tls.rejectUnauthorized 被设为 false，客户端不再校验服务端证书，中间人可任意替换证书解密/篡改流量，等价于明文传输。修复：移除该配置（默认 true），若为自签证书则显式配置受信 CA，而非整体关闭校验。"
+    },
+    {
+      "file": "src/counter.ts",
+      "line": 11,
+      "severity": "major",
+      "title": "check-then-act 竞态导致余额双花",
+      "detail": "withdraw 中 if (balance >= amount) 检查与 balance -= amount 扣减之间夹着 await settle()，两个并发请求可同时通过余额检查，各自扣减后余额被扣成负数（双花/超额提现）。修复：用原子操作（如数据库事务行锁 SELECT ... FOR UPDATE）、乐观锁版本号或串行化队列，保证检查与扣减的原子性。"
+    },
+    {
+      "file": "src/auth.ts",
+      "line": 9,
+      "severity": "minor",
+      "title": "明文口令比较、非常量时间",
+      "detail": "login 用 user === 'admin' && password === ADMIN_PASSWORD 做明文比较，未走哈希校验，且字符串比较非常量时间，理论上存在时序侧信道，同时耦合了硬编码口令。修复：改为比对存储的哈希并使用 crypto.timingSafeEqual 做常量时间比较。"
+    },
+    {
+      "file": "src/upload.ts",
+      "line": 12,
+      "severity": "minor",
+      "title": "失败路径不可诊断",
+      "detail": "写文件失败（权限/磁盘/目录不存在）与 counter.ts 的扣减失败均直接抛出或静默返回，缺少错误上下文与日志，线上难以定位。修复：在失败分支补充结构化错误信息（目标路径、原因、请求标识）并记录，返回可区分的错误码。"
+    }
+  ],
+  "summary": "对 fixture 仓库（auth.ts / config.ts / counter.ts / upload.ts）完成四维度评审并委派安全专项深挖，结论一致。共 7 条发现：2 条 critical —— src/auth.ts:6 硬编码管理员口令、src/upload.ts:11 用户入参直接拼接路径造成任意文件写入（路径穿越）；4 条 major —— src/auth.ts:14 MD5 无盐口令存储、src/config.ts:7 关闭 TLS 证书校验（等价明文、MITM 面全开）、src/counter.ts:11 check-then-act 竞态导致余额双花；另有 auth.ts:9 明文/非常量时间口令比较与失败路径不可诊断 2 条 minor。全仓未命中 SQL 拼接、eval/exec、命令注入、不安全反序列化等额外风险面。存在 2 项可直接利用的 critical，须阻断合并并优先修复后重评。",
+  "riskLevel": "high"
+}
