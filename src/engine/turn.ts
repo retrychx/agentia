@@ -32,6 +32,7 @@ import type {
 import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
+import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
 import { createBudgetGuard } from './budget.js';
 import type { BudgetGuard } from './budget.js';
@@ -514,6 +515,9 @@ async function executeOneTool<S extends JsonSchema>(
     // 子循环拿不到就等于护栏在子循环期间离线（各级共享同一 recorder，按同一账单判断）
     ...(args.maxTotalTokens != null ? { maxTotalTokens: args.maxTotalTokens } : {}),
     ...(args.maxCostUsd != null ? { maxCostUsd: args.maxCostUsd } : {}),
+    // 裁判权（2026-09-17）：把本次的工具预算告诉工具自己 —— 带计时器的工具（MCP 桥）
+    // 据此交出裁判权，不再另开一个计时器判同一件事（否则同一事件会有两种账，见 spec §10 ⑤）。
+    ...(args.toolTimeoutMs != null ? { toolTimeoutMs: args.toolTimeoutMs } : {}),
   };
   let ok = true;
   let content: unknown = '';
@@ -579,9 +583,16 @@ async function executeOneTool<S extends JsonSchema>(
       }
     } catch (e) {
       ok = false;
-      errorKind = 'threw';
-      const err = classifyError(e);
-      content = `error(${err.type}): ${err.message}`;
+      if (isTimeoutError(e)) {
+        // 工具**自判**的超时（`code='timeout'`，如 MCP 桥的兜底路径）与引擎判的超时归同一类账：
+        // 同一个物理事件不该因为「谁先到」而变成两种 errorKind（此前是 threw + error(unknown)）。
+        errorKind = 'timeout';
+        content = `error(timeout): ${e instanceof Error ? e.message : String(e)}`;
+      } else {
+        errorKind = 'threw';
+        const err = classifyError(e);
+        content = `error(${err.type}): ${err.message}`;
+      }
     }
   }
   args.recorder.event(turnId, 'tool.output', {

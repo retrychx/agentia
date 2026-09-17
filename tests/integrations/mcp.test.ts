@@ -32,6 +32,17 @@ function fakeMcp(
   return { client, calls, listed: () => listed };
 }
 
+/** 取 trace 里第一条 `tool.output` 事件正文（桥接进主循环后的账目） */
+function toolOutput(trace: { spans: Array<{ events: Array<{ name: string; body: unknown }> }> }) {
+  for (const s of trace.spans) {
+    for (const e of s.events) {
+      if (e.name === 'tool.output')
+        return e.body as { ok?: boolean; errorKind?: string; content?: string };
+    }
+  }
+  throw new Error('trace 里没有 tool.output 事件');
+}
+
 const OBJ = { type: 'object', properties: { tz: { type: 'string' } } } as const;
 
 describe('mcpTools —— MCP 桥（D1）', () => {
@@ -189,17 +200,80 @@ describe('mcpTools 接进主循环（D1 e2e 单进程版）', () => {
     assert.match(String((out.body as { content: string }).content), /server 内部错误/);
   });
 
-  it('桥自带超时（timeoutMs）→ 该条 is_error 且消息可诊断，不杀 run', async () => {
+  it('兜底超时（引擎未设 toolTimeoutMs）→ is_error + errorKind=timeout，不杀 run', async () => {
     const mcp = fakeMcp([{ name: 'hang', inputSchema: OBJ }], () => new Promise(() => {}));
     const tools = await mcpTools(mcp.client, { server: 's', timeoutMs: 20 });
     const { client } = mockClient([toolUseMsg('mcp_s_hang', {}), endTurnMsg('放弃')]);
     const result = await runAgent({ messages: [{ role: 'user', content: 'go' }], tools, client });
 
     assert.equal(result.stopReason, 'end_turn');
-    const turn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;
-    const out = turn.events.find((e) => e.name === 'tool.output')!;
-    assert.equal((out.body as { ok: boolean }).ok, false);
-    assert.match(String((out.body as { content: string }).content), /调用超时（超过 20ms）/);
+    const out = toolOutput(result.trace);
+    assert.equal(out.ok, false);
+    assert.match(String(out.content), /调用超时（超过 20ms）/);
+    // 账目必须与引擎自己判的超时同类：此前是 errorKind='threw' + error(unknown)（同一事件两种账）
+    assert.equal(out.errorKind, 'timeout');
+  });
+
+  it('单一裁判：引擎设了 toolTimeoutMs ⇒ 桥的 timeoutMs 不参与判定（更短也不抢）', async () => {
+    const mcp = fakeMcp([{ name: 'slow', inputSchema: OBJ }], async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      return { content: [{ type: 'text', text: 'late-but-ok' }] };
+    });
+    const tools = await mcpTools(mcp.client, { server: 's', timeoutMs: 20 }); // 桥 20ms「更短」
+    const { client } = mockClient([toolUseMsg('mcp_s_slow', {}), endTurnMsg('done')]);
+    const result = await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      tools,
+      client,
+      toolTimeoutMs: 5000,
+    });
+
+    const out = toolOutput(result.trace);
+    assert.equal(out.ok, true, '引擎设了预算 ⇒ 桥不得再判一次超时（旧行为：20ms 抛错记 threw）');
+    assert.equal(out.errorKind, undefined);
+  });
+
+  it('单一裁判：超的是引擎预算时，记的是引擎的账（timeout 文案也是引擎的）', async () => {
+    const mcp = fakeMcp([{ name: 'hang', inputSchema: OBJ }], () => new Promise(() => {}));
+    const tools = await mcpTools(mcp.client, { server: 's', timeoutMs: 5000 }); // 桥更长，同样不该抢
+    const { client } = mockClient([toolUseMsg('mcp_s_hang', {}), endTurnMsg('放弃')]);
+    const result = await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      tools,
+      client,
+      toolTimeoutMs: 60,
+    });
+
+    const out = toolOutput(result.trace);
+    assert.equal(out.ok, false);
+    assert.equal(out.errorKind, 'timeout');
+    assert.match(String(out.content), /工具执行超过 60ms/, '账目文案属于裁判（引擎）');
+  });
+
+  it('兜底路径同样不靠竞速：resolve 后同步阻塞越过截止 ⇒ 必须记超时，不得记成功', async () => {
+    // 与 spec §10 ② 证明 withTimeout 有病的是同一构造：**确定性**，不拿余量赌概率。
+    // 微任务已排入但要等本轮回调跑完 ⇒ 下游先看见工具的返回值，而已到期的截止计时器
+    // 只能等下一轮 timers 阶段 —— 纯竞速实现会在这里放行（实测旧实现记 ok:true）。
+    const mcp = fakeMcp(
+      [{ name: 'blocked', inputSchema: OBJ }],
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({ content: [{ type: 'text', text: 'late' }] });
+            const t = Date.now();
+            while (Date.now() - t < 60) {
+              /* 同步阻塞越过 20ms 截止 */
+            }
+          }, 5);
+        }),
+    );
+    const tools = await mcpTools(mcp.client, { server: 's', timeoutMs: 20 });
+    const { client } = mockClient([toolUseMsg('mcp_s_blocked', {}), endTurnMsg('done')]);
+    const result = await runAgent({ messages: [{ role: 'user', content: 'go' }], tools, client });
+
+    const out = toolOutput(result.trace);
+    assert.equal(out.ok, false, '超预算的调用不得因赢下竞速被记成成功');
+    assert.equal(out.errorKind, 'timeout');
   });
 
   it('timeoutMs 非正数 = 不限（旧行为）', async () => {
