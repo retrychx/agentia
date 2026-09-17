@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+### 变更（MCP 超时单源化 —— 一次调用只有一个裁判）
+
+- **原语单源**：`TIMED_OUT` / `withTimeout` 下沉到 `src/core/timeout.ts`，`engine/concurrency.ts`
+  原样再导出（`import` 路径与名字对使用者与测试都不变）。MCP 桥的 `withDeadline` 改为它的**薄封装** ——
+  此前桥自带一份**纯竞速**实现，于是 2026-09-14 的「超时是硬的」收紧只落进引擎，桥能把**超预算**的
+  MCP 调用记成成功（确定性可复现；取证与决策见 `docs/spec.md` §10 2026-09-17 ①）。
+- **⚠️ 行为变更（迁移注意）**：引擎设了 `toolTimeoutMs` 时，`mcpTools({ timeoutMs })` **不再参与判定**
+  （即使桥的 `timeoutMs` 更短）—— 一次调用只有一个裁判，此前「谁短谁生效」让同一件事在 trace 里
+  落成两种账。要收紧某个 MCP server 的时限，请设 `toolTimeoutMs`（或把该工具单独包一层）。
+  桥的 `timeoutMs`（缺省 `MCP_DEFAULT_TIMEOUT_MS` = 60000）只在「桥脱离引擎单用」或
+  「引擎没设 `toolTimeoutMs`」时作为兜底，且兜底同样走**实测耗时**判定。
+- **超时归一类账**：工具自判的超时（抛 `code === 'timeout'` 的错误，桥的兜底超时即是）从
+  `errorKind='threw'` + `error(unknown)` 变为 `errorKind='timeout'` + `error(timeout): …`，
+  与引擎判的超时同类、同样**不杀 run**。按 `errorKind` 分流看板的查询请知悉这一变化。
+
 ### 修复（第五轮 review：三条「功能静默失效」+ 一批边界）
 
 - **`app.run` 丢掉 `signal`（取消全线失效）**：运行期入参是逐字段手抄进 `executeRun` 的，

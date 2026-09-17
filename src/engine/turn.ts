@@ -516,7 +516,7 @@ async function executeOneTool<S extends JsonSchema>(
     ...(args.maxTotalTokens != null ? { maxTotalTokens: args.maxTotalTokens } : {}),
     ...(args.maxCostUsd != null ? { maxCostUsd: args.maxCostUsd } : {}),
     // 裁判权（2026-09-17）：把本次的工具预算告诉工具自己 —— 带计时器的工具（MCP 桥）
-    // 据此交出裁判权，不再另开一个计时器判同一件事（否则同一事件会有两种账，见 spec §10 ⑤）。
+    // 据此交出裁判权，不再另开一个计时器判同一件事（否则同一事件会有两种账，见 spec §10 2026-09-17 ①）。
     ...(args.toolTimeoutMs != null ? { toolTimeoutMs: args.toolTimeoutMs } : {}),
   };
   let ok = true;

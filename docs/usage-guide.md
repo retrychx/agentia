@@ -432,7 +432,7 @@ process.on('SIGTERM', async () => {
 - **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**（构造期校验：必须 ≥ 0 的**有限**数 —— NaN/Infinity 会被 `setTimeout` 钳到 1ms，等于每个任务立即超时，故直接抛错；要「不限」传 0 或不设）。
 - **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与底层 client 的内置重试叠加（默认 client 的 `maxRetries` 缺省 2）—— 建议二选一调（这里 `maxAttempts: 1`，或 `createAnthropicClient({ maxRetries: 0 })`）。
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
-- **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。
+- **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。**超时判定只有一个裁判**：`toolTimeoutMs` 是唯一判据 —— 工具自带的超时（如 MCP 桥的 `timeoutMs`）在设了本项时**不参与**判定；反过来说，工具自判的超时（抛 `code='timeout'` 的错误）与引擎判的记**同一类账**（`errorKind='timeout'`），并同样回 `is_error`。
 
 ### 观测
 
@@ -551,12 +551,13 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 |---|---|
 | `mcpTools` | 把 MCP server 的 `tools/list` 映射成框架 `AgentTool[]`（进 `createApp({ tools })`） |
 | `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
-| `MCP_DEFAULT_TIMEOUT_MS` | 桥的缺省单次调用超时（60000 ms） |
+| `MCP_DEFAULT_TIMEOUT_MS` | 桥的**兜底**单次调用超时（60000 ms）—— 引擎设了 `toolTimeoutMs` 时**不参与**判定 |
 
 - **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名（原名不含任何 ASCII 字母/数字/下划线时产物为空，如全 emoji 名）/ 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
 - **原名**：每次调用写进发起 turn 的两条 attribute —— `mcp.tool.<菜单名>`（每次调用各一条，并行调用互不覆盖，审计 / 回放靠它把菜单名还原成 server 认识的原名）与 `mcp.tool`（本次 turn **最近一次**的原名，兼容既有查询）。
 - **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的子集校验器在 `callTool` **之前**校验（非法入参根本不会发给 server，模型自己会改）。
 - **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了。
+- **超时**：**只有一个裁判**。引擎设了 `toolTimeoutMs` 时，桥的 `timeoutMs`（缺省 `MCP_DEFAULT_TIMEOUT_MS` = 60000）**不参与判定**；它只在「桥脱离引擎单用」或「引擎没设 `toolTimeoutMs`」时作为兜底。两条路径共用同一判定（`core/timeout.ts`：**看实测耗时，不看竞速**），超时都记 `errorKind='timeout'` + `is_error` 回模型、**不杀 run**。你自己写的工具要报超时，抛一个 `code === 'timeout'` 的错误即可（不必 import 框架的类）。
 - **连接器不在框架里**（守「零运行时依赖」）：stdio / StreamableHTTP 归独立可选包，或你自己接 SDK 后实现 `McpClientLike`。本仓库 `scripts/e2e-mcp.ts` 有一份最小连接器可参考。
 
 ```ts
@@ -968,7 +969,7 @@ const callable = {
 | OpenAI 流式的上游故障不再装成功 | 流中 `error` 分片（上游把故障塞进 200 的流）与「流正常结束却无文本无 tool_calls」都**抛错**按失败处理 —— 不再静默映射成「成功空回复」（与非流式空 `choices` 的守卫同口径） |
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；连接器（stdio / HTTP）不在框架内 |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
-| MCP 超时同样是「不等了」 | 桥自带的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它与 engine 的 `toolTimeoutMs` **双重计时**，谁短谁生效 |
+| MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判），两条路径**同判定、同账**（`errorKind='timeout'`） |
 | MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool.<菜单名>` attribute 逐次可查；`mcp.tool` 是最近一次） |
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用（两种引用粒度都要先有 token） |
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |

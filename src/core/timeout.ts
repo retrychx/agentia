@@ -4,7 +4,7 @@
  * 为什么在 core：engine 的工具级超时（`engine/turn.ts`）与桥的 MCP 调用超时
  * （`integrations/mcp.ts`）**必须共用同一套判定**。此前两处各写一份，代价是
  * 2026-09-14 的「硬保证」收紧只落进了 `engine/concurrency.ts`，桥那一份继续用竞速判定 ——
- * 同一个承诺两套实现，于是同一个事件在 trace 里能有两种账（见 `docs/spec.md` §10 ⑤）。
+ * 同一个承诺两套实现，于是同一个事件在 trace 里能有两种账（见 `docs/spec.md` §10 2026-09-17 ①）。
  * `integrations` 只能依赖 core（`tests/architecture/layering.test.ts` 强制），
  * 所以单源的落点是 core。core 是叶子：本文件零 import。
  */
@@ -18,7 +18,7 @@ export const TIMED_OUT = Symbol('agentia.timed-out');
  * 为什么需要它：超时此前只能靠**错误文案**辨认 —— 桥抛的是普通 `Error`，而
  * `classifyError` 里没有 timeout 这一类，于是 trace 里记成 `error(unknown)` +
  * `errorKind=threw`，与引擎自己判的超时（`error(timeout)` + `errorKind=timeout`）
- * 成为同一事件的**两种账**（见 `docs/spec.md` §10 ⑤）。
+ * 成为同一事件的**两种账**（见 `docs/spec.md` §10 2026-09-17 ①）。
  *
  * 判定契约（对使用者可见）：**任何** `code === 'timeout'` 的错误都会被引擎归为
  * `errorKind='timeout'`，不需要 import 这个类（`isTimeoutError` 也认鸭子类型）。

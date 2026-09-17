@@ -128,7 +128,7 @@ export interface ToolRunContext {
    *
    * 存在的意义是**划定裁判权**：工具（尤其带自己计时器的桥，见 `integrations/mcp.ts`）
    * 据此知道「这次调用的超时由引擎判」，从而不再启动第二个计时器 —— 两个计时器判同一件事，
-   * 只会得到两种账（桥那份曾被记成 `error(unknown)` + `errorKind=threw`，见 spec §10 ⑤）。
+   * 只会得到两种账（桥那份曾被记成 `error(unknown)` + `errorKind=threw`，见 spec §10 2026-09-17 ①）。
    *
    * ⚠️ 它是本次调用的**配置值**，不是「剩余时间」。
    */

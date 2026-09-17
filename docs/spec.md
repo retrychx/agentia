@@ -339,8 +339,10 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   调不回去的名字）；**原名**每次调用写进发起 turn 的 `mcp.tool.<菜单名>` attribute（每次一条，并行调用互不覆盖；另留 `mcp.tool` 记最近一次，兼容既有查询）—— 审计 / 回放要还原它才能回调 server；
   `inputSchema` 原样透传（engine 的子集校验器在 `callTool` 之前先校验）；`callTool` 抛错 → 该条 `is_error`
   且**不杀 run**；**协议层 `isError: true` 框架看不见 —— 必须由连接器转成抛错**（否则模型以为成功）。
-  桥自带 `timeoutMs`（缺省 60000）= **放弃等待**（拿不到 server 侧取消句柄），与 engine 的 `toolTimeoutMs`
-  **双重计时、谁短谁生效**。**不做**：`sampling`（server 反向请求模型）/ `resources` / `prompts` 原语、连接池。
+  桥自带 `timeoutMs`（缺省 60000）= **放弃等待**（拿不到 server 侧取消句柄），但它是**兜底**、不是第二裁判：
+  **引擎设了 `toolTimeoutMs` 时本项不参与判定**（一次调用只有一个裁判 —— 此前的「双重计时、谁短谁生效」
+  会让同一件事在 trace 里落成两种账，2026-09-17 收口，见本文件 §10 同日 ①）。
+  **不做**：`sampling`（server 反向请求模型）/ `resources` / `prompts` 原语、连接池。
   **② evals**：新增 `src/eval/`（**叶子消费模块**，只依赖公共面、无反向依赖）：`scriptedClient(steps)`
   与 `defineEval<T>({ name, app, cases, expect })`。**语义锁定**：步骤在 `finalMessage()` **成功返回后才前进**
   （用函数步骤 `throw` 模拟 429 时，重试会**重放同一步** —— 想验重试就这么写）；`scriptedClient`
@@ -1279,6 +1281,72 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
   改成按行首判后咬人）；`verify-all.sh` 8/8；派生产物同一 sha。
   **教训（写进本仓库口径）**：凡「宿主/消费方测试用假实现」的边界，必须有一条走**真实现**的用例 ——
   三条 MAJOR 全部活在这类缝里。
+
+### 2026-09-17 ①：MCP 超时**单源化** —— 一次调用只有一个裁判（桥不再自判）
+
+**背景**：`engine/concurrency.ts` 的 `withTimeout` 自 2026-09-14 ②（本文件）起是「不看竞速、只看实测耗时」
+的硬保证；但同一判定在 `src/integrations/mcp.ts` 里有**第二份实现**（`withDeadline`，纯 `Promise.race`），
+而 ② 那次收紧只改了 engine 那一份（`git show --name-only 1ceb372` 的文件清单里**没有** `mcp.ts`）。
+
+**取证（先证再改，三档）**：
+
+- **确定性构造**（② 证明 `withTimeout` 有病时用的**同一个**构造：预算 20ms、工具 5ms resolve 后在同一回调里
+  同步阻塞 30ms）：桥返回 `'late'`（= `ok: true`，实测 wallMs **79**）、engine 返回 `TIMED_OUT`
+  ⇒ **超预算的调用被记成成功**。
+- **800 次扫描（8× CPU 超订）**：`预算20/工作20` 一档 **桥 800/800 记成功**（样本 elapsed 20/21/22 > 预算），
+  同档 engine 799 超时 + 1 次 19ms 合法返回；`预算20/工作21` 两实现都 800 全超时；3× 余量档 **0/800 未复现**
+  （与 ② 记的 1/1200 稀有度一致）—— **不据此下结论**。
+- **真引擎路径**（`runAgent` + `mcpTools`，读 trace 的 `tool.output`）：
+  `引擎20/桥20/工作20` → 40/40 `errorKind=timeout`；**`引擎20/桥20/工作21` → 40/40 `threw` + `error(unknown)`**；
+  `引擎5000/桥20/工作21` → 40/40 `threw`；`引擎20/桥5000/工作21` → 12/12 `timeout`；
+  `引擎不限/桥20/工作20` → 40/40 `ok:true`（durationMs 21）
+  ⇒ **同一个物理事件，账目取决于「谁先到」**。
+
+**根因**：同一个承诺两份实现，且桥那份是竞速判定；engine 的 catch 又把桥的普通 `Error` 交给 `classifyError`，
+而它**没有 timeout 这一类** ⇒ 同一事件裂成 `timeout` / `threw`+`unknown` 两种账。常见配置
+（引擎预算 ≤ 桥预算）下 engine 的实测耗时兜底**掩盖**了桥的缺口，这正是它一直没被发现的原因。
+
+**决定**：
+
+1. **原语单源**：`TIMED_OUT` + `withTimeout` 下沉到 `src/core/timeout.ts`（core 是叶子、零 import，且
+   `integrations` 只能依赖 core ⇒ 落点唯一）；`engine/concurrency.ts` **原样再导出**，`turn.ts` 与既有测试零改动。
+2. **一次调用只有一个裁判**：`ToolRunContext` 新增 `toolTimeoutMs`（engine 在 `executeOneTool` 注入）；桥在
+   「引擎设了预算」时**不再启动自己的计时器**。`McpToolsOptions.timeoutMs`（缺省 60000）退化为**兜底**，
+   只在「桥脱离引擎单用」或「引擎没设 `toolTimeoutMs`」时生效。
+3. **超时是一类账**：新增 `TimeoutError`（`code='timeout'`）与 `isTimeoutError`（认鸭子类型）；引擎的工具级
+   catch 把任何 `code==='timeout'` 的错误记成 `errorKind='timeout'` + `error(timeout): …`。对使用者可见的
+   契约是 **`code` 字段**，不需要 import 那个类。
+4. **兜底路径也用硬判定**（不是只搬代码）：桥的 `withDeadline` 变成共享原语的薄封装 —— 同一条实测耗时规则
+   对两条路径都成立，不存在「哪条路靠运气」。
+
+**代价（如实记）**：
+
+- **行为变更 1**：引擎设了 `toolTimeoutMs` 时桥的 `timeoutMs` **不再生效**（即使桥更短）。「谁短谁生效」
+  作废 —— 想收紧某个 MCP server 的时限请设 `toolTimeoutMs`。
+- **行为变更 2**：桥自判的超时从 `errorKind='threw'` + `error(unknown)` 变为 `errorKind='timeout'` +
+  `error(timeout): MCP 工具 "x" 调用超时（超过 20ms）`。**按 `errorKind` 分流看板的查询需知悉。**
+- 边界语义收紧（同 ②）：耗时刻到预算即算超时。
+
+**门禁**（均为**确定性**构造，不拿余量赌概率）：
+
+- `tests/core/timeout.test.ts`（新）：共享原语直接单测（哨兵区别 `undefined` / 非正预算透传 /
+  `TimeoutError.code` / `isTimeoutError` 只认那一个 code）。
+- `tests/integrations/mcp.test.ts`：兜底超时**记 `errorKind=timeout`**（旧断言只看了 `ok=false` 与文案）；
+  「单一裁判」两条（引擎 5000 + 桥 20 ⇒ 必须成功；引擎 60 + 桥 5000 ⇒ 记引擎的账与文案）；
+  **兜底路径的确定性构造**（resolve 后同步阻塞越过截止 ⇒ 必须记超时）。
+- `tests/engine/toolTiming.test.ts`：工具抛 `code='timeout'` ⇒ `errorKind='timeout'`。
+- **变异电池 7/7 咬人**：桥不交出裁判权 / 桥退回纯竞速 / 去掉实测耗时兜底 / `isTimeoutError` 恒 false /
+  引擎不认自判超时 / 不注入 `toolTimeoutMs` / 桥丢掉 `code` —— 每条都指名了变红的用例。
+- **顺序**：既有 39 条（concurrency / toolTiming / mcp / timeoutLiveness）在**单源化那一步之后**先跑一遍全绿
+  ⇒ 证明「提取零行为变化」，**然后**才做行为变更（两件事分开验，免得把重构错判成回归）。
+
+**未坐实 / 未做（如实标注）**：
+
+- 3× 余量下的桥翻转未复现（0/800）；本条证据是确定性构造与边界档，不依赖它。
+- 「同批到期、计时器表顺序决定谁先」仍是**假说**（② 同样保留）。
+- **`classifyError` 仍不认 `timeout`** ⇒ 模型调用超时（`anthropic.ts` 的 `DOMException('TimeoutError')`、
+  OTLP / metrics 导出超时）在 `span.error` 上仍是 `type:'unknown'`。**没有顺手改**：`retryable` 有消费方
+  （`engine/retry.ts` 的自动重试），把超时标成可重试会改变「模型超时要不要自动重试」的行为 —— 那是独立决策。
 
 ## 11. 开放项
 

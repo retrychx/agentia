@@ -55,7 +55,7 @@ export interface McpToolsOptions {
   /**
    * **兜底**单次 `callTool` 超时（毫秒），缺省 60000；非正数 = 不限。
    *
-   * ⚠️ 语义（2026-09-17 收紧，见 spec §10 ⑤）：**引擎设了 `toolTimeoutMs` 时本项不参与判定** ——
+   * ⚠️ 语义（见 spec §10 2026-09-17 ①）：**引擎设了 `toolTimeoutMs` 时本项不参与判定** ——
    * 一次调用只有一个裁判，否则同一件事会有两个计时器、两种账。它只在两种情况生效：
    * ① 桥脱离引擎单用（直接 `tool.run(...)`，没有 ctx）；② 引擎没设 `toolTimeoutMs`。
    *
@@ -86,7 +86,7 @@ function normalizeToolName(raw: string): string {
  * 给一次 MCP 调用套超时。⚠️ 与引擎的工具超时同样是**放弃等待**而非取消 ——
  * MCP 的 `notifications/cancelled` 属于连接器职责，桥这一层拿不到取消句柄。
  *
- * 实现是 `core/timeout.ts` 共享原语的**薄封装**（2026-09-17 单源化，见 spec §10 ⑤）：
+ * 实现是 `core/timeout.ts` 共享原语的**薄封装**（2026-09-17 单源化，见 spec §10 2026-09-17 ①）：
  * 「一次调用只有一个预算判定」在引擎与桥之间只允许有一份实现。此前桥自带一份**纯竞速**
  * 版本，于是 2026-09-14 的「超时是硬的」收紧只落进引擎，桥继续把**超预算**的调用记成成功。
  *
@@ -186,7 +186,7 @@ export async function mcpTools(
           input && typeof input === 'object' && !Array.isArray(input)
             ? (input as Record<string, unknown>)
             : {};
-        // 裁判权（2026-09-17，见 spec §10 ⑤）：引擎设了工具预算时，桥**不启动自己的计时器** ——
+        // 裁判权（2026-09-17，见 spec §10 2026-09-17 ①）：引擎设了工具预算时，桥**不启动自己的计时器** ——
         // 两个计时器判同一件事，只会得到两种账（桥那份曾被记成 error(unknown)/errorKind=threw），
         // 而且桥的纯竞速还会把超了预算的调用记成成功。`timeoutMs` 退化为兜底（脱离引擎单用 /
         // 引擎没设 toolTimeoutMs 时生效）。

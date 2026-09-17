@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { isTimeoutError, TIMED_OUT, TimeoutError, withTimeout } from '../../src/core/timeout.js';
 
 /**
- * 共享超时原语（2026-09-17 单源化，见 `docs/spec.md` §10 ⑤）。
+ * 共享超时原语（2026-09-17 单源化，见 `docs/spec.md` §10 2026-09-17 ①）。
  *
  * 为什么要**直接**单测它：这份原语此前散在两处 —— `engine/concurrency.ts` 与
  * `integrations/mcp.ts` 各写一份，于是「超时是硬的」那次收紧只落进前者，桥那一份
