@@ -8,6 +8,7 @@
 | [`deploy/`](./deploy/) | **最小**可交付服务：HTTP 宿主 + `SqliteTaskStore` + `/healthz` + 优雅停机 + Docker | 想知道「怎么把它跑上线」时 |
 | [`complete/`](./complete/) | **完整**示例：四类能力 + 三种触发 + 鉴权 + 全观测栈（上面四个 sink 接成一条链）+ Docker | 想知道「一个真实服务长什么样」时 |
 | [`code-review/`](./code-review/) | **产品验证**示例：代码评审 agent 服务 —— 四类能力编排 + 结构化报告 + trace/成本数字，离线确定性 demo 与真模型两种跑法 | 想看「拿它做一个真业务长什么样、跑一轮花多少钱」时 |
+| [`grpc-host/`](./grpc-host/) | **第 4 个宿主**：gRPC 服务定义 → `RunInput` → `app.run` / `runner.submit`（一元 / 服务端流 / 异步投递 / 查任务；deadline→signal、metadata traceparent→link） | 想给已有服务加一个 gRPC 入口、又不想把语义写歪时 |
 
 配套阅读：[`docs/observability.md`](../docs/observability.md)（配方讲解）、
 [`docs/usage-guide.md`](../docs/usage-guide.md)（API 速查）、[`docs/spec.md`](../docs/spec.md)（设计规格）。

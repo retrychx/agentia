@@ -369,6 +369,77 @@ const app = await createApp({ ... });
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；客户端结构面 `get` / `set` / `del` / `keys`（或 `scanIterator`），外加设 TTL 时必需的 `expire`。`set` **只传两参** —— 尾参的选项形状两家相反：ioredis 认位置参数 `('EX', n)`、node-redis 认对象 `{ EX: n }`，取任何一种都会在另一家上失效（ioredis 会把对象字符串化成 `"[object Object]"` 报语法错；**node-redis 的 `SET` 只声明三个形参，位置参数被静默丢弃**）。所以 TTL 一律走 `expire(key, seconds)`（两家同名同形）；设了 `ttlSeconds > 0` 却没给 `expire` 时**构造期抛错**，不静默丢掉 TTL |
 
+#### gRPC 宿主（第 4 个宿主，**框架不内置**）
+
+gRPC 不是「另一种 broker」，它与 HTTP 是同一档的东西：**触发宿主**。所以正确形状与 HTTP 宿主
+同构 —— 只产服务实现、不 listen（监听/端口/信号都是宿主的职责）：
+
+```ts
+const out = await app.run(normalizeMessages(req.input), {
+  signal: ac.signal,                                        // ① 中断
+  ...(traceContext !== undefined ? { traceContext } : {}),  // ② 入站链路
+  rethrow: false,                                           // 跑失败是业务结果，不是传输错误
+});
+```
+
+**为什么框架不内置 gRPC**（与「MCP 连接器内置」不矛盾，判别规则只有一条）：
+MCP stdio 只用标准库（`spawn` + 全局 `fetch`）⇒ **内置不新增一个第三方依赖**；
+gRPC 必须引第三方客户端（`@grpc/grpc-js`）⇒ 落在「可选能力一律 duck-typed / peer」那一侧。
+「零运行时依赖」是公开承诺（`package.json` 三个依赖字段全空），所以它只能以**配方 + 示例**存在。
+真有第二个使用方要同一份逻辑时再考虑独立包，且粒度是**一个第三方客户端一个包** ——
+不是把所有集成塞进一个「服务包」（理由见 spec §10 2026-09-18 ⑪）。
+
+**宿主必须自己接上的四处**（漏掉任何一条都**不会报错**，只会静默丢东西）：
+
+```
+① deadline / 客户端取消  →  AbortSignal  →  options.signal
+   不接 = 客户端已经走了，服务端还把这次 run 跑完（token 照烧），trace 里也看不出「白跑了一轮」
+② metadata `traceparent` →  options.traceContext  →  run 根一条 link
+   不接 = 跨进程关联在服务边界上断掉（§6.4「跨进程关联」那条缝在 gRPC 宿主上同样成立）
+③ 框架错误 → gRPC 状态码（照抄 classifyError 的分类，别自己 instanceof 厂商错误类）
+   不接 = 全部塌成一个 UNKNOWN，调用方的重试策略随之失效
+④ trace → sink（落盘 / OTLP / 指标）
+   不接 = RPC 回了结果，但「这次为什么慢 / 贵 / 失败」没有证据 —— trace 决定你敢不敢上线
+```
+
+**错误 → 状态码**照着引擎的分类口径写（`classifyError` 认的是**数据属性**：数值 `status` /
+errno `code`，不是 `instanceof`）：
+
+```ts
+const t = classifyError(e).type;
+t === 'rate_limit'                ? grpc.status.RESOURCE_EXHAUSTED
+: t === 'server' || t === 'connection' ? grpc.status.UNAVAILABLE
+: t === 'timeout'                 ? grpc.status.DEADLINE_EXCEEDED
+: t === 'aborted'                 ? grpc.status.CANCELLED
+: t === 'api'                     ? grpc.status.INVALID_ARGUMENT  // 4xx：调用方写错了
+:                                   grpc.status.INTERNAL
+```
+
+**run 失败 ≠ RPC 失败**：与 HTTP 宿主 200 + `status: failed` 同口径 —— run 的硬失败是**业务结果**
+（`rethrow: false`，看 `status` / `error` 字段），别翻成 UNKNOWN 让调用方以为是基础设施故障。
+只有宿主层面的失败（入参不可规整、停机中）才用非 OK 状态码。
+
+**流式**走同一个 `onText` 缝（不是 gRPC 特例）：`onText: (d) => call.write({ textDelta: d })`，
+末帧下发整份结果 —— 与 HTTP 宿主的 SSE 事件一一对应（`text.delta` / `run.end`），
+前端能把两套传输共用一套渲染逻辑。
+
+**调用方怎么带上游链路**：metadata 里放 W3C `traceparent`（与 HTTP 头同格式、同一个
+`parseTraceparent` 解析）；**畸形头静默当作没有上游**，不打回失败 —— 链路是观测行为，
+一个畸形头不该把业务请求打成错误。
+
+**现成可跑**：仓库 `examples/grpc-host/`（proto + 宿主 + 客户端 + e2e；四个 RPC：一元 /
+服务端流 / 异步投递 / 查任务态），README 里每条都是可执行命令：
+
+```bash
+cd examples/grpc-host && npm install
+npm run serve     # 起宿主；PORT=0 时它打印实际端口（不靠外部探端口，没有抢占窗口）
+npm run client    # 另一个终端：把四个 RPC 跑一遍
+```
+
+它的 e2e（`npm run e2e:grpc`）守的正是上面四处语义：deadline 到期后**服务端的 run 真被 abort**
+（trace 里 `error.type=aborted`，而不是跑完）、`traceparent` 落成 run 根 link、
+同 `session_id` 的两轮 run 共享历史、同 `idempotency-key` 重投不重复执行。
+
 #### HTTP 端点速查（`createHttpHandler` 的路由）
 
 | 端点 | 请求 | 响应 |
@@ -587,6 +658,8 @@ runner.submit(msg.value, {
 ```
 
 异步任务可以在 `POST /tasks` 的 body 里显式给 `options.traceContext`，它优先于 `traceparent` 头。
+换宿主这条缝不变：gRPC 宿主把 metadata 的 `traceparent` 翻进 `options.traceContext`，
+见 §6.2「gRPC 宿主」。
 
 > **只做入站**：框架**不生成**出站 `traceparent`（运行中没有「当前 span」这个概念，硬造一个会是假的
 > spanId，比不做更糟）。要从 run 往外传，用结果里的 `runId`（== `traceId`）拼你自己的头，见 §7 已知边界。

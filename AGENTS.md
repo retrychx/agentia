@@ -55,6 +55,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── scripts/e2e-deploy.ts    # 部署示例端到端（npm run e2e 第三步：examples/deploy 真构建、真起服务，
 │                            #   跑 /healthz · 同步 /run · /metrics · 优雅停机 + **崩溃续跑**
 │                            #   （SIGKILL 后同库重启 resumePending 续跑）；假 Anthropic 端点，不联网）
+├── scripts/e2e-grpc.ts      # gRPC 宿主端到端（npm run e2e 第四步：examples/grpc-host 真构建、真起宿主，
+│                            #   用**示例自带的客户端**跑四个 RPC —— 一元 / 服务端流 / 异步投递 / 查任务；
+│                            #   守四处语义：deadline 到期服务端 run 真被 abort、metadata traceparent →
+│                            #   run 根 link、同 session_id 共享历史、同 idempotency-key 不重复执行；
+│                            #   假 Anthropic 端点 + tempdir trace，不联网、不留产物）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
 ├── scripts/e2e-live.ts      # 真 API 集成验证（npm run e2e:live：真实厂商端点跑框架主路径 ——
 │                            #   SSE 分片 / tool_use / tool_result 回灌 / cache_control / signal 中止 /
@@ -124,6 +129,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   ⚠️ `tsconfig.json` 的 `"types": ["node"]` **不可删**：全仓 @types/node 此前是靠
   「import SDK 类型 → undici-types → `/// <reference types="node" />`」的传递链偶然进编译程序的，
   SDK import 移除后只能靠显式声明。
+- **宿主 / 集成接入不打包**（判别规则只有一条：**客户端是不是标准库**）：只用标准库的平台能力
+  （MCP stdio 的 `spawn` + 全局 `fetch`）直接内置；要引第三方客户端的（gRPC 的 `@grpc/grpc-js`、
+  Kafka 的 `kafkajs`）**只留 duck-typed 缝 + 配方 / 示例**，框架永不 import —— 这就是
+  `examples/grpc-host/` 是示例而不是包的原因。真到该拆包时，粒度是**一个第三方客户端一个包**，
+  不是把所有集成塞进一个「服务包」；理由与升级触发条件见 spec §10 2026-09-18 ⑪。
 - **默认 client 是自研 fetch + SSE 实现**：`src/integrations/anthropic.ts` 手写
   `POST {baseURL}/v1/messages` + 逐行 SSE 组装，**不再实例化 `@anthropic-ai/sdk`**；
   引擎经 `createAnthropicClient()` 取默认 client。使用者自定义只需
@@ -162,7 +172,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     等一个永不出现的检查。折进已有步骤还有个好处 —— 新检查直接落进**必需**检查里。
     lint 就是这么进来的：它原本只在 CI 的独立 job 里，本地链不跑它，于是「本地 8/8 全绿、
     CI 挂 Biome」是可能的（2026-09-14 真发生了一次）。
-  - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）**+ `examples/` 三份示例的 `src`**
+  - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）**+ `examples/` 四份示例的 `src`**
     —— 示例此前被 tsconfig 排除在外，等于「文档指着它说『完整可跑写法』、却没有任何门禁守着」；
     靠 `paths` 映射指到框架 `src` 与 `examples/observability` 源码，因此**无需在示例目录里 install** 即可检查；
   - `typecheck:types` = **针对构建产物 dist 的类型断言测试**（`tests/types/`，用 `@ts-expect-error`

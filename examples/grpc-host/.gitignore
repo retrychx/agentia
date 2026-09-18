@@ -1,0 +1,2 @@
+# 本地跑 `npm run serve` / `npm run client` 的产物（trace.jsonl 等）
+out/
