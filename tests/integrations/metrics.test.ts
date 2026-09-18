@@ -764,3 +764,69 @@ describe('基数上限（内存上界：三个维度的键空间都得封住）'
     assert.throws(() => metricsSink({ maxScores: Number.NaN }), /maxScores/);
   });
 });
+
+/**
+ * D（2026-09-18 第七轮复审）：基数上限折叠必须**在 /metrics 上可见**。
+ *
+ * 此前 `droppedCapabilities/Models/Scores` 只存在于 `snapshot()`，`render()` 一个都没有 ——
+ * 而文档让用户把 `metricsSink()` 接到 `GET /metrics`（只消费 `render()`），
+ * 于是 Prometheus-only 的部署**完全看不见折叠发生**（静默丢失）。
+ * 对照：同一份文件对「算不出成本的 turn」专门发了 `model_unpriced_turns_total`。
+ */
+function traceWithModel(model: string): Trace {
+  const traceId = `t-${model}`;
+  const rootSpanId = `r-${model}`;
+  return {
+    traceId,
+    rootSpanId,
+    status: 'ok',
+    totalUsage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    spans: [
+      {
+        spanId: rootSpanId,
+        traceId,
+        parentSpanId: null,
+        kind: 'run',
+        name: 'app',
+        startedAt: 1,
+        endedAt: 2,
+        status: 'ok',
+        attributes: {},
+        events: [],
+      },
+      {
+        spanId: `s-${model}`,
+        traceId,
+        parentSpanId: rootSpanId,
+        kind: 'llm.turn',
+        name: model,
+        startedAt: 1,
+        endedAt: 2,
+        status: 'ok',
+        attributes: {},
+        events: [],
+      },
+    ],
+  };
+}
+
+describe('D：基数折叠在 render() / Prometheus 面可见', () => {
+  it('maxModels=1 + 3 个模型 → 三个 *_dropped_keys gauge，且折叠数对得上 snapshot', () => {
+    const sink = metricsSink({ maxModels: 1 });
+    for (const m of ['m-a', 'm-b', 'm-c']) sink.export(traceWithModel(m));
+
+    assert.equal(sink.snapshot().droppedModels, 2, '两条被折叠（这是 snapshot 侧的既有口径）');
+    const text = sink.render();
+    assert.match(text, /# TYPE agentia_dropped_keys gauge/);
+    assert.match(text, /agentia_dropped_keys\{kind="model"\} 2/);
+  });
+
+  it('恒定发三个（即使为 0）—— 「0 → N」本身就是要告警的信号', () => {
+    const sink = metricsSink();
+    sink.export(traceWithModel('m-a'));
+    const text = sink.render();
+    for (const k of ['capability', 'model', 'score']) {
+      assert.match(text, new RegExp(`agentia_dropped_keys\\{kind="${k}"\\} 0`));
+    }
+  });
+});

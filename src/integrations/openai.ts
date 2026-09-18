@@ -423,6 +423,24 @@ function statusOfStreamError(err: { type?: string; code?: string | null }): numb
   const key = `${err.type ?? ''} ${err.code ?? ''}`.toLowerCase();
   if (key.includes('rate_limit') || key.includes('insufficient_quota') || key.includes('too_many'))
     return 429;
+  // 4xx 档：这些是**改配置才有救**的病因（上下文超限 / 模型名错 / 鉴权 / 内容策略），
+  // 一律 500 + retryable 会让引擎白重试 3 次（3 次网络请求 + 3 倍等待），
+  // 且 trace 记成 `server` 而非 `api` —— 排障方向被带偏。
+  //
+  // 注意**不能照抄 anthropic.ts 的那三档**：anthropic 协议只有
+  // `rate_limit_error` / `overloaded_error` / `api_error` 三种 type，默认 500 是合理的；
+  // OpenAI 兼容生态的类型多得多（这里全部来自真实兼容端点的错误码）。
+  if (
+    key.includes('invalid_request') ||
+    key.includes('context_length') ||
+    key.includes('model_not_found') ||
+    key.includes('does_not_exist') ||
+    key.includes('content_filter') ||
+    key.includes('authentication') ||
+    key.includes('permission')
+  ) {
+    return 400;
+  }
   return 500;
 }
 
@@ -602,6 +620,19 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
       name: tc.function.name,
       input: parseToolArgs(tc.function.arguments),
     } as ToolUseBlock);
+  }
+
+  // 空补全守卫（**非流式**）：与流式路径 accumulatorToMessage 的同款判据对齐。
+  // 200 + `message.content = null` + `finish_reason: 'stop'` 是上游故障（网关截断、
+  // 兼容端点 bug；`stream:false` 正是文档给的兜底形态），映射成「空文本 + end_turn」
+  // 会被记成正常收尾 —— 与模块头「上游故障绝不映射成成功」相反，且同一个响应在流式路径上
+  // 会被判失败。例外同流式：`content_filter`（refusal）是**合法**的空回复。
+  if (content.length === 0 && mapStopReason(choice?.finish_reason, false) !== 'refusal') {
+    throw new OpenAICompatApiError(
+      500,
+      `OpenAI 兼容端点返回空补全（id=${data.id ?? 'unknown'}，finish=${choice?.finish_reason ?? '缺失'}）；` +
+        '响应无可用补全，按上游故障处理',
+    );
   }
 
   return {

@@ -389,3 +389,55 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
     assert.equal(requests[0].json.messages[0].content, '只有文本');
   });
 });
+
+/**
+ * B（2026-09-18 第七轮复审）：流内 error 分片的 status 反推必须分 4xx/429/5xx 三档。
+ *
+ * 此前只把限流类判 429、**其余一律 500 + retryable**：于是「上下文超限 / 模型名错」
+ * 这类**改配置才有救**的 4xx 病因被引擎白重试 3 次（3 次请求 + 3 倍等待），
+ * 且 trace 记成 `server` 而非 `api`。
+ */
+describe('B：流内 error 分片的 status 反推（4xx / 429 / 5xx 三档）', () => {
+  const errShard = (error: Record<string, unknown>) => sseFetch(sseBody([{ error }, '[DONE]']));
+
+  const statusOf = async (
+    error: Record<string, unknown>,
+  ): Promise<{ status: number | undefined; c: ReturnType<typeof classifyError> }> => {
+    const { fetchImpl } = errShard(error);
+    const client = createOpenAIClient({ apiKey: 'k', fetchImpl, maxRetries: 0 });
+    let seen: { status: number | undefined; c: ReturnType<typeof classifyError> } | null = null;
+    await assert.rejects(
+      () => client.messages.stream(BASE).finalMessage(),
+      (e: unknown) => {
+        seen = { status: (e as { status?: number }).status, c: classifyError(e) };
+        return true;
+      },
+    );
+    return seen!;
+  };
+
+  it('确定性 4xx 病因（invalid_request / context_length）→ 400 且**不可重试**', async () => {
+    const { status, c } = await statusOf({
+      type: 'invalid_request_error',
+      code: 'context_length_exceeded',
+      message: 'context length exceeded',
+    });
+    assert.equal(status, 400);
+    assert.equal(c.type, 'api');
+    assert.equal(c.retryable, false, '改配置才有救的错误重试 3 次只是白烧请求与等待');
+  });
+
+  it('限流仍是 429 + 可重试（既有行为不变）', async () => {
+    const { status, c } = await statusOf({ type: 'rate_limit_exceeded', message: 'slow down' });
+    assert.equal(status, 429);
+    assert.equal(c.type, 'rate_limit');
+    assert.equal(c.retryable, true);
+  });
+
+  it('未知/服务端故障仍是 500 + 可重试（既有的保守档不变）', async () => {
+    const { status, c } = await statusOf({ type: 'server_error', message: 'boom' });
+    assert.equal(status, 500);
+    assert.equal(c.type, 'server');
+    assert.equal(c.retryable, true);
+  });
+});

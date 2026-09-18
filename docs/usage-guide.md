@@ -606,6 +606,8 @@ runner.submit(msg.value, {
   来自 `capability` span。**`@Prompt` 不建 span、无独立耗时，因此不产出能力指标**（如实缺省，不硬凑）。
 - **模型级** —— 按模型（`llm.turn` 的 span name）归因 turn 数 / token / 成本 / 耗时，并单独给出
   `model_unpriced_turns_total`（算不出成本的 turn 数 —— **成本护栏失效的显式信号**）。
+  同理，**标签基数折叠不是静默的**：`agentia_dropped_keys{kind="capability"|"model"|"score"}`
+  （恒定发三个样本，即使为 0 —— 「0 → N」这个变化本身就是要告警的信号）。
 - **评分级** —— 来自 run 根 span 的 `score` 事件（`attachScore` 写入）：
   `agentia_score{name,source}` gauge 记**最近一次**值（分数不是累加量），`agentia_score_total{name,source}` counter 记条数；
   `snapshot().scores` 以 `name@source` 为键（source 缺省时裸 name）暴露 `{ value, count, sum }`（平均 = sum/count），
@@ -654,6 +656,8 @@ runner.submit(msg.value, {
 - 分位是**窗口内精确值**（最近 rank 法），只反映最近 `windowSize` 条样本；**直方图计数是累积的**（全历史），两者语义不同、各有各的用处。
 - **内存上限** ≈ `(1 + 能力数 + 模型数) × windowSize` —— 三个维度都由基数上限封顶（`maxCapabilities` / `maxModels` / `maxScores`），长跑宿主不会被拖住。
 - 超上限的键折叠进 `__other__`：**丢的只是标签粒度，量不丢** —— `__other__` 桶照常累加，`snapshot()` 里各维度的总数仍然对得上。被折叠的**不同**键数见 `droppedCapabilities` / `droppedModels` / `droppedScores`（各自最多记账 1024 个键，满了以后是下界）。
+**同样的数在 `/metrics` 上也看得见**（`render()`）：`agentia_dropped_keys{kind=…}` —— 只看 Prometheus
+不看 `snapshot()` 的部署不会漏掉折叠。
 - `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
 
 #### 调用树面板（`agentia dev` 的本地面板 / 官网 Playground）

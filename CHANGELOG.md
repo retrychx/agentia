@@ -5,6 +5,54 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 修复（第七轮复审收口：三处「不报错地不干活」）
+
+- **Anthropic 适配器：流被截断 / 空流现在抛带 `status` 的错误**（`AnthropicApiError(500)`）。
+  此前两处抛裸 `Error` ⇒ `classifyError` 判 `unknown` + `retryable:false`：上游故障被记成「模型的
+  协议问题」（排障方向被带偏），且**引擎层重试一次都不会发生**。更糟的是「已吐出半句之后断流」——
+  内容非空使旧判据（`!started`）不触发，`stop_reason: null` 落 `unknown_stop_reason`（同样不可重试）。
+  现在按 openai 侧同款判据：**既无 `message_stop`、也无 `message_delta` 的 `stop_reason` ⇒ 抛 500 可重试**。
+- **OpenAI 适配器：流内 error 分片的 status 反推分三档**（此前只把限流判 429、其余一律 500 + 可重试）。
+  `invalid_request_error` / `context_length_exceeded` / `model_not_found` / 鉴权 / `content_filter` 这类
+  **改配置才有救**的 4xx 病因现在判 400 且**不可重试**（此前白重试 3 次、trace 记成 `server` 而非 `api`）。
+- **OpenAI 适配器：非流式路径的「200 + 空补全」不再记成成功**。`choices[0].message.content = null`
+  + `finish_reason: 'stop'` 此前映射成「空文本 + end_turn」成功收尾，而同一响应在**流式**路径上会被判
+  失败 —— 两条路径结论相反，且与模块头「上游故障绝不映射成成功」相反。`content_filter` 的合法空回复
+  仍豁免（与流式同款例外）。
+- **`AsyncRunner.resumePending` 补重入闸**：并发/重入调用现在**共享同一次扫描的结果**（返回在飞那个
+  Promise，而不是谎报 0）。「先落库再派发」只堵住了**串行**重扫 —— 认领是异步的，两个并发调用都在任一
+  `save` 落地前 `list()` 到旧快照，`ownerId` 过滤双双失效 ⇒ 同一任务被派发两次（副作用与花费翻倍）。
+- **`metricsSink`：基数折叠在 `/metrics` 上可见** —— 新增 gauge 家族
+  `agentia_dropped_keys{kind="capability"|"model"|"score"}`（Prometheus 与 OTLP 两侧都出，恒定发三个样本）。
+  此前 `droppedCapabilities/Models/Scores` 只存在于 `snapshot()`，而文档让用户把 `metricsSink()` 接到
+  `GET /metrics`（只消费 `render()`）⇒ Prometheus-only 的部署**完全看不见折叠发生**（静默丢失）；
+  对照：同一份文件对「算不出成本的 turn」专门发了 `model_unpriced_turns_total`。
+- **`metrics.ts` 的 OTLP 导出失败改抛 `MetricsExportError`（带数值 `status`）**：裸 `Error` 被判
+  `unknown`，宿主在 `onExportError` 里拿不到 status，无法区分「collector 拒收（4xx，改配置）」与
+  「collector 挂了（5xx，等它回来）」。
+
+### 修复（守卫自身的洞 —— 本版主题是「把没门禁的约定收口」，而守卫自己有洞）
+
+- **`tests/architecture/transport-errors.test.ts` 的注释剥离会瘫痪整份文件的扫描**（严重）：
+  旧实现把每行「截到 `//` 为止」，而 `//` 会出现在**字符串里**（最典型是 URL）。截断会切掉该行闭合的
+  `)` 与反引号 ⇒ `bareErrorThrows` 的括号配平一路吃到文件末尾 ⇒ **那一行之后的每一处抛错都再也扫不到、
+  且全程不报错**。实测 `src/integrations/metrics.ts`：8 处裸抛错只剩 2 处可见，被吞掉的正好包括
+  `OTLP metrics 导出失败: HTTP ${res.status}`（本守卫存在的理由）。改为「整行丢弃注释行」，
+  并以合成样本复现该机制作回归钉（旧实现下会红）。
+- `tests/docs/guards-registry.test.ts` 的**条目密度下限由 8 提到 24**（实测 32）：旧下限意味着删掉
+  注册表 §1.1–§1.3 整整三节仍会绿 —— 防「抽词器退化」的护栏同时替「整节被删」放了行。
+
+### 仍未做（如实标注，下一轮）
+
+- `tests/integrations/adapter-parity.test.ts` 的矩阵**结构上测不到「缺省 `maxRetries` 对称」**：
+  `make(maxRetries: number)` 是必填、所有场景都显式 `a.make(2)` ⇒ 把 openai 的缺省改成 0 仍全绿。
+  而该矩阵被造出来正是为守这件事（修法：加一条走缺省的场景）。
+- `maxToolConcurrency` 是否该随 `ToolRunContext` 透传给嵌套能力（`docs/guards.md` §2 已登记的
+  「手写转发列表不得漏字段」形状，历史事故 = `runAgentScoped` 漏 `toolTimeoutMs`）—— 待口径判定：
+  转发，或在 `types.ts` 注明「只作用本层循环」。
+
 ## [0.6.3] - 2026-09-18
 
 > 本版主题：把第六轮 16 条的共同根因（「约定写在文档里、但没有门禁」）收口 ——

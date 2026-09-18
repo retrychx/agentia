@@ -604,3 +604,83 @@ describe('中止在飞请求（零 key、零外网：本地假端点）', () => 
     }
   });
 });
+
+/**
+ * A（2026-09-18 第七轮复审）：流被截断 / 空流 **都必须抛带 status 的错误**。
+ *
+ * 此前这两处抛裸 `Error` ⇒ `classifyError` 判 `unknown` + `retryable:false`：
+ * ① 上游故障被记成「模型的协议问题」，排障方向被带偏；
+ * ② 引擎层那 3 次重试**一次都不会发生**（同 `otlp.ts` / `openai.ts` 被新守卫抓到的那一类）。
+ * 而「已吐半句后断流」更糟：内容非空 ⇒ 旧判据不触发 ⇒ `stop_reason: null` 落
+ * `unknown_stop_reason`，同样不可重试。
+ */
+describe('A：流截断 / 空流按上游故障抛错（带 status、可重试）', () => {
+  const expectUpstreamFailure = (e: unknown, re: RegExp): boolean => {
+    const c = classifyError(e);
+    assert.equal(
+      (e as { status?: number }).status,
+      500,
+      '必须带数值 status（否则 classifyError 判 unknown）',
+    );
+    assert.equal(c.type, 'server');
+    assert.equal(
+      c.retryable,
+      true,
+      '上游故障必须可重试（此前裸 Error 判不可重试 → 引擎一次都不重试）',
+    );
+    assert.match(String((e as Error).message), re);
+    return true;
+  };
+
+  it('空流（未见 message_start）→ 500 + 可重试，不再判 unknown', async () => {
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, []));
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: ep.baseURL,
+        maxRetries: 0,
+      });
+      await assert.rejects(
+        () => client.messages.stream(BASE_PARAMS).finalMessage(),
+        (e: unknown) => expectUpstreamFailure(e, /为空|未见 message_start/),
+      );
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('截断（已吐出半句、无 message_delta / message_stop）→ 500 + 可重试，不报成成功', async () => {
+    const full = textEvents('你', '好');
+    // 砍掉终止证据：`message_delta`（携带 stop_reason）与 `message_stop`
+    const truncated = full.slice(0, full.length - 2);
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, truncated));
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: ep.baseURL,
+        maxRetries: 0,
+      });
+      await assert.rejects(
+        () => client.messages.stream(BASE_PARAMS).finalMessage(),
+        (e: unknown) => expectUpstreamFailure(e, /截断/),
+      );
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('正常流（带 message_stop）不受影响 —— 判据不误伤', async () => {
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, textEvents('你', '好')));
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: ep.baseURL,
+        maxRetries: 0,
+      });
+      const msg = await client.messages.stream(BASE_PARAMS).finalMessage();
+      assert.equal(msg.stop_reason, 'end_turn');
+    } finally {
+      await ep.close();
+    }
+  });
+});

@@ -118,7 +118,10 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
             }
 
             if (!res.body) {
-              throw new Error('Anthropic 流式响应没有 body（端点声明了 event-stream 却没给流）');
+              throw new AnthropicApiError(
+                500,
+                'Anthropic 流式响应没有 body（端点声明了 event-stream 却没给流）',
+              );
             }
             return await readAnthropicStream(res.body, params.model, textCallbacks);
           } finally {
@@ -348,6 +351,8 @@ async function readAnthropicStream(
 ): Promise<Message> {
   const blocks: BlockAcc[] = [];
   let started = false;
+  /** 是否见到 `message_stop`（流的终止标记）—— 截断判据的一半，见循环后的说明 */
+  let sawStop = false;
   let id = '';
   let model = '';
   let stopReason: string | null = null;
@@ -427,13 +432,36 @@ async function readAnthropicStream(
           `Anthropic 流内错误（${err.type ?? 'unknown'}）：${err.message ?? payload.slice(0, 300)}`,
         );
       }
+      case 'message_stop': {
+        sawStop = true;
+        break;
+      }
       default:
-        break; // content_block_stop / message_stop / ping 及未知事件：忽略
+        break; // content_block_stop / ping 及未知事件：忽略
     }
   }
 
   if (!started) {
-    throw new Error('Anthropic 流式响应为空（未见 message_start）；响应无可用补全，按上游故障处理');
+    throw new AnthropicApiError(
+      500,
+      'Anthropic 流式响应为空（未见 message_start）；响应无可用补全，按上游故障处理',
+    );
+  }
+  // 终止证据：收到 `message_stop`，或拿到 `stop_reason`（由 message_delta 携带）。二者皆无
+  // = 流在上游 / 代理侧被提前关闭 —— **必须抛出**。
+  //
+  // 这一条**不能**挂在「累积为空」上（openai.ts 踩过同一个坑）：截断发生在已吐出半句话之后时
+  // 内容非空 ⇒ 判据不触发 ⇒ `stop_reason: null` 被 resolveStopReason 判成
+  // `unknown_stop_reason`（那是 stop-reason 解析分支，**不是重试判据**）⇒ 引擎的重试一次都
+  // 不会发生，且 trace 把它记成「模型返回了未识别的 stop_reason」—— 把「上游被截断」
+  // 误诊成「模型协议异常」，排障方向被带偏。
+  if (!sawStop && stopReason === null) {
+    const chars = blocks.reduce((n, b) => n + b.text.length, 0);
+    throw new AnthropicApiError(
+      500,
+      `Anthropic 流式响应被截断（未收到 message_stop，也未收到 message_delta 的 stop_reason；` +
+        `已累积 ${blocks.length} 个内容块、${chars} 字符文本）；响应不完整，按上游故障处理`,
+    );
   }
 
   const content: ContentBlock[] = [];

@@ -38,16 +38,25 @@ function walkTs(dir: string, acc: string[] = []): string[] {
 }
 
 /**
- * 剥掉注释再匹配 —— 否则「文档里恰好写了 `throw new Error(\`… HTTP …\`)` 的说明」
- * 会被当成真代码（本文件自己就是活例子：文件头注释里就有一行）。
- * 只处理 `//` 行注释；块注释里出现整句 throw 的概率极低，且误报方向是「多报」而非漏报。
+ * 丢掉**整行**注释（`//` 开头 / 块注释的 `*` 行），而**不是**「截到 `//` 为止」。
+ *
+ * 为什么不能截（2026-09-18 修）：`//` 会出现在**字符串/模板串里**，本仓库最常见的形态
+ * 就是 URL（`http://localhost:4318`）。截断会把该行的闭合 `)` 与反引号一起切掉，
+ * 于是 `bareErrorThrows` 的括号配平一路吃到文件末尾 —— **那一行之后的每一处抛错都再也
+ * 扫不到，且不报错**。实测：`metrics.ts` 里
+ * `export:'otlp' 必须给 endpoint（如 http://localhost:4318）` 那一行之后，
+ * 8 处裸抛错只剩 2 处可见，其中包括 `OTLP metrics 导出失败: HTTP ${res.status}`
+ * —— 而后者正是本守卫存在的理由（同 `otlp.ts` 被本守卫抓到的那次）。
+ *
+ * 改成「整行丢弃」两头都对：块注释的说明行（`*` / `//` 开头）不再误报，
+ * 字符串里的 `//` 也不再破坏扫描。
  */
-function stripLineComments(text: string): string {
+function stripCommentLines(text: string): string {
   return text
     .split('\n')
-    .map((l) => {
-      const i = l.indexOf('//');
-      return i === -1 ? l : l.slice(0, i);
+    .filter((l) => {
+      const t = l.trim();
+      return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'));
     })
     .join('\n');
 }
@@ -91,7 +100,7 @@ function isTransportViolation(thrown: string): boolean {
 function findViolations(dir: string): string[] {
   const bad: string[] = [];
   for (const p of walkTs(dir)) {
-    const text = stripLineComments(readFileSync(p, 'utf8'));
+    const text = stripCommentLines(readFileSync(p, 'utf8'));
     for (const thrown of bareErrorThrows(text)) {
       if (isTransportViolation(thrown)) {
         bad.push(`${relative(repoRoot, p)} → ${thrown.replace(/\s+/g, ' ').slice(0, 140)}`);
@@ -123,7 +132,7 @@ const API_ERROR_CLASS_DECL = /export class (\w*ApiError) extends Error \{\n([\s\
 test('每个 `*ApiError` 类都必须暴露数值 status（命名即承诺）', () => {
   const bad: string[] = [];
   for (const p of walkTs(join(SRC, 'integrations'))) {
-    const text = stripLineComments(readFileSync(p, 'utf8'));
+    const text = stripCommentLines(readFileSync(p, 'utf8'));
     for (const m of text.matchAll(API_ERROR_CLASS_DECL)) {
       const [, name, body] = m;
       if (!/readonly status:\s*number/.test(body)) {
@@ -162,10 +171,31 @@ test('判定器抓得到违规、且不误伤配置校验（合成样本）', ()
 test('解析器真的吃到了足够多的裸抛错（防真空变绿护栏）', () => {
   let count = 0;
   for (const p of walkTs(join(SRC, 'integrations'))) {
-    count += bareErrorThrows(stripLineComments(readFileSync(p, 'utf8'))).length;
+    count += bareErrorThrows(stripCommentLines(readFileSync(p, 'utf8'))).length;
   }
   assert.ok(
     count >= 8,
     `只解析到 ${count} 处裸 \`throw new Error\` —— 解析器大概率漏了某种写法（本守卫在空转）`,
   );
+});
+
+/**
+ * 回归钉（2026-09-18）：注释剥离**不得**被字符串里的 `//` 破坏。
+ *
+ * 病灶：旧实现把每行「截到 `//` 为止」，而 `//` 会出现在字符串/模板串里（最典型是 URL）。
+ * 截断会把该行的闭合 `)` 与反引号一起切掉，于是 `bareErrorThrows` 的括号配平一路吃到文件
+ * 末尾 —— **那一行之后的每一处抛错都再也扫不到，且不报错**。
+ * 实测 `src/integrations/metrics.ts`：8 处裸抛错只剩 2 处可见，被吞掉的正好包括
+ * `OTLP metrics 导出失败: HTTP ${res.status}`（本守卫存在的理由）。
+ */
+test('注释剥离不被打断：字符串里的 // 之后仍要扫得到（回归）', () => {
+  const S = '${';
+  const src = [
+    "  const url = 'http://localhost:4318';",
+    '  throw new Error(`OTLP metrics 导出失败: HTTP ' + S + 'res.status}`);',
+  ].join('\n');
+
+  const found = bareErrorThrows(stripCommentLines(src));
+  assert.equal(found.length, 1, 'URL 行之后的抛错必须仍被扫到（旧实现在这里会漏）');
+  assert.equal(isTransportViolation(found[0]), true, '而且要被判为违规');
 });

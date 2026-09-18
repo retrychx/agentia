@@ -3,6 +3,26 @@ import type { Trace, TraceSink } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
 /**
+ * OTLP metrics 导出失败（带数值 `status`）。
+ *
+ * 为什么不能抛裸 `Error`：`engine/errors.ts` 的分类是鸭子类型，只看数据属性。
+ * 裸 Error 会被判 `unknown` + `retryable:false` —— 宿主在 `onExportError` 里拿不到
+ * status，也就没法区分「collector 拒收（4xx，改配置）」与「collector 挂了（5xx，等它回来）」。
+ * 形状与 `otlp.ts` 的 `OtlpExportError` 一致（同层两处导出器不该有两种错误形状）。
+ *
+ * 注：本处抛错由 `onExportError` 接住并按「观测失败不得击穿业务」吞掉 —— 带 status 是为了
+ * **可判断**，不是为了让谁重试。
+ */
+export class MetricsExportError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'MetricsExportError';
+    this.status = status;
+  }
+}
+
+/**
  * Agentia —— 指标（D3 → 可观测下沉 E2/E3/E4/E5）。
  *
  * `MetricsSink` **天然满足** `TraceSink` → `createApp({ sinks: [metricsSink()] })` 即接入，
@@ -643,6 +663,18 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
         `${p}cost_usd_total ${costUsd}`,
       ]),
     );
+    // 基数上限的**可见性**：被折叠掉的不同键数。与 `snapshot()` 的同名字段一一对应 ——
+    // 此前只有 snapshot() 有、render() 没有，于是「按文档把 metricsSink 接到 /metrics」的部署
+    // **完全看不见折叠发生**（静默丢失）；而同一份文件对「算不出成本的 turn」专门发了
+    // `model_unpriced_turns_total`，口径不一致。
+    // 与 unpriced 不同：**恒定发三行**（不是 >0 才发）—— 「0 → N」这个变化本身就是要告警的信号。
+    out.push(
+      family(`${p}dropped_keys`, 'gauge', '因基数上限被折叠的不同键数（kind 分项）', [
+        `${p}dropped_keys{kind="capability"} ${capBudget.dropped}`,
+        `${p}dropped_keys{kind="model"} ${modelBudget.dropped}`,
+        `${p}dropped_keys{kind="score"} ${scoreBudget.dropped}`,
+      ]),
+    );
     // 时长：histogram（可跨实例聚合）+ 窗口内精确分位（单实例好读），两种口径并存。
     // 分位 gauge 必须用另一个名字 `*_last` —— 同名指标只允许一种 TYPE，
     // 先发 histogram 再发 gauge 会被 expfmt 判硬错误，整次 scrape 失败。
@@ -914,6 +946,23 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       metrics.push(sum(`${p}score_total`, acc.count, '评分条数', attrs));
     }
 
+    // 基数上限可见性（与 Prometheus 侧 `*_dropped_keys{kind=…}` 同名同义）
+    metrics.push(
+      gauge(`${p}dropped_keys`, capBudget.dropped, '因基数上限被折叠的不同键数', [
+        strAttr('kind', 'capability'),
+      ]),
+    );
+    metrics.push(
+      gauge(`${p}dropped_keys`, modelBudget.dropped, '因基数上限被折叠的不同键数', [
+        strAttr('kind', 'model'),
+      ]),
+    );
+    metrics.push(
+      gauge(`${p}dropped_keys`, scoreBudget.dropped, '因基数上限被折叠的不同键数', [
+        strAttr('kind', 'score'),
+      ]),
+    );
+
     const resourceAttrs: OtlpAttr[] = [
       strAttr('service.name', serviceName),
       ...Object.entries(opts.resourceAttributes ?? {}).map(([k, v]) => strAttr(k, v)),
@@ -946,7 +995,10 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
       });
       if (!res.ok) {
         const text = (await res.text()).slice(0, 200);
-        throw new Error(`OTLP metrics 导出失败: HTTP ${res.status} ${text}`);
+        throw new MetricsExportError(
+          res.status,
+          `OTLP metrics 导出失败: HTTP ${res.status} ${text}`,
+        );
       }
     } catch (e) {
       opts.onExportError?.(e); // 观测失败不得击穿业务

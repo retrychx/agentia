@@ -409,3 +409,53 @@ describe('createOpenAIClient', () => {
     );
   });
 });
+
+/**
+ * C（2026-09-18 第七轮复审）：**非流式**路径的「200 + 空补全」不得记成成功。
+ *
+ * 流式路径已有同款守卫（`openaiStream.test.ts` 的「流正常结束但什么都没累积到」），
+ * 而非流式只有 `!choice` 的守卫 —— `choices[0].message.content = null` + `finish_reason: 'stop'`
+ * 会映射成「空文本 + end_turn」记成功。同一个响应在两条路径上结论相反，
+ * 且与模块头「上游故障绝不映射成成功」相反。
+ */
+describe('C：非流式空补全按上游故障处理（与流式路径同结论）', () => {
+  it('200 + content:null + finish:stop → 500 且不可静默记成成功', async () => {
+    const { fetchImpl } = fakeFetch([
+      {
+        body: chatResponse({
+          choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: null } }],
+        }),
+      },
+    ]);
+    const client = createOpenAIClient({ apiKey: 'k', fetchImpl, stream: false, maxRetries: 0 });
+    await assert.rejects(
+      () =>
+        client.messages
+          .stream({ model: 'gpt-x', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] })
+          .finalMessage(),
+      (e: unknown) => {
+        assert.equal((e as { status?: number }).status, 500);
+        assert.equal(classifyError(e).retryable, true);
+        assert.match(String((e as Error).message), /空补全/);
+        return true;
+      },
+    );
+  });
+
+  it('refusal（content_filter）的空回复**不抛** —— 合法空回复（与流式路径同一例外）', async () => {
+    const { fetchImpl } = fakeFetch([
+      {
+        body: chatResponse({
+          choices: [
+            { finish_reason: 'content_filter', message: { role: 'assistant', content: null } },
+          ],
+        }),
+      },
+    ]);
+    const client = createOpenAIClient({ apiKey: 'k', fetchImpl, stream: false, maxRetries: 0 });
+    const msg = await client.messages
+      .stream({ model: 'gpt-x', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] })
+      .finalMessage();
+    assert.equal(msg.stop_reason, 'refusal');
+  });
+});

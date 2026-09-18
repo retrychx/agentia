@@ -1738,6 +1738,48 @@ openai 打 1 次（引擎层那一次）。两侧各自的测试都通过，因�
 **「spread 转发时漏掉一个键」TS 结构类型仍然不报**（`{...opts}` 少字段照样过）。
 该缺口留在 `docs/guards.md §2`。
 
+**2026-09-18 ⑧ —— 第七轮复审收口：适配器错误分类对齐 / 指标面可见 / 续跑重入闸（+ 守卫自身的洞）**
+
+**缘起**：三路并行复审 `9f1dcd8..HEAD`（第六轮那 16 条）后逐条回读源码，发现四类残留。其中最有价值的
+不是任何单条 bug，而是一个模式：**这一轮的主题是「把没有门禁的约定收口」，而守卫自己有洞** ——
+① `transport-errors` 的注释剥离被字符串里的 `//` 打断（见下）；② `adapter-parity` 的矩阵结构上测不到
+「缺省值对称」；③ `guards-registry` 的密度下限（8）远低于实测（32），删整节仍绿。①③ 本轮修掉，
+② 如实留在 CHANGELOG 的「仍未做」。
+
+**决策（错误分类必须「同故障同结论」）**：`anthropic` 与 `openai` 在同一个上游故障上给出相反结论，
+是比任何单条分类错误更坏的事（两条适配器都叫「默认 client」）。本轮统一三处：
+- **截断判据两侧同款**：既无终止标记（`message_stop` / `[DONE]`）、又无 `stop_reason` / `finish_reason`
+  ⇒ 抛 500 可重试。**判据不能挂在「累积为空」上**（两侧都踩过）：已吐半句后断流时内容非空，
+  于是落 `unknown_stop_reason`（**不是**重试判据）⇒ 引擎一次都不重试 + trace 误诊成「模型协议异常」。
+- **流内 error 分片的 status 反推不照抄**：anthropic 协议只有三种 type（默认 500 合理），
+  OpenAI 兼容生态有 `invalid_request_error` / `context_length_exceeded` 这类**改配置才有救**的 4xx 病因 ——
+  判 400 不可重试。照抄 anthropic 的三档会让引擎白重试 3 次。
+- **非流式与流式同结论**：`content_filter` 的合法空回复两侧都豁免；其余空补全两侧都抛。
+
+**决策（`resumePending` 重入：共享在飞那次，而不是返回 0）**：并发重入时返回 0 是**谎报**
+（「本次没派发任何东西」，而实际派发了）。返回在飞那个 Promise，调用方拿到的始终是本次扫描的真实结果。
+闸门用 `Promise<number> | null` 而非 boolean，正是为了让重入方拿到同一个数。
+
+**决策（指标名刻意不嵌在既有前缀里）**：基数折叠的 gauge 定为单家族
+`agentia_dropped_keys{kind="capability"|"model"|"score"}` —— 与既有 `tokens_total{kind=…}` 同形。
+初版曾命名 `agentia_model_dropped_keys` 等三个家族，**被既有测试的 `agentia_score` 子串断言当场抓到**：
+嵌在 `agentia_model_*` / `agentia_score_*` 前缀里会让「按前缀匹配」的看板与断言无端把折叠计数算进去。
+
+**守卫的洞（本轮最值钱的发现，记清机制）**：`transport-errors.test.ts` 的 `stripLineComments` 把每行
+「截到 `//` 为止」—— 而 `//` 会出现在**字符串里**（URL 是最常见的形态）。截断切掉该行闭合的 `)` 与
+反引号 ⇒ `bareErrorThrows` 的括号配平一路吃到文件末尾 ⇒ **该行之后的每一处抛错都被并进同一个「throw」
+片段，再也判不出违规，且不报错**。实测 `src/integrations/metrics.ts`：8 处裸抛错只剩 2 处可见，
+被吞掉的恰好包括 `OTLP metrics 导出失败: HTTP ${res.status}`（本守卫存在的理由）。改为「整行丢弃
+注释行（`//` / `*` / `/*` 开头）」两头都对：块注释说明行不误报，字符串里的 `//` 不再破坏扫描。
+**反向验证**：新回归样本在旧实现下「捕获 1 处 / 判违规 0 处」、新实现「2 处 / 1 处」——断言要求 2 处 ⇒ 会红。
+密度下限同时由 8 提到 24（实测 32，留 ~25% 余量）。
+
+**门禁**：`tests/architecture/transport-errors.test.ts` 新增回归钉；`tests/integrations/anthropic.test.ts`
++3（空流 / 截断 / 正常流不误伤）、`openaiStream.test.ts` +3（4xx / 429 / 5xx 三档）、`openai.test.ts` +2
+（非流式空补全 / refusal 豁免）、`metrics.test.ts` +2（折叠数对得上 snapshot / 恒定发三个）、
+`tests/transport/async.test.ts` +1（并发重入）。**三处承重性反向验证**：摘掉重入闸、短路截断判据、
+把注释剥离改回旧实现 —— 对应新用例分别变红。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
