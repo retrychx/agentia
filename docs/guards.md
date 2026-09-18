@@ -34,7 +34,7 @@
 | `tests/engine/retry.test.ts` | 显式 `undefined` 字段**不得**覆盖缺省（`{maxAttempts: undefined}` 不是「关闭重试」） | 逐字段传 `undefined`，断言回落到缺省 | 重试静默关闭，而 trace 记成 `config.retry.maxAttempts: 0`（像是用户主动关的） |
 | `tests/toolkit/env.test.ts` | `.env` 解析的分支矩阵（引号 / 引号+行内注释 / 转义 / 不闭合 / 值内含 `#`） | 表格驱动，逐格断言 | 密钥带字面引号进 `process.env` → 每个请求 401，而文件看上去完全正确（真发生过） |
 | `tests/toolkit/subagent.test.ts` · `skill.test.ts` | 嵌套能力必须把 `toolTimeoutMs` 等透传子循环（裁判权交接） | 喂带字段的 ctx，断言子循环按该口径记账 | 子循环永不超时 + MCP 桥起自己的兜底计时器 = 双计时器双账本 |
-| `tests/integrations/mcpConnector.test.ts` | MCP 连接器**三件只有它能做的事**：spawn 的 `'error'` 是异步事件必须接住 / stdout 必须按 `\n` 攒包 / **协议层 `isError: true` 必须转成抛错**；另守装配期超时与 `close()` 幂等有界 | 起**真子进程**夹具（`tests/fixtures/mcp/fake-server.mjs`，env 覆盖 7 种模式）+ HTTP 侧注入 `fetchImpl`；用例本身由 **9 条变异电池**证明会咬 | `isError` 不转抛错 ⇒ 失败的调用被**模型与 trace 一起**记成成功（正好打在本框架「trace 决定你敢不敢上线」的承诺上）；不接 `'error'` ⇒ 命令不存在时未捕获异常把宿主进程带崩 |
+| `tests/integrations/mcpConnector.test.ts` | MCP 连接器**三件只有它能做的事**：spawn 的 `'error'` 是异步事件必须接住 / stdout 必须按 `\n` 攒包 / **协议层 `isError: true` 必须转成抛错**；装配期超时；`close()` **返回即子进程已终止**；StreamableHTTP 会话过期（`404`）**自愈且只重试一次** | 起**真子进程**夹具（`tests/fixtures/mcp/fake-server.mjs`，env 覆盖 8 种模式，含忽略 SIGTERM 的 `stubborn` + pid 文件）+ HTTP 侧注入 `fetchImpl`；用例本身由 **15 条变异电池**证明会咬 | `isError` 不转抛错 ⇒ 失败的调用被**模型与 trace 一起**记成成功（正好打在本框架「trace 决定你敢不敢上线」的承诺上）；不接 `'error'` ⇒ 命令不存在时未捕获异常把宿主进程带崩；`close()` 不等 reap ⇒ 留孤儿进程；会话过期不自愈 ⇒ 长跑宿主只能重建连接器 |
 
 ### 1.3 宿主与耐久
 
@@ -49,7 +49,7 @@
 | 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |
 |---|---|---|---|
 | `tests/docs/usage-guide.test.ts` | `usage-guide.md` 的表格**逐项对源码核**（字段名/默认值/类型） | 解析文档 + 断言与源码一致 | 文档承诺了、代码没有（本仓库最主要的对外风险面） |
-| `tests/docs/api-page.test.ts` | 官网 `api.html` 对导出面的**反向全覆盖**（每个导出都必须在页面出现） | 读 `src/index.ts` 导出清单 + 扫页面文本 | 新增导出在文档里缺席（`1 个运行时依赖 → 0 个` 这类数字也会漂） |
+| `tests/docs/api-page.test.ts` | 官网 `api.html` 对导出面的**反向全覆盖**（每个导出都必须在页面出现）；以及**页面上所有手写数字**对源码核（`N 个导出` → `src/index.ts` 导出数、`N 个层次` → 页面 section 数、`N 个运行时依赖` → `package.json` 的 `dependencies` 数、`N 类能力` → 四个能力装饰器、`N 类触发` → 三个传输宿主） | 读导出清单 / 计数 + 扫页面文本（两个 fragment 的 chips 与首屏统计行都覆盖） | 新增导出在文档里缺席；「0 个运行时依赖」变成 1、加一类能力后页面继续写 4 —— 这类数字此前靠人眼改（`1 个运行时依赖 → 0 个` 真漂过） |
 | `tests/docs/no-legacy-terms.test.ts` | 面向使用者的表面（文档 / 官网 / 包 README / CLI `--help` 与报错）不得出现旧伞形术语 | 文本扫描 + 允许标记块（有行数上限） | 一次改名漏扫几处，读者看到两套术语 |
 | `tests/docs/run-output-shape.test.ts` | `run` 返回结构的文档形状与实际一致 | 扫描 + 断言 | 结构化结果的对外契约漂移 |
 | `tests/scripts/release-scripts.test.ts` | `release.mjs bump` 的**每项替换计数断言**本身可靠 | 直接测护栏（护栏失灵会写坏整棵树，且发生在发版当天） | 一次 bump 把仓库写坏却没人拦 |
@@ -70,6 +70,7 @@
 | **`0` 的双重语义（不限 vs 已到点）** | `handler.drain({timeoutMs:1})` 跨过 deadline 后永不返回 | 已有单点用例（`host-hardening.test.ts`），但**没有**统一的「limits 语义对照表」——`mapWithConcurrency` / `drain` / `runTimeoutMs` / `maxIterations` 仍各自解释 `0` | 建一份「limits 语义」单一真源 + 集中用例（`limits.test.ts`） |
 | **零/负/非有限值的语义统一** | 同上一行（`mapWithConcurrency` 已修，其余散在） | 分散在多个模块，无单一真源 | 同上，与上一行合并做 |
 | **手写转发列表不得漏字段** | `runAgentScoped` 漏 `toolTimeoutMs`（跨 3 层：engine → toolkit → ctx） | `exactOptionalPropertyTypes` 已开（见 §1），堵住了「显式传 undefined」这一半；但**「spread 转发时漏掉一个键」TS 结构类型仍不报**（`{...opts}` 少了字段照样过） | 穷尽转发类型（把可转发字段抽成 `Pick<…, ForwardableKey>` 并要求逐项出现）；或改成显式 `omitUndefined({...})` + 一处集中清单 |
+| **首屏 `0 反射` 这类策略声明** | —（尚未漂过） | 页面上写了「0 反射」（= 显式 DI，不用装饰器元数据反射），但源码里本来就有 `Reflect.ownKeys` 这类**正当**用法 ⇒ **无法从源码计数推导**。`api-page.test.ts` 只钉「别被悄悄删掉」 | 若要真守，得先能给出「反射式 DI」的可判定定义（例如「除 `Reflect.ownKeys` 外不得使用 `Reflect.*`，且不得读 `Symbol.metadata`」）—— 那是一条**可写的守卫**，但需要先确认这条口径值不值得当门禁 |
 
 > 已在本轮补上守卫、从本表移入 §1 的：**成对实现对称**（`tests/integrations/adapter-parity.test.ts`）、
 > **浅合并被 `null` 覆盖**（`anthropic.test.ts` 的 usage 用例）、**同步 vs 真实异步 store**
