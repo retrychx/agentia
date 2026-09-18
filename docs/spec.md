@@ -1917,6 +1917,36 @@ metadata `traceparent` → `traceContext`、框架错误 → gRPC 状态码、tr
 （`NOT_FOUND` → `INTERNAL`）后才由断言抓住。**「被抓住」不等于「被那条断言抓住」**，
 变异电池的记录必须区分这两者，否则它会高估断言的判别力。
 
+**2026-09-18 ⑫ —— OpenAI 适配器：legacy `function_call` 形态改为**响亮失败**（原为静默 `end_turn`）**
+
+**怎么发现的**（记下来，因为入口是一次「看着像纯风格问题」的 lint 注解）：`biome ci` 一直挂着一条
+`noUselessSwitchCase`（`openai.ts:672` 的 `case 'stop':` 落进 `default`，同一个返回值 —— 纯冗余）。
+顺手把这张映射表的**完整性**也核了一遍：`stop` / `length` / `tool_calls` / `content_filter` 都覆盖，
+但 `default: return 'end_turn'` 会吞掉**任何**未知值 —— 其中 `function_call`（legacy `functions` 形态）
+是唯一一个「吞掉就有害」的：调用在 `message.function_call` 里，而适配器只读 `tool_calls`。
+
+**取证**（假端点喂真适配器，不改仓库）：legacy 响应 ⇒ `stop_reason = end_turn`、
+`content = [{"type":"text","text":"好的，我查一下。"}]`、**工具调用没了且没有任何报错**。
+即「模型要调工具、工具没执行」以成功收尾 —— 本仓库最贵的那一类（模块头写的就是
+「上游故障绝不映射成成功」）。
+
+**决策**：`case 'function_call':` **响亮失败**，不做 legacy 兼容、不静默降级。
+- **不做兼容**：请求侧只发 `tool_calls`（`buildMessages`），回灌的 `role:'tool'` legacy-only 端点
+  同样吃不下 ⇒ 半吊子支持比不支持更糟（与「一个第三方客户端一个包」同一条思路：要么真支持，要么明说不支持）。
+- **400 而非相邻空补全那条 500**：这是**确定性不兼容**，换不了结论 ⇒ 落 `classifyError` 的
+  `api`／不可重试。用 500 会被引擎重试三次，每次都重复丢弃同一个调用（把一次故障放大成三次）。
+- **`default` 保持 `end_turn`**（未知 finish_reason **且有正文** ⇒ 上游只说「结束了」）：
+  空正文那条已在流式/非流式两个调用点各自拦住，不会走到这里变成「成功空回复」。
+  这个默认是**有意**的，已用一个 `eos_token` 用例钉住，防后人顺手改成抛错。
+
+**验证**：`tests/integrations/openai.test.ts` +2 例（legacy 形态抛 400／`classifyError.type==='api'`／
+消息里含 `function_call`；未知值 `eos_token` + 正文 ⇒ `end_turn`），该文件 15/15 绿。
+**变异电池 2/2**：删掉整条分支 ⇒ 用例红在「Missing expected rejection」（本该抛错却拿到了
+`end_turn`）；把 400 改回 500 ⇒ 红在状态码那条严格相等断言。⚠️ 诚实记一笔：第二条我脚本里的
+`expect_marker` 写的是「状态码」而实际失败行没印这三个字，被标成「非预期断言」——
+**核对失败行内容后**确认它确实是目标断言（`assert.equal(status, 400)`）。标记匹配是辅助，
+**「红在哪一行」才是判据**（同 §10 ⑪ 那条：被抓住 ≠ 被那条断言抓住）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

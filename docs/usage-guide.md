@@ -1151,6 +1151,7 @@ const callable = {
 | 同 session 并发 run 要自行串行化 | `SessionStore` 是 **append-only**：并发写不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 共用同一 sessionId 时，各自追加的轮次可能交错成「连续两条 user」，下一轮 load 出来撞角色交替校验（400）。同一 session 的并发 run 请调用方自行串行化（每 session 一把锁 / 一条队列） |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
 | OpenAI 流式的上游故障按失败处理 | 三种形态都**抛错**按失败处理：流中 `error` 分片（上游把故障塞进 200 的流；按 `type`/`code` 反推 status，限流能被引擎重试认出）；**未收到 `[DONE]` 也无 `finish_reason`**（流被上游/代理截断 —— 哪怕已吐出半句、有累积文本，也按不完整响应抛错，不报 `end_turn`）；正常终止却无任何文本与工具调用（与非流式空 `choices` 同一守卫）。**例外**：`finish_reason=content_filter` 的空流是合法 refusal，不抛 —— 与非流式路径同一个响应同一个结论 |
+| OpenAI 兼容端点回 legacy `function_call` 形态时**不支持** | 适配器只认现代 `tool_calls`（请求侧也只发这个形态）。收到 `finish_reason=function_call` 会**响亮失败**（400，落 `api`／不可重试），**不**按 `end_turn` 收尾 —— 那种回法里的调用在 `message.function_call` 里、读不出来，报成正常收尾会让「模型要调工具、工具却没执行」记成成功。换支持 `tool_calls` 的端点或模型即可（legacy `functions` 形态 OpenAI 2023 已废弃） |
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；出厂连接器同样只做 `tools/list` + `tools/call` |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果（出厂连接器已代你处理） |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判；**显式 `toolTimeoutMs: 0` 也算设了** —— 那是引擎表态「不限」，桥不会再自作主张判 60s），两条路径**同判定、同账**（`errorKind='timeout'`） |

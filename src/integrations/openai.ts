@@ -670,7 +670,27 @@ function mapStopReason(finish: string | null | undefined, hasToolCalls: boolean)
     case 'content_filter':
       return 'refusal';
     case 'stop':
+      return 'end_turn';
+    case 'function_call':
+      // legacy `functions` 形态（OpenAI 2023 已废弃）：调用在 `message.function_call` 里，
+      // 而本适配器只读现代 `tool_calls` ⇒ **这次调用的名称与入参读不出来**。
+      // 绝不能让它落到 default 报 end_turn ——「模型要调工具、工具却没执行」会以成功收尾
+      // （本仓库最贵的一类故障，同上面 hasToolCalls 那条注释的病）。
+      //
+      // 为什么**不做** legacy 兼容：请求侧我们只发 `tool_calls`（见 buildMessages），回灌的
+      // `role:'tool'` 消息 legacy-only 端点同样吃不下 ⇒ 半吊子支持比不支持更糟。
+      //
+      // 为什么是 400 而不是相邻空补全那条 500：这是**确定性不兼容**（换不了结论），
+      // 落 classifyError 的 `api`/不可重试；用 500 会被引擎重试三次，每次都重复丢弃同一个调用。
+      throw new OpenAICompatApiError(
+        400,
+        `上游返回 legacy \`function_call\` 形态（finish_reason=function_call）——本适配器只认现代 ` +
+          '`tool_calls`，这次调用的名称与入参读不出来。按 end_turn 收尾会把「工具没执行」记成成功，' +
+          '故此处响亮失败：请换用支持 tool_calls 的端点或模型。',
+      );
     default:
+      // 未知 finish_reason **且有正文** ⇒ 按正常收尾（上游只保证它「结束了」）。
+      // 空正文那条已在两个调用点各自拦住（流式/非流式），不会走到这里变成「成功空回复」。
       return 'end_turn';
   }
 }

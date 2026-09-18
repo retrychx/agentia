@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { MessageParam, ToolParam } from '../../src/index.js';
 import { classifyError, executeRun } from '../../src/index.js';
 import type { AgentTool } from '../../src/index.js';
-import { createOpenAIClient } from '../../src/integrations/openai.js';
+import { OpenAICompatApiError, createOpenAIClient } from '../../src/integrations/openai.js';
 import { toolUseMsg, endTurnMsg, mockClient } from '../helpers.js';
 
 /**
@@ -204,6 +204,57 @@ describe('createOpenAIClient', () => {
     assert.equal(m1.stop_reason, 'max_tokens');
     assert.equal(m2.stop_reason, 'refusal');
     assert.deepEqual(m2.content, []);
+  });
+
+  it('legacy function_call 形态：响亮失败，不得报成 end_turn 把工具调用丢掉', async () => {
+    const { fetchImpl } = fakeFetch([
+      {
+        body: chatResponse({
+          choices: [
+            {
+              finish_reason: 'function_call',
+              message: {
+                content: '好的，我查一下。',
+                function_call: { name: 'get_weather', arguments: '{"city":"上海"}' },
+              },
+            },
+          ],
+        }),
+      },
+    ]);
+    // maxRetries: 0 —— 这条是**确定性不兼容**，不该被内层重试洗掉（重试只会重复丢弃同一个调用）
+    const client = createOpenAIClient({ fetchImpl, maxRetries: 0 });
+    await assert.rejects(
+      () => client.messages.stream({ model: 'm', max_tokens: 8, messages: [] }).finalMessage(),
+      (e: unknown) => {
+        assert.ok(
+          e instanceof OpenAICompatApiError,
+          `应是 OpenAICompatApiError，实际 ${String(e)}`,
+        );
+        assert.equal((e as { status?: number }).status, 400);
+        assert.match(e.message, /function_call/);
+        assert.equal(classifyError(e).type, 'api'); // 不可重试 —— 重试换不了结论
+        return true;
+      },
+    );
+  });
+
+  it('未知 finish_reason 且有正文：按 end_turn 收尾（**有意的默认**，别顺手改成抛错）', async () => {
+    // eos_token 是真实存在的兼容端点回法（HF TGI）；上游只说「结束了」，正文是完整的 ⇒ 正常收尾。
+    // 空正文那条另有守卫（见上面「流式/非流式空响应」用例），不会走到这里变成成功空回复。
+    const { fetchImpl } = fakeFetch([
+      {
+        body: chatResponse({
+          choices: [{ finish_reason: 'eos_token', message: { content: 'hi' } }],
+        }),
+      },
+    ]);
+    const client = createOpenAIClient({ fetchImpl });
+    const msg = await client.messages
+      .stream({ model: 'm', max_tokens: 1, messages: [] })
+      .finalMessage();
+    assert.equal(msg.stop_reason, 'end_turn');
+    assert.deepEqual(msg.content, [{ type: 'text', text: 'hi' }]);
   });
 
   it('带 tool_calls 但 finish_reason=stop（DeepSeek/vLLM/Ollama）：stop_reason 仍为 tool_use', async () => {
