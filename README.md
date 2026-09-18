@@ -30,7 +30,7 @@ $EDITOR my-app/.env                  # 填 ANTHROPIC_API_KEY（也可直接 expo
 > 框架**不自动**读 `.env`：脚手架 `src/main.ts` 首行的 `loadEnvFile()` 负责把它读进 `process.env`。
 > 真实环境变量优先（CI / docker / 命令行永远赢过文件），`loadEnvFile({ override: true })` 才反过来。
 
-> **版本**：`0.6.3`（`@migor/agentia` 与 `@migor/cli` 均已发布到 npm）。`examples/` **刻意**用
+> **版本**：`0.7.0`（`@migor/agentia` 与 `@migor/cli` 均已发布到 npm）。`examples/` **刻意**用
 > `file:../..` 指向本仓库而不是 npm 版本 —— 跑的是**工作区代码**，理由见
 > [`examples/README.md`](examples/README.md) 的「依赖说明」。
 
