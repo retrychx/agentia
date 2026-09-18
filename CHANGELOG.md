@@ -5,7 +5,16 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.7.0] - 2026-09-18
+
+### 变更
+
+> 本版两个主题：**MCP 连接器出厂自带**（新增公共 API：`createStdioMcpConnector` /
+> `createStreamableHttpMcpConnector` / `McpConnector` / `MCP_CLOSE_GRACE_MS`），
+> 以及一轮复审与「已知边界」收口。**两处行为变更，都不需要使用者改代码**：
+> ① StreamableHTTP 会话过期从「抛错、需重建连接器」变成**自愈**（多了个可选的
+> `onSessionExpired` 钩子）；② `close()` 从「到点即返回」变成「返回即子进程已终止」。
+> **无破坏性变更** ⇒ 不需要迁移动作。
 
 ### 修复（MCP 连接器两条「已知边界」收掉）
 
@@ -106,6 +115,8 @@
 - `maxToolConcurrency` 是否该随 `ToolRunContext` 透传给嵌套能力（`docs/guards.md` §2 已登记的
   「手写转发列表不得漏字段」形状，历史事故 = `runAgentScoped` 漏 `toolTimeoutMs`）—— 待口径判定：
   转发，或在 `types.ts` 注明「只作用本层循环」。
+
+## [Unreleased]
 
 ## [0.6.3] - 2026-09-18
 
@@ -470,7 +481,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/retrychx/agentia/releases/tag/v0.7.0
 [0.6.3]: https://github.com/retrychx/agentia/releases/tag/v0.6.3
 [0.6.2]: https://github.com/retrychx/agentia/releases/tag/v0.6.2
 [0.6.1]: https://github.com/retrychx/agentia/releases/tag/v0.6.1

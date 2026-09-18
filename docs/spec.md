@@ -1890,7 +1890,10 @@ SIGKILL，然后**继续等真正的 `'exit'`/`'close'`**（SIGKILL 不可被捕
   两处语义变更见 CHANGELOG）；
   → v0.6.3（守卫注册表 + 三个新架构守卫 + 适配器对拍矩阵；`exactOptionalPropertyTypes`
   迁移完成；OpenAI 适配器补客户端内层重试与 anthropic 对称；**无破坏性变更**）；
-  `AGENTIA_VERSION = '0.6.3'`。决策均见 §10。
+  → v0.7.0（**MCP 连接器出厂自带**（stdio / StreamableHTTP，只用标准库、不新增第三方依赖）
+  + 第七轮复审收口 + StreamableHTTP 会话过期**自愈** + `close()` **保证子进程已终止**
+  + 官网手写数字守卫；**无破坏性变更**）；
+  `AGENTIA_VERSION = '0.7.0'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
