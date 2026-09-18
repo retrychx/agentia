@@ -385,4 +385,37 @@ describe('AsyncRunner', () => {
       '超时应 abort 传给 app 的 signal（真中止，不再白烧 token）',
     );
   });
+
+  it('resumePending：并发重入共享同一次扫描 —— 不再各扫一遍、重复派发', async () => {
+    const store = new AsyncCopyStore();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const app = fakeApp(() => gate);
+    // concurrency=1 + 先占住槽位：认领的任务停在 queued，重入窗口因此可确定复现
+    const runner = new AsyncRunner(app, { store, concurrency: 1 });
+    runner.submit('block');
+    await waitFor(() => app.calls === 1, '占位任务应已开跑');
+
+    store.seed({
+      taskId: 'task_other',
+      status: 'running', // 他进程死在半路，留给本进程续跑
+      spec: { messages: [{ role: 'user', content: 'x' }] },
+      createdAt: Date.now(),
+      ownerId: 'p999-otherproc',
+    });
+
+    // ⚠️ 关键是**不 await 第一次**：两个调用都在任一 save 落地前 list()，
+    // 两份「旧快照」的 ownerId 都不是自己 ⇒「先落库再派发」挡不住它们（那是串行才有效的判据）。
+    const first = runner.resumePending();
+    const second = runner.resumePending();
+    const [a, b] = await Promise.all([Promise.resolve(first), Promise.resolve(second)]);
+    assert.equal(a, 1);
+    assert.equal(b, 1, '重入方共享同一次扫描的结果（不是 0，也不是再派一遍）');
+
+    release();
+    await runner.awaitTask('task_other');
+    assert.equal(app.calls, 2, '占位 1 次 + 续跑 1 次；重复派发会是 3 次');
+  });
 });

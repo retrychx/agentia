@@ -293,13 +293,43 @@ export class AsyncRunner {
    *   （大概正被那个进程执行）。缺省 0 = 不判断、一律重派（单进程旧语义）。
    */
   resumePending(opts: ResumePendingOptions = {}): number | Promise<number> {
+    // 重入闸：**并发**调用共享同一次扫描的结果，而不是各自再扫一遍。
+    //
+    // 为什么必须（2026-09-18 补）：「先落库再派发」只堵住了**串行**重扫 —— 认领是异步的
+    // （异步 store 的 `list()` 返回反序列化的**新对象**），两个并发调用都在任一 `save`
+    // 落地前 `list()` 到旧快照，`ownerId === this.ownerId` 的过滤对两份旧快照**双双失效**
+    // ⇒ 同一个任务被派发两次（`app.run` 重复执行，副作用与花费翻倍）。
+    //
+    // 语义：闸门期间返回**在飞那次的 Promise**（同一个数），而不是 0 —— 0 会谎称
+    // 「没派发任何东西」，而实际上派发了。调用方拿到的始终是本次扫描的真实结果。
+    if (this.inflightResume) return this.inflightResume;
     const listed = this.store.list();
     const staleAfterMs = opts.staleAfterMs ?? 0;
     if (isThenable(listed)) {
-      return listed.then((recs) => this.#redispatch(recs, staleAfterMs));
+      const run = Promise.resolve(listed)
+        .then((recs) => this.#redispatch(recs, staleAfterMs))
+        .finally(() => {
+          this.inflightResume = null;
+        });
+      this.inflightResume = run;
+      return run;
     }
-    return this.#redispatch(listed, staleAfterMs);
+    const dispatched = this.#redispatch(listed, staleAfterMs);
+    if (isThenable(dispatched)) {
+      const run = Promise.resolve(dispatched).finally(() => {
+        this.inflightResume = null;
+      });
+      this.inflightResume = run;
+      return run;
+    }
+    return dispatched;
   }
+
+  /**
+   * 在飞的 `resumePending`（重入闸，见上）。不用 boolean 而用 Promise：
+   * 重入方要拿到**同一次扫描**的结果，而不是一个「你等着」的空数。
+   */
+  private inflightResume: Promise<number> | null = null;
 
   /**
    * 重新派发前**必须**先把 `ownerId` 认领落库 —— 否则「认领」只是内存里的一个记号。

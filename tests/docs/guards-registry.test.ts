@@ -58,7 +58,13 @@ test('docs/guards.md 引用的仓库内路径必须真实存在（清单不得�
     if (!existsSync(join(repoRoot, token))) missing.push(token);
   }
 
-  assert.ok(checked >= 8, `只解析到 ${checked} 个路径 token —— 抽词器大概率退化了（本守卫在空转）`);
+  // 下限贴近**实测值 32**（留 ~25% 余量），不是「聊胜于无」的 8：旧值 8 意味着删掉注册表
+  // §1.1–§1.3 整整三节（约 14 个 token）仍会绿 —— 防「抽词器退化」的护栏同时替「整节被删」放行了
+  // （2026-09-18 第七轮复审）。改注册表时若这条跌破，先确认是「清单真变短」还是「抽词器退化」。
+  assert.ok(
+    checked >= 24,
+    `只解析到 ${checked} 个路径 token —— 抽词器大概率退化了（本守卫在空转）`,
+  );
   assert.deepEqual(
     missing,
     [],
