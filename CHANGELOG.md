@@ -7,6 +7,34 @@
 
 ## [Unreleased]
 
+### 修复（MCP 连接器两条「已知边界」收掉）
+
+- **StreamableHTTP 会话过期不再需要人工重建连接器**（`404` 自愈）。带会话 id 收到 `404` 的语义是
+  「这个会话我不认识」⇒ **该请求没有被 server 执行** ⇒ 连接器丢会话、重新握手、把**这一次**重试一次
+  （**只一次**，第二次再 404 直接抛，不循环）—— 这也是 MCP 规范对客户端的要求。
+  此前按不可重试的 `api` 错抛出，长跑宿主的会话一过期就得**重建整个连接器**。
+  自愈本身是静默的，所以给了 **`onSessionExpired`** 钩子：不挂它就没人知道恢复发生过 ——
+  「静默恢复」和「静默失效」在监控上看不出区别。
+- **`close()` 现在保证返回时子进程已终止**（stdio）。此前「到点即 resolve」：SIGTERM → 等
+  `MCP_CLOSE_GRACE_MS` → SIGKILL **并立刻返回**，此刻子进程往往还在（未回收）—— 调用方以为
+  进程没了，实际留下一个孤儿。现在 SIGKILL 之后**继续等真正的 `'exit'`**（SIGKILL 不可被捕获，
+  该事件必达）。
+- 验证：`tests/integrations/mcpConnector.test.ts` 27 → 31 例；
+  **变异电池 6/6 全部被抓到、0 漏网**（删自愈分支 / 丢掉 `sessionId !== null` 前置 / 重试透传
+  `allowReinit`（无限重试）/ 去掉 `onSessionExpired` / `close()` 恢复不等 reap / 夹具不再忽略
+  SIGTERM ⇒ 证明那条用例真在测 SIGKILL 路径）。
+
+### 修复（官网手写数字：补上真正没被守的那几个）
+
+- `api.html` 的 `0 个运行时依赖` / `4 类能力` 与 `index.html` 首屏的 `4 类能力` / `0 个运行时依赖` /
+  `3 类触发` **此前没有任何断言** —— 加一个运行时依赖、增删一类能力或触发宿主，页面会继续写旧数字
+  而没人拦。现在逐条对源码核（`package.json` 的 `dependencies` 数 / 四个能力装饰器 / 三个传输宿主）。
+  变异电池 3/3 会咬（改成 1 / 5 / 4 各判红一次）。
+  ⚠️ 顺带**更正一处过度声明**：`210 个导出` 与 `9 个层次` **本来就有守卫**
+  （`api-page.test.ts` 已有：前者对 `src/index.ts` 导出数、后者对页面 section 数）——
+  它们从来不是缺口。首屏 `1:1 run ↔ trace`（真守卫在 `traceLink.test.ts`）与 `0 反射`
+  （策略声明，无法从源码计数推导）**刻意不推导**，已在 `guards.md` §2「待守」登记。
+
 ### 新增（MCP 连接器**出厂自带**：stdio + StreamableHTTP）
 
 - **`createStdioMcpConnector(cmd, opts?)`** / **`createStreamableHttpMcpConnector(url, opts?)`**

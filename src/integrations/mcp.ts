@@ -239,11 +239,11 @@ export async function mcpTools(
  */
 export interface McpConnector extends McpClientLike {
   /**
-   * 释放底层资源，**幂等**、**有界**：
-   * stdio = 先 SIGTERM，宽限期（{@link MCP_CLOSE_GRACE_MS}）后 SIGKILL；
-   * HTTP = 尽力 `DELETE` 终止会话（server 不认也无所谓，失败不抛）。
+   * 释放底层资源，**幂等**；stdio 侧**保证返回时子进程已终止**：
+   * 先 SIGTERM，宽限期（{@link MCP_CLOSE_GRACE_MS}）后 SIGKILL，然后**等真正的 `'exit'`**
+   * （2026-09-18 收紧：此前到点即返回、不等 reap，会留下孤儿进程而调用方无从知晓）。
+   * HTTP 侧 = 尽力 `DELETE` 终止会话（server 不认也无所谓，失败不抛）。
    *
-   * ⚠️ 「有界」是刻意的：`close()` 不保证等到子进程被 reap，只保证**会返回**。
    * 关闭后再调用 `listTools` / `callTool` 会抛出可读错误（不静默挂死）。
    */
   close(): Promise<void>;
@@ -534,7 +534,8 @@ export function createStdioMcpConnector(
         } catch {
           /* 已经死了 */
         }
-        markExited(); // 强杀之后不再无限等：close() 的承诺是「尽力 + 有界」
+        // ⚠️ 这里**不** resolve：SIGKILL 不可被捕获，'exit'/'close' 必达 —— 继续等真的退出。
+        // 到点即返回是 2026-09-18 之前的行为：调用方以为进程没了，实际还留着一个孤儿。
       }, MCP_CLOSE_GRACE_MS);
       try {
         await exitPromise;
@@ -554,6 +555,11 @@ export interface StreamableHttpMcpConnectorOptions {
   protocolVersion?: string;
   /** 装配期超时（毫秒）—— 只作用于**握手 + `tools/list`**，语义同 {@link StdioMcpConnectorOptions.timeoutMs} */
   timeoutMs?: number;
+  /**
+   * 会话过期时被调一次（见 `rpc` 的 404 自愈）。**给可观测用**：默认自愈是静默的，
+   * 而「静默恢复」和「静默失效」在监控上看不出区别 —— 要计数 / 告警 / 打日志就挂这个钩子。
+   */
+  onSessionExpired?: () => void;
   /** 注入 `fetch`（测试用；缺省全局 `fetch`，与 `createOpenAIClient` 同款） */
   fetchImpl?: typeof fetch;
 }
@@ -566,13 +572,13 @@ export interface StreamableHttpMcpConnectorOptions {
  *   （报文按 SSE 帧下发，server 应在发完响应后关流）；
  * - 会话：`initialize` 响应里的 `Mcp-Session-Id` 会被记住并在后续请求上回带
  *   （后续响应不带该头时**不覆盖**）；`close()` 尽力 `DELETE` 终止会话；
+ *   **会话过期自愈**：带会话 id 收到 `404` ⇒ 视为「会话已终止、该请求未被 server 执行」
+ *   ⇒ 丢会话 → 重新握手 → 把这一次**重试一次**（只一次，不再循环）。自愈是静默的，
+ *   所以给了 `onSessionExpired` 钩子给你计数 / 告警 —— 否则它和「静默失效」没区别。
  * - 协议版本：请求头 `MCP-Protocol-Version` 带**协商到的**版本（2025-06-18 起要求，
  *   老 server 忽略未知头）；
  * - HTTP 层失败**挂数值 `status`** ⇒ `engine/errors.ts::classifyError` 自动分流
  *   （429 → `rate_limit` 可重试 / ≥500 → `server` 可重试 / 其余 4xx → `api` 不可重试）。
- *
- * 已知边界：会话过期（带会话 id 收到 `404`）**不自动重握手**，按不可重试的 `api` 错抛出 ——
- * 自动重建会掩盖「server 侧会话策略」这件事；需要的话重建连接器。
  */
 export function createStreamableHttpMcpConnector(
   url: string,
@@ -672,9 +678,32 @@ export function createStreamableHttpMcpConnector(
     return pickResult(msg, id, method);
   };
 
-  const rpc = async (method: string, params: unknown, withVersion: boolean): Promise<unknown> => {
+  /**
+   * 一次 JSON-RPC 往返，带**会话过期自愈**（2026-09-18；MCP Streamable HTTP 的规范语义）。
+   *
+   * 带会话 id 收到 `404` 的含义是「这个会话我不认识」⇒ **该请求没有被执行** ——
+   * 所以丢掉会话、重新握手、把这一次**重试一次**是安全的（不会重复执行副作用）。
+   * 规范也是这么要求的：客户端**必须**新建会话（不带会话 id 重新 `initialize`）。
+   *
+   * **只重试一次**：第二次再 404 说明对面不是「会话过期」而是别的问题，直接抛（不循环）。
+   * 自愈本身是静默的，但可通过 `onSessionExpired` 观测 —— 否则它和「静默失效」没区别。
+   */
+  const rpc = async (
+    method: string,
+    params: unknown,
+    withVersion: boolean,
+    allowReinit = true,
+  ): Promise<unknown> => {
     const id = nextId++;
     const res = await post({ jsonrpc: '2.0', id, method, params }, { withVersion });
+    if (res.status === 404 && sessionId !== null && allowReinit) {
+      await readText(res); // 排空，别把连接晾着
+      opts.onSessionExpired?.();
+      sessionId = null;
+      ready = null; // 下一次 ensureReady 会新建会话
+      await ensureReady();
+      return rpc(method, params, withVersion, false);
+    }
     if (!res.ok) throw httpError(res.status, method, await readText(res));
     return guard(readResult(res, id, method), method);
   };

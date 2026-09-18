@@ -8,6 +8,7 @@ import {
   createStdioMcpConnector,
   createStreamableHttpMcpConnector,
   mcpTools,
+  MCP_CLOSE_GRACE_MS,
 } from '../../src/integrations/mcp.js';
 import type { McpConnector } from '../../src/integrations/mcp.js';
 import { classifyError } from '../../src/engine/errors.js';
@@ -31,9 +32,13 @@ afterEach(async () => {
   await Promise.all(open.splice(0).map((c) => c.close().catch(() => undefined)));
 });
 
-function stdio(mode: string, opts: { logFile?: string; timeoutMs?: number } = {}): McpConnector {
+function stdio(
+  mode: string,
+  opts: { logFile?: string; pidFile?: string; timeoutMs?: number } = {},
+): McpConnector {
   const env: Record<string, string> = { FAKE_MCP_MODE: mode };
   if (opts.logFile) env.FAKE_MCP_LOG_FILE = opts.logFile;
+  if (opts.pidFile) env.FAKE_MCP_PID_FILE = opts.pidFile;
   const c = createStdioMcpConnector([process.execPath, SERVER], {
     env,
     stderr: 'ignore',
@@ -159,6 +164,31 @@ describe('createStdioMcpConnector —— stdio 连接器', () => {
     await c.close();
   });
 
+  it('close() 返回时子进程**已被回收**（连忽略 SIGTERM 的 server 也照杀）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-mcp-'));
+    const pidFile = join(dir, 'pid');
+    const c = stdio('stubborn', { pidFile });
+    await c.listTools(); // 先确认进程真起来了并完成握手
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    assert.ok(Number.isFinite(pid) && pid > 0, `没读到 pid：${pidFile}`);
+
+    const started = Date.now();
+    await c.close();
+    const elapsed = Date.now() - started;
+
+    assert.ok(
+      elapsed >= MCP_CLOSE_GRACE_MS,
+      `server 忽略了 SIGTERM ⇒ 必须走到 SIGKILL（实测 ${elapsed}ms，宽限期 ${MCP_CLOSE_GRACE_MS}ms）`,
+    );
+    // 这一条是承重的：在「到点就 resolve、不等 reap」的旧实现下，close() 会在 SIGKILL
+    // 刚发出时就返回，此刻子进程还在（未回收）⇒ kill(pid, 0) 不报 ESRCH ⇒ 用例变红。
+    assert.throws(
+      () => process.kill(pid, 0),
+      /ESRCH/,
+      'close() 返回即代表子进程已终止 —— 不能留下孤儿进程',
+    );
+  });
+
   it('出厂连接器直接接 `mcpTools`（菜单名归一化整条走通）', async () => {
     const c = stdio('normal');
     const tools = await mcpTools(c, { server: 'fake' });
@@ -189,7 +219,12 @@ interface Recorded {
  */
 function fakeServer(
   opts: {
+    /** 固定会话 id（不换、不过期）—— 现有会话相关用例用它 */
     sessionId?: string;
+    /** 每个**新**会话可承载的请求数；用完后再带该会话发请求一律 404（逼客户端重新 initialize） */
+    sessionExpireAt?: number;
+    /** `tools/call` 恒 404（验会话自愈**只重试一次**、不循环） */
+    always404Call?: boolean;
     negotiated?: string;
     sse?: boolean;
     isError?: boolean;
@@ -198,11 +233,15 @@ function fakeServer(
   } = {},
 ): { fetchImpl: typeof fetch; requests: Recorded[] } {
   const requests: Recorded[] = [];
-  const sessionHeader = (method: string | undefined): Record<string, string> =>
-    // 会话 id **只在 initialize 的响应上**给：后续响应不带它，用来验连接器不会把它清空
-    opts.sessionId !== undefined && method === 'initialize'
-      ? { 'mcp-session-id': opts.sessionId }
-      : {};
+  /** 会话是**显式开启**的：没给任何会话相关选项就当作「不支持会话的 server」（不回该头） */
+  const useSession =
+    opts.sessionId !== undefined ||
+    opts.sessionExpireAt !== undefined ||
+    opts.always404Call === true;
+  /** 当前有效会话（`sessionId` 模式下恒为那个固定值；否则每次 initialize 铸一个新的） */
+  let active: string | null = null;
+  let minted = 0;
+  let served = 0;
 
   const fetchImpl = (async (url: unknown, init: unknown) => {
     const i = init as { method: string; headers: Record<string, string>; body?: string };
@@ -217,8 +256,32 @@ function fakeServer(
       });
     }
     const method = msg?.method;
+
+    if (method === 'initialize' && useSession) {
+      active = opts.sessionId ?? `sess-${++minted}`;
+      served = 0;
+    } else if (active !== null) {
+      // 会话校验：带错会话 / 已过期 → 404（MCP 规范语义：这个会话我不认识）
+      const carried = i.headers['mcp-session-id'];
+      const expired = opts.sessionExpireAt !== undefined && served >= opts.sessionExpireAt;
+      if (
+        carried !== active ||
+        expired ||
+        (opts.always404Call === true && method === 'tools/call')
+      ) {
+        return new Response('session not found', {
+          status: 404,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      served++;
+    }
+
+    const sessionHeader = (): Record<string, string> =>
+      method === 'initialize' && active !== null ? { 'mcp-session-id': active } : {};
+
     if (method === 'notifications/initialized') {
-      return new Response(null, { status: 202, headers: sessionHeader(method) });
+      return new Response(null, { status: 202, headers: sessionHeader() });
     }
     if (opts.emptyBody) {
       return new Response('', { status: 200, headers: { 'content-type': 'application/json' } });
@@ -237,7 +300,7 @@ function fakeServer(
         : { content: [{ type: 'text', text: 'ok' }] };
     }
     const payload = JSON.stringify({ jsonrpc: '2.0', id: msg?.id, result });
-    const headers = sessionHeader(method);
+    const headers = sessionHeader();
     if (opts.sse) {
       return new Response(`event: message\ndata: ${payload}\n\n`, {
         status: 200,
@@ -328,8 +391,8 @@ describe('createStreamableHttpMcpConnector —— StreamableHTTP 连接器', () 
     assert.equal(info.retryable, true);
   });
 
-  it('HTTP 404（会话过期）→ 归成不可重试的 api 错，不自动重握手', async () => {
-    const { connector } = http({ status: 404 });
+  it('HTTP 404 且**尚无会话**时不当作会话过期（照常抛，不重试）', async () => {
+    const { connector, requests } = http({ status: 404 });
     const err = await connector.listTools().then(
       () => assert.fail('应当抛错'),
       (e: unknown) => e,
@@ -337,6 +400,61 @@ describe('createStreamableHttpMcpConnector —— StreamableHTTP 连接器', () 
     const info = classifyError(err);
     assert.equal(info.type, 'api');
     assert.equal(info.retryable, false);
+    assert.equal(
+      requests.filter((q) => q.msg?.method === 'initialize').length,
+      1,
+      '没有会话可过期 ⇒ 不该触发重握手',
+    );
+  });
+
+  it('会话过期（404）→ 自动重握手并把**这一次**重试一次（自愈成功）', async () => {
+    const expired: number[] = [];
+    const { fetchImpl, requests } = fakeServer({ sessionExpireAt: 2 });
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl,
+      onSessionExpired: () => expired.push(Date.now()),
+    });
+    open.push(connector);
+
+    assert.equal((await connector.listTools()).length, 1, '握手恰好占满 2 次会话额度');
+    const r = (await connector.callTool('get-time', {})) as { content?: unknown };
+    assert.deepEqual(
+      r.content,
+      [{ type: 'text', text: 'ok' }],
+      '过期的那次没被执行（404 = 会话未知），重试应当成功',
+    );
+
+    assert.equal(expired.length, 1, 'onSessionExpired 必须被调一次 —— 自愈不能是静默的');
+    assert.equal(
+      requests.filter((q) => q.msg?.method === 'initialize').length,
+      2,
+      '应当重新 initialize 建新会话',
+    );
+    assert.deepEqual(
+      requests
+        .filter((q) => q.msg?.method === 'tools/call')
+        .map((q) => q.headers['mcp-session-id']),
+      ['sess-1', 'sess-2'],
+      '重试必须带**新**会话 id',
+    );
+  });
+
+  it('会话自愈**只重试一次**：对面一直 404 就直接抛（不循环）', async () => {
+    const { fetchImpl, requests } = fakeServer({ always404Call: true });
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', { fetchImpl });
+    open.push(connector);
+
+    assert.equal((await connector.listTools()).length, 1);
+    const err = await connector.callTool('get-time', {}).then(
+      () => assert.fail('应当抛错'),
+      (e: unknown) => e,
+    );
+    assert.equal((err as { status?: unknown }).status, 404);
+    assert.equal(
+      requests.filter((q) => q.msg?.method === 'initialize').length,
+      2,
+      '只允许初始 1 次 + 自愈 1 次；再多就是重试循环',
+    );
   });
 
   it('协议层 isError 转成抛错（与 stdio 同语义）', async () => {

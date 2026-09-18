@@ -818,6 +818,7 @@ const app = createApp({ system, providers: [...], tools });
 | `clientInfo` | 同 stdio |
 | `protocolVersion` | 请求的协议版本，缺省 `2024-11-05`；协商结果以 server 回的为准 |
 | `timeoutMs` | **装配期**超时（握手 + `tools/list`），缺省 60000，非正数 = 不限 |
+| `onSessionExpired` | 会话过期自愈时被调一次（见「已知边界」）—— 要计数 / 告警 / 打日志就挂它 |
 | `fetchImpl` | 注入 `fetch`（测试用；缺省全局 `fetch`，与 `createOpenAIClient` 同款） |
 
 #### evals（把 mockClient 提升为一等能力）
@@ -1081,8 +1082,8 @@ const callable = {
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果（出厂连接器已代你处理） |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判；**显式 `toolTimeoutMs: 0` 也算设了** —— 那是引擎表态「不限」，桥不会再自作主张判 60s），两条路径**同判定、同账**（`errorKind='timeout'`） |
 | MCP 连接器的超时只管装配期 | 连接器自带的 `timeoutMs` 只作用于**握手 + `tools/list`**（那两步**没有任何别的裁判** —— server 卡住会让 `createApp` 永久挂起）；`callTool` 仍是引擎 / 桥那一个裁判 |
-| MCP 连接的 `close()` 有界但不保证 reap | stdio 先 `SIGTERM`、`MCP_CLOSE_GRACE_MS`（2000 ms）后 `SIGKILL`；HTTP 尽力 `DELETE` 会话（server 不认也无所谓）。`close()` 保证**会返回**，不保证等到子进程被回收 |
-| StreamableHTTP 会话过期不自动重建 | 带会话 id 收到 `404` 按**不可重试**的 `api` 错抛出（自动重握手会掩盖 server 侧的会话策略）；要续用请重建连接器 |
+| MCP 连接的 `close()` 保证子进程已终止 | stdio 先 `SIGTERM`、`MCP_CLOSE_GRACE_MS`（2000 ms）后 `SIGKILL`，然后**等真正的 `'exit'`** —— **返回即代表进程已被回收**（此前到点即返回，会留孤儿进程而调用方无从知晓）；HTTP 尽力 `DELETE` 会话（server 不认也无所谓） |
+| StreamableHTTP 会话过期**自愈** | 带会话 id 收到 `404` = 会话已终止、**该请求未被 server 执行** ⇒ 丢会话 → 重新握手 → 把**这一次**重试一次（**只一次**，不再循环）。自愈本身是静默的 ⇒ 用 `onSessionExpired` 去计数 / 告警，否则它和「静默失效」在监控上看不出区别。`404` **之外**的失败仍按 `classifyError` 分流抛出，不重试 |
 | MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool.<菜单名>` attribute 逐次可查；`mcp.tool` 是最近一次） |
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用（两种引用粒度都要先有 token） |
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |

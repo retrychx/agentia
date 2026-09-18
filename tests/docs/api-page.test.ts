@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -250,5 +250,93 @@ describe('官网 api.html 与源码一致', () => {
       [...sections].sort(),
       '层次索引卡必须与 section 一一对应（防漏项与死链）',
     );
+  });
+});
+
+/**
+ * 页面上**其余**手写数字。（`210 个导出` / `9 个层次` 已由上面的 describe 守着：
+ * 前者对 `src/index.ts` 的导出数，后者对页面自己的 section 数。）
+ *
+ * 为什么补这一份：`0 个运行时依赖` / `4 类能力` / `3 类触发` 此前**没有任何断言** ——
+ * 加一个运行时依赖、加/删一类能力或触发宿主，页面会继续写旧数字而没人拦
+ * （本仓库已有这类漂移的先例：`1 个运行时依赖 → 0 个` 就是靠人眼改的）。
+ *
+ * ⚠️ 两个**刻意不推导**的，如实标出，别把它们当已守：
+ * - `1:1 run ↔ trace`：是不变量不是计数，真正的守卫在 `tests/engine/traceLink.test.ts`
+ *   （断言 `traceId == runId` 不被破坏）；这里只钉「首屏别把它删了」。
+ * - `0 反射`：策略声明（显式 DI，不用装饰器元数据反射）—— 源码里本来就有 `Reflect.ownKeys`
+ *   这类正当用法，**无法从源码计数推导**。已登记在 `docs/guards.md` §2「待守」。
+ */
+describe('官网手写数字与源码一致（chips 之外的）', () => {
+  const INDEX = join(repoRoot, 'packages', 'website', 'src', 'fragments', 'index.html');
+  const indexHtml = readFileSync(INDEX, 'utf8');
+
+  /** 四个能力装饰器（`src/toolkit/<name>.ts` 各一个） */
+  const ABILITIES = ['Tool', 'Skill', 'SubAgent', 'Prompt'];
+  /** 三种触发宿主（`src/transport/<name>.ts`） */
+  const TRIGGERS = ['http', 'async', 'scheduler'];
+
+  /** `api.html` 的 chip（`<b>N</b> 标签`） */
+  const chip = (label: string): number => {
+    const m = new RegExp(`<b>(\\d+)</b>\\s*${label}`).exec(html);
+    assert.ok(m, `api.html 上找不到「<b>N</b> ${label}」`);
+    return Number(m[1]);
+  };
+
+  /** `index.html` 首屏 hero-stats 行的取值（`<b>值</b> 标签`） */
+  const hero = /<div class="hero-stats"[^>]*>([\s\S]*?)<\/div>/.exec(indexHtml)?.[1] ?? '';
+  const heroStats = [...hero.matchAll(/<b>([^<]+)<\/b>\s*([^<]+)/g)].map((m) => ({
+    value: m[1].trim(),
+    label: m[2].trim(),
+  }));
+  const heroValue = (label: string): string | undefined =>
+    heroStats.find((s) => s.label === label)?.value;
+
+  const runtimeDeps = (): number => {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    return Object.keys(pkg.dependencies ?? {}).length;
+  };
+
+  it('解析器没退化（hero-stats 行抽到足够条目）', () => {
+    assert.ok(heroStats.length >= 5, `只抽到 ${heroStats.length} 条 hero 统计，解析器可能坏了`);
+  });
+
+  it('「个运行时依赖」= package.json 的 dependencies 数（两个页面都要对）', () => {
+    const deps = runtimeDeps();
+    assert.equal(chip('个运行时依赖'), deps, 'api.html 的 chip');
+    assert.equal(heroValue('个运行时依赖'), String(deps), 'index.html 首屏统计行');
+  });
+
+  it('「类能力」= 四个能力装饰器（都得是真导出，且两个页面都要对）', () => {
+    for (const name of ABILITIES) {
+      assert.ok(exported.has(name), `@${name} 必须是 src/index.ts 的导出`);
+      assert.ok(
+        existsSync(join(repoRoot, 'src', 'toolkit', `${name.toLowerCase()}.ts`)),
+        `src/toolkit/${name.toLowerCase()}.ts 应当存在（能力实现按名成文件）`,
+      );
+    }
+    assert.equal(chip('类能力'), ABILITIES.length, 'api.html 的 chip');
+    assert.equal(heroValue('类能力'), String(ABILITIES.length), 'index.html 首屏统计行');
+  });
+
+  it('「类触发」= 三种触发宿主（传输层文件必须在）', () => {
+    for (const f of TRIGGERS) {
+      assert.ok(
+        existsSync(join(repoRoot, 'src', 'transport', `${f}.ts`)),
+        `src/transport/${f}.ts 应当存在`,
+      );
+    }
+    assert.equal(heroValue('类触发'), String(TRIGGERS.length));
+  });
+
+  it('首屏那两条不可推导的声明**别被悄悄删掉**（不是「已守」，见本 describe 的注释）', () => {
+    assert.equal(
+      heroValue('run ↔ trace'),
+      '1:1',
+      '真正的不变量守卫在 tests/engine/traceLink.test.ts',
+    );
+    assert.equal(heroValue('反射'), '0', '策略声明，无法从源码计数推导 —— guards.md §2 待守');
   });
 });
