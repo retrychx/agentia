@@ -335,6 +335,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `McpClientLike { listTools(); callTool(name, args) }` + `mcpTools(client, { prefix, server, timeoutMs }) → AgentTool[]`；
   **不 import MCP SDK、不含任何传输实现**（stdio / StreamableHTTP 归独立可选包，本仓库 `scripts/e2e-mcp.ts`
   留了一份最小连接器供参考）。
+  > ⚠️ **后话（2026-09-18 ⑨）：本条后半句已作废** —— 连接器改为**内置**（那个「独立可选包」
+  > 从未发布）。上文保留为当时的决策记录；理由见 §10 2026-09-18 ⑨。
   **接入点偏离设计（此处锁定）**：设计写的是「`createApp({ providers })` 里放个 `useFactory` 即可」——
   **落地时不成立**：菜单只从装饰器注册表收集（`useFactory` 的返回值根本不进菜单），且 `Container.resolve`
   是同步的（`await mcpTools(...)` 塞不进去）。零新机制的做法是给 `AppOptions` 加 **`tools?: AgentTool[]`**：
@@ -1779,6 +1781,70 @@ openai 打 1 次（引擎层那一次）。两侧各自的测试都通过，因�
 （非流式空补全 / refusal 豁免）、`metrics.test.ts` +2（折叠数对得上 snapshot / 恒定发三个）、
 `tests/transport/async.test.ts` +1（并发重入）。**三处承重性反向验证**：摘掉重入闸、短路截断判据、
 把注释剥离改回旧实现 —— 对应新用例分别变红。
+
+**2026-09-18 ⑨ —— MCP 连接器改为**内置**（反转 2026-09-11 的 F7「独立可选包 `@migor/mcp`」）**
+
+**决策（连接器内置，不发独立包）**：`src/integrations/mcp.ts` 新增 `createStdioMcpConnector` /
+`createStreamableHttpMcpConnector`，公共面加 `McpConnector` 与 `MCP_CLOSE_GRACE_MS`。
+**同时作废**「连接器在独立可选包 `@migor/mcp`」这个说法 —— 它出现在 `src/index.ts`、
+`src/integrations/mcp.ts`、`scripts/e2e-mcp.ts`、`tests/integrations/mcp.test.ts`、
+`docs/plans/2026-09-11-agent-service-hardening.md` **共 5 处**（另加 §10 里 2026-09-11 那条原始记录本身，
+已就地加「后话」指针），而那个包**从未存在**
+（registry 返回 404，`packages/` 下只有 cli / trace-view / website）：等于 5 处注释指向一个空落点。
+
+**为什么反（F7 给的理由站不住，且与仓库自己的先例相反）**：
+- F7 的理由是「守住零运行时依赖」。**那条口径指的是不依赖第三方包**（`package.json` 的
+  dependencies / peerDependencies / optionalDependencies 三个字段全空），不是「不 import node 内建」——
+  `src/` 早已直接 import 10 处 `node:` 内建（`node:http` ×2 / `node:crypto` ×4 / `node:fs` ×4 /
+  `node:path` ×3 / `node:sqlite` / `node:module` / `node:async_hooks` / `node:url`）。
+  `spawn`（`node:child_process`）与 `fetch`（Node 18+ 全局）都是标准库 ⇒ **内置连一个第三方依赖都没加**。
+- **仓库自己的两份先例**（`store/` 的三层形状）：只用**标准库**的平台能力**直接内置**
+  （`FileTaskStore` = `node:fs` / `SqliteTaskStore` = `node:sqlite` / HTTP 宿主 = `node:http`）；
+  需要**第三方客户端**的才只留 duck-typed 缝（`RedisTaskStore` = `RedisLike`）。
+  MCP stdio 连接器属于**前者**。⇒ 内置才是与既有形状一致的那个选择，独立包是例外。
+- F7 的同文档下一节（§8 风险 D1）写的是真理由：「MCP 协议演进快 → 协议细节推给连接器包」。
+  但**这个问题的答案仓库已经有了**：`integrations/otlp.ts` 同样是外部 churn 协议（OTel GenAI
+  semconv，至今 experimental），它内置，对付 churn 的手法是「映射集中在单模块 + **钉住基准版本**」
+  （`otlp.ts:15` 对齐 v1.37，升级只改本模块）。若 OTLP 可以内置，MCP stdio 没有原则性理由在外面。
+- **可逆性**（拍板用的判据）：先内置，将来真被协议变更拖痛了，把这段挪进新包、旧路径 re-export 即可
+  ——**可逆**；先发包则用户已装第二个包，再收回来是破坏性的 ——**不可逆**。
+
+**结构面不变（本次的关键约束）**：`McpClientLike` 仍是最小缝 —— 接官方 SDK / 远程 server / 自研传输
+照旧。出厂连接器只是**默认件**，与 `FileTaskStore` / `SqliteTaskStore` 之于 `TaskStore` 完全同构。
+「第三方 SDK 对用户不可见」那条口径**没有**被放宽：一个 MCP SDK 都没 import。
+
+**顺带收掉三处非显然的坑**（此前只活在 `scripts/e2e-mcp.ts` 内联的 94 行私有副本里，没有任何门禁守着）：
+① spawn 失败的 `'error'` 是**异步事件**，没有监听器就是未捕获异常（真实宿主进程直接崩，没有 try/catch
+接得住）；② stdout 必须按 `\n` **攒包**（一条报文可能跨多个 chunk）；③ **协议层 `isError: true` 必须
+转成抛错** —— 否则模型收到一条「成功」的结果、trace 也把这次失败的调用记成成功，正好打在本框架
+「trace 决定你敢不敢上线」的承诺上。
+
+**超时口径（延续「一次调用只有一个裁判」）**：连接器的 `timeoutMs` **只作用于装配期**
+（握手 + `tools/list`）—— 那两步此前**没有任何裁判**，server 卡住会让 `createApp` 永久挂起；
+`callTool` 的裁判仍是引擎 / 桥，连接器**不再起第二个计时器**。实现复用 `core/timeout.ts` 的
+`withDeadline`，**不用 `AbortSignal.timeout`**：后者内部 unref，正是 2026-09-14 ④ 明令禁止的形状。
+
+**已知边界（如实标注）**：StreamableHTTP 的会话过期（带会话 id 收到 `404`）**不自动重握手**，
+按不可重试的 `api` 错抛出 —— 自动重建会掩盖 server 侧的会话策略；要续用请重建连接器。
+`close()` 幂等且**有界**（stdout 侧 SIGTERM → `MCP_CLOSE_GRACE_MS` 后 SIGKILL），但**不保证等到
+子进程被 reap** —— 有界返回比「等到确认」更值。
+
+**覆盖升级（不只是重构）**：`scripts/e2e-mcp.ts` 此前只能 `import type` 桥的类型、自己再写一份连接器
+⇒ 那条端到端证明测的是**它的私有副本**。现在它 import 出厂连接器 ⇒ 门禁测的就是用户拿到的东西。
+
+**门禁**：新增 `tests/integrations/mcpConnector.test.ts`（27 例）。stdio 侧起**真子进程**
+（夹具 `tests/fixtures/mcp/fake-server.mjs`，env 覆盖 7 种模式：normal / split / logline / noinit /
+die / iserror / badtools）—— 要验的三件事只存在于真子进程世界里，用假 client 验等于没验；
+HTTP 侧注入 `fetchImpl`（与 `openai.test.ts` 同款）。
+**变异电池 9/9 全部被抓到、0 漏网**：摘掉 spawn 的 `'error'` 监听器、stdout 分帧丢包、
+两侧 isError 不转抛错、握手不 memoize、会话 id 被后续响应清空、SSE 当 JSON 解析、
+HTTP 失败不挂数值 `status`、`tools` 非数组静默成空菜单。
+`npm run e2e:mcp` 改为走出厂连接器，真第三方 server（`uvx mcp-server-time`）全绿。
+文档面：`usage-guide` 新增 `StdioMcpConnectorOptions` / `StreamableHttpMcpConnectorOptions` 两张选项表
+（并把这两个类型登记进 `tests/docs/usage-guide.test.ts` 的 `MEMBERSHIP_TYPES`，否则会被
+「标题未点名类型的表 ⇒ 首列必须是导出名」那条规则误判）；`api.html` 导出面 204 → 210；
+`McpToolsOptions` 的用法示例此前还写着 `providers: [{ useFactory: … }]`（spec §10 2026-09-11 已记
+那条路不成立）—— 一并改成 `AppOptions.tools`。
 
 ## 11. 开放项
 

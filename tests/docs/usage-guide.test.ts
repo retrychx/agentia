@@ -36,6 +36,8 @@ const MEMBERSHIP_TYPES = [
   'HttpHandlerOptions',
   'HealthResponse',
   'McpToolsOptions',
+  'StdioMcpConnectorOptions',
+  'StreamableHttpMcpConnectorOptions',
   'MetricsSinkOptions',
   'MetricsSink',
 ];

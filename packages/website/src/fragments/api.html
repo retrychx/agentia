@@ -19,12 +19,14 @@
         <p class="api-lede">
           全部导出都来自包根 <code>@migor/agentia</code>，<strong>零运行时依赖</strong>
           （公共消息类型自有，与 <code>@anthropic-ai/sdk</code> 结构兼容但不需要安装它）——
-          可选能力（zod / Redis / MCP）一律 duck-typed，零新增依赖。可观测面（<code>Trace</code> / <code>TraceSink</code> /
+          可选能力（zod / Redis）与 MCP <strong>桥</strong>一律 duck-typed；MCP 连接器
+          （stdio / StreamableHTTP）出厂自带，但只用标准库（<code>node:child_process</code> +
+          全局 <code>fetch</code>）—— 一样是零新增依赖。可观测面（<code>Trace</code> / <code>TraceSink</code> /
           <code>metricsSink</code> / <code>createOtlpExporter</code>）与四类能力<strong>同级导出</strong>，
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>204</b> 个导出</span>
+          <span class="api-chip"><b>210</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -220,15 +222,21 @@
 
       <section id="integrations">
         <h2>integrations · MCP 与指标</h2>
-        <p>外部系统适配层，零运行时依赖 —— 可选能力一律 duck-typed（与 <code>RedisLike</code> 同款范式）。</p>
+        <p>外部系统适配层，零运行时依赖 —— MCP <strong>桥</strong>与可选能力（zod / Redis）一律 duck-typed（与 <code>RedisLike</code> 同款范式）；MCP <strong>连接器</strong>出厂自带而只用标准库，见下。</p>
         <div class="table-wrap"><table class="doc-table">
           <thead><tr><th>导出</th><th>签名摘要</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>mcpTools</td><td><code>(client: McpClientLike, opts?: McpToolsOptions) → Promise&lt;AgentTool[]&gt;</code></td><td>把 MCP server 的 <code>tools/list</code> 映射成框架工具，可直接进 <code>createApp({ tools })</code>；与本地 @Tool 同池（同过中间件、同进重名查重）。</td></tr>
-            <tr><td>McpClientLike</td><td><code>{ listTools(); callTool(name, args) }</code></td><td>MCP client 的最小结构面：任意实现它的对象都能接，<strong>框架不 import MCP SDK</strong>；stdio / HTTP 传输由连接器自行提供。callTool 失败请抛错（框架会包成 is_error）。</td></tr>
+            <tr><td>McpClientLike</td><td><code>{ listTools(); callTool(name, args) }</code></td><td>MCP client 的最小结构面：任意实现它的对象都能接，<strong>框架不 import MCP SDK</strong>；接官方 SDK / 远程 server / 自研传输走这条缝。callTool 失败请抛错（框架会包成 is_error）。</td></tr>
+            <tr><td>McpConnector</td><td><code>McpClientLike &amp; { close() }</code></td><td>两个出厂连接器的公共面。<code>close()</code> <strong>幂等且有界</strong>：stdio 先 <code>SIGTERM</code>、宽限期后 <code>SIGKILL</code>；HTTP 尽力 <code>DELETE</code> 会话。关闭后再调用会抛可读错误。</td></tr>
+            <tr><td>createStdioMcpConnector</td><td><code>(cmd: string[], opts?: StdioMcpConnectorOptions) → McpConnector</code></td><td><strong>出厂 stdio 连接器</strong>：spawn 子进程走换行分隔 JSON-RPC（<code>initialize</code> → <code>notifications/initialized</code> → <code>tools/list</code> / <code>tools/call</code>）。惰性（构造不 spawn）；替你兜住三件只有连接器能做的事：spawn 失败的异步 <code>'error'</code> 事件、stdout 分帧、<strong>协议层 <code>isError: true</code> 转抛错</strong>。只用 <code>node:child_process</code>。</td></tr>
+            <tr><td>createStreamableHttpMcpConnector</td><td><code>(url: string, opts?: StreamableHttpMcpConnectorOptions) → McpConnector</code></td><td><strong>出厂 StreamableHTTP 连接器</strong>：一个 endpoint POST JSON-RPC，<code>application/json</code> 与 <code>text/event-stream</code> 两种响应都接；记住 <code>Mcp-Session-Id</code> 并在后续请求回带、<code>close()</code> 尽力终止会话。HTTP 失败<strong>带数值 <code>status</code></strong> ⇒ 自动被归成可重试 / 不可重试。只用全局 <code>fetch</code>。</td></tr>
+            <tr><td>StdioMcpConnectorOptions</td><td><code>{ env?; cwd?; stderr?; clientInfo?; protocolVersion?; timeoutMs?=60000 }</code></td><td><code>timeoutMs</code> 只作用于<strong>装配期</strong>（握手 + <code>tools/list</code>）—— 那两步没有任何别的裁判，server 卡住会让 <code>createApp</code> 永久挂起。</td></tr>
+            <tr><td>StreamableHttpMcpConnectorOptions</td><td><code>{ headers?; clientInfo?; protocolVersion?; timeoutMs?=60000; fetchImpl? }</code></td><td><code>headers</code> 放鉴权；<code>fetchImpl</code> 是测试注入点（与 <code>createOpenAIClient</code> 同款）。</td></tr>
             <tr><td>McpToolInfo</td><td><code>{ name; description?; inputSchema? }</code></td><td>tools/list 条目的结构面子集；inputSchema 已是 JSON Schema → 原样当 input_schema 用。</td></tr>
             <tr><td>McpToolsOptions</td><td><code>{ prefix?; server?; timeoutMs?=60000 }</code></td><td>缺省前缀 <code>mcp_&lt;server&gt;_</code>（没给 server 时 <code>mcp_</code>）；timeoutMs 是<strong>兜底</strong>单次调用超时（放弃等待，非取消）—— 引擎设了 <code>toolTimeoutMs</code> 时本项不参与判定。</td></tr>
             <tr><td>MCP_DEFAULT_TIMEOUT_MS</td><td><code>60000</code></td><td>桥的<strong>兜底</strong>单次调用超时（引擎设了 <code>toolTimeoutMs</code> 时不参与判定）。</td></tr>
+            <tr><td>MCP_CLOSE_GRACE_MS</td><td><code>2000</code></td><td><code>close()</code> 里 <code>SIGTERM</code> → <code>SIGKILL</code> 的宽限期。</td></tr>
             <tr><td>metricsSink</td><td><code>(opts?: MetricsSinkOptions) → MetricsSink</code></td><td>进程内指标累加器，<strong>天然满足 TraceSink</strong> → <code>createApp({ sinks: [metricsSink()] })</code> 即接入，零新出口。维度都从既有 trace 派生（<strong>不用埋点</strong>）：run 级、<strong>能力级</strong>（每个 tool/skill/subagent 的调用数、失败数、耗时、token、成本 —— 工具读 turn 上的 <code>tool.output</code> 事件，skill/subagent 读 capability span）、模型级（按模型归因，另出 <code>model_unpriced_turns_total</code>）、评分级（<code>agentia_score</code> gauge + <code>agentia_score_total</code> counter，来自 run 根的 score 事件）；另有 <code>agentia_dropped_keys{kind="capability"|"model"|"score"}</code> —— 被基数上限折叠的不同键数，<strong>恒定发三个样本</strong>（折叠不静默）。</td></tr>
             <tr><td>MetricsSink</td><td><code>TraceSink &amp; { snapshot(); render(); flush(); stop(); reset() }</code></td><td>snapshot 给数值（含 <code>capabilities</code> / <code>models</code> / <code>droppedCapabilities</code> / <code>droppedModels</code> / <code>droppedScores</code>），render 给 Prometheus 文本（<code>/metrics</code> 直接回它），flush 主动导出一次（OTLP 模式），stop 停掉定时导出，reset 清空累计。被折叠的不同键数在 <code>snapshot()</code>（三个 <code>dropped*</code> 字段）与 <code>render()</code>（<code>agentia_dropped_keys</code>）<strong>两侧都可见</strong>。</td></tr>
             <tr><td>MetricsSinkOptions</td><td><code>{ export?='prometheus' | 'otlp'; endpoint?; intervalMs?=60000; resourceAttributes?; serviceName?; onExportError?; windowSize?=1024; prefix?='agentia_'; labelMode?='capability' | 'kind' | 'none'; maxCapabilities?=200; maxModels?=50; maxScores?=200; buckets? }</code></td><td>tokens 口径 = 四类之和（与 BudgetGuard 一致）。时长给两种口径<strong>并存</strong>：histogram（<code>*_bucket/_sum/_count</code>，累积语义、可跨实例聚合）+ 窗口内精确分位（gauge、单实例好读）。<code>export:'otlp'</code> 零依赖手写 OTLP/JSON，<strong>必须同时给 endpoint</strong>（不给就构造期抛错）。<code>labelMode</code> + <code>maxCapabilities</code>/<code>maxModels</code>/<code>maxScores</code> 给三个维度封顶（<code>model</code> 与评分键一样可能是无界键）——超限的键折叠进 <code>__other__</code>（各出口的 label 名分别为 <code>capability</code> / <code>model</code> / <code>name</code>），桶照常累加故<strong>总量不丢</strong>，丢的只是标签粒度。</td></tr>

@@ -7,6 +7,32 @@
 
 ## [Unreleased]
 
+### 新增（MCP 连接器**出厂自带**：stdio + StreamableHTTP）
+
+- **`createStdioMcpConnector(cmd, opts?)`** / **`createStreamableHttpMcpConnector(url, opts?)`**
+  —— MCP 的两种传输现在随框架发布。此前只有 `mcpTools()` 那条 duck-typed 桥，**连接器要自己写**：
+  官方示例只有 `scripts/e2e-mcp.ts` 里一份 94 行的最小参考（还是内联在脚本里的私有副本）。
+  公共面另加 `McpConnector`（`McpClientLike` + `close()`）与 `MCP_CLOSE_GRACE_MS`。
+  **只用标准库**（`node:child_process` + 全局 `fetch`）⇒ 不新增任何第三方依赖，「零运行时依赖」不变；
+  也**没有**放宽「第三方 SDK 对用户不可见」—— 一个 MCP SDK 都没 import，`McpClientLike` 这条缝原样保留
+  （接官方 SDK / 远程 server / 自研传输照旧走它）。
+- **本条反转了 2026-09-11 的 F7**（「连接器放独立可选包 `@migor/mcp`」）。那个包**从未发布**，
+  而仓库里有 5 处注释把它当既成事实引用（含 `src/index.ts` 的公共面注释）—— 现在全部改正。
+  为什么反：F7 的理由「守住零运行时依赖」不成立（该口径 = 不依赖**第三方包**；`spawn` / `fetch` 都是
+  标准库），且 `store/` 的三层形状里「只用标准库的平台能力」一律内置（`FileTaskStore` / `SqliteTaskStore` /
+  HTTP 宿主），独立包才是那个例外。完整论证与可逆性判据见 `docs/spec.md` §10 **2026-09-18 ⑨**。
+- **连接器替你兜住三件只有它能做的事**（此前只活在 `scripts/e2e-mcp.ts` 那段内联副本里，无门禁守着）：
+  ① spawn 失败的 `'error'` 是**异步事件**，不接住就是未捕获异常（真实宿主进程直接崩，没有 try/catch
+  接得住）；② stdout 必须按 `\n` **攒包**（一条报文可能跨多个 chunk）；③ **协议层 `isError: true`
+  转成抛错** —— 否则模型收到一条「成功」的结果、trace 也把这次失败的调用记成成功。
+- **连接器的 `timeoutMs` 只管装配期**（握手 + `tools/list`）：那两步此前**没有任何裁判**，server 卡住会让
+  `createApp` 永久挂起；`callTool` 的裁判仍是引擎 / 桥（延续「一次调用只有一个裁判」）。
+- **已知边界**：StreamableHTTP 会话过期（带会话 id 收到 `404`）**不自动重握手**，按不可重试的 `api` 错抛出；
+  `close()` 幂等且**有界**（SIGTERM → 2000 ms 后 SIGKILL），但**不保证等到子进程被 reap**。
+- 验证：新增 `tests/integrations/mcpConnector.test.ts` 27 例（stdio 侧起**真子进程**）；
+  **变异电池 9/9 全部被抓到、0 漏网**；`npm run e2e:mcp` 改为走出厂连接器后真第三方 server 全绿 ——
+  此前那条端到端证明测的是它自己那份私有副本，现在测的是用户拿到的东西。
+
 ### 修复（第七轮复审收口：三处「不报错地不干活」）
 
 - **Anthropic 适配器：流被截断 / 空流现在抛带 `status` 的错误**（`AnthropicApiError(500)`）。

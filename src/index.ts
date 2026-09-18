@@ -179,9 +179,23 @@ export type { ForkReplayOptions } from './engine/replay.js';
 export { diffTraces } from './engine/trace-diff.js';
 export type { DiffEntry, SpanDiff, TraceDiff, TraceDiffOptions } from './engine/trace-diff.js';
 
-// integrations：MCP 桥（D1）—— duck-typed，框架零依赖；连接器在独立包 @migor/mcp
-export { mcpTools, MCP_DEFAULT_TIMEOUT_MS } from './integrations/mcp.js';
-export type { McpClientLike, McpToolInfo, McpToolsOptions } from './integrations/mcp.js';
+// integrations：MCP 桥（D1）+ 两个内置连接器（stdio / StreamableHTTP）—— 桥是 duck-typed，
+// 连接器只用标准库（`node:child_process` + 全局 `fetch`），**不新增第三方依赖**（spec §10 2026-09-18）
+export {
+  mcpTools,
+  MCP_DEFAULT_TIMEOUT_MS,
+  MCP_CLOSE_GRACE_MS,
+  createStdioMcpConnector,
+  createStreamableHttpMcpConnector,
+} from './integrations/mcp.js';
+export type {
+  McpClientLike,
+  McpConnector,
+  McpToolInfo,
+  McpToolsOptions,
+  StdioMcpConnectorOptions,
+  StreamableHttpMcpConnectorOptions,
+} from './integrations/mcp.js';
 // integrations：指标（D3 → E2/E3/E4/E5）—— 满足 TraceSink 即可接入，能力零新出口
 export { metricsSink, DEFAULT_BUCKETS } from './integrations/metrics.js';
 export type {

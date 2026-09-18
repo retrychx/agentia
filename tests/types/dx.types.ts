@@ -7,6 +7,8 @@
  */
 import {
   createApp,
+  createStdioMcpConnector,
+  createStreamableHttpMcpConnector,
   defineEval,
   executeRun,
   fromZod,
@@ -23,6 +25,7 @@ import type {
   EvalReport,
   JsonSchema,
   McpClientLike,
+  McpConnector,
   MetricsSink,
   MetricsSnapshot,
   Provider,
@@ -169,6 +172,24 @@ async function dPhaseTypeChecks(): Promise<void> {
   createApp({ system: new SystemPrompt().add('role', 'r', true), tools });
   // @ts-expect-error tools 要的是 AgentTool[]（name/description/inputSchema/run 一个不能少）
   createApp({ system: new SystemPrompt().add('role', 'r', true), tools: [{ name: 'x' }] });
+
+  /* ⑨ 内置连接器：两者都返回 McpConnector（= McpClientLike + close()），可直接喂 mcpTools */
+  const stdioConn: McpConnector = createStdioMcpConnector(['uvx', 'mcp-server-time'], {
+    stderr: 'ignore',
+    timeoutMs: 5_000,
+  });
+  const httpConn: McpConnector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+    headers: { authorization: 'Bearer t' },
+  });
+  const connTools: AgentTool[] = await mcpTools(stdioConn, { server: 'time' });
+  void [connTools, httpConn];
+  // @ts-expect-error 只有 listTools/callTool（= McpClientLike）不算 McpConnector —— 还缺 close()
+  const missingClose: McpConnector = okClient;
+  void missingClose;
+  // @ts-expect-error cmd 必须是字符串数组
+  createStdioMcpConnector('uvx');
+  // @ts-expect-error url 必须是字符串
+  createStreamableHttpMcpConnector({ url: 'x' });
 
   /* D2：scriptedClient 满足 ModelClient；defineEval 的 expect 拿到推导后的 typed */
   const evalReport: Promise<EvalReport> = defineEval<{ ok: boolean }>({

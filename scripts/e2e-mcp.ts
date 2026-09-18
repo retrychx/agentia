@@ -1,5 +1,5 @@
 /**
- * D1 真端到端证明：**真 MCP server** → stdio JSON-RPC 连接器 → `mcpTools()` →
+ * D1 真端到端证明：**真 MCP server** → **出厂 stdio 连接器**（`createStdioMcpConnector`）→ `mcpTools()` →
  * `createApp` 菜单 → 真跑一轮 run（模型经 MCP 工具拿到真实时区时间）。
  *
  * 为什么单独一个脚本（不并进 `npm run e2e`）：它优先接**第三方 server**
@@ -10,13 +10,19 @@
  *
  * 跑法：npm run e2e:mcp        （可用 MCP_SERVER_CMD="python3 scripts/mcp-fixture-server.py" 指定 server）
  */
-import { execFileSync, spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createApp, mcpTools, metricsSink, scriptedClient, SystemPrompt } from '../src/index.js';
-import type { McpClientLike, McpToolInfo, ScriptedStep } from '../src/index.js';
+import {
+  createApp,
+  createStdioMcpConnector,
+  mcpTools,
+  metricsSink,
+  scriptedClient,
+  SystemPrompt,
+} from '../src/index.js';
+import type { ScriptedStep } from '../src/index.js';
 
 const metrics = metricsSink();
 let failures = 0;
@@ -26,102 +32,10 @@ function check(label: string, ok: boolean, detail?: string): void {
   if (!ok) failures++;
 }
 
-// ───────────────────────────── stdio 连接器 ─────────────────────────────
-// 真连接器属于独立可选包 @migor/mcp（框架零依赖）；这段是「最小可用的那一份」，
-// 保留在仓库里作为端到端证明 —— 也顺便说明连接器到底要做什么。
-function stdioMcpClient(cmd: string[]): {
-  client: McpClientLike;
-  close(): void;
-  proc: ChildProcess;
-} {
-  const proc = spawn(cmd[0], cmd.slice(1), { stdio: ['pipe', 'pipe', 'inherit'] });
-  let buf = '';
-  let nextId = 1;
-  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  /**
-   * spawn 本身失败（最典型：命令不存在 → `ENOENT`）时 Node 会发 `'error'` 事件；**没有监听器
-   * 就会抛未捕获异常把整个进程带崩**，而 `pickServer` 的 try/catch 接不住 —— 错误在 promise 链
-   * 之外异步到达。下面记下致命错误并拒绝所有在途请求，AGENTS.md 承诺的「离线自动回落夹具」才真成立。
-   */
-  let fatal: Error | null = null;
-  proc.on('error', (err: unknown) => {
-    fatal = err instanceof Error ? err : new Error(String(err));
-    for (const p of pending.values()) p.reject(fatal);
-    pending.clear();
-  });
-
-  proc.stdout!.setEncoding('utf8');
-  proc.stdout!.on('data', (chunk: string) => {
-    buf += chunk;
-    for (;;) {
-      const nl = buf.indexOf('\n');
-      if (nl < 0) break;
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      if (!line.trim()) continue;
-      let msg: { id?: number; result?: unknown; error?: { code: number; message: string } };
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue; // server 的日志行（非 JSON）忽略
-      }
-      if (typeof msg.id !== 'number') continue;
-      const p = pending.get(msg.id);
-      if (!p) continue;
-      pending.delete(msg.id);
-      if (msg.error) p.reject(new Error(`MCP error ${msg.error.code}: ${msg.error.message}`));
-      else p.resolve(msg.result);
-    }
-  });
-
-  const raw = (method: string, params: unknown): Promise<unknown> => {
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-      if (fatal) return reject(fatal); // 进程已死：别再写 stdin（EPIPE），也别让请求挂死
-      pending.set(id, { resolve, reject });
-      proc.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    });
-  };
-  const notify = (method: string, params: unknown): void => {
-    proc.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
-  };
-
-  // 握手：initialize → notifications/initialized（后续请求都等它完成）
-  const ready = raw('initialize', {
-    protocolVersion: '2024-11-05',
-    capabilities: {},
-    clientInfo: { name: 'agentia-e2e', version: '0.0.0' },
-  }).then(() => notify('notifications/initialized', {}));
-
-  const request = async (method: string, params: unknown): Promise<unknown> => {
-    await ready;
-    return raw(method, params);
-  };
-
-  return {
-    proc,
-    close: () => proc.kill(),
-    client: {
-      async listTools(): Promise<McpToolInfo[]> {
-        const r = (await request('tools/list', {})) as { tools?: McpToolInfo[] };
-        return r.tools ?? [];
-      },
-      async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-        const r = (await request('tools/call', { name, arguments: args })) as {
-          isError?: boolean;
-          content?: unknown;
-        };
-        // 约定：协议层 isError 由连接器转成抛错（否则模型看不到失败）
-        if (r?.isError) {
-          throw new Error(
-            `MCP 工具 ${name} 返回 isError: ${JSON.stringify(r.content).slice(0, 200)}`,
-          );
-        }
-        return r;
-      },
-    },
-  };
-}
+// ───────────────────────────── 连接器 ─────────────────────────────
+// 2026-09-18 起**出厂自带**（`createStdioMcpConnector`，见 spec §10 同日条）。本节此前内联过
+// 一份 94 行的「最小连接器」（注释里曾指向独立可选包 `@migor/mcp`）—— 现在直接 import
+// 出货的那份：**这条端到端证明测的就是用户拿到的东西**，而不是它的一个私有副本。
 
 async function pickServer(): Promise<{ cmd: string[]; label: string }> {
   const fromEnv = process.env.MCP_SERVER_CMD;
@@ -129,9 +43,9 @@ async function pickServer(): Promise<{ cmd: string[]; label: string }> {
 
   const uvx = ['uvx', 'mcp-server-time'];
   try {
-    const probe = stdioMcpClient(uvx);
-    const tools = await probe.client.listTools();
-    probe.close();
+    const probe = createStdioMcpConnector(uvx);
+    const tools = await probe.listTools();
+    await probe.close();
     if (tools.length > 0) {
       return { cmd: uvx, label: `${uvx.join(' ')}（第三方 server，${tools.length} 个工具）` };
     }
@@ -224,13 +138,13 @@ async function main(): Promise<void> {
   console.log('\n== 1. 起真 MCP server（stdio JSON-RPC）==');
   const { cmd, label } = await pickServer();
   console.log(`  server: ${label}`);
-  const mcp = stdioMcpClient(cmd);
+  const mcp = createStdioMcpConnector(cmd);
 
-  const listed = await mcp.client.listTools();
+  const listed = await mcp.listTools();
   check('tools/list 有工具', listed.length > 0, listed.map((t) => t.name).join(', '));
 
   console.log('\n== 2. mcpTools() 把 server 工具映射进框架菜单 ==');
-  const tools = await mcpTools(mcp.client, { server: 'time', timeoutMs: 30_000 });
+  const tools = await mcpTools(mcp, { server: 'time', timeoutMs: 30_000 });
   const target = listed[0];
   check('映射出 AgentTool[]（条数一致）', tools.length === listed.length);
   check(
@@ -336,7 +250,7 @@ async function main(): Promise<void> {
   console.log('\n== 6. agentia doctor 认不认这个 MCP 能力 ==');
   doctorDemo();
 
-  mcp.close();
+  await mcp.close();
   console.log(
     `\n${failures === 0 ? '✅ D1/D2/D3/D4 真端到端证明全绿' : `❌ ${failures} 项失败`}\n`,
   );

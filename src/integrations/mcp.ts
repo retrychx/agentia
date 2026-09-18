@@ -1,21 +1,26 @@
+import { spawn } from 'node:child_process';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 
 /**
- * Agentia —— MCP 桥（D1，spec §10 决策记录）。
+ * Agentia —— MCP 桥（D1）+ 两个内置连接器（spec §10 决策记录）。
  *
- * 设计原则同 `RedisLike`：框架只定义**结构面**，不 import `@modelcontextprotocol/sdk`，
- * 也**不含任何传输实现**（stdio spawn / StreamableHTTP 都在独立可选包 `@migor/mcp`，
- * 或用户自己接 SDK 后实现 `McpClientLike`）。本文件只依赖 core，符合分层约定
- * （`integrations` → `core`）。
+ * **桥**：框架只定义**结构面** —— 不 import `@modelcontextprotocol/sdk`，任何实现了
+ * `McpClientLike` 的客户端都能接（同 `RedisLike` 的 duck-typing）。本文件只依赖 core，
+ * 符合分层约定（`integrations` → `core`）。
  *
- * 用法：在 `createApp({ providers })` 里放一个 provider 即可 ——
+ * **连接器**（2026-09-18 起**内置**，见文件末「连接器」一节与 spec §10 同日条）：
+ * `createStdioMcpConnector` / `createStreamableHttpMcpConnector`。二者只用标准库
+ * （`node:child_process` + 全局 `fetch`），**不新增任何第三方依赖**。
+ *
+ * 用法（接入点是 `AppOptions.tools` 这条**裸工具缝**）：
  * ```ts
- * createApp({
- *   system: '…',
- *   providers: [{ provide: 'mcp', useFactory: () => mcpTools(client, { server: 'time' }) }],
- * });
+ * const mcp = createStdioMcpConnector(['uvx', 'mcp-server-time']);
+ * createApp({ system: '…', tools: await mcpTools(mcp, { server: 'time' }) });
  * ```
+ * ⚠️ **不是** `providers: [{ provide: 'mcp', useFactory: … }]` —— 那条路落地时不成立
+ * （菜单只从装饰器注册表收集，`useFactory` 的返回值根本不进菜单；见 spec §10 2026-09-11）。
  * 复用既有装配 / 查重 / 中间件，**零新机制**（MCP 工具与本地 @Tool 同处一个命名空间，
  * 重名由 AgentApp 的装配期查重拦下）。
  *
@@ -204,4 +209,551 @@ export async function mcpTools(
   }
 
   return tools;
+}
+
+/* ═══════════════════════════ 连接器（内置默认件） ═══════════════════════════
+ *
+ * 2026-09-18 决策（spec §10 同日条）：连接器从「独立可选包 `@migor/mcp`」改为**内置**。
+ * 判据是仓库自己的两份先例（`store/` 的三层形状）：
+ *
+ *   - 只用**标准库**的平台能力 → 直接内置在 `src/`
+ *     （`transport/http.ts` 的 `node:http`、`store/sqliteStore.ts` 的 `node:sqlite`、
+ *      `runtime/context.ts` 的 `node:async_hooks`、`engine/tracer.ts` 的 `node:crypto`）；
+ *   - 需要**第三方客户端** → 只留 duck-typed 缝、框架永不 import
+ *     （`store/redisStore.ts` 的 `RedisLike`，以及本文件的 `McpClientLike`）。
+ *
+ * `spawn`（`node:child_process`）与 `fetch`（Node 18+ 全局）都是标准库 ⇒ 内置**不增加**
+ * 任何第三方依赖。「零运行时依赖」那条口径（= 不依赖第三方包，见 `package.json` 三个依赖
+ * 字段全空）不受影响 —— 它从来不是「不 import node 内建」的意思，`node:http` 一直在用。
+ *
+ * 结构面**不变**：`McpClientLike` 仍是最小缝，用户照旧可以接官方 SDK / 远程 server /
+ * 自研传输。这里给出的只是**默认件** —— 与 `FileTaskStore` / `SqliteTaskStore` 之于
+ * `TaskStore` 完全同构（默认件内置 + 缝保留 + 特殊后端仍由用户带 client）。
+ */
+
+/**
+ * 连接器公共面：`McpClientLike` + 一个关闭句柄（两个内置连接器都返回它）。
+ *
+ * 缝的形状没有变化 —— 需要自己的传输（官方 SDK / 远程 server / 复用长连接）时，
+ * 实现 `McpClientLike` 两个方法即可，不必碰这里。
+ */
+export interface McpConnector extends McpClientLike {
+  /**
+   * 释放底层资源，**幂等**、**有界**：
+   * stdio = 先 SIGTERM，宽限期（{@link MCP_CLOSE_GRACE_MS}）后 SIGKILL；
+   * HTTP = 尽力 `DELETE` 终止会话（server 不认也无所谓，失败不抛）。
+   *
+   * ⚠️ 「有界」是刻意的：`close()` 不保证等到子进程被 reap，只保证**会返回**。
+   * 关闭后再调用 `listTools` / `callTool` 会抛出可读错误（不静默挂死）。
+   */
+  close(): Promise<void>;
+}
+
+/** `close()` 里 SIGTERM → SIGKILL 的宽限期（毫秒） */
+export const MCP_CLOSE_GRACE_MS = 2_000;
+
+/**
+ * 缺省 `clientInfo`（`initialize` 握手要发，协议要求该字段存在）。
+ *
+ * **刻意不写框架自身版本**：`integrations` 层不 import 公共面（`AGENTIA_VERSION` 在
+ * `src/index.ts`），且 `scripts/release-surface.mjs` 的发版面按**精确版本串**计数 ——
+ * 这里多一处版本字面量会让它的 count 断言失配。需要真实版本请自行传 `clientInfo`。
+ */
+const DEFAULT_CLIENT_INFO: { name: string; version: string } = {
+  name: 'agentia',
+  version: '0.0.0',
+};
+
+/** `initialize` 缺省请求的协议版本（e2e 已验证的版本；要对齐新版 server 请显式传） */
+const DEFAULT_PROTOCOL_VERSION = '2024-11-05';
+
+/**
+ * 装配期超时的落点：**握手 + `tools/list`**。
+ *
+ * 为什么不给 `callTool` 也套一个：一次调用只有一个裁判（见 `McpToolsOptions.timeoutMs`）。
+ * 走 `mcpTools` 时 `callTool` 由引擎 / 桥判定；而握手与 `tools/list` 发生在**装配期**，
+ * 没有任何别的裁判 —— server 卡住会让 `createApp` 永久挂起，必须在这里兜住。
+ */
+type Guard = <T>(p: Promise<T>, label: string) => Promise<T>;
+
+/** 把可能很大的值截成可读片段（错误消息要能进日志，不能是一兆的 JSON） */
+function brief(value: unknown, max = 200): string {
+  let s: string;
+  try {
+    s = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    s = String(value);
+  }
+  if (typeof s !== 'string') s = String(value);
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/** JSON-RPC 错误对象 → `Error`（`code` 进文案：`classifyError` 只认数值 `status`，这里不冒充它） */
+function jsonRpcError(err: unknown): Error {
+  if (typeof err === 'object' && err !== null) {
+    const { code, message } = err as { code?: unknown; message?: unknown };
+    return new Error(`MCP error ${String(code)}: ${String(message)}`);
+  }
+  return new Error(`MCP error: ${brief(err)}`);
+}
+
+/** server 混进 stdout / SSE 的非 JSON 行 */
+function isJsonRpcResponse(msg: unknown): msg is { id: number; result?: unknown; error?: unknown } {
+  return (
+    typeof msg === 'object' && msg !== null && typeof (msg as { id?: unknown }).id === 'number'
+  );
+}
+
+/** 从一条已解析的报文里取结果；带 `error` 则抛 */
+function unwrap(msg: { result?: unknown; error?: unknown }, method: string): unknown {
+  if (msg.error !== undefined) throw jsonRpcError(msg.error);
+  if (!('result' in msg)) throw new Error(`MCP ${method}：响应里既没有 result 也没有 error`);
+  return msg.result;
+}
+
+export interface StdioMcpConnectorOptions {
+  /** 追加 / 覆盖的环境变量（缺省继承 `process.env`） */
+  env?: Record<string, string>;
+  /** 子进程工作目录 */
+  cwd?: string;
+  /** 子进程 stderr 去向：`'inherit'`（缺省，server 日志直通终端）| `'ignore'` */
+  stderr?: 'inherit' | 'ignore';
+  /** 见 {@link DEFAULT_CLIENT_INFO} */
+  clientInfo?: { name: string; version: string };
+  /** 请求的协议版本，缺省 `'2024-11-05'` */
+  protocolVersion?: string;
+  /**
+   * 装配期超时（毫秒）—— 只作用于**握手 + `tools/list`**，缺省
+   * {@link MCP_DEFAULT_TIMEOUT_MS}；非正数 = 不限。语义见 {@link Guard}。
+   *
+   * 超时同样只是一类账（`code='timeout'`）：**不终止子进程**，与仓库其余「等待的终点」
+   * 一致（超时 = 放弃等待）。
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * **stdio 连接器**：spawn 一个 MCP server 子进程，走换行分隔的 JSON-RPC 2.0
+ * （`initialize` → `notifications/initialized` → `tools/list` / `tools/call`）。
+ *
+ * 进程与握手都是**惰性**的 —— 构造不产生副作用，第一次 `listTools` / `callTool` 才 spawn；
+ * 握手只做一次（并发调用共享同一次握手）。
+ *
+ * 三处非显然的坑，这里都兜住了（此前 `scripts/e2e-mcp.ts` 内联的那 94 行踩过）：
+ * 1. spawn **失败**（命令不存在 → `ENOENT`）是异步的 `'error'` 事件，不是抛出 ——
+ *    没有监听器就是未捕获异常、直接把宿主进程带崩，所以必须接住并拒绝在途请求；
+ * 2. 分帧：一条报文可能跨多个 chunk，必须自己攒 buffer 按 `\n` 切；
+ * 3. **协议层 `isError: true` 必须转成抛错** —— 否则模型收到一条「成功」的结果，
+ *    trace 也把它记成成功的调用（`McpClientLike` 的约定，见其注释）。
+ */
+export function createStdioMcpConnector(
+  cmd: readonly string[],
+  opts: StdioMcpConnectorOptions = {},
+): McpConnector {
+  const bin = cmd[0];
+  if (typeof bin !== 'string' || bin === '') {
+    throw new Error('createStdioMcpConnector：cmd 不能为空（需要可执行文件 + 参数）');
+  }
+  const rest = cmd.slice(1);
+  const timeoutMs = opts.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
+  const clientInfo = opts.clientInfo ?? DEFAULT_CLIENT_INFO;
+  const protocolVersion = opts.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
+
+  let proc: ChildProcess | null = null;
+  let fatal: Error | null = null;
+  let closed = false;
+  let exited = false;
+  let buf = '';
+  let nextId = 1;
+  let ready: Promise<void> | null = null;
+  let resolveExit: (() => void) | null = null;
+  const exitPromise = new Promise<void>((r) => {
+    resolveExit = r;
+  });
+  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+  const markExited = (): void => {
+    exited = true;
+    resolveExit?.();
+  };
+
+  /** 进程已死 / 已 close 时一次性拒绝全部在途请求 —— 不留永久挂起的 promise */
+  const fail = (err: Error): void => {
+    fatal = err;
+    for (const p of pending.values()) p.reject(err);
+    pending.clear();
+  };
+
+  const guard: Guard = (p, label) => withDeadline(p, timeoutMs, label);
+
+  const ensureProc = (): ChildProcess => {
+    if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
+    if (fatal) throw fatal;
+    if (proc) return proc;
+
+    const spawnOpts: SpawnOptions = {
+      stdio: ['pipe', 'pipe', opts.stderr ?? 'inherit'],
+      // exactOptionalPropertyTypes：可选字段不能赋 undefined，只能条件展开
+      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    };
+    const p = spawn(bin, rest, spawnOpts);
+    proc = p;
+
+    p.on('error', (err: unknown) => {
+      // 见函数头第 1 条：这个监听器不是可选的
+      fail(err instanceof Error ? err : new Error(String(err)));
+      markExited();
+    });
+    p.on('exit', (code, signal) => {
+      if (!closed) {
+        fail(
+          new Error(`MCP server 进程已退出（code=${code ?? 'null'} signal=${signal ?? 'null'}）`),
+        );
+      }
+      markExited();
+    });
+    // 'exit' 在 spawn 失败时可能不触发，'close' 一定会 —— close() 靠它才不会白等
+    p.on('close', markExited);
+    // 进程已死时写 stdin 会异步报 EPIPE；真实原因由上面的 'error' / 'exit' 给出
+    p.stdin?.on('error', () => {
+      /* 吞掉：EPIPE 是「进程没了」的次生现象，不是根因 */
+    });
+
+    p.stdout?.setEncoding('utf8');
+    p.stdout?.on('data', (chunk: string) => {
+      buf += chunk;
+      for (;;) {
+        const nl = buf.indexOf('\n');
+        if (nl < 0) break;
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.trim() === '') continue;
+        let msg: unknown;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue; // MCP 规定 stdout 只走协议，但 server 混日志进来是常事
+        }
+        if (!isJsonRpcResponse(msg)) continue; // 通知（无 id）不配对
+        const waiter = pending.get(msg.id);
+        if (!waiter) continue;
+        pending.delete(msg.id);
+        try {
+          waiter.resolve(unwrap(msg, 'response'));
+        } catch (e) {
+          waiter.reject(e instanceof Error ? e : new Error(String(e)));
+        }
+      }
+    });
+
+    return p;
+  };
+
+  const write = (payload: unknown): void => {
+    const p = ensureProc();
+    p.stdin?.write(`${JSON.stringify(payload)}\n`);
+  };
+
+  const send = (method: string, params: unknown): Promise<unknown> => {
+    if (closed) return Promise.reject(new Error('MCP 连接器已 close —— 请重新创建一个'));
+    if (fatal) return Promise.reject(fatal);
+    const id = nextId++;
+    return new Promise<unknown>((resolve, reject) => {
+      try {
+        ensureProc();
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      pending.set(id, { resolve, reject });
+      write({ jsonrpc: '2.0', id, method, params });
+    });
+  };
+
+  /** 握手只做一次；失败是**粘性**的（连接器已不可用 → 重建，而不是半初始化态） */
+  const ensureReady = (): Promise<void> => {
+    if (ready) return ready;
+    ready = (async () => {
+      const init = await guard(
+        send('initialize', { protocolVersion, capabilities: {}, clientInfo }),
+        'initialize',
+      );
+      // 协商结果以 server 回的那个为准（协议允许 server 降级或选自己的版本）
+      void init;
+      write({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+    })();
+    return ready;
+  };
+
+  const request = async (method: string, params: unknown): Promise<unknown> => {
+    await ensureReady();
+    return send(method, params);
+  };
+
+  const listTools = async (): Promise<McpToolInfo[]> => {
+    const r = await guard(request('tools/list', {}), 'tools/list');
+    if (typeof r !== 'object' || r === null) {
+      throw new Error(`MCP tools/list 返回了非对象：${brief(r)}`);
+    }
+    const listed = (r as { tools?: unknown }).tools;
+    if (listed === undefined) return [];
+    if (!Array.isArray(listed)) {
+      // 响亮失败：把协议不符吞成空菜单，用户看到的是「一个工具都没有」而不是「server 坏了」
+      throw new Error(`MCP tools/list 的 tools 不是数组：${brief(listed)}`);
+    }
+    return listed as McpToolInfo[];
+  };
+
+  const callTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+    const r = await request('tools/call', { name, arguments: args });
+    // 承重：协议层 isError 只有连接器看得见（见函数头第 3 条）
+    if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
+      throw new Error(
+        `MCP 工具 ${name} 返回 isError: ${brief((r as { content?: unknown }).content)}`,
+      );
+    }
+    return r;
+  };
+
+  return {
+    listTools,
+    callTool,
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      fail(new Error('MCP 连接器已 close —— 请重新创建一个'));
+      const p = proc;
+      proc = null;
+      if (!p) return;
+      p.kill('SIGTERM');
+      if (exited) return;
+      const killTimer = setTimeout(() => {
+        try {
+          p.kill('SIGKILL');
+        } catch {
+          /* 已经死了 */
+        }
+        markExited(); // 强杀之后不再无限等：close() 的承诺是「尽力 + 有界」
+      }, MCP_CLOSE_GRACE_MS);
+      try {
+        await exitPromise;
+      } finally {
+        clearTimeout(killTimer);
+      }
+    },
+  };
+}
+
+export interface StreamableHttpMcpConnectorOptions {
+  /** 附加请求头（鉴权等）。会覆盖缺省的 `content-type` / `accept` 同名字段 */
+  headers?: Record<string, string>;
+  /** 见 {@link DEFAULT_CLIENT_INFO} */
+  clientInfo?: { name: string; version: string };
+  /** 请求的协议版本，缺省 `'2024-11-05'`；协商结果以 server 回的为准 */
+  protocolVersion?: string;
+  /** 装配期超时（毫秒）—— 只作用于**握手 + `tools/list`**，语义同 {@link StdioMcpConnectorOptions.timeoutMs} */
+  timeoutMs?: number;
+  /** 注入 `fetch`（测试用；缺省全局 `fetch`，与 `createOpenAIClient` 同款） */
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * **StreamableHTTP 连接器**：一个 endpoint，POST JSON-RPC（MCP 2025-03-26 起的
+ * Streamable HTTP 传输）。
+ *
+ * - 两种响应形态**都要接**：`application/json`（整条报文）与 `text/event-stream`
+ *   （报文按 SSE 帧下发，server 应在发完响应后关流）；
+ * - 会话：`initialize` 响应里的 `Mcp-Session-Id` 会被记住并在后续请求上回带
+ *   （后续响应不带该头时**不覆盖**）；`close()` 尽力 `DELETE` 终止会话；
+ * - 协议版本：请求头 `MCP-Protocol-Version` 带**协商到的**版本（2025-06-18 起要求，
+ *   老 server 忽略未知头）；
+ * - HTTP 层失败**挂数值 `status`** ⇒ `engine/errors.ts::classifyError` 自动分流
+ *   （429 → `rate_limit` 可重试 / ≥500 → `server` 可重试 / 其余 4xx → `api` 不可重试）。
+ *
+ * 已知边界：会话过期（带会话 id 收到 `404`）**不自动重握手**，按不可重试的 `api` 错抛出 ——
+ * 自动重建会掩盖「server 侧会话策略」这件事；需要的话重建连接器。
+ */
+export function createStreamableHttpMcpConnector(
+  url: string,
+  opts: StreamableHttpMcpConnectorOptions = {},
+): McpConnector {
+  if (typeof url !== 'string' || url === '') {
+    throw new Error('createStreamableHttpMcpConnector：url 不能为空');
+  }
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
+  const clientInfo = opts.clientInfo ?? DEFAULT_CLIENT_INFO;
+  const requestedVersion = opts.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
+  const baseHeaders: Record<string, string> = {
+    'content-type': 'application/json',
+    // MCP 规定客户端必须同时接受两种响应形态（否则 server 无法按规范回 SSE）
+    accept: 'application/json, text/event-stream',
+    ...opts.headers,
+  };
+
+  let sessionId: string | null = null;
+  let negotiated = requestedVersion;
+  let closed = false;
+  let ready: Promise<void> | null = null;
+  let nextId = 1;
+
+  const guard: Guard = (p, label) => withDeadline(p, timeoutMs, label);
+
+  /** HTTP 层失败：带上数值 `status`，让 `classifyError` 能按状态分流 */
+  const httpError = (status: number, method: string, body: string): Error => {
+    const e = new Error(`MCP ${method} HTTP ${status}${body ? `：${body}` : ''}`);
+    (e as { status?: number }).status = status;
+    return e;
+  };
+
+  const readText = async (res: Response): Promise<string> => {
+    try {
+      return await res.text();
+    } catch {
+      return '';
+    }
+  };
+
+  const post = async (payload: unknown, o: { withVersion?: boolean } = {}): Promise<Response> => {
+    if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
+    const headers: Record<string, string> = { ...baseHeaders };
+    if (sessionId !== null) headers['mcp-session-id'] = sessionId;
+    if (o.withVersion) headers['mcp-protocol-version'] = negotiated;
+    const res = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+    // 会话 id 只在 initialize 响应里出现；后续响应不带时**不能**把它清成 null
+    const sid = res.headers.get('mcp-session-id');
+    if (sid !== null && sid !== '') sessionId = sid;
+    return res;
+  };
+
+  /** 非 SSE 报文（单条 JSON-RPC）→ 取 result；SSE 里可能有别的通知帧，只取与 `id` 配对的 */
+  const pickResult = (msg: unknown, id: number, method: string): unknown => {
+    if (!isJsonRpcResponse(msg)) {
+      throw new Error(`MCP ${method}：响应里没有 id 为 ${id} 的 JSON-RPC 报文`);
+    }
+    return unwrap(msg, method);
+  };
+
+  /**
+   * 从响应取结果。SSE 分支一次性读完整个 body 再解析 —— StreamableHTTP 约定 server 发完
+   * 响应即关流，读全比手写增量解析器稳（`text/event-stream` 里 `data:` 行按规范可跨多行拼接）。
+   */
+  const readResult = async (res: Response, id: number, method: string): Promise<unknown> => {
+    const ct = (res.headers.get('content-type') ?? '').toLowerCase();
+    const text = await readText(res);
+    if (ct.includes('text/event-stream')) {
+      for (const frame of text.split(/\r?\n\r?\n/)) {
+        const data = frame
+          .split(/\r?\n/)
+          .filter((l) => l.startsWith('data:'))
+          .map((l) => l.slice(5).trim())
+          .join('');
+        if (data === '') continue;
+        let msg: unknown;
+        try {
+          msg = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        if (isJsonRpcResponse(msg) && msg.id === id) return unwrap(msg, method);
+      }
+      throw new Error(`MCP ${method}：SSE 响应里没有 id 为 ${id} 的报文`);
+    }
+    if (text.trim() === '') {
+      throw new Error(`MCP ${method}：响应体为空（期望 id 为 ${id} 的 JSON-RPC 报文）`);
+    }
+    let msg: unknown;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      throw new Error(`MCP ${method}：响应不是合法 JSON：${brief(text)}`);
+    }
+    return pickResult(msg, id, method);
+  };
+
+  const rpc = async (method: string, params: unknown, withVersion: boolean): Promise<unknown> => {
+    const id = nextId++;
+    const res = await post({ jsonrpc: '2.0', id, method, params }, { withVersion });
+    if (!res.ok) throw httpError(res.status, method, await readText(res));
+    return guard(readResult(res, id, method), method);
+  };
+
+  const ensureReady = (): Promise<void> => {
+    if (ready) return ready;
+    ready = (async () => {
+      const init = await guard(
+        rpc(
+          'initialize',
+          { protocolVersion: requestedVersion, capabilities: {}, clientInfo },
+          false,
+        ),
+        'initialize',
+      );
+      if (typeof init === 'object' && init !== null) {
+        const v = (init as { protocolVersion?: unknown }).protocolVersion;
+        if (typeof v === 'string' && v !== '') negotiated = v;
+      }
+      const res = await guard(
+        post(
+          { jsonrpc: '2.0', method: 'notifications/initialized', params: {} },
+          { withVersion: true },
+        ),
+        'notifications/initialized',
+      );
+      if (!res.ok) {
+        throw httpError(res.status, 'notifications/initialized', await readText(res));
+      }
+      await readText(res); // 排空：202 + 空体是合法应答，但别把连接晾着
+    })();
+    return ready;
+  };
+
+  const listTools = async (): Promise<McpToolInfo[]> => {
+    await ensureReady();
+    const r = await guard(rpc('tools/list', {}, true), 'tools/list');
+    if (typeof r !== 'object' || r === null) {
+      throw new Error(`MCP tools/list 返回了非对象：${brief(r)}`);
+    }
+    const listed = (r as { tools?: unknown }).tools;
+    if (listed === undefined) return [];
+    if (!Array.isArray(listed)) {
+      throw new Error(`MCP tools/list 的 tools 不是数组：${brief(listed)}`);
+    }
+    return listed as McpToolInfo[];
+  };
+
+  const callTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+    await ensureReady();
+    const r = await rpc('tools/call', { name, arguments: args }, true);
+    // 承重同 stdio：协议层 isError 只有连接器看得见
+    if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
+      throw new Error(
+        `MCP 工具 ${name} 返回 isError: ${brief((r as { content?: unknown }).content)}`,
+      );
+    }
+    return r;
+  };
+
+  return {
+    listTools,
+    callTool,
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      const sid = sessionId;
+      sessionId = null;
+      if (sid === null) return;
+      try {
+        // 尽力终止会话（MCP 约定的显式关闭）；server 不认这个方法也不该让 close() 抛
+        const res = await fetchImpl(url, {
+          method: 'DELETE',
+          headers: { ...baseHeaders, 'mcp-session-id': sid, 'mcp-protocol-version': negotiated },
+        });
+        await readText(res);
+      } catch {
+        /* 关闭是尽力而为 */
+      }
+    },
+  };
 }

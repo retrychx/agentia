@@ -34,6 +34,7 @@
 | `tests/engine/retry.test.ts` | 显式 `undefined` 字段**不得**覆盖缺省（`{maxAttempts: undefined}` 不是「关闭重试」） | 逐字段传 `undefined`，断言回落到缺省 | 重试静默关闭，而 trace 记成 `config.retry.maxAttempts: 0`（像是用户主动关的） |
 | `tests/toolkit/env.test.ts` | `.env` 解析的分支矩阵（引号 / 引号+行内注释 / 转义 / 不闭合 / 值内含 `#`） | 表格驱动，逐格断言 | 密钥带字面引号进 `process.env` → 每个请求 401，而文件看上去完全正确（真发生过） |
 | `tests/toolkit/subagent.test.ts` · `skill.test.ts` | 嵌套能力必须把 `toolTimeoutMs` 等透传子循环（裁判权交接） | 喂带字段的 ctx，断言子循环按该口径记账 | 子循环永不超时 + MCP 桥起自己的兜底计时器 = 双计时器双账本 |
+| `tests/integrations/mcpConnector.test.ts` | MCP 连接器**三件只有它能做的事**：spawn 的 `'error'` 是异步事件必须接住 / stdout 必须按 `\n` 攒包 / **协议层 `isError: true` 必须转成抛错**；另守装配期超时与 `close()` 幂等有界 | 起**真子进程**夹具（`tests/fixtures/mcp/fake-server.mjs`，env 覆盖 7 种模式）+ HTTP 侧注入 `fetchImpl`；用例本身由 **9 条变异电池**证明会咬 | `isError` 不转抛错 ⇒ 失败的调用被**模型与 trace 一起**记成成功（正好打在本框架「trace 决定你敢不敢上线」的承诺上）；不接 `'error'` ⇒ 命令不存在时未捕获异常把宿主进程带崩 |
 
 ### 1.3 宿主与耐久
 
@@ -113,8 +114,12 @@
 
 1. **宁可窄，不要误报。** 守卫应当断言「**允许集合**」而非「禁止某个写法」（`layering.test.ts`
    的 `ALLOWED` 就是这个形状）。误报的门禁最终会被人加 ignore 关掉，等于没有。
-2. **必须能反向证伪。** 守卫写完要**回退实现、确认它变红**再恢复（见 PR 模板自查第 5 条）。
+2. **必须能反向证伪 —— 而且是逐条。** 守卫写完要**回退实现、确认它变红**再恢复（见 PR 模板自查第 5 条）。
    没做过反向验证的守卫，很可能是永远绿的空断言 —— 本仓库已有「真空变绿」的教训，
    `layering.test.ts` 的「解析计数下限」就是为它加的。
+   ⚠️ **一个用例文件里 N 条承重断言要 N 次反向验证**（摘一处实现只证明一处会咬）：
+   用一次性脚本跑**变异电池**（逐条改回坏版本 → 跑测试 → 还原并逐字复核源码），验收标准是
+   **0 漏网**。`mcpConnector.test.ts` 的 9 条变异就是这么过的；只做「随便摘一处看它红」
+   照样会漏掉一条永远绿的断言。
 3. **失败信息必须能定位。** `assert` 消息里带**文件:行号**与修法（`layering.test.ts` /
    `transport-errors.test.ts` 都是这个形状），否则 CI 只留一个 exit 1。
