@@ -752,25 +752,40 @@ const app = await createApp({ /* … */ sinks: [jsonl] });
 | `diffTraces` | 两条 trace 的 A/B 比对（prompt / 模型实验）：run 级 summary + 逐 span 字段差；纯函数，llm.turn 配对**忽略模型名**，缺省忽略墙钟 |
 | `applyMiddleware` | 手动包裹配置菜单（装配层已自动做） |
 
-#### MCP 桥（MCP 是「工具来源」，不是新机制）
+#### MCP 桥与连接器（MCP 是「工具来源」，不是新机制）
 
 | API | 说明 |
 |---|---|
 | `mcpTools` | 把 MCP server 的 `tools/list` 映射成框架 `AgentTool[]`（进 `createApp({ tools })`） |
 | `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
+| `createStdioMcpConnector` | **出厂 stdio 连接器**：spawn 一个 MCP server 子进程，走换行分隔 JSON-RPC（只用 `node:child_process`） |
+| `createStreamableHttpMcpConnector` | **出厂 StreamableHTTP 连接器**：一个 endpoint POST JSON-RPC；`application/json` 与 `text/event-stream` 两种响应都接（只用全局 `fetch`） |
+| `McpConnector` | 两个连接器的公共面 = `McpClientLike` + `close()`。自己写传输时实现 `McpClientLike` 即可，不必碰它 |
 | `MCP_DEFAULT_TIMEOUT_MS` | 桥的**兜底**单次调用超时（60000 ms）—— 引擎设了 `toolTimeoutMs` 时**不参与**判定 |
+| `MCP_CLOSE_GRACE_MS` | `close()` 里 SIGTERM → SIGKILL 的宽限期（2000 ms） |
 
 - **名字**：`prefix + 归一化原名`（MCP 名里的 `-` / `.` / 空格 → `_`）。归一化后**空名（原名不含任何 ASCII 字母/数字/下划线时产物为空，如全 emoji 名）/ 撞名 / 超 64 字符**一律**装配期抛错**（静默改名会得到一个调不回去的名字，比启动期报错难查得多）。
 - **原名**：每次调用写进发起 turn 的两条 attribute —— `mcp.tool.<菜单名>`（每次调用各一条，并行调用互不覆盖，审计 / 回放靠它把菜单名还原成 server 认识的原名）与 `mcp.tool`（本次 turn **最近一次**的原名，兼容既有查询）。
 - **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 原样透传，由 engine 的子集校验器在 `callTool` **之前**校验（非法入参根本不会发给 server，模型自己会改）。
-- **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了。
+- **失败**：`callTool` 抛错 → 该条 `tool_result` 记 `is_error`，**不杀 run**（与本地工具抛错同语义）。⚠️ **协议层的 `isError: true` 框架看不见** —— 连接器必须转成抛错，否则模型以为成功了（出厂连接器已代你处理）。
 - **超时**：**只有一个裁判**。引擎设了 `toolTimeoutMs` 时，桥的 `timeoutMs`（缺省 `MCP_DEFAULT_TIMEOUT_MS` = 60000）**不参与判定**；它只在「桥脱离引擎单用」或「引擎没设 `toolTimeoutMs`」时作为兜底。两条路径共用同一判定（`core/timeout.ts`：**看实测耗时，不看竞速**），超时都记 `errorKind='timeout'` + `is_error` 回模型、**不杀 run**。你自己写的工具要报超时，抛一个 `code === 'timeout'` 的错误即可（不必 import 框架的类）。
-- **连接器不在框架里**（守「零运行时依赖」）：stdio / StreamableHTTP 归独立可选包，或你自己接 SDK 后实现 `McpClientLike`。本仓库 `scripts/e2e-mcp.ts` 有一份最小连接器可参考。
+- **连接器出厂自带，但仍只给缝**：两个连接器只用标准库（`node:child_process` + 全局 `fetch`）⇒ **不新增任何第三方依赖**。要接官方 SDK / 远程 server / 自研传输，实现 `McpClientLike` 两个方法即可（同 `RedisLike` 的形状）。
+- **连接器替你兜住三件只有它能做的事**：① spawn 失败（命令不存在 → `ENOENT`）是**异步 `'error'` 事件**，不接住会把宿主进程带崩；② stdout 的分帧 —— 一条报文可能跨多个 chunk；③ **协议层 `isError: true` 转成抛错**。
+- **连接器的 `timeoutMs` 只管装配期**（握手 + `tools/list`）：那两步**没有任何别的裁判**，server 卡住会让 `createApp` 永久挂起；`callTool` 的裁判仍是引擎 / 桥（一次调用只有一个）。
 
 ```ts
-// 任意实现了 listTools/callTool 的对象都能接（duck-typed，无需继承）
-const client: McpClientLike = myStdioConnector;
-const tools = await mcpTools(client, { server: 'time' }); // → mcp_time_get_current_time …
+// 出厂连接器：stdio（spawn 子进程）
+const mcp = createStdioMcpConnector(['uvx', 'mcp-server-time']);
+const tools = await mcpTools(mcp, { server: 'time' }); // → mcp_time_get_current_time …
+
+// 远程 server：StreamableHTTP
+const remote = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+  headers: { authorization: 'Bearer …' },
+});
+const remoteTools = await mcpTools(remote, { server: 'remote' });
+
+// 也可以用你自己的传输：任意实现了 listTools/callTool 的对象都能接（duck-typed，无需继承）
+const mine = await mcpTools(myOwnConnector, { server: 'time' });
 
 // 与本地 @Tool 同池：同过中间件链、同进重名查重
 const app = createApp({ system, providers: [...], tools });
@@ -783,6 +798,27 @@ const app = createApp({ system, providers: [...], tools });
 | `prefix` | 工具名前缀；缺省 `mcp_<server>_`（没给 `server` 时 `mcp_`）；`''` = 不加前缀（撞名自负） |
 | `server` | server 标识，只用于拼缺省前缀（不会发给 server） |
 | `timeoutMs` | 单次 `callTool` 超时（毫秒）；缺省 60000，非正数 = 不限 |
+
+#### `StdioMcpConnectorOptions`（`createStdioMcpConnector` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `env` | 追加 / 覆盖的环境变量（缺省继承 `process.env`） |
+| `cwd` | 子进程工作目录 |
+| `stderr` | 子进程 stderr 去向：`'inherit'`（缺省，server 日志直通终端）或 `'ignore'` |
+| `clientInfo` | `initialize` 握手要发的 `{ name, version }`（协议要求存在） |
+| `protocolVersion` | 请求的协议版本，缺省 `2024-11-05` |
+| `timeoutMs` | **装配期**超时（握手 + `tools/list`），缺省 60000，非正数 = 不限 |
+
+#### `StreamableHttpMcpConnectorOptions`（`createStreamableHttpMcpConnector` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `headers` | 附加请求头（鉴权等）；会覆盖缺省的 `content-type` / `accept` 同名字段 |
+| `clientInfo` | 同 stdio |
+| `protocolVersion` | 请求的协议版本，缺省 `2024-11-05`；协商结果以 server 回的为准 |
+| `timeoutMs` | **装配期**超时（握手 + `tools/list`），缺省 60000，非正数 = 不限 |
+| `fetchImpl` | 注入 `fetch`（测试用；缺省全局 `fetch`，与 `createOpenAIClient` 同款） |
 
 #### evals（把 mockClient 提升为一等能力）
 
@@ -1041,9 +1077,12 @@ const callable = {
 | 同 session 并发 run 要自行串行化 | `SessionStore` 是 **append-only**：并发写不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 共用同一 sessionId 时，各自追加的轮次可能交错成「连续两条 user」，下一轮 load 出来撞角色交替校验（400）。同一 session 的并发 run 请调用方自行串行化（每 session 一把锁 / 一条队列） |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
 | OpenAI 流式的上游故障按失败处理 | 三种形态都**抛错**按失败处理：流中 `error` 分片（上游把故障塞进 200 的流；按 `type`/`code` 反推 status，限流能被引擎重试认出）；**未收到 `[DONE]` 也无 `finish_reason`**（流被上游/代理截断 —— 哪怕已吐出半句、有累积文本，也按不完整响应抛错，不报 `end_turn`）；正常终止却无任何文本与工具调用（与非流式空 `choices` 同一守卫）。**例外**：`finish_reason=content_filter` 的空流是合法 refusal，不抛 —— 与非流式路径同一个响应同一个结论 |
-| MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；连接器（stdio / HTTP）不在框架内 |
-| MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果 |
+| MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；出厂连接器同样只做 `tools/list` + `tools/call` |
+| MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果（出厂连接器已代你处理） |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判；**显式 `toolTimeoutMs: 0` 也算设了** —— 那是引擎表态「不限」，桥不会再自作主张判 60s），两条路径**同判定、同账**（`errorKind='timeout'`） |
+| MCP 连接器的超时只管装配期 | 连接器自带的 `timeoutMs` 只作用于**握手 + `tools/list`**（那两步**没有任何别的裁判** —— server 卡住会让 `createApp` 永久挂起）；`callTool` 仍是引擎 / 桥那一个裁判 |
+| MCP 连接的 `close()` 有界但不保证 reap | stdio 先 `SIGTERM`、`MCP_CLOSE_GRACE_MS`（2000 ms）后 `SIGKILL`；HTTP 尽力 `DELETE` 会话（server 不认也无所谓）。`close()` 保证**会返回**，不保证等到子进程被回收 |
+| StreamableHTTP 会话过期不自动重建 | 带会话 id 收到 `404` 按**不可重试**的 `api` 错抛出（自动重握手会掩盖 server 侧的会话策略）；要续用请重建连接器 |
 | MCP 名字可能被归一化 | 原名含 `-` / `.` / 空格 → 进菜单时变成 `_`；回调 server 用的仍是原名（`mcp.tool.<菜单名>` attribute 逐次可查；`mcp.tool` 是最近一次） |
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用（两种引用粒度都要先有 token） |
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |

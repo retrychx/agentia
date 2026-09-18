@@ -6,7 +6,7 @@ import { createApp, runAgent, Tool } from '../../src/index.js';
 import type { CapabilityMiddleware } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
-/** 记录调用、可脚本化响应的假 MCP client（真连接器在 @migor/mcp，这里只验桥） */
+/** 记录调用、可脚本化响应的假 MCP client（这里只验**桥**；连接器本身见 mcpConnector.test.ts） */
 function fakeMcp(
   tools: McpToolInfo[],
   call: (name: string, args: Record<string, unknown>) => Promise<unknown> = async () => ({

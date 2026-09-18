@@ -283,6 +283,28 @@ import { createHttpHandler } from '@migor/agentia';
 createServer(createHttpHandler(app, { runner })).listen(8080);
 ```
 
+### MCP（连接器出厂自带）
+
+MCP server 的工具映射成菜单项 —— 连接器（stdio / StreamableHTTP）**随框架发布**，只用标准库（`node:child_process` + 全局 `fetch`），不新增第三方依赖：
+
+```ts
+import { createApp, createStdioMcpConnector, createStreamableHttpMcpConnector, mcpTools } from '@migor/agentia';
+
+// stdio：spawn 一个 MCP server 子进程
+const mcp = createStdioMcpConnector(['uvx', 'mcp-server-time']);
+const tools = await mcpTools(mcp, { server: 'time' }); // → mcp_time_get_current_time …
+
+// 远程 server：StreamableHTTP（一个 endpoint，鉴权走 headers）
+const remote = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+  headers: { authorization: 'Bearer …' },
+});
+
+// 与本地 @Tool 同池：同过中间件链、同进重名查重
+createApp({ system, providers: [...], tools });
+```
+
+`McpClientLike` 这条缝仍然在：接官方 SDK / 远程 server / 自研传输时实现 `listTools()` + `callTool()` 两个方法即可（框架**不 import** MCP SDK）。
+
 ### 多模型（OpenAI 兼容端点）
 
 ```ts

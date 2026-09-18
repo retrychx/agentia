@@ -124,7 +124,10 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 - **Models** — `createAnthropicClient()` (default) and `createOpenAIClient()` for any OpenAI-compatible
   endpoint (DeepSeek, **Ollama**, gateways). You never need to touch a vendor SDK: pass
   `createAnthropicClient({ baseURL })` / `createOpenAIClient({ baseURL })`.
-- **MCP** — `mcpTools()` bridges an MCP server's tools into the menu (duck-typed, zero dependency)
+- **MCP** — `createStdioMcpConnector()` / `createStreamableHttpMcpConnector()` ship with the framework
+  (stdlib only: `node:child_process` + global `fetch`); `mcpTools()` bridges the server's tools into the
+  menu. The framework never imports the MCP SDK, and the `McpClientLike` seam stays open
+  (bring the official SDK / a remote server / your own transport).
 - **Memory** — `memory: { store, keys }` for cross-run state; task stores: memory / JSONL / SQLite / Redis
 - **Evals** — `scriptedClient` + `defineEval` turn mocked runs into a first-class diagnostic loop
 - **Platforms** — send traces to Langfuse / Phoenix / etc. via OTLP or a tiny custom `TraceSink`

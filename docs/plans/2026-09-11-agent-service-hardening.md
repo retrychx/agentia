@@ -309,6 +309,10 @@ export function mcpTools(client: McpClientLike, opts?: McpToolsOptions): Promise
 - **工具名归一化**：MCP 名可含 `-`/`.`（对 LLM API 不友好）→ 统一转 `_`，并**记录原名**到 attribute（审计/回放需要原名才能回调 server）。
 - **入参 schema**：MCP 的 `inputSchema` 已是 JSON Schema → 直接当 `inputSchema` 用（框架已有子集校验器，天然兼容）。
 - **连接器不进框架**：stdio（spawn 子进程 + JSON-RPC over stdin/stdout）与 HTTP（StreamableHTTP）两种传输的实现放**独立可选包 `@migor/mcp`**（或由用户自己接 SDK 后实现 `McpClientLike`）。框架只留这 20 行桥。
+  > ⚠️ **已反转（2026-09-18）**：连接器改为**内置**（`createStdioMcpConnector` / `createStreamableHttpMcpConnector`），
+  > 理由与证据见 `docs/spec.md` §10 **2026-09-18 ⑨** —— 简要说：「零运行时依赖」指的是不依赖**第三方包**
+  > （`spawn` / `fetch` 都是标准库 ⇒ 内置零依赖增量），且 `store/` 的三层形状里「只用标准库的平台能力」
+  > 一律内置；`@migor/mcp` 从未发布（registry 404）。
 - **接入点**：`createApp({ providers })` 里放一个 provider（`useFactory` 里 `await mcpTools(...)`）即可 —— 复用现有装配/查重/中间件，**零新机制**。
   > ⚠️ **落地时此条被推翻（见 spec §10）**：菜单只从装饰器注册表收集，`useFactory` 的返回值**不进菜单**；
   > 且 `Container.resolve` 是同步的，异步的 `mcpTools()` 塞不进去。实际接入点 = `AppOptions.tools`（裸工具直进主菜单，
@@ -366,7 +370,7 @@ export function metricsSink(opts?: { export?: 'otlp' | 'prometheus' }): MetricsS
 | F4 | 鉴权钩子失败怎么表达 | 抛错即 401（可带 `status`/`body`） | 返回显式 `{ ok:false, status, body }` | **A**（与「工具抛错即 is_error」的既有风格一致） |
 | F5 | `budget_exceeded` 算成功还是失败 | `failed`（没跑完） | `succeeded`（护栏是流程一部分） | **A** |
 | F6 | 会话持久化 | 新增 `SessionStore`（与 `MemoryStore` 并列） | 扩展 `MemoryStore` 承载 messages | **A**（两者语义正交，合并会让「键值黑板」变糊） |
-| F7 | MCP 连接器落点 | 独立可选包 `@migor/mcp`（框架零依赖） | 直接进 `src/integrations/mcp.ts`（含 stdio/HTTP 实现） | **A**（守住「零运行时依赖」；框架只留 duck-typed 桥） |
+| F7 | MCP 连接器落点 | 独立可选包 `@migor/mcp`（框架零依赖） | 直接进 `src/integrations/mcp.ts`（含 stdio/HTTP 实现） | **A**（守住「零运行时依赖」；框架只留 duck-typed 桥）⚠️ **2026-09-18 改为 B**：见 spec §10 2026-09-18 ⑨ —— A 的理由（零依赖）不成立，`spawn`/`fetch` 都是标准库；`store/` 的先例是「只用标准库的平台能力直接内置」 |
 | F8 | 任务完成回调 | 先做进程内 `TaskSink` | 直接做 webhook（含重试/签名） | **A**（webhook 可用 sink+fetch 自搭；先给最小缝） |
 
 ---
