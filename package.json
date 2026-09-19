@@ -51,7 +51,8 @@
     "e2e:examples": "npm run build && tsx scripts/e2e-examples.ts",
     "e2e:deploy": "npm run build && tsx scripts/e2e-deploy.ts",
     "e2e:live": "tsx scripts/e2e-live.ts",
-    "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts"
+    "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts",
+    "e2e:soak": "tsx scripts/e2e-soak.ts"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.125.0",

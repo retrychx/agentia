@@ -43,6 +43,7 @@
 | `scripts/e2e-deploy.ts` | 崩溃续跑：`SIGKILL` 后同库重启 `resumePending` 必须续跑 | 真起服务、真杀进程、同库重启、断言终态 | 「耐久」是句空话（在飞任务死半路无人接管） |
 | `tests/transport/host-hardening.test.ts` | 鉴权拦在**读 body 之前**、body 上限、并发闸门、`exposeErrors` | 真 HTTP 请求 + 断言状态码与连接行为 | 未鉴权请求也会被读进 body；内部拓扑回吐给未鉴权调用方 |
 | `tests/transport/async.test.ts` | 幂等键去重、`resumePending` 认领、迟到 reject 不改写终态 | 状态机级用例 | 同键任务重复执行；成功的 run 被落库失败覆写成 failed |
+| `tests/engine/approval.test.ts` · `tests/transport/approval.test.ts` · `tests/transport/httpApproval.test.ts` | HITL 挂起/恢复（2026-09-19 ①）：未决审批 ⇒ **整回合零执行零 tool_result**（协议配平）；`awaiting_approval` 不占槽、不触发 `onFinished`、`resumePending` 不捡、淘汰跳过；`approve` 逐 id 幂等（第一次赢）+ 先落库再派发；惰性超时自动全拒；挂起段照常 flushSinks、恢复段 link 上一段 | 引擎层 mockClient + 宿主层**真引擎**（executeRun）+ 真 HTTP；含「不做什么」断言（onFinished 不开火、普通工具不提前执行） | 审批闸被绕过（副作用直接发生）；挂起被当终态通知 webhook；恢复丢决定/重复执行 |
 
 ### 1.4 文档与发布面
 

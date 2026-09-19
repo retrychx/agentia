@@ -64,6 +64,19 @@ export class Run {
     this._status = isSuccessStopReason(result.stopReason) ? 'succeeded' : 'failed';
   }
 
+  /**
+   * 挂起（HITL）：从 running 进 awaiting_approval。**不是终态** —— finishedAt 不置、
+   * 不算成功也不算失败；扩展后的消息历史在 `result.suspendedMessages` 里，
+   * 由异步宿主落库等待审批，决定到齐后带着它重进引擎循环。
+   */
+  suspend(result: AgentRunResult): void {
+    if (this._status !== 'running') {
+      throw new Error(`cannot suspend a run in status ${this._status}`);
+    }
+    this._result = result;
+    this._status = 'awaiting_approval';
+  }
+
   fail(error: unknown): void {
     this._status = 'failed';
     this.finishedAt = Date.now();
@@ -81,6 +94,8 @@ export class Run {
         iterations: 0,
         error: classifyError(error),
         typed: undefined,
+        suspendedMessages: undefined,
+        pendingApprovals: undefined,
       };
       return;
     }
@@ -177,6 +192,15 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         // 会话标识落 run 根 attribute（`session.id`）—— 多轮 run 按会话聚合的锚点
         ...(session ? { sessionId: session.id } : {}),
       });
+      if (result.stopReason === 'awaiting_approval') {
+        // HITL 挂起：不是终态 —— 记忆回写/会话追加维持「只成功才写」（挂起不写），
+        // beforeFlush 也只在正常收尾路径调（见该选项注释）。
+        // 但**照常 flushSinks**：挂起段的 trace 段落必须可观测（每段执行一棵树，
+        // 恢复段是经 traceContext link 挂过来的新树 —— sink 两边都收得到）。
+        run.suspend(result);
+        await flushSinks(options.sinks, result.trace);
+        return { run, result };
+      }
       run.finish(result);
       if (memory) {
         // 回写是辅助动作：失败不得把已成功的 run 翻成 failed（会丢结果与 trace），

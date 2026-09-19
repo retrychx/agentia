@@ -20,6 +20,7 @@ export type {
 export { attachScore, parseTraceparent } from './core/trace.js';
 export type {
   AgentTool,
+  ApprovalDecision,
   JsonSchema,
   ModelClient,
   RecorderBackend,

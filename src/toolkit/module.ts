@@ -446,6 +446,9 @@ export class AgentApp {
         // 「契约字段必须原样透传」的规则（漏掉这一行 = traceparent 头解析出来了却没人用）。
         traceContext: opts.traceContext,
         idempotencyKey: opts.idempotencyKey,
+        // HITL：审批决定（tool_use_id → 决定）原样进引擎；恢复挂起任务时由
+        // AsyncRunner 经它把落库的决定喂回来
+        approvals: opts.approvals,
         contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
         retry: opts.retry ?? this.base.retry,
         maxTotalTokens: opts.maxTotalTokens ?? this.base.maxTotalTokens,

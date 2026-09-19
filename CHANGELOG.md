@@ -5,6 +5,51 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 修复（第八轮复审：时间维度的三处破口）
+
+- **子 agent / skill 被 `toolTimeoutMs` 超时后，capability span 在交付的 trace 里永不收尾，
+  且后台继续烧的 token 不进任何观测面**。新增 `ToolRunContext.abandoned`：引擎「放弃等待」
+  时 abort 它 —— @SubAgent / @Skill 收到信号即中止子循环（在飞请求被掐掉），capability
+  span 立刻以 `error`（`timeout`）收尾（trace 是浅拷交付的，等子循环自己 settle 再关
+  就进不了已交付的那份）。自定义工具要「真停」同样监听它。
+- **Scheduler 的 `at()` / `every()` 挡 32 位定时器溢出**：超过 2³¹-1ms（约 24.86 天）的
+  延迟会被 Node **静默**钳到 1ms —— `at(30 天后)` 变成立即触发、`every(34 天)` 退化成
+  每毫秒空转。现在构造期抛错（与 `runTimeoutMs` 同款防线）。
+- **skill 方法体 `try/catch` 掉 `ctx.llm()` 失败并降级时，capability span 不再被误标
+  error**（旧实现把「子运行失败」提前烙进 span，幂等守卫让整体成功的调用翻不了案）。
+
+### 新增（HITL 人工审批：挂起/恢复，跨进程耐久）
+
+- **审批 = 异步 tool_result**：`@Tool({ approval: 'required' })`（或裸 `AgentTool` 的 `approval`
+  字段）声明后，模型每次调用该工具都会把任务**挂起**：run 状态变为 `awaiting_approval`，
+  **整个回合一个工具都不执行**（回合级全有或全无 —— 协议要求每个 tool_use 配对 tool_result）；
+  完整消息历史（末尾是含未决 tool_use 的 assistant 消息）与待决清单（`pendingApprovals`）
+  随 `TaskRecord` 落库，进程重启不丢。
+- **恢复**：`runner.approve(taskId, decisions, { decidedBy? })` 或
+  `POST /tasks/:id/approve`（body `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }`）。
+  **逐 tool_use_id 幂等**（第一次决定赢）；决定齐了整个回合恢复执行：批准的工具正常执行
+  （工具体内经 `ToolRunContext.approval` 读到决定），拒绝的得 `tool_result(is_error,
+  '审批被拒绝：…')`（理由回给模型，可自行换路）。恢复后再遇未决审批 ⇒ 再次挂起（可等多轮）。
+  引擎侧的恢复是**通用**的：任何「assistant 结尾带 tool_use」的消息历史喂给
+  `runAgent` / `app.run` 都会先解决这些 tool_use 再调模型。
+- **状态语义**：`awaiting_approval` 是**非终态**（`awaitTask` 继续等）、不占并发槽、
+  不触发 `TaskSink.onFinished`、`resumePending` 不捡（它不是孤儿，是在等人）、
+  InMemory 淘汰跳过、同幂等键重复 submit 返回等待中的任务。挂起段的 trace **照常投递
+  sinks**；恢复段是一棵新树，经根 span 的 `links` 挂到上一段 runId。
+- **审批超时兜底**：`new AsyncRunner(app, { approvalTimeoutMs })`（缺省 0 = 一直等）。
+  **惰性判定、不起定时器**：`approve` / `poll` / `resumePending` 读到过期挂起任务时，
+  自动把全部待决项写成「拒绝：审批超时」并恢复执行。
+- 新公共面：`ApprovalDecision` 类型；`RunAgentOptions.approvals` / `RunInvocationOptions.approvals`；
+  `AgentRunResult.suspendedMessages` / `pendingApprovals`（字段恒在场，未挂起为 `undefined`）；
+  `AgentStopReason` 与 `RunStatus` 各增 `'awaiting_approval'`；`AsyncRunner.approve` /
+  `approvalTimeoutMs`；trace 事件 `approval.requested` / `approval.decided`（带 waitedMs）。
+- 已知边界（详见 usage-guide §7）：超时惰性判定；指标按段计；批准后崩溃 ⇒ at-least-once
+  重执行；预算口径在恢复段重新起算；嵌套能力（子 agent / skill 子循环）内的审批工具
+  不支持挂起整个 run；同步 `POST /run` 撞上审批会带 `awaiting_approval` 返回（要审批请走
+  `/tasks`）。
+
 ## [0.7.0] - 2026-09-18
 
 ### 变更

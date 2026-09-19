@@ -104,6 +104,7 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `schema` | 入参 JSON Schema；传 `fromZod<T>(...)` 可获得签名校验 |
 | `name` | 模型可见的工具名，缺省取方法名（建议 snake_case） |
 | `strict` | 透传给 Anthropic 的 strict 模式（**框架不校验 schema 合规性**） |
+| `approval` | `'required'` = 每次调用先挂起等人工审批（HITL，见 §6.6「人工审批」） |
 
 ### `@Skill(spec: SkillSpec)`
 
@@ -205,8 +206,10 @@ npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 | `beforeFlush` | `(trace, result) => void \| Promise<void>`：**sinks 冲刷之前**的最后一笔（run 正常收尾后调一次，抛错被吞）。给「**拿到结果才判得出**的结论」用的缝 —— 典型是 `defineEval` 的 score：等 `app.run` 返回再 `attachScore`，`metricsSink` 早在导出那一刻聚完账，分数就永远进不了指标。读 trace 就够的判断不必用它，写进 sinks 里即可（见 §6 判官配方） |
+| `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `awaiting_approval` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
 
-返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`。
+返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`；
+`stopReason === 'awaiting_approval'`（HITL 挂起）时另有 `suspendedMessages`（完整消息历史，末尾是含未决 tool_use 的 assistant 消息）与 `pendingApprovals`（待决 tool_use_id 列表），未挂起时两者为 `undefined`。
 
 ---
 
@@ -359,7 +362,7 @@ const app = await createApp({ ... });
 | API | 说明 |
 |---|---|
 | `createHttpHandler` | `(req,res)` handler：`POST /run` 同步（带 `Accept: text/event-stream` 则 SSE 流式）、`POST /tasks` 异步、`GET /tasks/:id`、`GET /healthz`；返回值另带 `drain()` 与 `runner` |
-| `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `resumePending` / `drain`） |
+| `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `approve` / `resumePending` / `drain`）；`approve(taskId, decisions, { decidedBy? })` 审批挂起任务（HITL，见 §6.6「人工审批」） |
 | `TaskSink` | 任务完成回调 `{ onFinished(rec) }`，配 `AsyncRunner({ taskSinks })`；抛错被吞 |
 | `HttpException` | 鉴权钩子抛出以自定 HTTP 状态与响应体（抛别的错误一律按 401 处理） |
 | `Scheduler` | 定时触发（`every` / `at`） |
@@ -376,6 +379,7 @@ const app = await createApp({ ... });
 | `POST /run` | body 是 `RunInput`（string / messages / `{prompt\|text\|messages}`）；带 `Accept: text/event-stream` 则走 SSE | 200 `{ runId, status, stopReason, finalText, typed?, trace, error? }` —— **`status=failed` 也照返 200**（`rethrow:false` 语义：硬失败以 `error` 字段表达，不用 HTTP 错误码） |
 | `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重，直接返回既有记录 |
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
+| `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；不在 `awaiting_approval` 状态 → 409；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
 | `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
 | `GET /metrics` | — | 200 Prometheus 文本（`text/plain; version=0.0.4`）；**需在 `createHttpHandler` 里传 `metrics`**，**不鉴权**（与 `/healthz` 同档），停机中也回 |
 
@@ -452,7 +456,7 @@ process.on('SIGTERM', async () => {
 - **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**（构造期校验：必须 ≥ 0 的**有限**数 —— NaN/Infinity 会被 `setTimeout` 钳到 1ms，等于每个任务立即超时，故直接抛错；要「不限」传 0 或不设）。
 - **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与底层 client 的**内置重试**叠加 —— **两条内置适配器口径一致**（`createAnthropicClient` / `createOpenAIClient` 都有 `maxRetries`，缺省 2，重试同一状态码集合 408/409/429/5xx）—— 建议二选一调（这里 `maxAttempts: 1`，或 `<适配器>({ maxRetries: 0 })`）。
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
-- **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**，`AgentTool.run` 没有 signal 参数，**副作用可能已发生** —— 想真停的工具请自行读 `ToolRunContext.signal`。**超时判定只有一个裁判**：`toolTimeoutMs` 是唯一判据 —— 工具自带的超时（如 MCP 桥的 `timeoutMs`）在设了本项时**不参与**判定；反过来说，工具自判的超时（抛 `code='timeout'` 的错误）与引擎判的记**同一类账**（`errorKind='timeout'`），并同样回 `is_error`。
+- **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**：`AgentTool.run` 没有 signal 参数，**副作用可能已发生**；但引擎放弃等待时会 abort `ToolRunContext.abandoned` —— 想真停的工具监听它自行收尾（框架自带的 @SubAgent / @Skill 已这么做：超时即中止子循环，capability span 以 error 收尾）。**超时判定只有一个裁判**：`toolTimeoutMs` 是唯一判据 —— 工具自带的超时（如 MCP 桥的 `timeoutMs`）在设了本项时**不参与**判定；反过来说，工具自判的超时（抛 `code='timeout'` 的错误）与引擎判的记**同一类账**（`errorKind='timeout'`），并同样回 `is_error`。
 
 ### 6.3 上下文预算与成本
 
@@ -981,10 +985,13 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 - 拦下来的那次 run **仍然要记账**（模型的钱已经花了）—— 记账在 sink 里、拦截在 middleware 里，两者独立。
 - 被拦下的能力**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
 
-#### 人工审批闸门
+#### 人工审批
 
-框架不做审批子系统，但**闸门**这一层已经具备 —— `middleware` 可以 `await` 决策再放行，
-引擎会等工具结果（`Promise.resolve(tool.run(...))`）：
+两种形态，按「人什么时候在场」选：
+
+**A. 进程内闸门（middleware）** —— 审批方能被一次 `await` 等到（同进程回调 / 短等待）时用，
+不需要任何新机制 —— `middleware` 可以 `await` 决策再放行，引擎会等工具结果
+（`Promise.resolve(tool.run(...))`）：
 
 ```ts
 const DANGEROUS = new Set(['send_email', 'deploy', 'delete_records']);
@@ -1007,9 +1014,59 @@ createApp({ system, providers: [...], middleware: [requireApproval] });
   （ALS 传播，见上一节）。
 - 等待不会被默认掐断（`toolTimeoutMs` 缺省 0 = 不限）；真设了它，注意别把人的思考时间算进去。
 
-**框架不做的**：把 run 停成「待批准」态、进程重启后从断点续跑。`RunStatus` 没有这个状态、循环位置不落库，
-且 `traceToMessages` 重放**有损**（assistant 原文未记录）—— 拿它假装续跑只会拿到降级的上下文。
-要跨重启审批，就自己上工作流引擎（见 §7）。
+**B. 挂起式审批（HITL，跨进程耐久）** —— 审批在**另一个系统**里发生（工单 / IM / 后台台帐），
+可能要等几小时甚至跨进程重启时用：给工具声明 `approval: 'required'`，模型每次调用它都会把
+任务**挂起**，等决定到达后从断点恢复。
+
+```ts
+class DeployTools {
+  @Tool({ description: '部署到生产环境', schema: deploySchema, approval: 'required' })
+  async deploy(input: DeployInput) { /* … */ }
+}
+```
+
+流程（异步任务宿主）：
+
+1. `POST /tasks` 提交任务；模型调到 `deploy` 时 run **挂起**：任务状态变
+   `awaiting_approval`，**整个回合一个工具都不执行**（全有或全无 —— 协议要求每个
+   tool_use 配对 tool_result，部分执行 + 部分挂起会产出配不平的历史）。
+2. 轮询 `GET /tasks/:id` 看到 `status: 'awaiting_approval'` + `pendingApprovals`
+   （待决的 tool_use_id 列表）+ `spec.messages`（完整消息历史，末尾是含未决 tool_use
+   的那条 assistant 消息）。挂起**不占并发槽**、不算终态（`awaitTask` 继续等）、
+   `resumePending` 不会把它当孤儿捡走。
+3. 人批了：`POST /tasks/:id/approve`，body
+   `{ decisions: { '<tool_use_id>': { approved: true } }, decidedBy: 'alice' }`
+   （或直接 `runner.approve(taskId, decisions, { decidedBy })`）。**逐 tool_use_id 幂等**
+   （第一次决定赢，重复提交不推翻）。决定**随任务落库**（`TaskRecord.approvals`，
+   进程重启不丢）；待决集合齐了任务自动恢复执行。
+4. 恢复时：**批准**的工具正常执行（工具体内经 `ToolRunContext.approval` 读到自己的决定 —
+   谁批的、什么时候、什么理由）；**拒绝**的工具得到 `tool_result(is_error: true,
+   content: '审批被拒绝：…')` —— 理由回给模型，可自行换路。恢复后再遇未决审批 ⇒
+   再次挂起（可等多轮）。
+
+##### `ApprovalDecision`（审批决定）的字段
+
+| 字段 | 说明 |
+|---|---|
+| `approved` | `true` = 批准执行；`false` = 拒绝（tool_result 记 `is_error`） |
+| `reason` | 拒绝理由 / 备注（回给模型） |
+| `decidedBy` | 审批人标识（审计用） |
+| `decidedAt` | 决定时刻；缺省由框架在收到决定时填 |
+| `requestedAt` | 挂起时刻（框架回填；trace 的 `approval.decided` 事件据此算 `waitedMs`） |
+
+观测与兜底：
+
+- trace：挂起段在发起回合的 turn span 记 `approval.requested`（带待决 id 列表）；
+  恢复执行时记 `approval.decided`（带 tool_use_id / approved / decidedBy / reason /
+  waitedMs）。**挂起段与恢复段是两棵独立的 trace**，恢复段经根 span 的 `links` 挂到
+  上一段 runId（跨段关联不断链）；挂起段的 trace 照常投递 sinks（「任务为什么在等」
+  必须可观测）。
+- 超时兜底：`new AsyncRunner(app, { approvalTimeoutMs })`（缺省 0 = 一直等）。**惰性判定，
+  不起定时器**：`approve` / `poll` / `resumePending` 读到一个挂起已超过该值的任务时，
+  自动把全部待决项写成「拒绝：审批超时」并恢复执行（模型收到理由、任务走向终态）。
+  没人读的任务不会自己超时 —— 要定期扫就靠 `resumePending()`。
+
+**已知边界**（也收录在 §7）：见 §7 表的「审批」相关行。
 
 #### 内容护栏
 
@@ -1039,8 +1096,8 @@ const callable = {
 在**工具实现内部**做（Docker / 子进程 / 微 VM 随你），框架不参与也不该参与 ——
 `AgentTool.run(input) → output` 这个契约把隔离整个挡在实现里。
 
-唯一沾边的一条：工具起了子进程，**取消时要自己 kill**。框架的 `toolTimeoutMs` 是「不等了」不是取消
-（`AgentTool.run` 收不到 `signal`）；要能真停，让工具自己读 `ToolRunContext.signal`。
+唯一沾边的一条：工具起了子进程，**取消时要自己 kill**。框架的 `toolTimeoutMs` 是「不等了」，
+放弃等待时会 abort `ToolRunContext.abandoned` —— 要能真停，让工具监听它（或读 `ToolRunContext.signal` 响应整条 run 的中止）。
 
 ---
 
@@ -1071,9 +1128,9 @@ const callable = {
 | 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不做进程级决策）；信号处理是宿主的 |
 | 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
-| 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |
+| 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；并行子循环（一回合多个子 agent）各自过闸，超支上限是「**每个在飞分支**各一个回合」而非「总共一个回合」；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |
 | `maxCostUsd` 依赖价格表 | 模型不在价格表内（且未用 `priceOverrides` 覆盖）时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens`。**失效会响**：turn 上会记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、可回调 `onUnpricedModel` |
-| 工具超时**不取消**工具 | `AgentTool.run` 没有 signal 参数，超时只是「不等了」；副作用可能已发生。想真停请让工具自己读 `ToolRunContext.signal` |
+| 工具超时**不强制取消**工具 | `AgentTool.run` 没有 signal 参数，超时首先是「不等了」；副作用可能已发生。想真停：监听 `ToolRunContext.abandoned`（引擎放弃等待时 abort 它）自行收尾。框架自带的 @SubAgent / @Skill 已这么做 —— 超时即中止子循环（在飞请求被掐、不再后台烧 token），capability span 立刻以 error 收尾 |
 | 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
 | 同 session 并发 run 要自行串行化 | `SessionStore` 是 **append-only**：并发写不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 共用同一 sessionId 时，各自追加的轮次可能交错成「连续两条 user」，下一轮 load 出来撞角色交替校验（400）。同一 session 的并发 run 请调用方自行串行化（每 session 一把锁 / 一条队列） |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
@@ -1100,7 +1157,18 @@ const callable = {
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
 | 链路关联只做**入站** | `traceContext` / `traceparent` 头只把**上游**接进来（run 根的 `links`）；框架**不生成**出站 `traceparent` —— 运行中没有「当前 span」可导出，硬造会给出假 spanId。要从 run 往外传，用 `result.trace.traceId`（== `runId`）自行拼头。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
-| 人工介入只到「闸门」 | `middleware` 能 `await` 审批决策再放行；**跨进程挂起/续跑框架不做** —— `RunStatus` 无「待批准」态、循环位置不落库，`traceToMessages` 重放有损，不能拿它假装续跑（要跨重启审批请上工作流引擎）|
+| 人工审批两种形态 | 进程内闸门用 `middleware`（`await` 决策再放行）；跨进程耐久审批用 `@Tool({ approval: 'required' })` + `POST /tasks/:id/approve`（挂起/恢复，见 §6.6「人工审批」） |
+| 审批超时是**惰性**判定 | `approvalTimeoutMs` 不起定时器：`approve` / `poll` / `resumePending` 读到过期挂起任务时才自动全拒并重派 —— 没人读的任务不会自己超时（要定期扫就调 `resumePending()`） |
+| 挂起段与恢复段是两棵 trace | 每段执行一棵独立的树（`traceId == runId`），恢复段经根 span 的 `links` 挂到上一段；指标按段计（挂起段算一次 ok 的 run —— 「等人」不算失败，区分看 `stop_reason` attribute） |
+| 审批是 at-least-once | 崩溃发生在「批准后、恢复执行中」时，副作用工具会重执行（与 `resumePending` 续跑同口径）—— 副作用工具自己保证幂等 |
+| 挂起/恢复间预算重新起算 | `maxTotalTokens` / `maxCostUsd` 在恢复段从 0 重新计（新树新账，与 `resumePending` 续跑同口径） |
+| 嵌套能力内的审批不支持挂起 | @SubAgent / @Skill 子循环里的 `approval: 'required'` 工具无法把整个 run 挂起 —— 子循环挂起会以 `is_error` 交回主 agent（要审批的能力请放主菜单） |
+| 同步 `/run` 撞上审批没人可批 | 同步 RPC 会带着 `stopReason: 'awaiting_approval'` 返回（含 `suspendedMessages`），但没有任务记录可审批 —— 要审批请走 `POST /tasks` 异步宿主 |
+| Scheduler 调度表不落库 | `every` / `at` 的调度本身只在内存：已 submit 的任务记录能经 `resumePending` 续跑，但「未来某刻再触发」的调度在重启后不存在（远期单发由宿主自己的 cron 驱动）。另：`drain()` 不停 Scheduler —— 停机窗口内到点的 tick 会打一条触发失败日志（无害但吵），介意就 `scheduler.stop()` 先行 |
+| file store 的撕裂写只在启动时自愈 | 写入中途失败（磁盘满等）留下的残行由 `healTail` 在**构造期**修复；同进程内继续 append 会把新记录粘在残行尾部、下次启动时一起丢弃 —— 磁盘满告警后先恢复写入能力再继续依赖它 |
+| 终态落库失败无告警 | AsyncRunner 终态 save 失败被吞（「不击穿主流程」的代价）：store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**（副作用已发生）的任务 —— 耐久 store 的故障告警是宿主的事 |
+| `contextPolicy` 不进子循环 | 应用级 `contextPolicy` / `onText` 只对主循环生效：@SubAgent / @Skill 的子运行不做上下文裁剪（长跑子 agent 撞上下文上限会以 api 错误收尾）。预算护栏（`maxTotalTokens` / `maxCostUsd`）正常透传 |
+| 记忆没有删除语义 | `MemoryStore` 只有 load/save：run 内 `ctx.delete` 掉的键回写时不会从 store 移除（下一轮水合会复活）。要真删请直接操作 store 实现 |
 | 内容护栏不给实现 | 同「配额」：只给缝（入参包 `app.run` / 工具前 `middleware` / 出参包返回值或 `sinks`），策略（正则 / 分类器 / 外部 API）是你的 |
 | 框架不执行模型生成的代码 | 无沙箱可言：`@Skill` 跑你写的方法、`@Tool` 是你写的函数，模型输出只成文本 / `tool_result`；代码执行工具的隔离是**工具实现内部**的事；工具起的子进程取消时要自己 kill |
 
@@ -1122,7 +1190,7 @@ const callable = {
 | 鉴权钩子抛错，客户端只看到「未通过鉴权」 | 这是设计：非 `HttpException` 的错误原文只进服务端日志（要回给调用方就抛 `HttpException(status, body)`） |
 | 停机后 `POST /tasks` 回 503 | `drain()` 已被调用（或注入的 runner 已 drain）—— 这是「拒新单」的正常行为，任务没丢 |
 | `stopReason` 是 `budget_exceeded`、任务被判失败 | 这是设计（护栏拦下的 run **没跑完**）。只想「记一笔」不想改结局，就自己用 `createBudgetGuard` 读 trace |
-| 工具超时了，副作用却还是发生了 | 超时是「放弃等待」不是取消（`AgentTool.run` 收不到 signal）。要能真停就得让工具自己读 `ToolRunContext.signal` |
+| 工具超时了，副作用却还是发生了 | 超时是「放弃等待」不是强制取消。引擎放弃时会 abort `ToolRunContext.abandoned`（@SubAgent/@Skill 已靠它自中止）—— 你自己的工具要真停就监听它 |
 | 用 OpenAI 端点没看到打字机效果 | 端点没按 `stream:true` 回 `event-stream`（回了一整份 JSON）—— 适配器按响应形态解析，此时退回一次性 |
 | 改了框架源码却看不到效果 | 确认 import 的是同一份构建产物（`npm run build` 后跑 `dist`） |
 | MCP 工具没出现在菜单里 | `mcpTools()` 的返回值没传进 `createApp({ tools })` —— 它不走装饰器收集，也不进 DI 容器（裸工具缝） |

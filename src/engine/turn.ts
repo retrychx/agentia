@@ -22,6 +22,7 @@ import type {
 import { textOf as coreTextOf } from '../core/text.js';
 import type {
   AgentTool,
+  ApprovalDecision,
   JsonSchema,
   ModelClient,
   ModelPricing,
@@ -111,6 +112,8 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   priceOverrides?: Record<string, ModelPricing> | undefined;
   /** 未定价模型回调（F2）：本循环作用域内每模型一次 */
   onUnpricedModel?: ((info: { model: string; spanId: string }) => void) | undefined;
+  /** 人工审批决定（HITL）：以 tool_use_id 为键；恢复挂起的 run 时由宿主传入 */
+  approvals?: Record<string, ApprovalDecision> | undefined;
 }
 
 /**
@@ -461,17 +464,47 @@ export function resolveStopReason(message: Message, maxTokens: number): StopReso
 }
 
 /**
+ * 回合工具执行的结果：
+ * - `executed`：全部执行完（results 与输入一一对应，顺序保持）；
+ * - `suspended`：有需审批的 tool_use 还没有决定 ⇒ **整回合一个工具都没执行**
+ *   （全有或全无，见下），`pending` 是缺决定的 tool_use_id 列表，由 loop 收尾为挂起。
+ */
+export type TurnToolsOutcome =
+  | { kind: 'executed'; results: ToolResultBlockParam[] }
+  | { kind: 'suspended'; pending: string[] };
+
+/**
  * —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
  *    单条 user 消息回全部 tool_result（抑制并行是反模式）——
  * submit_result 校验通过会就地更新 ctx.typed / ctx.submitted（先到先得，见 executeOneTool）。
+ *
+ * 审批闸（HITL，**回合级全有或全无**）：任何一个标了 `approval: 'required'` 的
+ * tool_use 在 `args.approvals` 里没有决定 ⇒ 整回合**一个工具都不执行**、不推任何
+ * tool_result（Anthropic 协议要求每个 tool_use 都有配对 tool_result —— 部分执行 +
+ * 部分挂起会产出协议上残缺的历史），记 `approval.requested` 事件后交 loop 挂起。
+ * 两类例外不参与审批：隐藏的 submit_result（不在 args.tools 里，是纯内部提交、
+ * 永不需审批）与未知工具（走既有 unknown_tool 路径）。
  */
 export async function executeTurnTools<S extends JsonSchema>(
   ctx: LoopContext<S>,
   turnId: SpanId,
   toolUses: ToolUseBlock[],
   overBudget: 'tokens' | 'cost' | null,
-): Promise<ToolResultBlockParam[]> {
+): Promise<TurnToolsOutcome> {
   const { args } = ctx;
+  if (!overBudget) {
+    const pending = toolUses.filter((use) => {
+      const tool = args.tools.find((t) => t.name === use.name);
+      return tool?.approval === 'required' && args.approvals?.[use.id] === undefined;
+    });
+    if (pending.length > 0) {
+      args.recorder.event(turnId, 'approval.requested', {
+        tool_use_ids: pending.map((u) => u.id),
+        tools: pending.map((u) => u.name),
+      });
+      return { kind: 'suspended', pending: pending.map((u) => u.id) };
+    }
+  }
   // 成本硬管控（C1）：走得到这里说明循环还要继续（模型要求调工具）—— 超限就停，
   // 连带不执行这批工具（避免超预算的 run 继续产生副作用）。已产出的文本保留。
   // 例外：submit_result 是纯内部的结构化提交（零副作用、不触外部系统），超预算也照常
@@ -481,9 +514,12 @@ export async function executeTurnTools<S extends JsonSchema>(
     ? toolUses.filter((u) => args.resultSchema !== undefined && u.name === SUBMIT_RESULT)
     : toolUses;
 
-  return mapWithConcurrency(runnable, args.maxToolConcurrency ?? Number.POSITIVE_INFINITY, (use) =>
-    executeOneTool(ctx, turnId, use),
+  const results = await mapWithConcurrency(
+    runnable,
+    args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
+    (use) => executeOneTool(ctx, turnId, use),
   );
+  return { kind: 'executed', results };
 }
 
 /**
@@ -497,6 +533,9 @@ async function executeOneTool<S extends JsonSchema>(
 ): Promise<ToolResultBlockParam> {
   const { args } = ctx;
   const tool = args.tools.find((t) => t.name === use.name);
+  // HITL：需审批工具的决定（到达这里说明决定已在 —— 未决的整回合在
+  // executeTurnTools 的审批闸被拦下，不会走到单工具执行）。
+  const decision = tool?.approval === 'required' ? args.approvals?.[use.id] : undefined;
   // 工具级时序（E1）：起点在事件之前 —— durationMs 覆盖「入参校验 + 执行 + 超时等待」
   // 的完整处理时长，是「哪一步慢」的可信基线。并行工具各记各的（tool_use_id 配对）。
   const toolStartedAt = Date.now();
@@ -506,11 +545,30 @@ async function executeOneTool<S extends JsonSchema>(
     tool_use_id: use.id,
     input: limit(use.input, args.maxEventChars ?? DEFAULT_EVENT_CHARS),
   });
+  // 审批决定的审计账（HITL）：谁、什么时候、以什么理由批/拒，等审批等了多久。
+  // waitedMs 需要 requestedAt（挂起时刻，由宿主在挂起时回填）—— 手工直传
+  // approvals 而没有 requestedAt 时不记 waitedMs（不编造）。
+  if (decision) {
+    args.recorder.event(turnId, 'approval.decided', {
+      tool: use.name,
+      tool_use_id: use.id,
+      approved: decision.approved,
+      ...(decision.decidedBy !== undefined ? { decidedBy: decision.decidedBy } : {}),
+      ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+      ...(decision.decidedAt !== undefined && decision.requestedAt !== undefined
+        ? { waitedMs: Math.max(0, decision.decidedAt - decision.requestedAt) }
+        : {}),
+    });
+  }
 
+  // 超时「放弃等待」时的通知信号（见 ToolRunContext.abandoned）：控制器随本次
+  // 调用创建、随调用消亡，只在 withTimeout 判超时的分支里 abort。
+  const abandonAc = new AbortController();
   const toolCtx: ToolRunContext = {
     client: args.client,
     recorder: args.recorder,
     parentSpanId: turnId,
+    abandoned: abandonAc.signal,
     ...(args.signal ? { signal: args.signal } : {}),
     // 价格覆盖透传给嵌套能力（F1）：否则子 agent 用同一模型会退化成"未定价"
     ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
@@ -523,11 +581,14 @@ async function executeOneTool<S extends JsonSchema>(
     // 裁判权（2026-09-17）：把本次的工具预算告诉工具自己 —— 带计时器的工具（MCP 桥）
     // 据此交出裁判权，不再另开一个计时器判同一件事（否则同一事件会有两种账，见 spec §10 2026-09-17 ①）。
     ...(args.toolTimeoutMs != null ? { toolTimeoutMs: args.toolTimeoutMs } : {}),
+    // HITL：批准执行的决定带给工具体（审计 / 按 decidedBy 分级授权等）
+    ...(decision !== undefined ? { approval: decision } : {}),
   };
   let ok = true;
   let content: unknown = '';
-  // 失败归类（E1）：只记「为什么没成」，不记栈 —— 观测看得清「哪个工具老超时」
-  let errorKind: 'invalid_input' | 'timeout' | 'threw' | 'unknown_tool' | undefined;
+  // 失败归类（E1）：只记「为什么没成」，不记栈 —— 观测看得清「哪个工具老超时」。
+  // 'denied'（HITL）：审批被拒绝 —— 不是工具故障，是**人**的决定，单列一类账。
+  let errorKind: 'invalid_input' | 'timeout' | 'threw' | 'unknown_tool' | 'denied' | undefined;
   if (args.resultSchema && use.name === SUBMIT_RESULT) {
     // 隐藏提交工具：校验通过即携结果收尾（循环在 agentLoop 下方 break）；
     // 校验失败回 is_error（含路径，模型可自我修正），同回合其他工具照常执行。
@@ -559,6 +620,12 @@ async function executeOneTool<S extends JsonSchema>(
     ok = false;
     errorKind = 'unknown_tool';
     content = `unknown tool: ${use.name}`;
+  } else if (decision && !decision.approved) {
+    // HITL 拒绝：不执行（副作用不发生），理由写进 tool_result 回给模型 ——
+    // 模型看得到「为什么被拒」，可自行换路（与「工具抛错不中断 run」同语义）。
+    ok = false;
+    errorKind = 'denied';
+    content = `审批被拒绝：${decision.reason ?? '未给出理由'}`;
   } else {
     // 模型给的 input 先过 schema 校验：不合法直接回 is_error（含路径，
     // 模型可自我修正），不进方法体 —— schema 是方法与模型间的运行时契约。
@@ -579,6 +646,9 @@ async function executeOneTool<S extends JsonSchema>(
           args.toolTimeoutMs ?? 0,
         );
         if (out === TIMED_OUT) {
+          // 放弃等待 ≠ 取消：通知工具「没人等结果了」（@SubAgent/@Skill 靠它中止
+          // 子循环、立刻收尾 capability span；见 ToolRunContext.abandoned）
+          abandonAc.abort();
           ok = false;
           errorKind = 'timeout';
           content = `error(timeout): 工具执行超过 ${args.toolTimeoutMs}ms`;

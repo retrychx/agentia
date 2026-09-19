@@ -1,5 +1,11 @@
 import type { CacheControl, MessageParam } from '../core/message.js';
-import type { AgentTool, JsonSchema, ModelClient, ModelPricing } from '../core/tool.js';
+import type {
+  AgentTool,
+  ApprovalDecision,
+  JsonSchema,
+  ModelClient,
+  ModelPricing,
+} from '../core/tool.js';
 import type { SpanError, Trace, TraceContext } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
 
@@ -27,6 +33,14 @@ export type AgentStopReason =
   | 'budget_exceeded'
   /** stop_reason=tool_use 但回合里没有可执行块（畸形响应），防死循环直接停 */
   | 'tool_use_no_blocks'
+  /**
+   * 人工审批挂起（HITL）：回合里有需审批的 tool_use 还没有决定 ⇒ 整回合一个工具
+   * 都没执行（协议要求每个 tool_use 配对 tool_result，见 turn.ts 的审批闸），
+   * run 带着完整消息历史（`suspendedMessages`）挂起等待。
+   * **不是成功也不是失败**：`isSuccessStopReason` 不含它；trace 状态记 ok
+   * （挂起段本身执行无误，「等人」不该被看板算成失败）；宿主据此落库而非收尾。
+   */
+  | 'awaiting_approval'
   /** 模型/网关返回了本框架未识别的 stop_reason：保留文本，但按失败收尾 */
   | 'unknown_stop_reason'
   | 'error';
@@ -206,6 +220,13 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 走 `AgentApp.run` / `executeRun` 时给了 `session` 就自动带上，不用手填。
    */
   sessionId?: string;
+  /**
+   * 人工审批决定（HITL）：以 **tool_use_id** 为键。恢复挂起的 run 时由宿主
+   * （`AsyncRunner.approve` → 恢复段）传入；手工续跑「assistant 结尾带 tool_use」
+   * 的消息历史时也可直接给。菜单里标了 `approval: 'required'` 的工具，
+   * 其 tool_use 在这里**没有**决定 ⇒ 该回合整体挂起（见 AgentTool.approval）。
+   */
+  approvals?: Record<string, ApprovalDecision>;
 }
 
 export interface AgentRunResult<T = unknown> {
@@ -222,4 +243,16 @@ export interface AgentRunResult<T = unknown> {
    * 类型由 resultSchema 推导（见 RunAgentOptions.resultSchema 的泛型说明）。
    */
   typed: T | undefined;
+  /**
+   * HITL 挂起时的**完整消息历史**（末尾是含未决 tool_use 的那条 assistant 消息）；
+   * 未挂起为 undefined（**字段在场**，与 `error` 同一条结果记录约定）。
+   * 恢复 = 把它连同 `approvals` 决定一起喂回 `runAgent` / `app.run`（引擎见到
+   * 「assistant 结尾带 tool_use」的输入会先解决这些 tool_use 再调模型）。
+   */
+  suspendedMessages: MessageParam[] | undefined;
+  /**
+   * HITL 挂起时**待决的 tool_use_id 列表**（本次挂起缺决定的那些）；未挂起为 undefined。
+   * 宿主（`AsyncRunner`）据此持久化「该批哪些 id」，HTTP 轮询方据此知道该审批什么。
+   */
+  pendingApprovals: string[] | undefined;
 }

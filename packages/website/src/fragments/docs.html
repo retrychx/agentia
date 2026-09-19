@@ -164,7 +164,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
 };
 <span class="fn">createApp</span>({ system, providers, middleware: [requireApproval] });</code></pre>
         </div>
-        <p><strong>框架不做</strong>「跨进程挂起 / 续跑」：<code>RunStatus</code> 里没有「待批准」态、循环位置不落库 —— 要跨重启审批得自备工作流引擎。详见「<a href="#crosscut">横切配方</a>」。</p>
+        <p><strong>跨进程挂起 / 续跑已支持</strong>：<code>@Tool({ approval: 'required' })</code> 声明后，模型每次调用都把任务挂起为 <code>awaiting_approval</code>（消息历史与待决清单随任务落库，重启不丢），<code>POST /tasks/:id/approve</code> 批准/拒绝后从断点恢复 —— 详见「<a href="#crosscut">横切配方</a>」与 API 参考。</p>
       </section>
 
       <!-- 四类能力 -->
@@ -544,10 +544,10 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
       <!-- 横切缝 -->
       <section id="crosscut">
         <h2>审批、护栏与代码隔离</h2>
-        <p>审批、护栏、代码隔离这三件事，框架<strong>只给缝、不做子系统</strong>（策略差异太大，硬编码必错）。三份配方都只用既有扩展点，完整边界见「已知边界」表与 <code>/llms-full.txt</code>。</p>
+        <p>护栏与代码隔离，框架<strong>只给缝、不做子系统</strong>（策略差异太大，硬编码必错）；审批除了闸门缝之外还有内建的<strong>挂起 / 恢复</strong>（HITL）。配方都只用既有扩展点，完整边界见「已知边界」表与 <code>/llms-full.txt</code>。</p>
 
         <h3>审批闸门</h3>
-        <p>中间件可以 <code>await</code> 人的决策再放行 —— 引擎会等工具结果。<strong>放行</strong>＝<code>next()</code>；<strong>拒绝</strong>＝不调 <code>next()</code>（短路，副作用不发生）；<strong>拒绝并让模型改道</strong>＝抛错（该条结果记 <code>is_error</code>，run 不中断）。<strong>框架不做</strong>「跨进程挂起 / 续跑」：<code>RunStatus</code> 里没有「待批准」态、循环位置不落库，重放是有损的 —— 要跨重启审批得自备工作流引擎。</p>
+        <p>中间件可以 <code>await</code> 人的决策再放行 —— 引擎会等工具结果。<strong>放行</strong>＝<code>next()</code>；<strong>拒绝</strong>＝不调 <code>next()</code>（短路，副作用不发生）；<strong>拒绝并让模型改道</strong>＝抛错（该条结果记 <code>is_error</code>，run 不中断）。<strong>要跨进程 / 跨重启的耐久审批</strong>，用 <code>@Tool({ approval: 'required' })</code>：run 挂起为 <code>awaiting_approval</code>（消息历史落库），<code>POST /tasks/:id/approve</code> 批准后带着决定恢复执行 —— 见 API 参考的 <code>AsyncRunner.approve</code> 与 <code>ApprovalDecision</code>。</p>
         <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>approval.ts</em></div>
         <pre><code><span class="kw">import</span> { createApp } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
 <span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
 import type { SpanError } from '../core/trace.js';
 import type { RunStatus } from '../core/run.js';
+import type { ApprovalDecision } from '../core/tool.js';
 import type { RunSpec } from '../engine/spec.js';
 
 /**
@@ -46,6 +47,21 @@ export interface TaskRecord {
   ownerId?: string | undefined;
   result?: AgentRunResult | undefined;
   error?: SpanError | undefined;
+  /**
+   * HITL：已收到的审批决定（tool_use_id → 决定）。**随任务落库**（进程重启不丢）；
+   * 逐 id 幂等（第一次决定赢，见 `AsyncRunner.approve`）。
+   */
+  approvals?: Record<string, ApprovalDecision> | undefined;
+  /**
+   * HITL：当前**待决**的 tool_use_id 列表（挂起时由引擎写进结果、宿主落库）。
+   * 审批方据此知道该批哪些 id；决定齐了之后宿主把任务恢复执行。
+   */
+  pendingApprovals?: string[] | undefined;
+  /**
+   * HITL：进入挂起的时刻（epoch ms）。`approvalTimeoutMs` 的**惰性**判定与
+   * `approval.decided` 事件的 `waitedMs` 都以它为基准。
+   */
+  approvalPendingSince?: number | undefined;
 }
 
 export interface TaskStore {
@@ -85,11 +101,13 @@ export class InMemoryTaskStore implements TaskStore {
     if (this.byTask.size > this.maxRecords) this.evict();
   }
 
-  /** 超过上限时按插入序淘汰已终态记录（在飞记录跳过，避免丢正在跑的任务） */
+  /** 超过上限时按插入序淘汰已终态记录（在飞/挂起记录跳过，避免丢正在跑或等人的任务） */
   private evict(): void {
     for (const [taskId, rec] of this.byTask) {
       if (this.byTask.size <= this.maxRecords) break;
-      if (rec.status === 'queued' || rec.status === 'running') continue;
+      // awaiting_approval 同样不可淘汰：它不在跑、但也没完 —— 淘汰了审批决定就无家可归
+      if (rec.status === 'queued' || rec.status === 'running' || rec.status === 'awaiting_approval')
+        continue;
       this.byTask.delete(taskId);
       if (rec.idempotencyKey && this.byKey.get(rec.idempotencyKey) === taskId) {
         this.byKey.delete(rec.idempotencyKey);

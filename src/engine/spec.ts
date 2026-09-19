@@ -1,6 +1,5 @@
 import type { MessageParam } from '../core/message.js';
-import type { ModelClient, ModelPricing } from '../core/tool.js';
-import type { AgentTool } from '../core/tool.js';
+import type { AgentTool, ApprovalDecision, ModelClient, ModelPricing } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
 import type { TraceContext } from '../core/trace.js';
 import type { ContextPolicy } from './types.js';
@@ -65,6 +64,12 @@ export interface RunInvocationOptions {
    * 截断只影响记账，回给模型的 tool_result 永远完整。见 `RunAgentOptions.maxEventChars`。
    */
   maxEventChars?: number | false;
+  /**
+   * 人工审批决定（HITL）：以 tool_use_id 为键。恢复 `awaiting_approval` 任务时由
+   * 异步宿主随记录传入（纯数据、可序列化，随 `TaskRecord` 落库）；手工续跑
+   * 「assistant 结尾带 tool_use」的消息历史时也可直接给 `app.run`。
+   */
+  approvals?: Record<string, ApprovalDecision>;
 }
 
 /** 一次任务的规范化入参：messages（已由 normalizeMessages 规整） */

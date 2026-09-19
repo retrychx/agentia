@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { TraceRecorder, runAgent, subagentToTool } from '../../src/index.js';
-import type { AgentTool, JsonSchema, SubAgentCapability, ToolRunContext } from '../../src/index.js';
+import type {
+  AgentTool,
+  JsonSchema,
+  ModelClient,
+  SubAgentCapability,
+  ToolRunContext,
+} from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
 const TASK_SCHEMA: JsonSchema = {
@@ -229,5 +235,63 @@ describe('预算护栏透传子 agent 循环（C1：预算是整条 run 的口�
     assert.equal(result.stopReason, 'end_turn');
     assert.equal(result.finalText, '汇总完毕');
     assert.equal(result.trace.status, 'ok');
+  });
+});
+
+describe('子 agent 被引擎超时放弃等待（ToolRunContext.abandoned）', () => {
+  it('capability span 立刻以 error 收尾（不留永不闭合的半截 span）+ 子循环被中止（不再后台烧 token）', async () => {
+    // 回归（2026-09-19 复审）：旧实现里超时只是「不等了」—— 交付的 trace 里 capability
+    // span 永远没有 endedAt、status 停在缺省 ok（与同回合 tool.output 的 timeout 矛盾），
+    // 且子循环在后台继续跑模型请求，花费不进任何观测面。
+    let subAborted = false;
+    let calls = 0;
+    const client = {
+      messages: {
+        stream: (params: unknown) => ({
+          on() {},
+          finalMessage: async () => {
+            calls++;
+            if (calls === 1) return toolUseMsg('researcher', { task: 'x' }, 'tu1');
+            if (calls === 2) {
+              // 子循环的模型请求：挂住直到 signal 中止（慢子 agent 的形态）
+              await new Promise<never>((_, reject) => {
+                const sig = (params as { signal?: AbortSignal }).signal;
+                sig?.addEventListener(
+                  'abort',
+                  () => {
+                    subAborted = true;
+                    reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+                  },
+                  { once: true },
+                );
+              });
+            }
+            return endTurnMsg('主循环收尾');
+          },
+        }),
+      },
+    } as unknown as ModelClient;
+
+    const tool = subagentToTool(researcherCapability(), () => []);
+    const result = await runAgent({
+      model: 'test-model',
+      maxTokens: 1024,
+      client,
+      messages: [{ role: 'user', content: '调研一下' }],
+      tools: [tool],
+      toolTimeoutMs: 30,
+    });
+
+    assert.equal(result.stopReason, 'end_turn', '子 agent 超时不该中断主 run');
+    assert.ok(subAborted, '子循环必须收到中止信号 —— 否则它在后台继续烧 token');
+    const capSpan = result.trace.spans.find((s) => s.kind === 'capability');
+    assert.ok(capSpan, 'trace 里应有 capability span');
+    assert.notEqual(
+      capSpan.endedAt,
+      undefined,
+      '交付的 trace 里 capability span 必须已收尾（浅拷交付后迟到的 close 进不去）',
+    );
+    assert.equal(capSpan.status, 'error');
+    assert.equal(capSpan.error?.type, 'timeout');
   });
 });

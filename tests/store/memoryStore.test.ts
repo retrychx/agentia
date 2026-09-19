@@ -46,6 +46,16 @@ describe('InMemoryTaskStore 内存闸门（maxRecords）', () => {
     assert.equal(store.list().length, 50);
   });
 
+  it('awaiting_approval（HITL 挂起）同样不可淘汰：它不在跑、但也没完', () => {
+    const store = new InMemoryTaskStore({ maxRecords: 2 });
+    const awaiting = rec({ status: 'awaiting_approval' });
+    store.save(awaiting);
+    store.save(rec({ status: 'succeeded' }));
+    store.save(rec({ status: 'succeeded' })); // size 3 > 2 → 触发淘汰
+    assert.ok(store.get(awaiting.taskId), '挂起记录不淘汰（淘汰了审批决定就无家可归）');
+    assert.equal(store.list().length, 2);
+  });
+
   it('maxRecords 非法值（0 / 负数）抛错', () => {
     assert.throws(() => new InMemoryTaskStore({ maxRecords: 0 }), /maxRecords/);
     assert.throws(() => new InMemoryTaskStore({ maxRecords: -1 }), /maxRecords/);

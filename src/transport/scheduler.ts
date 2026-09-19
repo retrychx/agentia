@@ -17,6 +17,12 @@ import { isThenable } from '../store/store.js';
  * v1 提供 everyMs / at；cron 表达式解析后置（宿主可用队列 cron 替换语义）。
  */
 
+/**
+ * Node 定时器延迟的上限：2^31-1ms（约 24.86 天）。超过会被**静默**钳到 1ms
+ * （只打一条 TimeoutOverflowWarning）—— every/at 都在注册前挡掉（2026-09-19 复审发现）。
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 interface Job {
   id: string;
   kind: 'every' | 'at';
@@ -63,6 +69,14 @@ export class Scheduler {
       // 0 钳到 1ms 但仍是每毫秒一次的忙轮询）。这是配置错误，直接报错。
       throw new Error(`Scheduler.every 的 intervalMs 必须为正有限数，收到 ${intervalMs}`);
     }
+    if (intervalMs > MAX_TIMER_DELAY_MS) {
+      // Node 的定时器延迟是 32 位有符号整数：超过 2^31-1ms（约 24.86 天）会被**静默**
+      // 钳到 1ms —— 周期任务退化成每毫秒空转（每个 tick 都对 store 打一轮）。这是
+      // 配置错误，与上面的 0 同款处理（runTimeoutMs 在 async.ts 有同款防线）。
+      throw new Error(
+        `Scheduler.every 的 intervalMs 超过定时器上限（约 24.86 天），收到 ${intervalMs}`,
+      );
+    }
     const id = randomUUID();
     const timer = setInterval(() => {
       const job = this.jobs.get(id);
@@ -93,6 +107,13 @@ export class Scheduler {
     }
     const id = randomUUID();
     const delay = Math.max(0, when.getTime() - Date.now());
+    if (delay > MAX_TIMER_DELAY_MS) {
+      // 与 every() 同款防线：超 2^31-1ms 会被静默钳到 1ms ⇒「30 天后」变成「立即触发」，
+      // 定时语义直接作废。远期单发请拆成多次自检（或落库后由宿主自己的 cron 驱动）。
+      throw new Error(
+        `Scheduler.at 的目标时刻超过定时器上限（约 24.86 天后），收到 ${when.toISOString()}`,
+      );
+    }
     const timer = setTimeout(() => {
       const job = this.jobs.get(id);
       this.jobs.delete(id);
@@ -150,13 +171,15 @@ export class Scheduler {
       if (isThenable(rec)) {
         void rec
           .then((r) => {
-            if (!r || r.status === 'succeeded' || r.status === 'failed') forget(taskId);
+            // awaiting_approval 也算「不再占执行资源」（在等人，不在跑）——
+            // 不放手会让 maxInFlight 闸门永久自闭（人可能几小时后才批）
+            if (!r || (r.status !== 'queued' && r.status !== 'running')) forget(taskId);
           })
           .catch(() => forget(taskId)); // 查不到就别再挡住后续 tick
         continue;
       }
       const r = rec as { status?: string } | undefined;
-      if (!r || r.status === 'succeeded' || r.status === 'failed') forget(taskId);
+      if (!r || (r.status !== 'queued' && r.status !== 'running')) forget(taskId);
     }
   }
 
