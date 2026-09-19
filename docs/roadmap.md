@@ -186,11 +186,14 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 
 > 状态（2026-09-17）：质量闭环 / trace diff 与分叉重放 / canCall 能力级能力边 / 文档站内容扩充 /
 > 默认 client 自研化 + 公共类型自有化**均已落地**（各条内标 ✅ 或删除线 + 落地日期），
-> 仍为候选的只剩：中间件二次评估、HITL 跨进程挂起、Workers 代理版 playground。
+> 仍为候选的只剩：中间件二次评估、~~HITL 跨进程挂起~~（✅ 2026-09-19 落地）、Workers 代理版 playground。
 
 - trace 改写为内置中间件的二次评估（v0.1.0 评审放弃的理由见 spec §10）；
-- **HITL 跨进程挂起 / 续跑**（`awaiting_approval` 状态机 + 循环位置落库）—— 闸门配方已覆盖同步审批，
-  此条仅当「审批跨重启」是硬需求时立项（见 spec §10 与 usage-guide §6）；
+- ~~**HITL 跨进程挂起 / 续跑**（`awaiting_approval` 状态机 + 循环位置落库）~~ **✅ 已落地
+  （2026-09-19，决策见 spec §10 当日条）**：关键解锁是「审批 = 异步 tool_result」—— 不落
+  「循环位置」、落**消息历史**（assistant 结尾的未决 tool_use 即断点），恢复 = 引擎见到这种
+  输入先解决这些 tool_use 再调模型；`@Tool({ approval: 'required' })` + `AsyncRunner.approve` /
+  `POST /tasks/:id/approve`，回合级全有或全无、决定随任务落库、惰性超时兜底；
 - ~~**默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）~~ **✅ 已落地
   （2026-09-17，两个 PR：#42 自研 client + 本条类型自有化）** —— 前者 = 用 fetch 重实现
   Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），
@@ -232,7 +235,8 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
     打印 run 级 summary + 逐 span 差异，差异非空 exit 1；框架 `diffTraces` 的去类型移植副本 +
     逐字对拍守护（同 harvest 模式，改算法必须两边同步）。图形 diff / UI 不做（对照 R7 调研结论：
     不建看板，给数据与 CLI）。
-  HITL 耐用审批门由上面既有候选（`awaiting_approval` 状态机）覆盖，不重复列。
+  ~~HITL 耐用审批门由上面既有候选（`awaiting_approval` 状态机）覆盖，不重复列。~~
+  ⇒ 该候选已于 2026-09-19 落地（见上）。
 - **维护：CI 抖动 —— 已定位并修掉（`toolTiming` 的「工具超时」，见 spec §10 2026-09-14）**。
   v0.2.2 窗口内 main 曾红一次（PR #8 那棵树），同树**重跑即绿** ⇒ 抖动而非回归。
   具体用例当时**无法定位**：`verify-all.sh` 把步骤输出捕获后只 `tail -30`，恰好冲掉 node:test 的 `✖ <名字>` 标记行，

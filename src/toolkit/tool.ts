@@ -29,6 +29,12 @@ export interface ToolSpec<S extends JsonSchema = JsonSchema> {
   schema: S;
   /** strict 参数校验（透传给 Anthropic 的 strict 模式） */
   strict?: boolean;
+  /**
+   * 人工审批闸（HITL）：`'required'` 时该工具的每次调用都先挂起等审批
+   * （回合级全有或全无，见 `AgentTool.approval`）；批准/拒绝经
+   * `AsyncRunner.approve` / `POST /tasks/<id>/approve` 到达。
+   */
+  approval?: 'required';
 }
 
 /** 方法函数 → spec。WeakMap 不阻碍 GC，也不要求 globalThis 注册表。 */
@@ -69,6 +75,7 @@ function buildTool(instance: object, key: string | symbol, spec: ToolSpec): Agen
     description: spec.description,
     inputSchema: spec.schema,
     ...(spec.strict ? { strict: true } : {}),
+    ...(spec.approval ? { approval: spec.approval } : {}),
     run: (input: unknown) =>
       Reflect.apply(
         (instance as Record<string | symbol, (...args: unknown[]) => unknown>)[key],

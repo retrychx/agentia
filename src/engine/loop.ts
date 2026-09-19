@@ -1,4 +1,4 @@
-import type { MessageParam } from '../core/message.js';
+import type { MessageParam, ToolUseBlock } from '../core/message.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import type {
   AgentTool,
@@ -73,6 +73,13 @@ export interface AgentLoopResult<T = unknown> {
   iterations: number;
   /** submit_result 校验通过的结构化结果；未提交则为 undefined（类型由 resultSchema 推导） */
   typed: T | undefined;
+  /**
+   * HITL 挂起（stopReason === 'awaiting_approval'）时的完整消息历史
+   * （末尾是含未决 tool_use 的 assistant 消息）；未挂起为 undefined（字段在场）。
+   */
+  suspendedMessages: MessageParam[] | undefined;
+  /** HITL 挂起时待决的 tool_use_id 列表；未挂起为 undefined（字段在场） */
+  pendingApprovals: string[] | undefined;
 }
 
 /**
@@ -85,6 +92,43 @@ export interface AgentLoopResult<T = unknown> {
  */
 function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | undefined {
   return policy?.forRun ? policy.forRun() : policy;
+}
+
+/**
+ * 取消息历史**末尾**那条 assistant 消息里待解决的 tool_use 块（恢复模式检测）。
+ * 空数组 = 不是恢复场景（正常从 user 消息起跑）。
+ */
+function tailToolUses(messages: MessageParam[]): ToolUseBlock[] {
+  const tail = messages[messages.length - 1];
+  if (tail?.role !== 'assistant' || !Array.isArray(tail.content)) return [];
+  // ToolUseBlockParam 结构上兼容 ToolUseBlock（多一个可选 cache_control）
+  return tail.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
+}
+
+/** 取 MessageParam（请求侧）里的文本块拼成的文本（恢复模式收尾时用） */
+function textOfParam(message: MessageParam): string {
+  if (!Array.isArray(message.content))
+    return typeof message.content === 'string' ? message.content : '';
+  return message.content
+    .filter((b) => b.type === 'text')
+    .map((b) => (b as { text?: string }).text ?? '')
+    .join('\n');
+}
+
+/** 挂起收尾的结果对象（两处出口共用：循环中途挂起 / 恢复模式进来发现决定仍不齐） */
+function suspendResult<T>(
+  ctx: { messages: MessageParam[]; progress: { iterations: number }; typed: T | undefined },
+  pending: string[],
+): AgentLoopResult<T> {
+  return {
+    stopReason: 'awaiting_approval',
+    finalText: '',
+    error: undefined,
+    iterations: ctx.progress.iterations,
+    typed: ctx.typed,
+    suspendedMessages: [...ctx.messages],
+    pendingApprovals: pending,
+  };
 }
 
 /**
@@ -105,6 +149,45 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   let error: SpanError | undefined;
   let finalText = '';
   let finished = false;
+
+  // 恢复模式（HITL 挂起续跑，也是通用续跑入口）：messages 末尾是含 tool_use 的
+  // assistant 消息 ⇒ 这些 tool_use 尚未解决。跳过模型请求，先把它们解决掉再进正常
+  // 循环 —— assistant 消息已在历史里，**不重复 push**。决定仍不齐则再次挂起
+  // （不发请求、零花费）。
+  const resumeUses = tailToolUses(ctx.messages);
+  if (resumeUses.length > 0) {
+    // 已取消：不执行任何工具（副作用不该在取消后发生），按 aborted 收尾
+    if (args.signal?.aborted) {
+      return {
+        stopReason: 'aborted',
+        finalText: '',
+        error: abortedError(),
+        iterations: 0,
+        typed: undefined,
+        suspendedMessages: undefined,
+        pendingApprovals: undefined,
+      };
+    }
+    // 工具事件记到父 span：被恢复的回合属于挂起段的旧 trace，本段没有对应 llm.turn
+    const outcome = await executeTurnTools(ctx, args.parentSpanId ?? '', resumeUses, null);
+    if (outcome.kind === 'suspended') {
+      return suspendResult(ctx, outcome.pending);
+    }
+    if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
+    if (ctx.submitted) {
+      // 恢复的回合里 submit_result 校验通过：直接落定（finalText 取该 assistant 消息的文本块）
+      const tail = ctx.messages[ctx.messages.length - 2]; // 刚 push 了 tool_results，前一条是那条 assistant
+      return {
+        stopReason: 'end_turn',
+        finalText: tail ? textOfParam(tail) : '',
+        error: undefined,
+        iterations: 0,
+        typed: ctx.typed,
+        suspendedMessages: undefined,
+        pendingApprovals: undefined,
+      };
+    }
+  }
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
     const halt = await checkTurnEntry(ctx, iteration);
@@ -144,8 +227,16 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       break;
     }
 
-    const toolResults = await executeTurnTools(ctx, turnId, resolution.toolUses, overBudget);
-    if (toolResults.length > 0) ctx.messages.push({ role: 'user', content: toolResults });
+    const outcome = await executeTurnTools(ctx, turnId, resolution.toolUses, overBudget);
+    if (outcome.kind === 'suspended') {
+      // HITL 挂起：assistant 消息（含未决 tool_use）已在历史里、**不推任何 tool_result**
+      // （全有或全无，见 executeTurnTools 的审批闸）；approval.requested 已记在 turn span 上。
+      // error 保持 undefined —— 挂起不是失败。
+      stopReason = 'awaiting_approval';
+      finalText = textOf(message);
+      return { ...suspendResult(ctx, outcome.pending), finalText };
+    }
+    if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
 
     if (ctx.submitted) {
       // submit_result 校验通过：结构化结果落定，循环正常收尾（finalText 取该回合文本，可空）
@@ -176,7 +267,15 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     };
   }
 
-  return { stopReason, finalText, error, iterations: ctx.progress.iterations, typed: ctx.typed };
+  return {
+    stopReason,
+    finalText,
+    error,
+    iterations: ctx.progress.iterations,
+    typed: ctx.typed,
+    suspendedMessages: undefined,
+    pendingApprovals: undefined,
+  };
 }
 
 /** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */
@@ -240,6 +339,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       maxEventChars: options.maxEventChars,
       priceOverrides: options.priceOverrides,
       onUnpricedModel: options.onUnpricedModel,
+      approvals: options.approvals,
     });
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
@@ -249,10 +349,17 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       error: classifyError(e),
       iterations: progress.iterations,
       typed: undefined,
+      suspendedMessages: undefined,
+      pendingApprovals: undefined,
     };
   }
 
-  const runStatus = isSuccessStopReason(result.stopReason) ? 'ok' : 'error';
+  // awaiting_approval 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
+  // trace 记 ok；它与成功的区分由 stop_reason attribute 承担。
+  const runStatus =
+    result.stopReason === 'awaiting_approval' || isSuccessStopReason(result.stopReason)
+      ? 'ok'
+      : 'error';
   recorder.setAttribute(rootId, 'stop_reason', result.stopReason);
   recorder.end(rootId, { status: runStatus, ...(result.error ? { error: result.error } : {}) });
   const trace = recorder.snapshot(runStatus);
@@ -263,6 +370,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     iterations: result.iterations,
     error: result.error,
     typed: result.typed,
+    suspendedMessages: result.suspendedMessages,
+    pendingApprovals: result.pendingApprovals,
   };
 }
 

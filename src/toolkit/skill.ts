@@ -1,6 +1,7 @@
 import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
 import type { CapabilityDecoratorContext } from './collect.js';
 import type { MessageParam } from '../core/message.js';
+import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { AgentStopReason } from '../engine/types.js';
@@ -132,6 +133,26 @@ export function skillToTool(
         closed = true;
         recorder.end(capabilityId, patch);
       };
+      // 引擎超时「放弃等待」（toolTimeoutMs）时：span 立刻以 error 收尾 + 中止子循环
+      // （与 subagent.ts 同款：trace 交付是浅拷，迟到的 close 进不了已交付的 trace；
+      // 不中止的话子循环在后台继续烧 token，且不进任何观测面）。
+      const onAbandoned = (): void => {
+        close({
+          status: 'error',
+          error: {
+            type: 'timeout',
+            message: `skill(${name}) 执行超时被引擎放弃等待`,
+            retryable: true,
+          },
+        });
+      };
+      ctx.abandoned?.addEventListener('abort', onAbandoned, { once: true });
+      const combined = combineSignals(ctx.signal, ctx.abandoned);
+      // llm 子运行失败的丰富错误（type/retryable 比通用 Error 信息量大）先存在这里，
+      // 由外层 catch 兜底时取用 —— **不在 llm 闭包里直接 close**：方法体是用户代码，
+      // 可以 try/catch 掉 llm 失败再继续（降级路径），提前 close 会把一次整体成功的
+      // 调用永久误标成 error（close 幂等，ok 再也写不进去）。
+      let llmError: SpanError | undefined;
 
       const skillCtx: SkillContext = {
         model: spec.model,
@@ -155,7 +176,7 @@ export function skillToTool(
             tools: spec.tools?.length ? resolveTools() : [],
             recorder,
             parentSpanId: capabilityId,
-            signal: ctx.signal,
+            signal: combined,
             // 价格覆盖透传（F1）：子循环用同一模型也要能算成本
             priceOverrides: ctx.priceOverrides,
             // 事件截断口径透传：同一棵树上主/子 agent 的正文可见性必须一致
@@ -171,15 +192,14 @@ export function skillToTool(
             const report = `skill "${name}".llm ${loop.stopReason}: ${(
               loop.finalText || loop.error?.message || ''
             ).slice(0, 2000)}`;
-            const error: SpanError = loop.error ?? {
+            // 丰富错误（type/retryable）存起来交给外层 catch 收尾，**不在这里 close** ——
+            // 用户方法体可以 catch 掉这次失败并降级继续，提前 close 会把一次整体成功的
+            // 调用永久误标成 error（幂等守卫会让后来的 ok 写不进去）。
+            llmError = loop.error ?? {
               type: 'agent_error',
               message: report,
               retryable: true,
             };
-            // 先把丰富错误挂到 capability span（loop.error 的 type/retryable 比新造的
-            // Error 信息量大），再抛出走外层 catch 的通用收尾 —— 外层 close 幂等，
-            // 不会覆盖这里写的 error（与 subagent.ts 同款）。
-            close({ status: 'error', error });
             throw new Error(report);
           }
           return { text: loop.finalText, stopReason: loop.stopReason };
@@ -191,8 +211,12 @@ export function skillToTool(
         close({ status: 'ok' });
         return out;
       } catch (e) {
-        close({ status: 'error', error: classifyError(e) });
+        close({ status: 'error', error: llmError ?? classifyError(e) });
         throw e;
+      } finally {
+        // 摘除监听：宿主级共享 signal 是长寿的，不摘会按调用次数累积
+        ctx.abandoned?.removeEventListener('abort', onAbandoned);
+        releaseCombinedSignal(combined);
       }
     },
   };

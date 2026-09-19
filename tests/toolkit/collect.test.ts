@@ -30,6 +30,23 @@ describe('collect*（装饰器能力收集）', () => {
     assert.equal(await tools[0].run({}), 'p:ok');
   });
 
+  it('@Tool：approval 声明透传到 AgentTool（HITL）；未声明则无该字段', async () => {
+    class T {
+      @Tool({ description: 'd', schema: OBJ, approval: 'required' })
+      dangerous(): string {
+        return 'x';
+      }
+
+      @Tool({ description: 'd', schema: OBJ })
+      safe(): string {
+        return 'y';
+      }
+    }
+    const tools = collectTools(new T());
+    assert.equal(tools.find((t) => t.name === 'dangerous')?.approval, 'required');
+    assert.equal(tools.find((t) => t.name === 'safe')?.approval, undefined);
+  });
+
   it('继承：父类装饰方法进入子类实例菜单', () => {
     class P {
       @Tool({ description: 'd', schema: OBJ })

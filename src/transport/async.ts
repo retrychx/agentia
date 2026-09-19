@@ -14,6 +14,8 @@ import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
  *
  * - submit 即回（queued），后台驱动状态机 queued → running → succeeded/failed；
+ *   工具标了 `approval: 'required'` 时 run 可在回合间挂起为 **awaiting_approval**
+ *   （HITL：非终态、不占并发槽、不触发 TaskSink.onFinished），`approve()` 给齐决定后恢复；
  * - **at-least-once 去重**：同一 idempotencyKey 重复 submit，若上一任务仍在
  *   queued/running/succeeded 则直接返回既有记录，不重复执行（失败可重试新任务）；
  * - run 记录落 TaskStore（v1 InMemoryTaskStore），trace 随 result 一同保留；
@@ -38,6 +40,23 @@ export interface TaskSink {
   onFinished(rec: TaskRecord): void | Promise<void>;
 }
 
+/** `approve` 的入参：一批 tool_use_id → 批准/拒绝（理由可选） */
+export type ApprovalDecisions = Record<string, { approved: boolean; reason?: string }>;
+
+/**
+ * `approve` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
+ * `awaiting_approval` 状态），HTTP 宿主据此回对应响应。
+ * module 级 export —— 不进公共导出面（纯宿主内部实现细节）。
+ */
+export class TaskApproveError extends Error {
+  readonly status: 404 | 409;
+  constructor(status: 404 | 409, message: string) {
+    super(message);
+    this.name = 'TaskApproveError';
+    this.status = status;
+  }
+}
+
 export interface AsyncRunnerOptions {
   client?: ModelClient;
   store?: TaskStore;
@@ -55,6 +74,16 @@ export interface AsyncRunnerOptions {
    * 槽位无论如何立即回收；被放弃且仍在跑的任务会让实际并发短暂高于 concurrency。
    */
   runTimeoutMs?: number;
+  /**
+   * 审批等待超时（毫秒，HITL）；缺省 0 = 不限（一直等人）。
+   *
+   * **惰性判定，不起定时器**：`approve` / `poll` / `resumePending` 读到一个
+   * `awaiting_approval` 任务时，若它挂起已超过该值，框架自动把**全部待决项**写成
+   * 「denied，reason: '审批超时'」并恢复执行（模型收到拒绝理由，可自行换路）。
+   * 也就是说超时只在「有人读它」时生效 —— 没人读的任务不会自己动（进程里不养定时器，
+   * 崩溃/重启也不依赖任何在飞回调）。
+   */
+  approvalTimeoutMs?: number;
 }
 
 /** resumePending 的启动扫描选项 */
@@ -83,6 +112,7 @@ export class AsyncRunner {
   private readonly client: ModelClient | undefined;
   private readonly concurrency: number;
   private readonly runTimeoutMs: number;
+  private readonly approvalTimeoutMs: number;
   private running = 0;
   private readonly waitQueue: Array<() => void> = [];
   /** 已受理但未达终态的任务数（queued + running）—— /healthz 与 drain 共用 */
@@ -109,6 +139,13 @@ export class AsyncRunner {
       // NaN/Infinity 都不能放给 setTimeout：两者都会被钳到 1ms，每个任务立即「超时」失败
       // （且 NaN 会绕过 `< 0` 检查静默通过）。要「不限」请传 0（缺省）。
       throw new Error(`runTimeoutMs 必须为 ≥ 0 的有限数（0 = 不限），收到 ${opts.runTimeoutMs}`);
+    }
+    this.approvalTimeoutMs = opts.approvalTimeoutMs ?? 0;
+    if (!Number.isFinite(this.approvalTimeoutMs) || this.approvalTimeoutMs < 0) {
+      // 同 runTimeoutMs：非有限数会让「已挂起多久」的比较静默失效或立即超时
+      throw new Error(
+        `approvalTimeoutMs 必须为 ≥ 0 的有限数（0 = 不限），收到 ${opts.approvalTimeoutMs}`,
+      );
     }
     this.ownerId = `p${process.pid}-${randomUUID().slice(0, 8)}`;
   }
@@ -168,7 +205,10 @@ export class AsyncRunner {
 
   /** 查任务当前记录（异步 store 下返回 Promise，调用方 await） */
   poll(taskId: string): MaybePromise<TaskRecord | undefined> {
-    return this.store.get(taskId);
+    const rec = this.store.get(taskId);
+    // 惰性审批超时（HITL）：读到 awaiting 记录时顺手判定 —— 到点就自动全拒并重派
+    if (isThenable(rec)) return rec.then((r) => this.#lazyExpireApproval(r));
+    return this.#lazyExpireApproval(rec);
   }
 
   byIdempotency(key: string): MaybePromise<TaskRecord | undefined> {
@@ -177,6 +217,58 @@ export class AsyncRunner {
 
   list(): MaybePromise<TaskRecord[]> {
     return this.store.list();
+  }
+
+  /**
+   * 审批一个处于 `awaiting_approval` 的任务（HITL）。
+   *
+   * - **逐 tool_use_id 幂等**：已存在的决定不覆盖（第一次决定赢）—— 重复提交 /
+   *   并发点击不会推翻已有决定，也不会让恢复段重复执行；
+   * - 决定齐了就恢复：`status` 回 `running`、**先落库再派发**（与 `#redispatch`
+   *   同一条纪律 —— 没落库就恢复，进程崩在窗口里会丢决定）；恢复段带着
+   *   `rec.approvals` 与扩展后的消息历史（`rec.spec.messages`，末尾是含未决
+   *   tool_use 的那条 assistant 消息）重进引擎循环；
+   * - 决定**没**齐：只把本批决定落库，任务继续等（可能多轮审批）；
+   * - 返回当前 TaskRecord（快照）。任务不存在抛 404 语义、状态不对抛 409 语义
+   *   的 `TaskApproveError`。
+   */
+  async approve(
+    taskId: string,
+    decisions: ApprovalDecisions,
+    opts: { decidedBy?: string } = {},
+  ): Promise<TaskRecord> {
+    const rec = await this.store.get(taskId);
+    if (!rec) throw new TaskApproveError(404, `task 不存在: ${taskId}`);
+    if (rec.status !== 'awaiting_approval') {
+      throw new TaskApproveError(
+        409,
+        `task ${taskId} 当前状态为 ${rec.status}，只有 awaiting_approval 才能审批`,
+      );
+    }
+    const now = Date.now();
+    rec.approvals ??= {};
+    for (const [id, d] of Object.entries(decisions)) {
+      if (rec.approvals[id]) continue; // 逐 id 幂等：第一次决定赢
+      rec.approvals[id] = {
+        approved: d.approved,
+        ...(d.reason !== undefined ? { reason: d.reason } : {}),
+        ...(opts.decidedBy !== undefined ? { decidedBy: opts.decidedBy } : {}),
+        decidedAt: now,
+        ...(rec.approvalPendingSince !== undefined
+          ? { requestedAt: rec.approvalPendingSince }
+          : {}),
+      };
+    }
+    // 惰性审批超时：人的决定先并入（先到先赢），仍空着的待决项由超时兜底成 deny
+    if (this.#approvalExpired(rec, now)) this.#fillTimeoutDenials(rec, now);
+    const complete = (rec.pendingApprovals ?? []).every((id) => rec.approvals?.[id] !== undefined);
+    if (complete) {
+      rec.status = 'running'; // 由 #executeInner 接管（acquireSlot → 恢复执行）
+      rec.ownerId = this.ownerId;
+    }
+    await this.#safeSave(rec);
+    if (complete) void this.#execute(rec);
+    return { ...rec };
   }
 
   /** 已受理但未达终态的任务数（queued + running）—— 健康检查与 drain 共用同一口径 */
@@ -219,6 +311,70 @@ export class AsyncRunner {
     }
   }
 
+  /**
+   * 审批超时判定（HITL，**惰性**：不起定时器，只在 approve / poll / resumePending
+   * 读到 awaiting 记录时判）。基准是 `approvalPendingSince`（挂起时刻，挂起时落库）；
+   * 缺失时按 startedAt → createdAt 退化（容忍手工塞进来的记录）。
+   */
+  #approvalExpired(rec: TaskRecord, now: number): boolean {
+    return (
+      this.approvalTimeoutMs > 0 &&
+      rec.status === 'awaiting_approval' &&
+      now - (rec.approvalPendingSince ?? rec.startedAt ?? rec.createdAt) > this.approvalTimeoutMs
+    );
+  }
+
+  /**
+   * 超时自动拒绝：**仍空着的**待决项补上 deny（已有人工决定的不覆盖 —— 第一次决定赢）。
+   * 决定写到 `rec.approvals`，由调用方负责落库与重派。
+   */
+  #fillTimeoutDenials(rec: TaskRecord, now: number): void {
+    rec.approvals ??= {};
+    for (const id of rec.pendingApprovals ?? []) {
+      if (rec.approvals[id]) continue;
+      rec.approvals[id] = {
+        approved: false,
+        reason: '审批超时',
+        decidedBy: 'system',
+        decidedAt: now,
+        ...(rec.approvalPendingSince !== undefined
+          ? { requestedAt: rec.approvalPendingSince }
+          : {}),
+      };
+    }
+  }
+
+  /**
+   * 惰性超时扫描（HITL）：读到一个已超时的 awaiting 任务 ⇒ 自动全拒 + 落库 + 重派。
+   * 与 #redispatch 同一条纪律：**先落库再派发**（没落库就恢复，进程崩在窗口里会
+   * 丢掉超时决定、把同一件事再判一次）。
+   */
+  #expireAndResume(rec: TaskRecord, now: number): void {
+    this.#fillTimeoutDenials(rec, now);
+    rec.status = 'running';
+    rec.ownerId = this.ownerId;
+    let saved: MaybePromise<void>;
+    try {
+      saved = this.store.save(rec);
+    } catch {
+      return; // 同步落库失败则不派发（与下一条异步分支同纪律：先落库再派发）
+    }
+    if (isThenable(saved)) {
+      // 落库失败则不派发（认领没落地就派发 = 重新打开重复执行窗口）
+      saved.then(() => void this.#execute(rec)).catch(() => undefined);
+    } else {
+      void this.#execute(rec);
+    }
+  }
+
+  /** poll 的读路径钩子：读到 awaiting 且已超时 ⇒ 惰性判掉（见 #approvalExpired） */
+  #lazyExpireApproval(rec: TaskRecord | undefined): TaskRecord | undefined {
+    if (!rec) return rec;
+    const now = Date.now();
+    if (this.#approvalExpired(rec, now)) this.#expireAndResume(rec, now);
+    return rec;
+  }
+
   /** 任务终态唤醒：在 #execute 的统一出口调用，覆盖成功 / 失败 / 采纳既有结果各路径 */
   #notifyTaskDone(taskId: string): void {
     const waiters = this.#taskWaiters.get(taskId);
@@ -257,7 +413,7 @@ export class AsyncRunner {
     for (const w of waiters) w();
   }
 
-  /** 等到任务终态；超时抛错。 */
+  /** 等到任务终态；超时抛错。`awaiting_approval` 不是终态 —— 继续等（人在路上）。 */
   async awaitTask(
     taskId: string,
     opts: { timeoutMs?: number; intervalMs?: number } = {},
@@ -270,7 +426,8 @@ export class AsyncRunner {
     const intervalMs = opts.intervalMs ?? 250;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const rec = await this.store.get(taskId);
+      // 走 poll 而不是裸 store.get：惰性审批超时的判定挂在那里（HITL）
+      const rec = await this.poll(taskId);
       if (!rec) throw new Error(`task 不存在: ${taskId}`);
       if (rec.status === 'succeeded' || rec.status === 'failed') return rec;
       const left = deadline - Date.now();
@@ -283,6 +440,10 @@ export class AsyncRunner {
    * 宿主重启续跑：把 store 里 queued | running 的记录重新派发执行
    * （running 视为进程中断）。返回重派数量（异步 store 下返回 Promise<number>）。
    * 幂等键去重照常生效。
+   *
+   * `awaiting_approval`（HITL）**不捡**：它在等人、不是孤儿（进程没死也可能挂着）。
+   * 但读到它会做**惰性超时判定**：配了 `approvalTimeoutMs` 且已超时的挂起任务
+   * 自动全拒（`denied, reason: '审批超时'`）并重派。
    *
    * **认领先落库、再派发**（见 `#redispatch`）；异步 store 的认领落库失败会让本方法
    * reject —— 宁可让调用方看见「续跑没做」，也不要静默放出一批会被重复执行的任务。
@@ -346,6 +507,15 @@ export class AsyncRunner {
    */
   #redispatch(recs: TaskRecord[], staleAfterMs: number): number | Promise<number> {
     const now = Date.now();
+    // 惰性审批超时扫描（HITL）：awaiting_approval **不捡走续跑**（它在等人，不是
+    // 孤儿 —— 崩溃续跑语义不适用于「等审批」），但读到它时顺手判超时：
+    // 到点自动全拒并重派（框架补的 deny 决定先进 store，再进引擎）。
+    let expired = 0;
+    for (const rec of recs) {
+      if (rec.status !== 'awaiting_approval' || !this.#approvalExpired(rec, now)) continue;
+      expired++;
+      this.#expireAndResume(rec, now);
+    }
     const pending = recs.filter((r) => {
       if (r.status !== 'queued' && r.status !== 'running') return false;
       if (r.ownerId === this.ownerId) return false; // 自己的一定还活着
@@ -368,8 +538,8 @@ export class AsyncRunner {
         void this.#execute(rec);
       }
     }
-    if (claims.length === 0) return pending.length;
-    return Promise.all(claims).then(() => pending.length);
+    if (claims.length === 0) return pending.length + expired;
+    return Promise.all(claims).then(() => pending.length + expired);
   }
 
   /**
@@ -385,10 +555,12 @@ export class AsyncRunner {
       // 通知在飞递减**之前**：drain() 返回时保证「任务已终态 + 回调已发完」。
       // 内层 finally 保证回调万一抛错（理论上被吞掉）也不泄漏在飞计数。
       try {
-        await this.#notifySinks(rec);
+        // HITL：挂起不是终态 —— onFinished 的承诺是「任务达终态」，对它不开火
+        if (rec.status !== 'awaiting_approval') await this.#notifySinks(rec);
       } finally {
         this.active--;
-        // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）
+        // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
+        // 挂起也唤醒：等待者看一眼状态继续等（awaiting_approval 不是终态），无副作用。
         this.#notifyTaskDone(rec.taskId);
         this.#notifyDrained();
       }
@@ -453,6 +625,14 @@ export class AsyncRunner {
               : this.client !== undefined
                 ? { client: this.client }
                 : {}),
+            // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）
+            ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
+            // 恢复段的 trace 是一棵**新树**，经 traceContext link 挂到上一段 runId
+            // （spec §9.2 的入站关联机制）——「挂起段 → 恢复段 → …」在观测后端连成一条链。
+            // 判定依据：有决定且已有上一段 runId = 本次是恢复执行；首次执行两者皆无。
+            ...(rec.approvals !== undefined && rec.runId !== undefined
+              ? { traceContext: { traceId: rec.runId } }
+              : {}),
             rethrow: false, // 硬失败也以 failed 记录落库
             signal: combined,
           };
@@ -463,9 +643,23 @@ export class AsyncRunner {
               () => timeoutAc.abort(),
             );
             rec.runId = out.run.runId;
-            rec.status = out.run.status;
             rec.result = out.result;
             rec.error = out.result.error;
+            if (out.result.stopReason === 'awaiting_approval' && out.result.suspendedMessages) {
+              // HITL 挂起：扩展后的消息历史（末尾是含未决 tool_use 的 assistant 消息）
+              // 与待决清单、挂起时刻一起落库 —— approve / 惰性超时 / 重启后都靠它们。
+              // 槽位照常释放（finally）、onFinished 不触发（#execute 的出口判断）、
+              // finishedAt 不置（下面 finally 里按状态跳过）：它不是终态。
+              rec.status = 'awaiting_approval';
+              rec.spec = { ...rec.spec, messages: out.result.suspendedMessages };
+              rec.pendingApprovals = out.result.pendingApprovals;
+              rec.approvalPendingSince = Date.now();
+            } else {
+              rec.status = out.run.status;
+              // 终态后清掉挂起痕迹（决定保留：审批记录是审计的一部分，随任务走）
+              rec.pendingApprovals = undefined;
+              rec.approvalPendingSince = undefined;
+            }
           } finally {
             // 正常收尾（没有源中止）时主动摘除挂在各源上的监听器 —— 宿主级共享
             // signal 是长寿的，不摘会按任务数累积（MaxListenersExceededWarning）
@@ -476,7 +670,8 @@ export class AsyncRunner {
           rec.status = 'failed';
         }
       } finally {
-        rec.finishedAt = Date.now();
+        // HITL：挂起不是「完成」—— finishedAt 不置（等待中的任务没有结束时刻）
+        if (rec.status !== 'awaiting_approval') rec.finishedAt = Date.now();
         // 落库失败不遮罩、槽位必须释放：释放放在内层 finally，即便落库实现抛错也必达
         try {
           await this.#safeSave(rec);

@@ -2,8 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SpanError, Trace } from '../core/trace.js';
 import { parseTraceparent } from '../core/trace.js';
 import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
-import { AsyncRunner } from './async.js';
-import type { AppCallable } from './async.js';
+import { AsyncRunner, TaskApproveError } from './async.js';
+import type { AppCallable, ApprovalDecisions } from './async.js';
 import { sseWriter } from './sse.js';
 import { TaskInputError, normalizeMessages } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
@@ -26,6 +26,11 @@ import type { RunStatus } from '../core/run.js';
  * - POST /tasks      异步任务。body { input, idempotencyKey?, options? } →
  *                    AsyncRunner.submit → 202 TaskRecord（queued，幂等键去重照常生效）。
  * - GET  /tasks/<id> 轮询任务记录 → 200 TaskRecord；不存在 → 404。
+ * - POST /tasks/<id>/approve  人工审批（HITL）。body
+ *                    `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }`
+ *                    → 200 TaskRecord；任务不存在 → 404；不在 awaiting_approval 状态 → 409；
+ *                    body 非法 → 400。**停机中仍可用**（与 GET 轮询同理由：
+ *                    挂起的任务只有人能推进，停机不该连「批准」也拒掉）。
  * - GET  /healthz    健康检查 → 200 { ok, inFlight, uptimeMs, draining }；**不鉴权**
  *                    （探针不该带凭据）。停机中仍回 200（进程活着），就绪与否看 draining。
  *
@@ -567,13 +572,55 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
       }
 
       if (pathname.startsWith('/tasks/')) {
+        const rest = pathname.slice('/tasks/'.length);
+        // POST /tasks/<id>/approve（HITL）：审批挂起的任务。drain 期间仍允许 ——
+        // 与 GET 轮询同理由：挂起的任务只有人能推进，停机不该连「批准」也拒掉。
+        if (rest.endsWith('/approve')) {
+          if (method !== 'POST') {
+            methodNotAllowed(res, method, 'POST');
+            return;
+          }
+          let taskId: string;
+          try {
+            taskId = decodeURIComponent(rest.slice(0, -'/approve'.length));
+          } catch {
+            sendJson(res, 400, { error: 'taskId 不是合法的 URL 编码' });
+            return;
+          }
+          const body = await parseJsonBody(req, res, maxBodyBytes);
+          if (body === PARSE_FAILED) return;
+          const parsed = parseApproveBody(body);
+          if (!parsed) {
+            sendJson(res, 400, {
+              error:
+                'body 需为 { decisions: { <tool_use_id>: { approved: boolean, reason?: string } }, decidedBy?: string }',
+            });
+            return;
+          }
+          try {
+            const rec = await runner.approve(
+              taskId,
+              parsed.decisions,
+              parsed.decidedBy !== undefined ? { decidedBy: parsed.decidedBy } : {},
+            );
+            sendJson(res, 200, rec);
+          } catch (e) {
+            // 404（任务不存在）/ 409（状态不对）是调用方语义；其余按内部错误处理
+            if (e instanceof TaskApproveError) {
+              sendJson(res, e.status, { error: errMessage(e) });
+              return;
+            }
+            sendInternalError(res, e);
+          }
+          return;
+        }
         if (method !== 'GET') {
           methodNotAllowed(res, method, 'GET');
           return;
         }
         let taskId: string;
         try {
-          taskId = decodeURIComponent(pathname.slice('/tasks/'.length));
+          taskId = decodeURIComponent(rest);
         } catch {
           // 残缺的 % 转义会抛 URIError —— 是调用方的输入问题（400），不是服务端 500
           sendJson(res, 400, { error: 'taskId 不是合法的 URL 编码' });
@@ -599,6 +646,36 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
 }
 
 const PARSE_FAILED = Symbol('parse-failed');
+
+/**
+ * 解析 `POST /tasks/<id>/approve` 的 body；形状不合法返回 undefined（调用方回 400）。
+ * `decisions` 必须是纯对象，每个值是 `{ approved: boolean, reason?: string }`。
+ */
+function parseApproveBody(
+  body: unknown,
+): { decisions: ApprovalDecisions; decidedBy?: string } | undefined {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const o = body as { decisions?: unknown; decidedBy?: unknown };
+  if (!o.decisions || typeof o.decisions !== 'object' || Array.isArray(o.decisions)) {
+    return undefined;
+  }
+  if (o.decidedBy !== undefined && typeof o.decidedBy !== 'string') return undefined;
+  const decisions: ApprovalDecisions = {};
+  for (const [id, d] of Object.entries(o.decisions)) {
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return undefined;
+    const v = d as { approved?: unknown; reason?: unknown };
+    if (typeof v.approved !== 'boolean') return undefined;
+    if (v.reason !== undefined && typeof v.reason !== 'string') return undefined;
+    decisions[id] = {
+      approved: v.approved,
+      ...(v.reason !== undefined ? { reason: v.reason } : {}),
+    };
+  }
+  return {
+    decisions,
+    ...(o.decidedBy !== undefined ? { decidedBy: o.decidedBy as string } : {}),
+  };
+}
 
 /** 读取并解析 JSON body；失败时直接回错误响应并返回哨兵（连接已断则无响应可回）。 */
 async function parseJsonBody(

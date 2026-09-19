@@ -161,3 +161,68 @@ describe('Skill 能力（ctx.llm 受限子运行）', () => {
     assert.equal(slowFinished, 0, '超时是硬的：慢工具不得事后把结果写回');
   });
 });
+
+describe('Skill 方法体捕获 llm 失败并降级（span 不得误标 error）', () => {
+  it('用户代码 try/catch 掉 ctx.llm 的失败、正常返回 ⇒ capability span 记 ok', async () => {
+    // 回归（2026-09-19 复审）：旧实现在 llm 闭包里先 close({status:'error'}) 再 throw ——
+    // 方法体 catch 住继续时，close 的幂等守卫让后来的 ok 写不进去，一次**整体成功**
+    // 的调用被永久误标 error。
+    class Resilient {
+      @Skill({ description: 'd' })
+      async tryLlm(_input: unknown, ctx: SkillContext): Promise<string> {
+        try {
+          await ctx.llm({ prompt: '会失败' });
+          return '不应到达';
+        } catch {
+          return '降级结果';
+        }
+      }
+    }
+    // llm 子运行的模型请求直接抛（请求级失败）→ 子运行非成功收尾 → llm 闭包 throw
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            throw new Error('upstream boom');
+          },
+        }),
+      },
+    } as unknown as ToolRunContext['client'];
+    const { ctx, recorder } = makeCtx(client);
+    const tool = skillToTool(onlySkill(new Resilient()), () => []);
+    const out = await tool.run({}, ctx);
+    assert.equal(out, '降级结果', '方法体降级路径应正常返回');
+    const trace = recorder.snapshot('ok');
+    const capSpan = trace.spans.find((s) => s.kind === 'capability');
+    assert.ok(capSpan);
+    assert.equal(capSpan.status, 'ok', '整体成功的调用不得被误标成 error');
+  });
+
+  it('llm 失败未被捕获 ⇒ span 记 error 且带子运行的丰富错误（type/retryable）', async () => {
+    class Fragile {
+      @Skill({ description: 'd' })
+      async tryLlm(_input: unknown, ctx: SkillContext): Promise<string> {
+        const out = await ctx.llm({ prompt: '会失败' });
+        return out.text;
+      }
+    }
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            throw new Error('upstream boom');
+          },
+        }),
+      },
+    } as unknown as ToolRunContext['client'];
+    const { ctx, recorder } = makeCtx(client);
+    const tool = skillToTool(onlySkill(new Fragile()), () => []);
+    await assert.rejects(async () => tool.run({}, ctx), /upstream boom|error/);
+    const trace = recorder.snapshot('ok');
+    const capSpan = trace.spans.find((s) => s.kind === 'capability');
+    assert.ok(capSpan);
+    assert.equal(capSpan.status, 'error', '未捕获的失败仍须记 error');
+  });
+});

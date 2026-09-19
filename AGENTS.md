@@ -65,6 +65,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   SSE 分片 / tool_use / tool_result 回灌 / cache_control / signal 中止 /
 │                            #   runAgent 全链。走 ANTHROPIC_BASE_URL，用 DeepSeek 的 Anthropic 兼容端点
 │                            #   即可，**不需要 Anthropic key**。⚠️ 会真花 token ⇒ 不进 verify-all / CI）
+├── scripts/e2e-soak.ts      # 浸泡/压力验证（npm run e2e:soak：本地假端点 + 种子固定的故障注入
+│                            #   （429/截断/400/流内错误）+ N 并发长跑 ⇒ 断言失败率≈注入率、
+│                            #   错误分类无 unknown、metrics 与实测对账、内存有界、干净退出。
+│                            #   零网络零 token；SOAK_DURATION_MS / SOAK_CONCURRENCY / SOAK_SEED 可调）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── scripts/release-surface.mjs  # **发布面清单（单源）**：一次发版要动哪些文件的哪个值 ——
@@ -186,6 +190,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     2026-09-14 靠它挖出「默认 client 从不转发 `signal`」（中止在飞 run 失效，见 spec §10）。
     那次也留下一条更省的教训：这类「契约有没有真落到传输层」的断言，**本地假端点**就能在 CI 里零成本守住
     （`tests/integrations/anthropic.test.ts` 就是这么做的），不必依赖真端点。
+  - 另有 `npm run e2e:soak`（浸泡/压力：本地假端点 + 故障注入 + 并发长跑，零网络零 token）。
+    **不并入**上面 8 步（它是「跑多久」而不是「对不对」的验证）。默认 60s×16 并发；
+    排「内存/句柄随时间泄漏」或「高并发下重试与背压行为」这类**时间维度**的疑点时跑它
+    （`SOAK_DURATION_MS=7200000` 即真两小时）。
   - **CI**：`.github/workflows/ci.yml` —— 五个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
     不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
     守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，

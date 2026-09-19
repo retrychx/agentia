@@ -267,6 +267,21 @@ describe('Scheduler', () => {
     assert.equal(scheduler.active, 0, '抛错前不得留下 job');
   });
 
+  it('every / at：超过 2^31-1ms 的延迟会被 Node 静默钳到 1ms —— 构造期抛错', () => {
+    const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
+    // 约 34 天：不挡的话 setInterval 退化成每 1ms 空转
+    assert.throws(() => scheduler.every(3_000_000_000, 'x'), /定时器上限/);
+    // 30 天后：不挡的话 setTimeout 1ms 后立即触发
+    assert.throws(
+      () => scheduler.at(new Date(Date.now() + 30 * 24 * 3600 * 1000), 'x'),
+      /定时器上限/,
+    );
+    // 上限边界内（恰好 2^31-1）合法
+    const ok = scheduler.at(new Date(Date.now() + 2_147_483_647), 'x');
+    ok.cancel();
+    assert.equal(scheduler.active, 0, '抛错前不得留下 job');
+  });
+
   it('at：非法 Date → 抛错（原会算出 NaN 延迟并立即触发）', () => {
     const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
     assert.throws(() => scheduler.at(new Date('garbage'), 'x'), /合法 Date/);

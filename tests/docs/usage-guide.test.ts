@@ -40,6 +40,7 @@ const MEMBERSHIP_TYPES = [
   'StreamableHttpMcpConnectorOptions',
   'MetricsSinkOptions',
   'MetricsSink',
+  'ApprovalDecision',
 ];
 
 function srcFiles(dir: string): string[] {

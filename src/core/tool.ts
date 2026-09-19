@@ -158,6 +158,44 @@ export interface ToolRunContext {
   maxTotalTokens?: number;
   /** 成本硬管控（C1）透传：累计成本（美元）上限；同 maxTotalTokens 的透传语义 */
   maxCostUsd?: number;
+  /**
+   * 本工具的审批决定（HITL）：仅当该工具声明了 `approval: 'required'` 且本次调用的
+   * 决定已到达时在场 —— 工具体内可据此读到自己「被谁、什么时候、以什么理由」
+   * 批准/拒绝（审计日志、按 decidedBy 分级授权等）。
+   */
+  approval?: ApprovalDecision;
+  /**
+   * 工具执行被引擎**放弃等待**的信号（`toolTimeoutMs` 超时触发）。
+   *
+   * 放弃 ≠ 取消：超时的语义是「不等了」，没有它时工具在后台继续跑、副作用与花费
+   * 都不进任何 trace。想「真停」的工具监听它自行收尾 —— 框架自带的
+   * @SubAgent / @Skill 就是这么做的：收到信号即中止子循环（在飞请求被 signal
+   * 中止，不再烧 token），capability span 立刻以 error 收尾（交付的 trace 里不留
+   * 永不闭合的半截 span）。
+   */
+  abandoned?: AbortSignal;
+}
+
+/**
+ * 人工审批决定（HITL）：一条 tool_use 的批准/拒绝结论。
+ * 以 **tool_use_id 为键**传给引擎（`RunAgentOptions.approvals`）或随任务落库
+ * （`TaskRecord.approvals` —— 进程重启不丢）。
+ */
+export interface ApprovalDecision {
+  /** true = 批准执行；false = 拒绝（该条 tool_result 记 is_error，理由回给模型） */
+  approved: boolean;
+  /** 拒绝理由 / 备注（回给模型，模型可据此换路） */
+  reason?: string;
+  /** 审批人标识（审计用） */
+  decidedBy?: string;
+  /** 决定时刻（epoch ms）；缺省由框架在收到决定时填 `Date.now()` */
+  decidedAt?: number;
+  /**
+   * 审批请求挂起的时刻（epoch ms）—— 框架回填，调用方不必设置。
+   * trace 的 `approval.decided` 事件里 `waitedMs = decidedAt - requestedAt` 靠它算出；
+   * 缺省（如手工给 `runAgent` 传 approvals）时该事件不带 waitedMs。
+   */
+  requestedAt?: number;
 }
 
 export interface AgentTool<I = unknown, O = unknown> {
@@ -167,6 +205,15 @@ export interface AgentTool<I = unknown, O = unknown> {
   inputSchema: JsonSchema;
   /** 开启严格参数校验（schema 需 additionalProperties:false + required） */
   strict?: boolean;
+  /**
+   * 人工审批闸（HITL）：`'required'` 时模型发起的该工具调用**不直接执行** ——
+   * 该回合挂起（`stopReason: 'awaiting_approval'`，回合级全有或全无：同一回合的
+   * 其他工具也一并等待，因为协议要求每个 tool_use 都有配对 tool_result），
+   * 等宿主把决定（`ApprovalDecision`，按 tool_use_id）喂回来后恢复：
+   * 批准 → 正常执行（工具体内经 `ToolRunContext.approval` 读到自己的决定）；
+   * 拒绝 → 该条 tool_result 记 `is_error: true`（理由回给模型，可自行换路）。
+   */
+  approval?: 'required';
   /**
    * 执行体。入参 = 模型按 schema 解析的结构化 input；
    * ctx 由 engine 注入（含 recorder/父 span），需要开嵌套 span 的能力（子 agent）用，

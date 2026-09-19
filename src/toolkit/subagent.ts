@@ -1,5 +1,6 @@
 import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
 import type { CapabilityDecoratorContext } from './collect.js';
+import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { SystemParam, SystemTextBlock } from '../engine/types.js';
@@ -123,6 +124,22 @@ export function subagentToTool(
         closed = true;
         recorder.end(capabilityId, patch);
       };
+      // 引擎超时「放弃等待」（toolTimeoutMs）时：capability span **立刻**以 error 收尾
+      // —— trace 在 run 结束时浅拷交付，等子循环自己 settle 再关，交付的那份里这个 span
+      // 永远没有 endedAt、status 停在缺省 ok（与同回合 tool.output 事件的 timeout 矛盾）。
+      // 同时合成 signal 中止子循环：在飞请求被掐掉，后台不再继续烧 token。
+      const onAbandoned = (): void => {
+        close({
+          status: 'error',
+          error: {
+            type: 'timeout',
+            message: `subagent(${name}) 执行超时被引擎放弃等待`,
+            retryable: true,
+          },
+        });
+      };
+      ctx.abandoned?.addEventListener('abort', onAbandoned, { once: true });
+      const combined = combineSignals(ctx.signal, ctx.abandoned);
 
       try {
         const raw: unknown = input ?? {};
@@ -141,7 +158,7 @@ export function subagentToTool(
           tools,
           recorder,
           parentSpanId: capabilityId,
-          signal: ctx.signal,
+          signal: combined,
           resultSchema: spec.resultSchema,
           // 价格覆盖透传（F1）：子 agent 用同一模型也要能算成本
           priceOverrides: ctx.priceOverrides,
@@ -186,6 +203,10 @@ export function subagentToTool(
         // runAgentScoped 抛出的请求级异常（此前 capability 未关）在此兜底标记
         close({ status: 'error', error: classifyError(e) });
         throw e;
+      } finally {
+        // 摘除监听：宿主级共享 signal（ctx.signal）是长寿的，不摘会按调用次数累积
+        ctx.abandoned?.removeEventListener('abort', onAbandoned);
+        releaseCombinedSignal(combined);
       }
     },
   };

@@ -482,6 +482,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `next()`（短路，副作用不发生），拒绝并让模型改道 = 抛错（记 `is_error`，不杀 run）；`toolTimeoutMs` 缺省 0
   不掐断等待。**真缺口是「跨进程挂起/续跑」**：`RunStatus` 无「待批准」态、循环位置（消息数组）不落库，
   且 `traceToMessages` 重放**有损**（assistant 原文未记录）—— 无法以重放假冒续跑，故**不做**，列为 R7 候选评估。
+  > ⚠️ **后话（2026-09-19 ①）**：跨进程挂起/续跑**已落地** —— 关键解锁是「审批 = 异步 tool_result」
+  > （不落「循环位置」、落**消息历史**：assistant 结尾的未决 tool_use 就是断点本身），见下。
   **护栏** —— **不做子系统**（同「配额不是框架子系统」）：入参缝（包 `app.run` / `authenticate`）、工具前缝
   （`middleware`）、出参缝（包返回值 / `sinks`）已足，策略差异过大硬编码必错。**沙箱** —— **框架不执行模型
   生成的代码**（`@Skill`/`@Tool` 均用户代码，模型输出只成文本 / `tool_result`），无沙箱可言；代码执行隔离属
@@ -1946,6 +1948,101 @@ metadata `traceparent` → `traceContext`、框架错误 → gRPC 状态码、tr
 `expect_marker` 写的是「状态码」而实际失败行没印这三个字，被标成「非预期断言」——
 **核对失败行内容后**确认它确实是目标断言（`assert.equal(status, 400)`）。标记匹配是辅助，
 **「红在哪一行」才是判据**（同 §10 ⑪ 那条：被抓住 ≠ 被那条断言抓住）。
+### 2026-09-19 ①：HITL 落地 —— 审批 = 异步 tool_result（挂起/恢复），解开 2026-09-11 的「不做」
+
+**背景**：2026-09-11 的能力边界结论把 HITL 定为「闸门层无需新机制（middleware 可 await 决策），
+**跨进程挂起/续跑不做**」—— 当时的卡点原文是「`RunStatus` 无『待批准』态、循环位置（消息数组）
+不落库、`traceToMessages` 重放有损」。本轮把它落地了，关键想法是：**不落「循环位置」，落消息历史**。
+
+**① 为什么审批 = 异步 tool_result**：Anthropic 协议里一个 tool_use 的归宿只有两种 ——
+执行出 tool_result，或给出 is_error 的 tool_result。「等审批」不是第三种归宿，而是
+「tool_result 迟到」。于是挂起态**不需要任何断点续跑原语**：run 以「末尾是含未决 tool_use 的
+assistant 消息」的消息历史落库（`TaskRecord.spec.messages`），恢复就是引擎见到这种输入时
+**先解决这些 tool_use 再调模型**（`agentLoop` 入口的通用恢复检测 —— 通用化收益：任何
+「assistant 结尾带 tool_use」的输入都能续跑，不只审批场景）。2026-09-11 那条卡点的三个成分
+因此全部消解：状态有了（`awaiting_approval`）、落的就是消息数组本身（无损）、不走
+`traceToMessages`（不经 trace 重放）。
+
+**② 为什么回合级全有或全无**：协议要求每个 tool_use 都有配对 tool_result。一个回合里
+**任何一个**需审批的 tool_use 没有决定 ⇒ 整回合**一个工具都不执行**、不推任何 tool_result ——
+部分执行 + 部分挂起会产出协议上残缺的历史（配不平的 tool_use），恢复时无法重放。
+恢复时决定齐了：deny → `tool_result(is_error: true, content: '审批被拒绝：…')`
+（**理由回给模型**，可自行换路）；approve → 正常执行且工具体内经 `ToolRunContext.approval`
+读到自己的决定（审计 / 分级授权）。两个例外不参与审批：隐藏 `submit_result`（纯内部提交）
+与未知工具（走既有 unknown_tool 路径）。恢复后再遇未决 ⇒ 再次挂起（可等多轮）。
+
+**③ 为什么惰性超时（不起定时器）**：`approvalTimeoutMs` 只在 `approve` / `poll`（含
+`awaitTask` 的读路径）/ `resumePending` **读到** awaiting 记录时判定 —— 到点自动把全部待决项
+写成 `denied, reason: '审批超时'`（`decidedBy: 'system'`）并重派。理由与 2026-09-14 ④ 同源：
+「等待的终点」类计时器在空事件循环下会让进程退不出/等待永不结束；而且挂起的任务**不占任何
+在飞资源**，一个永远没人读的任务也不该被定时器推着走。代价如实标注：没人读 ⇒ 没人判
+（文档写明「惰性」）。
+
+**④ 为什么挂起也 flushSinks**：trace 是一等公民 —— 「挂起段」也是一段真实执行
+（模型往返 + 审批请求），它的 trace 必须可观测，否则「任务为什么在等」无从回答。
+每段执行一棵独立的新树（`traceId == runId` 不变量不破），恢复段经 `traceContext` link
+挂到上一段 runId（复用 2026-09-17 ⑤ 的入站关联机制），观测后端据此把多段连成一条链。
+对称地：`TaskSink.onFinished` **不**对挂起开火（它的承诺是「任务达终态」），记忆回写 /
+会话追加维持「只成功才写」。
+
+**消费点口径（`awaiting_approval` 这个新状态的全量清单）**：非终态（`awaitTask` 继续等）、
+不占并发槽（挂起即释放，`#execute` 正常收尾）、`resumePending` 不捡（它不是孤儿，是在等人）、
+InMemory 淘汰跳过（同「在飞永不淘汰」）、幂等键复用（同键重复 submit 返回等待中的任务）、
+`Run` 状态机走新加的 `suspend()`（running → awaiting_approval，finishedAt 不置）、
+trace 状态记 **ok**（挂起段执行无误，「等人」不该被看板算成失败；区分靠 stop_reason attribute）。
+
+**已知边界（写进 usage-guide §7）**：审批超时是**惰性**判定；挂起段与恢复段是两棵
+link 相连的 trace（指标按段计）；**at-least-once**：崩溃发生在「批准后、恢复执行中」时，
+副作用工具会重执行（与 resumePending 同口径）；预算口径（maxTotalTokens/maxCostUsd）在
+恢复段**重新起算**（新树新账，与 resumePending 续跑同口径）；嵌套能力（@SubAgent/@Skill
+的子循环）里的审批工具**不支持挂起整个 run** —— 子循环挂起会以 is_error 交回主 agent
+（要审批的能力请放主菜单）；同步 `POST /run` 撞上审批会带着 `awaiting_approval` 返回
+（没有人可批的入口 —— 要审批就走 `/tasks` 异步宿主）。
+
+**实现时的两处规格外补充（如实记）**：`AgentRunResult` 除 `suspendedMessages` 外还带
+`pendingApprovals`（待决 tool_use_id 列表）—— 宿主必须知道「该批哪些 id」，而它从
+suspendedMessages **推不出来**（runner 不知道哪些工具标了审批；待决集合是引擎算出来的）；
+`TaskRecord` 除 `approvals` 外带 `approvalPendingSince`（挂起时刻）—— 否则进程重启后
+惰性超时与 `approval.decided` 的 `waitedMs` 都没有基准。两者都是纯数据、可序列化、随记录落盘。
+
+**门禁**：`tests/engine/approval.test.ts`（9：挂起形状 / flushSinks 照常 / approved 恢复 +
+ctx.approval + waitedMs / denied 回模型 / 混合回合全有或全无 / 二次挂起 / submit_result
+绕过与同回合等待 / 通用恢复入口 / 恢复入口尊重 signal）、`tests/transport/approval.test.ts`
+（8：挂起落库 + 槽位释放（concurrency=1 证明）+ onFinished 不开火 / 恢复成功 + trace link /
+逐 id 幂等（第一次赢）+ 决定不齐不恢复 / 404·409 语义 / 惰性超时自动 deny / resumePending
+不捡 + 过期判拒 / FileTaskStore 跨进程 / 幂等键复用）、`tests/transport/httpApproval.test.ts`
+（6：200 / 400×5 种坏 body / 404 / 409 / 401 / 拒绝路径端到端）、toolkit 透传 1 +
+InMemory 淘汰 1。宿主侧全部走**真引擎**（executeRun + mockClient），不用假 app ——
+「宿主测试用假实现」的边界是第五轮 review 三条 MAJOR 的共同病灶。
+
+### 2026-09-19 ②：工具超时的「放弃等待」升级为「放弃 + 通知」——`ToolRunContext.abandoned`
+
+**背景**：第八轮复审（engine/runtime 面）抓到观测完整性的破口：子 agent / skill 被
+`toolTimeoutMs` 超时后，capability span 要等子循环自己 settle 才收尾 —— 而 trace 在 run
+结束时**浅拷交付**（tracer.snapshot 的注释写明「不拷贝就会事后变异已交付的 trace」），
+于是交付的那份里该 span 永远没有 `endedAt`、status 停在缺省 `ok`（与同回合
+`tool.output` 事件的 `timeout` 记录自相矛盾）；更糟的是子循环在后台继续跑模型请求，
+**花费不进任何观测面**（trace / metrics / report 都看不见）。「超时不取消工具」是
+有意设计（副作用无法回滚），但「不取消」不等于「不通知」。
+
+**决策**：新增 `ToolRunContext.abandoned: AbortSignal` —— 引擎 `withTimeout` 判超时的
+分支里 abort 它（`executeOneTool`）。「放弃等待」的语义不变（不等、不杀 run、tool_result
+记 is_error），但工具现在**收得到通知**：想真停的工具监听它自行收尾。框架自带的
+@SubAgent / @Skill 已这么做 —— 收到信号即把 `abandoned` 与 `ctx.signal` 合成后透传给
+子循环（在飞模型请求被掐掉，后台不再烧 token），capability span **立刻**以
+`error`（type: `timeout`）收尾（不等子循环 settle —— 同步于放弃时刻，必在交付前）。
+同轮顺手修掉 skill 的相邻缺陷：`ctx.llm()` 失败被用户方法体 try/catch 降级时，span
+曾被提前烙成 error（幂等守卫让整体成功的调用翻不了案）—— 现在丰富错误存起来交给
+外层 catch 收尾，方法体正常返回就是 ok。
+
+**反向验证**：新用例在旧实现下必红（旧代码没有 `abandoned`，`subAborted` 永远 false，
+capability span 永远没有 `endedAt`）。
+
+同轮还修：**Scheduler 的 `at()` / `every()` 挡 32 位定时器溢出**（> 2³¹-1ms 被 Node
+静默钳到 1ms ⇒「30 天后」变立即触发 / 周期任务退化成每毫秒空转；构造期抛错，与
+`runTimeoutMs` 的防线同款）。其余低危发现（file store 同进程撕裂写、终态落库失败静默、
+Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无删除语义、并行子循环
+下预算超限量级）**如实登记**进 usage-guide §7，不改行为。
 
 ## 11. 开放项
 
