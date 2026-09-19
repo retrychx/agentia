@@ -323,3 +323,102 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     assert.equal((await runner.list()).length, 1);
   });
 });
+
+describe('approve 的并发与落库纪律（第八轮复审补缺）', () => {
+  /**
+   * 反序列化 + 可闸门 save 的异步 store：get/list 返回副本（与 Redis 等同形），
+   * save 可挂住 —— 用来把「两个并发 approve 都在对方落库前读到 awaiting」的窗口撑开。
+   */
+  class GatedCopyStore {
+    readonly #byTask = new Map<string, TaskRecord>();
+    private gate: Promise<void> | null = null;
+    private release: (() => void) | null = null;
+    saveCalls = 0;
+    failNextSave = false;
+
+    holdNextSave(): void {
+      this.gate = new Promise<void>((r) => {
+        this.release = r;
+      });
+    }
+    releaseSave(): void {
+      this.release?.();
+      this.gate = null;
+      this.release = null;
+    }
+    async save(rec: TaskRecord): Promise<void> {
+      this.saveCalls++;
+      if (this.failNextSave) {
+        this.failNextSave = false;
+        throw new Error('store 抖动（测试注入）');
+      }
+      if (this.gate) await this.gate;
+      this.#byTask.set(rec.taskId, JSON.parse(JSON.stringify(rec)) as TaskRecord);
+    }
+    async get(taskId: string): Promise<TaskRecord | undefined> {
+      const r = this.#byTask.get(taskId);
+      return r ? (JSON.parse(JSON.stringify(r)) as TaskRecord) : undefined;
+    }
+    async byIdempotency(): Promise<undefined> {
+      return undefined;
+    }
+    async list(): Promise<TaskRecord[]> {
+      return [...this.#byTask.values()];
+    }
+    async clear(): Promise<void> {
+      this.#byTask.clear();
+    }
+  }
+
+  it('并发 approve 共享在飞那次：恢复只派发一次（不重复执行）', async () => {
+    // 反向验证：摘掉 approve 的重入闸（两个并发调用都落到各自 get→save→派发）⇒
+    // spy 会记到 2 次执行（同一任务跑两遍，副作用与花费翻倍）。
+    const spy: Spy = { calls: [] };
+    const { app } = hitlApp([toolUseMsg('danger', {}, 'tu1'), endTurnMsg('收尾')], spy);
+    const store = new GatedCopyStore();
+    const runner = new AsyncRunner(app, { store });
+    const { taskId } = runner.submit('任务');
+    await waitStatus(runner, taskId, 'awaiting_approval');
+
+    // 撑开窗口：第一个 approve 的 save 挂住，此时第二个 approve 进来
+    store.holdNextSave();
+    const p1 = runner.approve(taskId, { tu1: { approved: true } }, { decidedBy: 'alice' });
+    // 让 p1 推进到 save 挂起点
+    await new Promise((r) => setTimeout(r, 20));
+    const p2 = runner.approve(
+      taskId,
+      { tu1: { approved: false, reason: '我是后来的' } },
+      { decidedBy: 'bob' },
+    );
+    store.releaseSave();
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    assert.equal(r1.status, r2.status, '两个并发调用拿到同一次审批的结果');
+    assert.equal(r2.approvals?.['tu1']?.decidedBy, 'alice', '第一次决定赢（后到的不覆盖）');
+    const done = await waitStatus(runner, taskId, 'succeeded');
+    assert.equal(done.status, 'succeeded');
+    assert.equal(spy.calls.length, 1, '恢复只派发一次 —— 重复执行会是 2');
+  });
+
+  it('approve 落库失败：调用方收到 reject，且绝不派发（先落库再派发是真纪律）', async () => {
+    // 反向验证：改回 #safeSave（吞错）⇒ 本用例红在「approve 竟然 resolve 了」
+    // 且 spy 会记到 1 次执行（决定没落库、run 却恢复了）。
+    const spy: Spy = { calls: [] };
+    const { app } = hitlApp([toolUseMsg('danger', {}, 'tu1'), endTurnMsg('收尾')], spy);
+    const store = new GatedCopyStore();
+    const runner = new AsyncRunner(app, { store });
+    const { taskId } = runner.submit('任务');
+    await waitStatus(runner, taskId, 'awaiting_approval');
+
+    store.failNextSave = true;
+    await assert.rejects(
+      () => runner.approve(taskId, { tu1: { approved: true } }),
+      /store 抖动/,
+      '落库失败必须让调用方知道（approve 是写操作，不是观测）',
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(spy.calls.length, 0, '落库失败就绝不派发 —— 决定没落库的恢复不算数');
+    const rec = await store.get(taskId);
+    assert.equal(rec?.status, 'awaiting_approval', '任务仍在等待，重试 approve 可恢复');
+  });
+});

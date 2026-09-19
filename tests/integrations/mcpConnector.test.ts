@@ -497,3 +497,60 @@ describe('createStreamableHttpMcpConnector —— StreamableHTTP 连接器', () 
     assert.throws(() => createStreamableHttpMcpConnector(''), /url 不能为空/);
   });
 });
+
+describe('StreamableHTTP：超时裁判权与响应配对（第八轮复审补缺）', () => {
+  it('tools/call 不起第二个计时器：超过连接器 timeoutMs 的调用照常等完（裁判是引擎）', async () => {
+    // 反向验证：旧实现里 rpc() 末尾无条件 guard(readResult(...))，本用例会红在
+    // 30ms 超时被拒（而 spec §10 2026-09-17 ① 与文档都说 callTool 的裁判是引擎/桥）。
+    const { fetchImpl } = fakeServer();
+    const slow: typeof fetch = (async (url: unknown, init: unknown) => {
+      const i = init as { body?: string };
+      const method = i.body ? (JSON.parse(i.body) as { method?: string }).method : undefined;
+      const res = await fetchImpl(url as never, init as never);
+      if (method === 'tools/call') await new Promise((r) => setTimeout(r, 120));
+      return res;
+    }) as unknown as typeof fetch;
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: slow,
+      timeoutMs: 30, // 握手/list 的裁判；若它管到 call，120ms 的调用必被掐
+    });
+    open.push(connector);
+    const out = (await connector.callTool('get-time', {})) as {
+      content: Array<{ text: string }>;
+    };
+    assert.equal(out.content[0]?.text, 'ok', '慢调用必须等完 —— 引擎没设超时时它就该等');
+  });
+
+  it('握手仍受连接器 timeoutMs 约束（装配期路径的裁判不变）', async () => {
+    const hanging: typeof fetch = (() =>
+      new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: hanging,
+      timeoutMs: 30,
+    });
+    open.push(connector);
+    await assert.rejects(() => connector.listTools(), /超时|timeout|deadline/i);
+  });
+
+  it('非 SSE 响应的 id 不配对的拒绝（与 SSE 分支同款），不把别的请求的结果当本次的', async () => {
+    // 反向验证：旧实现只验「id 是 number」⇒ 本用例会红在「竟然返回了 ok」。
+    const { fetchImpl } = fakeServer();
+    const tampered: typeof fetch = (async (url: unknown, init: unknown) => {
+      const res = await fetchImpl(url as never, init as never);
+      const i = init as { body?: string };
+      const method = i.body ? (JSON.parse(i.body) as { method?: string }).method : undefined;
+      if (method !== 'tools/call') return res;
+      // 串包：回一个**别的请求**的 id
+      const body = JSON.parse(await res.text()) as { id: number };
+      return new Response(JSON.stringify({ ...body, id: body.id + 1000 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: tampered,
+    });
+    open.push(connector);
+    await assert.rejects(() => connector.callTool('get-time', {}), /id 为 \d+ 的 JSON-RPC 报文/);
+  });
+});

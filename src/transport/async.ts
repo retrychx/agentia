@@ -224,6 +224,11 @@ export class AsyncRunner {
    *
    * - **逐 tool_use_id 幂等**：已存在的决定不覆盖（第一次决定赢）—— 重复提交 /
    *   并发点击不会推翻已有决定，也不会让恢复段重复执行；
+   * - **并发重入共享在飞那次**：同一任务的并发 approve（双击「批准」/两个审批人
+   *   同时批）返回同一个 Promise —— 否则两个调用都在对方落库前读到
+   *   `awaiting_approval`、各自判「决定齐了」、**各派发一次**（同一任务重复执行，
+   *   与 resumePending 的闸门同一 bug 类）。被共享的那次覆盖不到的决定不丢：
+   *   调用方从返回的记录看到任务仍在等待，重试即并入；
    * - 决定齐了就恢复：`status` 回 `running`、**先落库再派发**（与 `#redispatch`
    *   同一条纪律 —— 没落库就恢复，进程崩在窗口里会丢决定）；恢复段带着
    *   `rec.approvals` 与扩展后的消息历史（`rec.spec.messages`，末尾是含未决
@@ -236,6 +241,23 @@ export class AsyncRunner {
     taskId: string,
     decisions: ApprovalDecisions,
     opts: { decidedBy?: string } = {},
+  ): Promise<TaskRecord> {
+    const inflight = this.inflightApprovals.get(taskId);
+    if (inflight) return inflight;
+    const run = this.#approveInner(taskId, decisions, opts).finally(() => {
+      this.inflightApprovals.delete(taskId);
+    });
+    this.inflightApprovals.set(taskId, run);
+    return run;
+  }
+
+  /** 同一任务的在飞审批（approve 的重入闸，见上）。 */
+  private readonly inflightApprovals = new Map<string, Promise<TaskRecord>>();
+
+  async #approveInner(
+    taskId: string,
+    decisions: ApprovalDecisions,
+    opts: { decidedBy?: string },
   ): Promise<TaskRecord> {
     const rec = await this.store.get(taskId);
     if (!rec) throw new TaskApproveError(404, `task 不存在: ${taskId}`);
@@ -266,7 +288,10 @@ export class AsyncRunner {
       rec.status = 'running'; // 由 #executeInner 接管（acquireSlot → 恢复执行）
       rec.ownerId = this.ownerId;
     }
-    await this.#safeSave(rec);
+    // 先落库再派发 —— **真纪律，不是注释**：save 失败（同步抛 / 异步 reject）就
+    // 绝不恢复执行（落不了库的决定不算决定：进程崩在窗口里会丢决定，重启后把
+    // 同一件事再判一次、可能改判）。调用方拿到 reject，重试即可。
+    await this.store.save(rec);
     if (complete) void this.#execute(rec);
     return { ...rec };
   }
