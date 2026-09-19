@@ -162,6 +162,9 @@ export function subagentToTool(
           resultSchema: spec.resultSchema,
           // 价格覆盖透传（F1）：子 agent 用同一模型也要能算成本
           priceOverrides: ctx.priceOverrides,
+          // 宿主的未定价告警回调透传到嵌套循环（F2）：子 agent 用了未定价模型时，
+          // 宿主的告警照样要响（与 priceOverrides 同写法透传）
+          onUnpricedModel: ctx.onUnpricedModel,
           // 事件截断口径透传：子 agent 里的工具结果同样要能看全文
           maxEventChars: ctx.maxEventChars,
           // 成本护栏透传（C1）：预算是整条 run（含子 agent）的口径，子循环每回合也检查

@@ -83,6 +83,43 @@ describe('TraceRecorder', () => {
     assert.equal(r.snapshot('ok').totalUsage.costEstimate, 0.3);
   });
 
+  it('usage() 与 snapshot().totalUsage 逐字同口径（预算护栏走 usage()，两条路不得漂移）', () => {
+    // 为什么单拎一条：`snapshot()` 会**拷**全部 span 的 attributes/events/links，而预算护栏
+    // 每回合要判两次 ⇒ 引擎侧改走 `usage()`（不拷）。两条路一旦漂移，护栏就会拿错数——
+    // 所以这里钉「deepEqual」而不是各字段分别断言。
+    const r = new TraceRecorder();
+    const root = r.begin('run', 'app', null);
+    const capability = r.begin('capability', 'subagent:reviewer', root);
+    const turn = r.begin('llm.turn', 'model-x', capability);
+    r.end(turn, {
+      usage: {
+        inputTokens: 100,
+        outputTokens: 40,
+        cacheReadTokens: 5,
+        cacheCreationTokens: 1,
+        costEstimate: 0.1,
+      },
+    });
+    const turn2 = r.begin('llm.turn', 'model-x', capability);
+    r.end(turn2, {
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costEstimate: 0.2,
+      },
+    });
+    r.end(capability); // 未显式给 usage ⇒ 就地聚合子孙 —— 不得影响总量（与 snapshot 同规则）
+    r.event(root, 'noise', { big: 'x'.repeat(500) });
+    r.end(root, { status: 'ok' });
+
+    assert.deepEqual(r.usage(), r.snapshot('ok').totalUsage, '两条路必须逐字相等');
+    assert.equal(r.usage().inputTokens, 100);
+    assert.equal(r.usage().outputTokens, 40);
+    assert.equal(r.usage().costEstimate, 0.3, '取整口径也要一致（0.1 + 0.2 → 0.3）');
+  });
+
   it('snapshot 的 events/attributes 是拷贝：交付后迟到的记账不变异已交付的 trace', () => {
     const r = new TraceRecorder();
     const root = r.begin('run', 'app', null);

@@ -248,7 +248,7 @@ export async function checkTurnEntry<S extends JsonSchema>(
   // 请求前拦住：不再发请求 = 不再花钱。与「模型自然收尾不改判」不冲突：自然收尾在
   // 上一回合就 break 了，走不到这里。
   if (ctx.budget) {
-    const over = ctx.budget.check(args.recorder.snapshot('ok'));
+    const over = ctx.budget.check({ totalUsage: args.recorder.usage() });
     if (over) {
       return { stopReason: 'budget_exceeded', error: budgetError(args, over) };
     }
@@ -348,7 +348,7 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
 
 /**
  * 回合记账：usage 换算 + 成本估算（未定价记事件 + 回调）+ 关 llm.turn span + token 属性。
- * 预算护栏依赖「记账完成后」的 snapshot，所以本函数必须先于任何 budget.check 调用。
+ * 预算护栏依赖「记账完成后」的 usage 累计，所以本函数必须先于任何 budget.check 调用。
  */
 export function recordTurnUsage<S extends JsonSchema>(
   ctx: LoopContext<S>,
@@ -572,6 +572,9 @@ async function executeOneTool<S extends JsonSchema>(
     ...(args.signal ? { signal: args.signal } : {}),
     // 价格覆盖透传给嵌套能力（F1）：否则子 agent 用同一模型会退化成"未定价"
     ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
+    // 宿主的未定价告警回调透传到嵌套循环（F2）：否则子循环里模型不在价格表时
+    // 只有 usage.unpriced 事件，宿主的告警回调静默缺席
+    ...(args.onUnpricedModel ? { onUnpricedModel: args.onUnpricedModel } : {}),
     // 事件截断口径同样透传：调试期开了全文，子 agent 的工具事件不该还是被截断的
     ...(args.maxEventChars != null ? { maxEventChars: args.maxEventChars } : {}),
     // 成本护栏（C1）同样透传：预算是整条 run（含各级子 agent）的口径，

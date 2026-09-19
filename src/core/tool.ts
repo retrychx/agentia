@@ -63,6 +63,14 @@ export interface RecorderBackend {
   event(id: SpanId, name: string, body: unknown): void;
   setAttribute(id: SpanId, key: string, value: string | number | boolean): void;
   snapshot(status: SpanStatus): Trace;
+  /**
+   * 整条 run 的累计 usage（只算 `llm.turn` 的**自身**计量，子 agent 的往返也在内）。
+   *
+   * 与 `snapshot(status).totalUsage` **同一口径**，但不拷 spans / attributes / events ——
+   * 预算护栏每回合要判两次（回合入口 + 回合末），走 `snapshot()` 会白拷全部 span 的
+   * attributes/events（O(回合 × 累计事件量)）。**只看总量**的消费者该走这里。
+   */
+  usage(): Usage;
 }
 
 /**
@@ -129,6 +137,13 @@ export interface ToolRunContext {
    * 模型在子循环里会退化成"未定价"（成本恒 0，`maxCostUsd` 静默失效）。
    */
   priceOverrides?: Record<string, ModelPricing>;
+  /**
+   * 宿主的未定价告警回调（F2，见 `RunAgentOptions.onUnpricedModel`）：模型不在价格表、
+   * 成本算不出时每模型回调一次。嵌套能力（@SubAgent / @Skill）拉起自己的 llm 循环时
+   * 必须原样传下去 —— 否则子循环里的「算不出成本」只有 `usage.unpriced` 事件、
+   * 宿主的告警回调静默缺席（`maxCostUsd` 在子循环里失效了却没人知道）。
+   */
+  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
   /**
    * 本次工具调用的**引擎侧预算**（毫秒）= 本次 run 的 `RunAgentOptions.toolTimeoutMs`；
    * undefined / 非正 = 引擎不设超时。

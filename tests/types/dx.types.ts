@@ -7,6 +7,7 @@
  */
 import {
   createApp,
+  createBudgetGuard,
   createStdioMcpConnector,
   createStreamableHttpMcpConnector,
   defineEval,
@@ -29,7 +30,9 @@ import type {
   MetricsSink,
   MetricsSnapshot,
   Provider,
+  Trace,
   TraceSink,
+  Usage,
 } from '../../dist/index.js';
 
 /* ================= ④a：Blackboard 声明合并 → 键补全 + 拼写检查 + 值类型 ================= */
@@ -228,5 +231,34 @@ async function dPhaseTypeChecks(): Promise<void> {
   // @ts-expect-error systemVersion 必须是 string
   await executeRun({ messages: msgs, systemVersion: 1 });
 }
+
+/* ================= 成本护栏：check 入参收窄**不破坏既有调用方** ================= */
+
+function budgetGuardTypeChecks(): void {
+  const g = createBudgetGuard({ maxTotalTokens: 10 });
+  const totalUsage: Usage = {
+    inputTokens: 1,
+    outputTokens: 2,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+  };
+  const trace: Trace = { traceId: 't', rootSpanId: 'r', spans: [], status: 'ok', totalUsage };
+
+  // ① 廉价视图：只给 totalUsage —— 引擎侧走的就是这个形态（不拷 spans）
+  g.check({ totalUsage });
+
+  // ② **兼容性**：整份 Trace 结构上满足入参 ⇒ 既有调用方（传整份 trace）不受影响。
+  //    这条是「收窄不是破坏性变更」的**全部依据**，所以在这里钉住它。
+  g.check(trace);
+
+  // ③ 反向：入参里没有 totalUsage 必须报错（否则收窄就白收了）
+  // @ts-expect-error 入参必须有 totalUsage
+  g.check({});
+  // ④ 反向：`spans` 不在入参里 —— 护栏**在类型上就读不到**它
+  //    （「check 只看 totalUsage」这条口径从注释变成了结构约束）
+  // @ts-expect-error 对象字面量多出 spans
+  g.check({ spans: [], totalUsage });
+}
+void budgetGuardTypeChecks;
 
 void dPhaseTypeChecks;

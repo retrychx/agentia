@@ -119,9 +119,17 @@ const app = await createApp({
   maxTotalTokens: 200_000, // 单条 run 的 token 上限（硬管控，超限以 budget_exceeded 收尾）
 });
 
-const runner = new AsyncRunner(app, { store: new InMemoryTaskStore(), runTimeoutMs: 120_000 });
 /** 会话历史（多轮 run 共享）。生产换持久化实现即可 —— 缝是同一个 `SessionStore`。 */
 const sessions = new InMemorySessionStore();
+const runner = new AsyncRunner(app, {
+  store: new InMemoryTaskStore(),
+  runTimeoutMs: 120_000,
+  // 异步路径的会话走**正式通道**：任务里只落可序列化的 sessionId，store 实例由
+  // runner 持有、执行前注入。直接往 submit 的 options 里塞 session 实例属于
+  // 整包展开逃逸 —— 换 SqliteTaskStore 后 JSON.stringify 会把 store 拍成 {}，
+  // 重启续跑就会翻车。
+  sessionStore: sessions,
+});
 
 // ── 宿主侧的三处翻译 ───────────────────────────────────────────────────────────
 
@@ -296,11 +304,21 @@ const implementation = {
     const traceContext = traceparent === undefined ? undefined : parseTraceparent(traceparent);
     const idempotencyKey = metadataValue(call.metadata, 'idempotency-key');
     try {
-      // at-least-once 去重：同一个 idempotencyKey 重复投递不会重复执行
+      // at-least-once 去重：同一个 idempotencyKey 重复投递不会重复执行。
+      // 会话在异步路径走 sessionId（正式通道，见上方 runner 的 sessionStore 注释）——
+      // 把 callOptions 里的 session 实例剥掉，换成可序列化的 id。
+      const { session: _dropped, ...baseOpts } = callOptions(
+        call.request,
+        new AbortController(),
+        traceContext,
+      );
       const rec = runner.submit(call.request.input, {
         source: 'grpc',
         ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-        options: callOptions(call.request, new AbortController(), traceContext),
+        options: {
+          ...baseOpts,
+          ...(call.request.sessionId !== '' ? { sessionId: call.request.sessionId } : {}),
+        },
       });
       callback(null, { taskId: rec.taskId });
     } catch (e) {

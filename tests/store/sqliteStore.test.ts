@@ -159,4 +159,49 @@ describe('SqliteTaskStore', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('busy_timeout 先于 WAL 生效：构造期遭遇写锁时等锁而非立即 SQLITE_BUSY', async () => {
+    // WAL 转换本身要拿写锁。若 busy_timeout 设在 WAL 之后，多进程同时首启时先到者
+    // 持锁，后到者在「PRAGMA journal_mode = WAL」上立即抛 database is locked
+    // （busy_timeout 尚未生效）。本用例让另一连接（worker，等价另一宿主进程）先
+    // BEGIN EXCLUSIVE 持锁 200ms，再构造 store：busy_timeout 先生效 ⇒ 构造等锁成功；
+    // 顺序反过来则构造即抛。构造是同步阻塞调用（sqlite busy handler 不让出事件循环），
+    // 所以持锁方必须放 worker 里，主线程 setTimeout 释放锁来不及触发。
+    const { dir, file } = tmpFile('busy-init.db');
+    const holder = new Worker(
+      `const { parentPort, workerData } = require('node:worker_threads');
+       const { DatabaseSync } = require('node:sqlite');
+       const db = new DatabaseSync(workerData.file);
+       db.exec('BEGIN EXCLUSIVE');
+       parentPort.postMessage('locked');
+       setTimeout(() => {
+         try { db.exec('COMMIT'); } catch {}
+         parentPort.postMessage('released');
+       }, 200);`,
+      { eval: true, workerData: { file } },
+    );
+    let locked!: () => void;
+    let released!: () => void;
+    const gotLocked = new Promise<void>((r) => (locked = r));
+    const gotReleased = new Promise<void>((r) => (released = r));
+    holder.on('message', (m) => {
+      if (m === 'locked') locked();
+      else if (m === 'released') released();
+    });
+    try {
+      await gotLocked; // 写锁已被他进程占住
+      const store = new SqliteTaskStore(file); // busy_timeout 先于 WAL：等锁；反之立即抛
+      try {
+        const a = rec();
+        store.save(a);
+        assert.deepEqual(store.get(a.taskId), a, '等锁后构造与写入都成功');
+      } finally {
+        store.close();
+      }
+      await gotReleased;
+    } finally {
+      await holder.terminate();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

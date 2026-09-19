@@ -49,7 +49,14 @@ export class Container {
   /** 正在解析的 token 链，用于循环依赖检测 */
   private resolving: Token[] = [];
 
-  /** 覆盖式注册（后注册覆盖先注册；同一 app 内同 token 重复注册视为升级） */
+  /**
+   * 覆盖式注册（后注册覆盖先注册；同一 app 内同 token 重复注册视为升级）。
+   *
+   * ⚠️ **注册不会刷新已装配的能力菜单**：`AgentApp.tools` 是**构建期**从容器解析的快照
+   * （见 `toolkit/module.ts` 的 `get tools()`）。`createApp()` 之后再 `register()` 一个新
+   * `@Tool` 的 provider，容器里确实有了，但主菜单**不会**多出这个工具 —— 菜单是静态稳定的。
+   * 要让新能力进菜单，得在装配**之前**注册（或重新 `createApp()`）。
+   */
   register(...providers: Provider[]): this {
     for (const p of providers) {
       if (!isProvider(p)) {

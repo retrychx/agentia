@@ -836,132 +836,132 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     const now = nanos(Date.now());
     const start = nanos(startedAtMs);
     const s = snapshot();
+    // OTLP 数据模型：Metric 身份 = name(+type/unit)。**同名**数据点必须合并进一个 Metric
+    // 的 dataPoints —— 规范里同名多 Metric 是 semantic error（consumer 可拒收整批），
+    // 同名 Metric 各带一份 description 同样冲突。对照 Prometheus 侧 render() 的 family()：
+    // 同名样本收进同一家族、家族头只发一次。这里按 name 建表聚合，助手只做
+    // 「查表取已建 Metric，append dataPoint」。
+    interface OtlpMetric {
+      name: string;
+      description: string;
+      sum?: { aggregationTemporality: number; isMonotonic: boolean; dataPoints: unknown[] };
+      gauge?: { dataPoints: unknown[] };
+      histogram?: { aggregationTemporality: number; dataPoints: unknown[] };
+    }
+    const metricTable = new Map<string, OtlpMetric>();
+    /** 查表取已建 Metric，没有则建；同名只保留首次的 description（冲突描述本身是 semantic error） */
+    const takeMetric = (name: string, help: string): OtlpMetric => {
+      let m = metricTable.get(name);
+      if (!m) {
+        m = { name, description: help };
+        metricTable.set(name, m);
+      }
+      return m;
+    };
     const sum = (
       name: string,
       value: number,
       help: string,
       attrs: OtlpAttr[],
       monotonic = true,
-    ) => ({
-      name,
-      description: help,
-      sum: {
-        aggregationTemporality: 2, // CUMULATIVE
-        isMonotonic: monotonic,
-        dataPoints: [
-          { attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asInt: String(value) },
-        ],
-      },
-    });
+    ): void => {
+      const m = takeMetric(name, help);
+      m.sum ??= { aggregationTemporality: 2, isMonotonic: monotonic, dataPoints: [] };
+      m.sum.dataPoints.push({
+        attributes: attrs,
+        startTimeUnixNano: start,
+        timeUnixNano: now,
+        asInt: String(value),
+      });
+    };
     // 浮点指标（成本）必须走 asDouble —— OTLP 的 asInt 是 string 编码 int64，
     // 塞浮点（如 0.25）会让 collector 直接拒收整批数据
-    const sumDouble = (name: string, value: number, help: string, attrs: OtlpAttr[]) => ({
-      name,
-      description: help,
-      sum: {
-        aggregationTemporality: 2, // CUMULATIVE
-        isMonotonic: true,
-        dataPoints: [
-          { attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asDouble: value },
-        ],
-      },
-    });
+    const sumDouble = (name: string, value: number, help: string, attrs: OtlpAttr[]): void => {
+      const m = takeMetric(name, help);
+      m.sum ??= { aggregationTemporality: 2, isMonotonic: true, dataPoints: [] };
+      m.sum.dataPoints.push({
+        attributes: attrs,
+        startTimeUnixNano: start,
+        timeUnixNano: now,
+        asDouble: value,
+      });
+    };
     // gauge 没有理由只收 int：评分值是浮点，统一走 asDouble
-    const gauge = (name: string, value: number, help: string, attrs: OtlpAttr[]) => ({
-      name,
-      description: help,
-      gauge: {
-        dataPoints: [
-          { attributes: attrs, startTimeUnixNano: start, timeUnixNano: now, asDouble: value },
-        ],
-      },
-    });
-    const hist = (name: string, stat: DurationStat, help: string, attrs: OtlpAttr[]) => ({
-      name,
-      description: help,
-      histogram: {
-        aggregationTemporality: 2,
-        dataPoints: [
-          {
-            attributes: attrs,
-            startTimeUnixNano: start,
-            timeUnixNano: now,
-            count: stat.count,
-            sum: stat.sumMs,
-            // OTLP 的 bucketCounts 是每桶**非累积**计数（Prometheus 文本才是累积语义）
-            bucketCounts: stat.perBucket(),
-            explicitBounds: [...stat.boundsList],
-          },
-        ],
-      },
-    });
+    const gauge = (name: string, value: number, help: string, attrs: OtlpAttr[]): void => {
+      const m = takeMetric(name, help);
+      m.gauge ??= { dataPoints: [] };
+      m.gauge.dataPoints.push({
+        attributes: attrs,
+        startTimeUnixNano: start,
+        timeUnixNano: now,
+        asDouble: value,
+      });
+    };
+    const hist = (name: string, stat: DurationStat, help: string, attrs: OtlpAttr[]): void => {
+      const m = takeMetric(name, help);
+      m.histogram ??= { aggregationTemporality: 2, dataPoints: [] };
+      m.histogram.dataPoints.push({
+        attributes: attrs,
+        startTimeUnixNano: start,
+        timeUnixNano: now,
+        count: stat.count,
+        sum: stat.sumMs,
+        // OTLP 的 bucketCounts 是每桶**非累积**计数（Prometheus 文本才是累积语义）
+        bucketCounts: stat.perBucket(),
+        explicitBounds: [...stat.boundsList],
+      });
+    };
 
-    const metrics: unknown[] = [
-      sum(`${p}runs_total`, s.runs, 'run 总数', []),
-      sum(`${p}runs_failed_total`, s.failed, '失败的 run 数', []),
-      sum(`${p}tokens_total`, tokens.input, '输入 token 累计', [strAttr('kind', 'input')]),
-      sum(`${p}tokens_total`, tokens.output, '输出 token 累计', [strAttr('kind', 'output')]),
-      sum(`${p}tokens_total`, tokens.cacheRead, '缓存读 token 累计', [
-        strAttr('kind', 'cache_read'),
-      ]),
-      sum(`${p}tokens_total`, tokens.cacheCreation, '缓存写 token 累计', [
-        strAttr('kind', 'cache_creation'),
-      ]),
-      sumDouble(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []),
-      hist(`${p}run_duration_ms`, runStat, 'run 时长（毫秒）', []),
-    ];
+    sum(`${p}runs_total`, s.runs, 'run 总数', []);
+    sum(`${p}runs_failed_total`, s.failed, '失败的 run 数', []);
+    // tokens_total：四类 kind 分项收进**同一个** Metric；description 与 Prometheus 侧
+    // render() 的 family() 统一成同一句总述（同名 Metric 各带一份描述是 semantic error）
+    const tokensHelp = 'token 累计（kind 分项：input / output / cache_read / cache_creation）';
+    sum(`${p}tokens_total`, tokens.input, tokensHelp, [strAttr('kind', 'input')]);
+    sum(`${p}tokens_total`, tokens.output, tokensHelp, [strAttr('kind', 'output')]);
+    sum(`${p}tokens_total`, tokens.cacheRead, tokensHelp, [strAttr('kind', 'cache_read')]);
+    sum(`${p}tokens_total`, tokens.cacheCreation, tokensHelp, [strAttr('kind', 'cache_creation')]);
+    sumDouble(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []);
+    hist(`${p}run_duration_ms`, runStat, 'run 时长（毫秒）', []);
+
     for (const label of [...capabilities.keys()].sort()) {
       const acc = capabilities.get(label)!;
       const attrs = [strAttr('capability', label)];
-      metrics.push(sum(`${p}capability_calls_total`, acc.calls, '能力调用次数', attrs));
-      metrics.push(sum(`${p}capability_errors_total`, acc.errors, '能力失败次数', attrs));
-      metrics.push(hist(`${p}capability_duration_ms`, acc.stat, '能力调用耗时（毫秒）', attrs));
+      sum(`${p}capability_calls_total`, acc.calls, '能力调用次数', attrs);
+      sum(`${p}capability_errors_total`, acc.errors, '能力失败次数', attrs);
+      hist(`${p}capability_duration_ms`, acc.stat, '能力调用耗时（毫秒）', attrs);
       if (acc.tokens !== null)
-        metrics.push(sum(`${p}capability_tokens_total`, acc.tokens, '子孙 token 合计', attrs));
+        sum(`${p}capability_tokens_total`, acc.tokens, '子孙 token 合计', attrs);
       if (acc.costUsd !== null)
-        metrics.push(
-          sumDouble(`${p}capability_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs),
-        );
+        sumDouble(`${p}capability_cost_usd_total`, acc.costUsd, '估算成本（美元）', attrs);
     }
     for (const model of [...models.keys()].sort()) {
       const acc = models.get(model)!;
       const attrs = [strAttr('model', model)];
-      metrics.push(sum(`${p}model_turns_total`, acc.turns, '模型往返次数', attrs));
-      metrics.push(sum(`${p}model_tokens_total`, acc.tokens, '模型 token 合计', attrs));
-      metrics.push(
-        sumDouble(`${p}model_cost_usd_total`, acc.costUsd, '模型估算成本（美元）', attrs),
-      );
+      sum(`${p}model_turns_total`, acc.turns, '模型往返次数', attrs);
+      sum(`${p}model_tokens_total`, acc.tokens, '模型 token 合计', attrs);
+      sumDouble(`${p}model_cost_usd_total`, acc.costUsd, '模型估算成本（美元）', attrs);
       if (acc.unpricedTurns > 0) {
-        metrics.push(
-          sum(`${p}model_unpriced_turns_total`, acc.unpricedTurns, '未定价 turn 数', attrs),
-        );
+        sum(`${p}model_unpriced_turns_total`, acc.unpricedTurns, '未定价 turn 数', attrs);
       }
-      metrics.push(hist(`${p}model_duration_ms`, acc.stat, '模型往返耗时（毫秒）', attrs));
+      hist(`${p}model_duration_ms`, acc.stat, '模型往返耗时（毫秒）', attrs);
     }
     for (const key of [...scores.keys()].sort()) {
       const acc = scores.get(key)!;
       const { name, source } = scoreLabels(key);
       const attrs = [strAttr('name', name), strAttr('source', source)];
-      metrics.push(gauge(`${p}score`, acc.value, '最近一次评分', attrs));
-      metrics.push(sum(`${p}score_total`, acc.count, '评分条数', attrs));
+      gauge(`${p}score`, acc.value, '最近一次评分', attrs);
+      sum(`${p}score_total`, acc.count, '评分条数', attrs);
     }
 
-    // 基数上限可见性（与 Prometheus 侧 `*_dropped_keys{kind=…}` 同名同义）
-    metrics.push(
-      gauge(`${p}dropped_keys`, capBudget.dropped, '因基数上限被折叠的不同键数', [
-        strAttr('kind', 'capability'),
-      ]),
-    );
-    metrics.push(
-      gauge(`${p}dropped_keys`, modelBudget.dropped, '因基数上限被折叠的不同键数', [
-        strAttr('kind', 'model'),
-      ]),
-    );
-    metrics.push(
-      gauge(`${p}dropped_keys`, scoreBudget.dropped, '因基数上限被折叠的不同键数', [
-        strAttr('kind', 'score'),
-      ]),
-    );
+    // 基数上限可见性（与 Prometheus 侧 `*_dropped_keys{kind=…}` 同名同义）：
+    // 三个 kind 收进同一个 gauge Metric
+    const droppedHelp = '因基数上限被折叠的不同键数';
+    gauge(`${p}dropped_keys`, capBudget.dropped, droppedHelp, [strAttr('kind', 'capability')]);
+    gauge(`${p}dropped_keys`, modelBudget.dropped, droppedHelp, [strAttr('kind', 'model')]);
+    gauge(`${p}dropped_keys`, scoreBudget.dropped, droppedHelp, [strAttr('kind', 'score')]);
+
+    const metrics = [...metricTable.values()];
 
     const resourceAttrs: OtlpAttr[] = [
       strAttr('service.name', serviceName),

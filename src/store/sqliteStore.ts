@@ -34,15 +34,17 @@ export class SqliteTaskStore implements TaskStore {
   constructor(path: string) {
     const DatabaseSync = loadDatabaseSync();
     this.db = new DatabaseSync(path);
+    // busy_timeout 必须先于 WAL 设置：WAL 转换本身要拿写锁，他进程占锁时若
+    // busy_timeout 尚未生效，多进程同时首启会在「PRAGMA journal_mode = WAL」上
+    // 立即抛 SQLITE_BUSY。先设 busy_timeout ⇒ 写事务争用时等待至多 5s 再重试。
+    // 没有它，多进程共库时第二个写者立即失败 —— 而 AsyncRunner 的 #safeSave 会把
+    // save 失败静默吞掉（不遮罩主流程），结果是任务记录无声丢失。
+    // 内存库同样支持该 pragma（合法 no-op），无需分支。
+    this.db.exec('PRAGMA busy_timeout = 5000');
     if (path !== ':memory:') {
       // WAL：读写不互斥，多进程共库的基础（内存库不支持，跳过）
       this.db.exec('PRAGMA journal_mode = WAL');
     }
-    // busy_timeout：写事务争用时不立即报 SQLITE_BUSY，而是等待至多 5s 再重试。
-    // 没有它，多进程共库时第二个写者立即失败 —— 而 AsyncRunner 的 #safeSave 会把
-    // save 失败静默吞掉（不遮罩主流程），结果是任务记录无声丢失。
-    // 内存库同样支持该 pragma（且无争用），无需跳过。
-    this.db.exec('PRAGMA busy_timeout = 5000');
     // status 列是 json 内 status 的反规范化副本：本 store 的 SELECT 只读 json，
     // 该列专供外部/DBA 直接按状态统计（如 SELECT status, count(*) FROM tasks GROUP BY status）。
     this.db.exec(`

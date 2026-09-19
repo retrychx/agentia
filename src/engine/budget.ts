@@ -1,4 +1,4 @@
-import type { Trace } from '../core/trace.js';
+import type { Usage } from '../core/trace.js';
 
 /**
  * Agentia —— 成本硬管控（C1，补 spec §6.4 的欠账）。
@@ -43,19 +43,30 @@ export interface BudgetGuardOptions {
 }
 
 export interface BudgetGuard {
-  /** 每回合记账完成后调用；超限返回 `'tokens' | 'cost'`，否则 `null` */
-  check(trace: Trace): 'tokens' | 'cost' | null;
+  /**
+   * 每回合记账完成后调用；超限返回 `'tokens' | 'cost'`，否则 `null`。
+   *
+   * ⚠️ 入参**只收它真正要读的那一项**，不是整份 `Trace`：本护栏每回合要判**两次**
+   * （回合入口 + 回合末），而 `TraceRecorder.snapshot()` 会拷全部 span 的
+   * attributes/events（O(回合 × 累计事件量)，长 run 下是白花的钱）。`Trace` 结构上
+   * 满足本类型，所以既有调用方（传整份 trace）不受影响；引擎侧传廉价视图即可：
+   * `check({ totalUsage: recorder.usage() })`。
+   *
+   * 收窄还有个附带好处：护栏**在类型上就没法**再去读 `spans` —— 「只看 totalUsage」
+   * 这条口径从注释变成了结构约束。
+   */
+  check(input: { readonly totalUsage: Usage }): 'tokens' | 'cost' | null;
 }
 
 /**
- * 建一个预算护栏。`check` 只看 **trace.totalUsage**（已由 recorder 按 llm.turn 求和，
+ * 建一个预算护栏。`check` 只看 **totalUsage**（已由 recorder 按 llm.turn 求和，
  * 子 agent 的往返也在内 —— 所以这是**整条 run** 的口径，不只是主循环）。
  */
 export function createBudgetGuard(opts: BudgetGuardOptions = {}): BudgetGuard {
   const { maxTotalTokens, maxCostUsd, onExceed } = opts;
   return {
-    check(trace: Trace): 'tokens' | 'cost' | null {
-      const u = trace.totalUsage;
+    check(input: { readonly totalUsage: Usage }): 'tokens' | 'cost' | null {
+      const u = input.totalUsage;
       const totalTokens =
         u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
       const costUsd = u.costEstimate ?? 0;

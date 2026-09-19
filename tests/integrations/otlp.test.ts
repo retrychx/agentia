@@ -376,4 +376,27 @@ describe('createOtlpExporter', () => {
       await close(server);
     }
   });
+
+  it('事件 body 里的显式 undefined 不产出非法 AnyValue（与 span 属性口径一致：跳过）', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const trace = sampleTrace();
+      trace.spans[1]!.events.push({
+        time: 1300,
+        name: 'tool.partial',
+        body: { a: undefined, b: 1 },
+      });
+      await createOtlpExporter({ endpoint: base }).export(trace);
+
+      const ev = captured[0].body.resourceSpans[0].scopeSpans[0].spans[1].events[1];
+      assert.equal(ev.name, 'tool.partial');
+      // undefined 值被跳过；正常的 b 仍在
+      assert.deepEqual(ev.attributes, [{ key: 'b', value: { intValue: '1' } }]);
+      // {stringValue: JSON.stringify(undefined)} 会序列化成 {"key":"a","value":{}} —— 非法 AnyValue
+      const raw = JSON.stringify(captured[0].body);
+      assert.ok(!raw.includes('"key":"a"'), 'undefined 值不得序列化成空 AnyValue');
+    } finally {
+      await close(server);
+    }
+  });
 });

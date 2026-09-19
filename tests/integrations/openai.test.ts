@@ -372,6 +372,47 @@ describe('createOpenAIClient', () => {
     }
   });
 
+  it('429（带 body 与 retry-after）→ 重试前排空失败响应的 body，第二次成功', async () => {
+    // 与 anthropic.ts 的 postWithRetries 对齐：可重试状态码不能只读 retry-after 头就
+    // continue —— 失败响应的诊断体必须被消费，否则直接丢在 socket 缓冲区。
+    // （实测 undici 会后台丢弃未消费 body、连接复用不受影响；这里守的是「不丢诊断体」。）
+    // 反向验证：旧实现从不调失败响应的 text() → firstBodyReads 恒 0。
+    let firstBodyReads = 0;
+    let calls = 0;
+    const fetchImpl = (async (_url: any, _init: any) => {
+      calls += 1;
+      if (calls === 1) {
+        // `Response.prototype.text` 在本项目的类型环境下是**只读**方法，不能改写，
+        // 所以这里不用真 Response，而是给一个「只实现 postWithRetries 真正读到的表面」
+        // 的替身：可重试响应恰好只被读 ok / status / headers / text 四项。
+        const res = {
+          ok: false,
+          status: 429,
+          headers: new Headers({
+            'retry-after': '0',
+            'content-type': 'application/json',
+          }),
+          text: async () => {
+            firstBodyReads += 1;
+            return JSON.stringify({ error: { message: 'slow down', type: 'rate_limit' } });
+          },
+        } as unknown as Response;
+        return res;
+      }
+      return new Response(JSON.stringify(chatResponse({})), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const client = createOpenAIClient({ apiKey: 'k', fetchImpl });
+    const msg = await client.messages
+      .stream({ model: 'm', max_tokens: 8, messages: [] })
+      .finalMessage();
+    assert.equal(calls, 2, '第一次 429 后必须重试');
+    assert.equal(firstBodyReads, 1, '重试前必须消费第一次（失败）响应的 body');
+    assert.equal(msg.stop_reason, 'end_turn');
+  });
+
   it('429 → 引擎重试真的发生（用例闭环：客户端给出的 status 一路传到引擎重试层）', async () => {
     const { fetchImpl, requests } = fakeFetch([
       { status: 429, body: 'slow down' },

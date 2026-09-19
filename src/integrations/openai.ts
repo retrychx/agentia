@@ -274,6 +274,10 @@ async function postWithRetries(
       continue;
     }
     if (res.ok || !isRetryableStatus(res.status) || attempt >= maxRetries) return res;
+    // 重试前排空响应体（与 anthropic.ts 的 postWithRetries 对齐）：不读的话这次失败的
+    // 诊断体直接丢在 socket 缓冲区。实测 Node 的 undici 会后台丢弃未消费的 body
+    // （连接复用不受影响），所以这是对齐 + 不丢诊断体，**不是**堵连接泄漏。
+    await res.text().catch(() => '');
     retryAfter = res.headers.get('retry-after');
   }
 }

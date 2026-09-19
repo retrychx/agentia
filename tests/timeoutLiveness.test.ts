@@ -24,7 +24,9 @@ function runProbe(which: string): Promise<{ code: number; out: string }> {
     execFile(
       process.execPath,
       ['--import', 'tsx', probe, which],
-      { cwd: repoRoot, timeout: 30_000 },
+      // 墙钟预算按最差情况定：实测 tsx 子进程在 8 核高负载机器上拉起框架 import 图
+      // 就要 ~17.5s，30s 只剩 1.7× 余量，而单进程成本随机器负载波动很大 —— 提到 120s。
+      { cwd: repoRoot, timeout: 120_000 },
       (err, stdout, stderr) => {
         done({ code: err ? 1 : 0, out: `${stdout ?? ''}${stderr ?? ''}` });
       },

@@ -110,7 +110,31 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
             // 内容协商（与 openai.ts 同款）：个别兼容端点会忽略 stream:true 直接回整份 JSON
             const ctype = res.headers.get('content-type') ?? '';
             if (!ctype.includes('event-stream')) {
-              const message = (await res.json()) as Message;
+              const body = (await res.json()) as Message & {
+                error?: { type?: string; message?: string };
+              };
+              // 回落路径不能强转了事：「HTTP 200 裹错误」在非流式形态下同样存在
+              // （流式路径由下方 readAnthropicStream 的 error 事件分支处理）。此前这里
+              // 直接强转 Message：body 是 {"error":{...}} 时 content 为 undefined，
+              // textOf 的 .filter() 抛裸 TypeError → classifyError 判 unknown/不可重试
+              // —— 同一事件走流式路径却是带 status 的可重试错误，两本账。
+              if (body.error) {
+                throw new AnthropicApiError(
+                  statusOfStreamError(body.error.type),
+                  `Anthropic 非流式响应携带错误（${body.error.type ?? 'unknown'}）：` +
+                    (body.error.message ?? JSON.stringify(body).slice(0, 300)),
+                );
+              }
+              // content 不是数组 = 200 但没给可用补全（网关截断 / 兼容端点 bug）：
+              // 与流式「未见 message_start」同款，按上游故障抛出而不是让 textOf 炸 TypeError。
+              // stop_reason 缺失**不拦**：引擎 turn.ts 有 unknown_stop_reason 兜底按失败收尾。
+              if (!Array.isArray(body.content)) {
+                throw new AnthropicApiError(
+                  500,
+                  'Anthropic 非流式响应缺 content 数组；响应无可用补全，按上游故障处理',
+                );
+              }
+              const message = body;
               // 分隔符 `''`：回落的原文本来就是一整段，拼回去要与流式累积的文本逐字一致
               const full = textOf(message, '');
               if (full) for (const cb of textCallbacks) cb(full);
@@ -318,6 +342,14 @@ interface BlockAcc {
   /** tool_use 的 input：JSON 字符串分片，stop 后整体 parse */
   partialJson: string;
   /**
+   * content_block_start 内联的 tool_use.input（对象形态）。
+   * 官方端点这里恒为 `{}`（完整入参走 input_json_delta 分片）；个别兼容端点会把
+   * 完整 input 内联在 start 事件且不发 delta —— 不收下它，工具会拿 `{}` 静默执行。
+   * 取舍规则（组装处兑现）：**delta 累积非空则以 delta 为准**（官方形态不受影响，
+   * 内联 `{}` + 分片维持旧语义），否则回落到内联值。
+   */
+  inlineInput?: unknown;
+  /**
    * 非 text/tool_use/thinking 的块（redacted_thinking 与一切未知块型）：
    * content_block_start 的原始块对象原样携带，finalMessage 原样透出 ——
    * 正是 `core/message.ts` 的 UnknownContentBlock 兜底成员的设计用途。
@@ -389,6 +421,16 @@ async function readAnthropicStream(
           name: typeof cb.name === 'string' ? cb.name : '',
           partialJson: '',
         };
+        // tool_use 块若内联对象形态 input（兼容端点形态），收下做初值 ——
+        // 官方端点恒给 `{}` 且后续 input_json_delta 会覆盖（delta 非空以 delta 为准）
+        if (
+          type === 'tool_use' &&
+          cb.input &&
+          typeof cb.input === 'object' &&
+          !Array.isArray(cb.input)
+        ) {
+          acc.inlineInput = cb.input;
+        }
         // redacted_thinking（数据在 `data` 字段）与一切未知块型：原始块对象
         // 原样携带 —— 不丢成空文本块，finalMessage 原样透出
         if (type !== 'text' && type !== 'tool_use' && type !== 'thinking') {
@@ -472,7 +514,9 @@ async function readAnthropicStream(
         type: 'tool_use',
         id: b.id,
         name: b.name,
-        input: parseToolInput(b.partialJson),
+        // delta 分片非空以分片为准（官方形态：start 内联 `{}` + input_json_delta 累积）；
+        // 一个 delta 都没来时回落到 start 事件内联的 input（兼容端点形态），再缺省 {}
+        input: b.partialJson ? parseToolInput(b.partialJson) : (b.inlineInput ?? {}),
       } as ToolUseBlock);
     } else if (b.type === 'thinking') {
       content.push({

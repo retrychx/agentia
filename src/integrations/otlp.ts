@@ -162,13 +162,21 @@ function spanAttributes(span: Span): OtlpAttribute[] {
 function eventAttributes(body: unknown): OtlpAttribute[] {
   if (body === undefined) return [];
   if (body && typeof body === 'object' && !Array.isArray(body)) {
-    return Object.entries(body as Record<string, unknown>).map(([key, v]) => ({
-      key,
-      value:
-        typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
-          ? toValue(v)
-          : { stringValue: JSON.stringify(v) },
-    }));
+    const attrs: OtlpAttribute[] = [];
+    for (const [key, v] of Object.entries(body as Record<string, unknown>)) {
+      // 显式 undefined 不是合法 AnyValue：走兜底分支会得到 {stringValue: JSON.stringify(undefined)}
+      // = {stringValue: undefined}，序列化成 {"key":"x","value":{}}，collector 判非法。
+      // 与 spanAttributes 的口径一致（span.attributes 的类型不允许 undefined）：跳过。
+      if (v === undefined) continue;
+      attrs.push({
+        key,
+        value:
+          typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+            ? toValue(v)
+            : { stringValue: JSON.stringify(v) },
+      });
+    }
+    return attrs;
   }
   return [{ key: 'body', value: { stringValue: JSON.stringify(body) } }];
 }

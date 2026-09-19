@@ -30,7 +30,10 @@ export class FileTaskStore implements TaskStore {
   private readonly byTask = new Map<string, TaskRecord>();
   private readonly byKey = new Map<string, string>(); // idempotencyKey → taskId
 
-  constructor(private readonly file: string) {
+  constructor(
+    private readonly file: string,
+    private readonly onLoadError?: (err: unknown) => void,
+  ) {
     // 目录在构造期建一次（原在每次 append 时 mkdirSync recursive —— save 是高频路径，
     // 每次都做一次递归 mkdir 是无谓的系统调用）
     mkdirSync(dirname(this.file), { recursive: true });
@@ -42,8 +45,10 @@ export class FileTaskStore implements TaskStore {
     let raw: string;
     try {
       raw = readFileSync(this.file, 'utf8');
-    } catch {
-      return; // 读失败按空宿主启动（宿主可另行告警）
+    } catch (err) {
+      // 读失败按空宿主启动：观测不击穿业务，缺省仍吞；宿主要告警就传 onLoadError
+      this.onLoadError?.(err);
+      return;
     }
     this.healTail(raw);
     for (const line of raw.split('\n')) {
@@ -123,7 +128,16 @@ export class FileTaskStore implements TaskStore {
    * 旧文件也完整），内存态不受影响。
    */
   compact(): void {
-    const body = [...this.byTask.values()].map((r) => `${JSON.stringify(r)}\n`).join('');
+    // 赢家殿后：内存语义是「同幂等键最后 save 的 taskId 赢」（save 覆写 byKey），
+    // 而 load 回放按行序 last-wins。直接按 Map 首次插入序写盘会丢掉「最后 save」
+    // 信息 —— 同键重提的新任务插入在后，旧任务又被 save 赢回时，插入序恰与赢家
+    // 属主相反，重启后赢家易主。把当前赢家排到文件末尾（load last-wins ⇒ 赢家
+    // 殿后即等价内存语义）；Array.prototype.sort 稳定，同组内仍按插入序。
+    const winners = new Set(this.byKey.values());
+    const rows = [...this.byTask.values()].sort(
+      (a, b) => Number(winners.has(a.taskId)) - Number(winners.has(b.taskId)),
+    );
+    const body = rows.map((r) => `${JSON.stringify(r)}\n`).join('');
     // 原子重写：先写临时文件再 rename。直接 writeFileSync 截断重写，中途被杀会留下
     // 半截文件、丢掉全部记录；同目录 rename 是原子的，旧文件在新文件就位前保持完整。
     // 临时文件名固定（单写者前提，见头注释）—— 上次被杀留下的残临时文件会被本次覆写。
