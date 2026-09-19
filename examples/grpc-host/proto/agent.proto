@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package agentia.demo;
+
+// Agentia gRPC 宿主示例 —— 第 4 个宿主（前三个：HTTP 同步 RPC / 异步任务 / 定时）。
+//
+// 关键在于**宿主只做翻译**：
+//   gRPC 请求  →  `normalizeMessages`  →  `app.run` / `runner.submit`
+//   run 结果   →  响应消息
+// 四种触发（HTTP / 异步 / 定时 / gRPC）共用同一份 `RunInput` 契约 ——
+// 「换宿主不换语义」（spec §1）。业务侧（能力声明、trace 记账、成本管控）一行都不用改。
+//
+// 每个 RPC 都对齐一个已有的 HTTP 宿主路径，便于两边对照：
+service Agent {
+  // 一元：跑一次同步 run，整份结果一次返回（对齐 HTTP 宿主 `POST /run`）
+  rpc Run(RunRequest) returns (RunReply);
+
+  // 服务端流：把增量文本逐帧下发（对齐 `POST /run` + `Accept: text/event-stream`）
+  rpc RunStream(RunRequest) returns (stream RunChunk);
+
+  // 异步：投任务即回 taskId（对齐 `POST /tasks`）
+  rpc Submit(RunRequest) returns (SubmitReply);
+
+  // 异步：查任务终态（对齐 `GET /tasks/:id`）
+  rpc GetTask(TaskQuery) returns (TaskReply);
+}
+
+message RunRequest {
+  // 与 HTTP 宿主同一份入参契约（`string | messages | {prompt|text|messages}`），
+  // 这里只暴露最简的一档：纯文本。
+  string input = 1;
+  // 会话标识：给定则同一会话的多次 run 共享记忆（框架的 session 缝）
+  string session_id = 2;
+  // 本次 run 的循环上限（不传用框架缺省）
+  int32 max_iterations = 3;
+  // 成本硬管控：整条 run 累计 token 上限；超限以 stop_reason=budget_exceeded 收尾
+  int32 max_total_tokens = 4;
+}
+
+message RunReply {
+  // == traceId（1:1 不变量，见 spec §9.2）
+  string run_id = 1;
+  // succeeded | failed | aborted
+  string status = 2;
+  // end_turn | budget_exceeded | aborted | ...
+  string stop_reason = 3;
+  string final_text = 4;
+  // 调用树 span 数。**完整 trace 落服务端**（见 README「trace 去哪了」）
+  int32 spans = 5;
+  int32 input_tokens = 6;
+  int32 output_tokens = 7;
+  // 非正常收尾时的原因；正常收尾为空串
+  string error = 8;
+}
+
+message RunChunk {
+  // 帧类型与 HTTP 宿主的 SSE 事件一一对应（text.delta / run.end）：
+  // 照这个对应关系，浏览器端与 gRPC 端能共用同一套 UI 逻辑。
+  oneof event {
+    string text_delta = 1;
+    RunReply end = 2;
+  }
+}
+
+message SubmitReply {
+  string task_id = 1;
+}
+
+message TaskQuery {
+  string task_id = 1;
+}
+
+message TaskReply {
+  string task_id = 1;
+  // queued | running | succeeded | failed | aborted
+  string status = 2;
+  string run_id = 3;
+  string final_text = 4;
+  string error = 5;
+}

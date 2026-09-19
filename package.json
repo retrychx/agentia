@@ -47,9 +47,10 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" && node --test \"packages/cli/test/*.test.mjs\" && node --test \"packages/trace-view/test/*.test.js\"",
-    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts && tsx scripts/e2e-examples.ts && tsx scripts/e2e-deploy.ts",
+    "e2e": "npm run build && npm run build:cli && tsx scripts/e2e-cli.ts && tsx scripts/e2e-examples.ts && tsx scripts/e2e-deploy.ts && tsx scripts/e2e-grpc.ts",
     "e2e:examples": "npm run build && tsx scripts/e2e-examples.ts",
     "e2e:deploy": "npm run build && tsx scripts/e2e-deploy.ts",
+    "e2e:grpc": "npm run build && tsx scripts/e2e-grpc.ts",
     "e2e:live": "tsx scripts/e2e-live.ts",
     "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts",
     "e2e:soak": "tsx scripts/e2e-soak.ts"
@@ -57,6 +58,8 @@
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
     "@biomejs/biome": "^2.5.13",
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1",
     "@types/node": "^26.5.1",
     "tsx": "^4.19.0",
     "typescript": "^7.0.2",

@@ -44,6 +44,7 @@
 | `tests/transport/host-hardening.test.ts` | 鉴权拦在**读 body 之前**、body 上限、并发闸门、`exposeErrors` | 真 HTTP 请求 + 断言状态码与连接行为 | 未鉴权请求也会被读进 body；内部拓扑回吐给未鉴权调用方 |
 | `tests/transport/async.test.ts` | 幂等键去重、`resumePending` 认领、迟到 reject 不改写终态 | 状态机级用例 | 同键任务重复执行；成功的 run 被落库失败覆写成 failed |
 | `tests/engine/approval.test.ts` · `tests/transport/approval.test.ts` · `tests/transport/httpApproval.test.ts` | HITL 挂起/恢复（2026-09-19 ①）：未决审批 ⇒ **整回合零执行零 tool_result**（协议配平）；`awaiting_approval` 不占槽、不触发 `onFinished`、`resumePending` 不捡、淘汰跳过；`approve` 逐 id 幂等（第一次赢）+ 先落库再派发；惰性超时自动全拒；挂起段照常 flushSinks、恢复段 link 上一段 | 引擎层 mockClient + 宿主层**真引擎**（executeRun）+ 真 HTTP；含「不做什么」断言（onFinished 不开火、普通工具不提前执行） | 审批闸被绕过（副作用直接发生）；挂起被当终态通知 webhook；恢复丢决定/重复执行 |
+| `scripts/e2e-grpc.ts` | **换宿主时最容易静默丢掉的四处语义**：deadline / 取消 → `signal`（要求服务端的 run **真被 abort**，trace 里 `error.type=aborted`，而不是照跑完）、metadata `traceparent` → run 根 link、同 `session_id` 两轮共享历史、同 `idempotency-key` 不重复执行 | 真构建 + 真起宿主（`PORT=0` 由服务自报端口，没有「探空闲端口再交出去」的抢占窗口）+ 用**示例自带的客户端**跑四个 RPC；模型侧假 Anthropic 端点、trace 落 tempdir（不留产物）；**变异电池 8/8 全部由对应断言抓住**（含一条「被抓住但不是被预期断言抓住」的更正记录，见 spec §10 2026-09-18 ⑪） | 客户端已经走了服务端还把 run 跑完（token 白烧）；跨进程链路在服务边界断掉；错误全塌成一个 UNKNOWN（调用方重试策略失效）；RPC 回了结果但「为什么慢 / 贵 / 失败」没有证据 |
 
 ### 1.4 文档与发布面
 
@@ -72,6 +73,7 @@
 | **零/负/非有限值的语义统一** | 同上一行（`mapWithConcurrency` 已修，其余散在） | 分散在多个模块，无单一真源 | 同上，与上一行合并做 |
 | **手写转发列表不得漏字段** | `runAgentScoped` 漏 `toolTimeoutMs`（跨 3 层：engine → toolkit → ctx） | `exactOptionalPropertyTypes` 已开（见 §1），堵住了「显式传 undefined」这一半；但**「spread 转发时漏掉一个键」TS 结构类型仍不报**（`{...opts}` 少了字段照样过） | 穷尽转发类型（把可转发字段抽成 `Pick<…, ForwardableKey>` 并要求逐项出现）；或改成显式 `omitUndefined({...})` + 一处集中清单 |
 | **首屏 `0 反射` 这类策略声明** | —（尚未漂过） | 页面上写了「0 反射」（= 显式 DI，不用装饰器元数据反射），但源码里本来就有 `Reflect.ownKeys` 这类**正当**用法 ⇒ **无法从源码计数推导**。`api-page.test.ts` 只钉「别被悄悄删掉」 | 若要真守，得先能给出「反射式 DI」的可判定定义（例如「除 `Reflect.ownKeys` 外不得使用 `Reflect.*`，且不得读 `Symbol.metadata`」）—— 那是一条**可写的守卫**，但需要先确认这条口径值不值得当门禁 |
+| **队列消费者（Kafka / RabbitMQ / SQS）配方没有门禁** | —（尚未漂过） | 它是**宿主侧的二十行样板**，框架侧没有可测的代码。配方真正依赖的两条地基已各有守卫（`runner.submit` + 幂等键 → `tests/transport/async.test.ts`；`traceContext` 随 `spec.options` 落库 → `tests/transport/http.test.ts`），但**配方本身**（消费者循环 + 提交位移的时机）没有任何 gate 真跑过 | 要守得起一个真 broker 或内存版 mock，成本不低；先如实标出。gRPC 那条同理，只是它已有 `scripts/e2e-grpc.ts` |
 
 > 已在本轮补上守卫、从本表移入 §1 的：**成对实现对称**（`tests/integrations/adapter-parity.test.ts`）、
 > **浅合并被 `null` 覆盖**（`anthropic.test.ts` 的 usage 用例）、**同步 vs 真实异步 store**

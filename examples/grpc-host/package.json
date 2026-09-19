@@ -1,0 +1,24 @@
+{
+  "name": "agentia-grpc-host-example",
+  "private": true,
+  "type": "module",
+  "description": "Agentia gRPC 宿主示例：服务定义 → RunInput → app.run / runner.submit（第 4 个宿主）",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "serve": "node dist/main.js",
+    "client": "tsx src/client.ts"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1",
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}

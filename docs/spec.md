@@ -1658,7 +1658,7 @@ false，时钟前跳构造，不赌毫秒）、`tests/transport/async.test.ts`�
 `tests/integrations/mcp.test.ts`（引擎显式 `toolTimeoutMs: 0` ⇒ 桥不自判）、
 `tests/core/sse-text-stats.test.ts`（下沉三件套的语义对拍）。
 每条修复都用「临时把修复废掉 ⇒ 新用例必须变红」验过判别力，再从备份还原。
-e2e：`npm run e2e`（CLI / EXAMPLES / DEPLOY 三关全绿）、`npm run e2e:mcp`（真第三方 MCP server → 桥 →
+e2e：`npm run e2e`（CLI / EXAMPLES / DEPLOY / GRPC 四关全绿）、`npm run e2e:mcp`（真第三方 MCP server → 桥 →
 菜单 → 真跑一轮，metrics 输出里可见 `droppedModels`/`droppedScores`）。
 
 ### 2026-09-18 ②：给「约定」补**守卫注册表** —— 上一条 16 条的共同缺口是「没有门禁」
@@ -1876,6 +1876,78 @@ SIGKILL，然后**继续等真正的 `'exit'`/`'close'`**（SIGKILL 不可被捕
 那条用例**真的在测 SIGKILL 路径**（而不是碰巧快）。HTTP 假端点同时改为「会话显式开启」，
 免得默认路径悄悄带上会话、把「无会话」这个场景测没了（这个坑当场被一条既有用例抓到）。
 
+**2026-09-18 ⑪ —— 宿主接入（gRPC / Kafka 这类）不打包：先配方 + 示例，升级为包要有触发条件**
+
+**问题**：「Kafka / gRPC 要不要包成成熟的工具暴露出来让用户用，降低使用成本？」→
+「是不是起一个服务包，把 grpc 和 Kafka 这几个都做了？」
+
+**决策（不做「服务包」）**：判别规则只有一条 —— **客户端是不是标准库**。
+MCP stdio 只用 `spawn`（`node:child_process`）+ 全局 `fetch` ⇒ 内置**零新增第三方依赖**；
+gRPC 要 `@grpc/grpc-js`、Kafka 要 `kafkajs` ⇒ 落在「可选能力一律 duck-typed / peer」那一侧
+（AGENTS.md 硬约定 + roadmap「可选能力（zod、OTLP、队列）全部 peer/可选接入」）。
+所以「MCP 内置、gRPC / Kafka 不内置」**不双标**：差别只有那一条。反向的路（把协议细节推给独立包）
+上一次刚被否过 —— 2026-09-18 ⑨ 反转了 F7 的「独立可选包 `@migor/mcp`」。
+
+**决策（粒度）**：若真拆包，是**一个第三方客户端一个包**，不是一个大「服务包」。三条硬理由：
+① peer/可选 变矩阵（只要 gRPC 的人也被要求配 kafkajs，或退化成一堆 dynamic import + 运行时报缺）；
+② semver 取最大值（Kafka 一个 bugfix 要发一个带 gRPC 宿主的新版本）；
+③ 弃用无法分离（kafkajs v3 迁移不该碰到 gRPC 用户）。发布成本本来就是 per-package 的
+（`release-surface.mjs` 18 项里每包各占 package.json 版本 + lock 版本字段 + check-release 条目 +
+prepublishOnly 闸门 + CHANGELOG），合成一个大包只省下一个 `package.json`，却把上面三条全买下来。
+唯一可辩护的「一个包」是**瘦门面**（自身零依赖、只 re-export 那几个包），前提是 ≥2 个包已存在
+且发现有测量到的「找不到」痛点 —— 现在做等于先建空壳。
+
+**决策（Kafka 侧不做）**：配方已在（§6.4「跨进程关联」的队列消费者形态，含那条真坑 ——
+**位移提交点与 run 终态不是一个时刻**）。而 consumer 包里唯一非平凡的部分（offset commit 时机、
+rebalance、shutdown flush）全是**进程级决策**，正是框架声明不碰的东西（不读 env、不订阅信号）。
+2026-09-17 ⑤ 已记「框架内建 Kafka 集成没必要：缝已经够」，本条不推翻它，只把理由补全。
+
+**决策（gRPC 侧做配方 + 示例，本轮落地）**：gRPC 与 Kafka **不同类** —— 它是**第 4 个宿主**，
+与 HTTP 并列的一等概念；而宿主接入里有四处是**框架语义**、不是样板：deadline / 取消 → `signal`、
+metadata `traceparent` → `traceContext`、框架错误 → gRPC 状态码、trace → sink。这四处漏掉
+**都不报错**（本仓库最贵的一类故障）。落点仍是 `examples/`（不随 npm 包发布），
+因为 gRPC 必须引第三方客户端。交付：`examples/grpc-host/`（proto + 宿主 + 客户端 + README）
++ `docs/usage-guide.md` §6.2 配方 + `npm run e2e:grpc`。
+
+**升级为独立包的触发条件**（写死，免得下一个人重新论证）：出现**第二个**真实使用方要同一份逻辑；
+或配方在 e2e 里证明样板已压不下去（即需要框架内语义：deadline→signal、状态码映射、流式记账）。
+
+**验证**：`npm run e2e:grpc` 真构建、真起宿主、用**示例自带的客户端**跑四个 RPC；
+**变异电池 8/8 全被抓、0 漏网** —— 逐个拆掉四处翻译 + `NOT_FOUND` 分支 + trace sink + SIGTERM 处理，
+每条都由**它该触发的那条断言**报红。诚实记一笔过程：第一轮里「拆掉 NOT_FOUND 分支」那条是被
+**构建失败**抓住的（我的变异把类型也改坏了），不是被状态码断言抓住 —— 换成纯行为变异
+（`NOT_FOUND` → `INTERNAL`）后才由断言抓住。**「被抓住」不等于「被那条断言抓住」**，
+变异电池的记录必须区分这两者，否则它会高估断言的判别力。
+
+**2026-09-18 ⑫ —— OpenAI 适配器：legacy `function_call` 形态改为**响亮失败**（原为静默 `end_turn`）**
+
+**怎么发现的**（记下来，因为入口是一次「看着像纯风格问题」的 lint 注解）：`biome ci` 一直挂着一条
+`noUselessSwitchCase`（`openai.ts:672` 的 `case 'stop':` 落进 `default`，同一个返回值 —— 纯冗余）。
+顺手把这张映射表的**完整性**也核了一遍：`stop` / `length` / `tool_calls` / `content_filter` 都覆盖，
+但 `default: return 'end_turn'` 会吞掉**任何**未知值 —— 其中 `function_call`（legacy `functions` 形态）
+是唯一一个「吞掉就有害」的：调用在 `message.function_call` 里，而适配器只读 `tool_calls`。
+
+**取证**（假端点喂真适配器，不改仓库）：legacy 响应 ⇒ `stop_reason = end_turn`、
+`content = [{"type":"text","text":"好的，我查一下。"}]`、**工具调用没了且没有任何报错**。
+即「模型要调工具、工具没执行」以成功收尾 —— 本仓库最贵的那一类（模块头写的就是
+「上游故障绝不映射成成功」）。
+
+**决策**：`case 'function_call':` **响亮失败**，不做 legacy 兼容、不静默降级。
+- **不做兼容**：请求侧只发 `tool_calls`（`buildMessages`），回灌的 `role:'tool'` legacy-only 端点
+  同样吃不下 ⇒ 半吊子支持比不支持更糟（与「一个第三方客户端一个包」同一条思路：要么真支持，要么明说不支持）。
+- **400 而非相邻空补全那条 500**：这是**确定性不兼容**，换不了结论 ⇒ 落 `classifyError` 的
+  `api`／不可重试。用 500 会被引擎重试三次，每次都重复丢弃同一个调用（把一次故障放大成三次）。
+- **`default` 保持 `end_turn`**（未知 finish_reason **且有正文** ⇒ 上游只说「结束了」）：
+  空正文那条已在流式/非流式两个调用点各自拦住，不会走到这里变成「成功空回复」。
+  这个默认是**有意**的，已用一个 `eos_token` 用例钉住，防后人顺手改成抛错。
+
+**验证**：`tests/integrations/openai.test.ts` +2 例（legacy 形态抛 400／`classifyError.type==='api'`／
+消息里含 `function_call`；未知值 `eos_token` + 正文 ⇒ `end_turn`），该文件 15/15 绿。
+**变异电池 2/2**：删掉整条分支 ⇒ 用例红在「Missing expected rejection」（本该抛错却拿到了
+`end_turn`）；把 400 改回 500 ⇒ 红在状态码那条严格相等断言。⚠️ 诚实记一笔：第二条我脚本里的
+`expect_marker` 写的是「状态码」而实际失败行没印这三个字，被标成「非预期断言」——
+**核对失败行内容后**确认它确实是目标断言（`assert.equal(status, 400)`）。标记匹配是辅助，
+**「红在哪一行」才是判据**（同 §10 ⑪ 那条：被抓住 ≠ 被那条断言抓住）。
 ### 2026-09-19 ①：HITL 落地 —— 审批 = 异步 tool_result（挂起/恢复），解开 2026-09-11 的「不做」
 
 **背景**：2026-09-11 的能力边界结论把 HITL 定为「闸门层无需新机制（middleware 可 await 决策），
@@ -1975,6 +2047,7 @@ Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
+  **宿主 / 集成接入不拆包**（gRPC / Kafka 这类只给配方 + 示例，判别规则与升级触发条件见 §10 2026-09-18 ⑪）。
   ⇒ 发布进度：v0.2.2（2026-09-14，框架包 + CLI 包，scope 为 `@migor/*`）→ v0.3.0（`.env` 一等入口）
   → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）
   → v0.4.2（发布后更正：Redis 的 TTL 在 node-redis 上静默失效）
