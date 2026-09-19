@@ -5,7 +5,23 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.7.1] - 2026-09-19
+
+### 变更
+
+> 本版主题（窗口 `0.7.0 → 0.7.1`，含 #71–#75）：**HITL 人工审批**（挂起 / 恢复、跨进程耐久）、
+> **gRPC 宿主配方与可跑示例**，以及**连续四轮复审收口**（第八轮「时间维度」、外部四路复审、
+> 外部复核的复核）。这批改动绝大多数是同一族病灶 —— **「不报错地不干活」**：超时不清簿记、
+> 重试不排空响应体、非流式回落零校验、回调通道缺失、幂等键赢家跨重启易主、门禁被 `&&`
+> 短路静默跳过。
+> **两处使用者会遇到的行为变更**：① OpenAI 兼容端点返回 legacy `function_call` 形态时，
+> 不再静默以 `end_turn` 收尾，而是抛 400（确定性不兼容 ⇒ 不重试），见下方
+> 「legacy `function_call` 形态响亮失败」；② MCP / 预算护栏 / 异步宿主的若干语义收紧
+> （会话过期自愈加互斥、`close()` 超时不挂死、未配 `sessionStore` 时 `submit` 响亮失败），
+> **都不需要改代码**。
+> **一处破坏性变更（仅类型面，运行时行为不变）**：`RecorderBackend` 新增必填成员 `usage()`；
+> `BudgetGuard.check` 入参由 `Trace` 收窄为 `{ readonly totalUsage: Usage }` ——
+> 迁移写法见本节末的「迁移」小节。
 
 ### 修复（外部四路复审收口：文档承诺了代码没做的事）
 
@@ -101,6 +117,27 @@
   签名改宽，且**不得再读 `spans`**（类型上已读不到 —— 「只看 totalUsage」由注释变成约束）。
 - `RecorderBackend` 新增必填成员 `usage(): Usage`。自己实现该结构面（或自建 recorder
   替身）的代码需补上。
+
+### 新增（gRPC 宿主配方与可跑示例）
+
+- **不对 Kafka / gRPC 做「服务包」**，但把真缺的那一块做成配方 + 可跑示例：gRPC 宿主必须
+  自己接上的**四处**（deadline / 取消 → `signal`、`metadata` 的 `traceparent` → `traceContext`、
+  框架错误 → gRPC 状态码、trace → sink），四处漏掉**都不报错**。判别规则只有一条 ——
+  客户端是不是标准库（MCP 用 `spawn` + `fetch` 所以能内置，gRPC / Kafka 要引第三方客户端），
+  决策见 spec §10 2026-09-18 ⑪。
+- `docs/usage-guide.md` §6.2 新增「gRPC 宿主」配方；`examples/grpc-host/` 给了 proto + 宿主 +
+  客户端 + README（一元 / 服务端流 / 异步投递 / 查任务，`PORT=0` 自报端口、无抢占窗口）；
+  `scripts/e2e-grpc.ts` 真构建真起宿主、用它自带的客户端跑四个 RPC，并入 `npm run e2e` 第四步。
+
+### 修复（OpenAI 兼容端点：legacy `function_call` 形态响亮失败）
+
+- 兼容端点把工具调用放在 `message.function_call` 时，适配器只读 `tool_calls` ⇒ 此前落进
+  `default: return 'end_turn'`，**模型要调的工具被丢掉、run 却以成功收尾**（模块头写的正是
+  「上游故障绝不映射成成功」）。现在 `function_call` 抛 `OpenAICompatApiError(400)`：这是
+  **确定性不兼容** ⇒ 落 `classifyError` 的 `api` / 不可重试（用 500 会被引擎重试三次，每次
+  都重复丢弃同一个调用）；也**不做 legacy 兼容**——请求侧只发 `tool_calls`，回灌的
+  `role:'tool'` legacy-only 端点同样吃不下，半吊子支持比不支持更糟。`default` 仍是有意的
+  `end_turn`（未知值**且有正文**），并补 `eos_token` 用例把这个有意默认钉住，防后人顺手改成抛错。
 
 ## [0.7.0] - 2026-09-18
 
@@ -578,7 +615,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/retrychx/agentia/releases/tag/v0.7.1
 [0.7.0]: https://github.com/retrychx/agentia/releases/tag/v0.7.0
 [0.6.3]: https://github.com/retrychx/agentia/releases/tag/v0.6.3
 [0.6.2]: https://github.com/retrychx/agentia/releases/tag/v0.6.2

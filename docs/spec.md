@@ -2137,7 +2137,13 @@ Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无
   → v0.7.0（**MCP 连接器出厂自带**（stdio / StreamableHTTP，只用标准库、不新增第三方依赖）
   + 第七轮复审收口 + StreamableHTTP 会话过期**自愈** + `close()` **保证子进程已终止**
   + 官网手写数字守卫；**无破坏性变更**）；
-  `AGENTIA_VERSION = '0.7.0'`。决策均见 §10。
+  → v0.7.1（**HITL 人工审批**（挂起/恢复、跨进程耐久）+ gRPC 宿主配方与可跑示例
+  + 连续四轮复审收口：11 条「不报错地不干活」（超时不清簿记 / 重试不排空 / 非流式回落零校验 /
+  回调通道缺失 / 幂等键赢家跨重启易主）+ 预算护栏走廉价 usage + 异步会话正式通道
+  （`RunInvocationOptions.sessionId` + `AsyncRunner.sessionStore`）+ 测试基建不再被 `&&` 静默
+  跳过；**类型面破坏性变更**：`RecorderBackend` 加必填 `usage()`、`BudgetGuard.check` 入参收窄
+  —— 运行时行为不变，迁移见 CHANGELOG）；
+  `AGENTIA_VERSION = '0.7.1'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
