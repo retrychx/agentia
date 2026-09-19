@@ -70,6 +70,17 @@ export interface RunInvocationOptions {
    * 「assistant 结尾带 tool_use」的消息历史时也可直接给 `app.run`。
    */
   approvals?: Record<string, ApprovalDecision>;
+  /**
+   * 会话引用（C4 的**可序列化**形态）：会话 id 字符串，随 `TaskRecord` 落库、
+   * 重启续跑不丢。只被**异步宿主**消费 —— `AsyncRunner` 配了 `sessionStore` 时，
+   * 执行前把它换成 `RunAppOptions.session`（store 实例 + id）注入 run；
+   * 没配 `sessionStore` 而任务带了 `sessionId` 则**响亮失败**（submit 即报
+   * TaskInputError），不静默降级成「没有会话」。
+   *
+   * 同步宿主（HTTP `POST /run` / `runSync`）不消费它：那边没有 store 可注入，
+   * 会话请走程序内的 `RunAppOptions.session`。
+   */
+  sessionId?: string;
 }
 
 /** 一次任务的规范化入参：messages（已由 normalizeMessages 规整） */

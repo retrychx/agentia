@@ -6,19 +6,23 @@ import { mockClient, toolUseMsg, endTurnMsg, U } from '../helpers.js';
 
 const OBJ = { type: 'object', properties: {} } as const;
 
+function usageWith(u: Partial<Usage>): Usage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    ...u,
+  };
+}
+
 function traceWith(u: Partial<Usage>): Trace {
   return {
     traceId: 't',
     rootSpanId: 'r',
     spans: [],
     status: 'ok',
-    totalUsage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      ...u,
-    },
+    totalUsage: usageWith(u),
   };
 }
 
@@ -26,6 +30,15 @@ describe('createBudgetGuard（C1）', () => {
   it('未配置上限 → 永不触发（零配置即零开销）', () => {
     const g = createBudgetGuard();
     assert.equal(g.check(traceWith({ inputTokens: 1e9, outputTokens: 1e9 })), null);
+  });
+
+  it('入参只要求 totalUsage（引擎传廉价视图，不必整份 Trace）', () => {
+    // 引擎侧走的是 `check({ totalUsage: recorder.usage() })` —— 不拷 spans / attributes /
+    // events（本护栏每回合要判两次，走 snapshot() 会白拷全部 span 的 attributes/events）。
+    // 这条同时钉住结构约束：参数类型里**根本没有 spans**，护栏想读也读不到。
+    const g = createBudgetGuard({ maxTotalTokens: 10 });
+    assert.equal(g.check({ totalUsage: usageWith({ inputTokens: 3 }) }), null);
+    assert.equal(g.check({ totalUsage: usageWith({ inputTokens: 11 }) }), 'tokens');
   });
 
   it('token 口径 = input + output + cacheRead + cacheCreation；等于上限不算超（严格大于）', () => {

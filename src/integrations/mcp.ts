@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
+import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
 
 /**
@@ -46,7 +47,17 @@ export interface McpToolInfo {
  */
 export interface McpClientLike {
   listTools(): Promise<McpToolInfo[]>;
-  callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  /**
+   * `opts.abandoned`：裁判（引擎 `toolTimeoutMs` / 桥兜底超时）**放弃等待**的通知信号。
+   * 放弃 ≠ 取消 —— 但连接器应借此清掉这次调用的簿记（stdio 的 pending 条目、
+   * HTTP 的在飞 fetch），否则「server 活着但不回包」时每超时一次就泄漏一条。
+   * 只实现两个参数的旧客户端依然兼容（可选参数，鸭子类型）。
+   */
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    opts?: { abandoned?: AbortSignal },
+  ): Promise<unknown>;
 }
 
 export interface McpToolsOptions {
@@ -201,9 +212,29 @@ export async function mcpTools(
         // 与「一次调用只有一个裁判」相反：说了不限就该不限。
         const engineBudget = ctx?.toolTimeoutMs;
         if (engineBudget != null) {
-          return client.callTool(original, args);
+          // 引擎是裁判：它的 toolTimeoutMs 到点会 fire ctx.abandoned —— 连接器据此
+          // 清掉这次调用的簿记（stdio 的 pending 条目），不留下等不到回收的残骸。
+          return client.callTool(
+            original,
+            args,
+            ctx?.abandoned !== undefined ? { abandoned: ctx.abandoned } : undefined,
+          );
         }
-        return withDeadline(client.callTool(original, args), timeoutMs, original);
+        // 桥兜底裁判（脱离引擎单用 / 引擎没设超时）：到点除了放弃等待，还要通知连接器
+        // 清理簿记 —— 与引擎路径共用同一个 `abandoned` 缝（`core/abort.ts` 合成）。
+        const ac = new AbortController();
+        const abandoned =
+          ctx?.abandoned !== undefined ? combineSignals(ctx.abandoned, ac.signal) : ac.signal;
+        try {
+          return await withDeadline(
+            client.callTool(original, args, { abandoned }),
+            timeoutMs,
+            original,
+          );
+        } finally {
+          ac.abort(); // 无论成败都摘掉：成功时条目已被响应清掉，超时/出错时靠这次 abort 清
+          releaseCombinedSignal(abandoned); // 摘除挂在 ctx.abandoned 上的监听器
+        }
       },
     });
   }
@@ -455,7 +486,7 @@ export function createStdioMcpConnector(
     p.stdin?.write(`${JSON.stringify(payload)}\n`);
   };
 
-  const send = (method: string, params: unknown): Promise<unknown> => {
+  const send = (method: string, params: unknown, abandoned?: AbortSignal): Promise<unknown> => {
     if (closed) return Promise.reject(new Error('MCP 连接器已 close —— 请重新创建一个'));
     if (fatal) return Promise.reject(fatal);
     const id = nextId++;
@@ -467,6 +498,17 @@ export function createStdioMcpConnector(
         return;
       }
       pending.set(id, { resolve, reject });
+      // 裁判放弃等待 ≠ 条目自动回收：超时的调用（引擎 toolTimeoutMs 或桥兜底）只是
+      // 不再 await，pending 里的 {resolve,reject} 会留到「server 终于回包 / 进程死 /
+      // close」—— 对「活着但不回包」的 server 就是无界泄漏。裁判表过态就删条目：
+      // 之后回包到了也没人等（:441 的 pending.get 落空即忽略，语义安全）。
+      if (abandoned !== undefined) {
+        const drop = (): void => {
+          pending.delete(id);
+        };
+        if (abandoned.aborted) drop();
+        else abandoned.addEventListener('abort', drop, { once: true });
+      }
       write({ jsonrpc: '2.0', id, method, params });
     });
   };
@@ -486,9 +528,13 @@ export function createStdioMcpConnector(
     return ready;
   };
 
-  const request = async (method: string, params: unknown): Promise<unknown> => {
+  const request = async (
+    method: string,
+    params: unknown,
+    abandoned?: AbortSignal,
+  ): Promise<unknown> => {
     await ensureReady();
-    return send(method, params);
+    return send(method, params, abandoned);
   };
 
   const listTools = async (): Promise<McpToolInfo[]> => {
@@ -505,8 +551,12 @@ export function createStdioMcpConnector(
     return listed as McpToolInfo[];
   };
 
-  const callTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
-    const r = await request('tools/call', { name, arguments: args });
+  const callTool = async (
+    name: string,
+    args: Record<string, unknown>,
+    callOpts?: { abandoned?: AbortSignal },
+  ): Promise<unknown> => {
+    const r = await request('tools/call', { name, arguments: args }, callOpts?.abandoned);
     // 承重：协议层 isError 只有连接器看得见（见函数头第 3 条）
     if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
       throw new Error(
@@ -602,6 +652,7 @@ export function createStreamableHttpMcpConnector(
   let negotiated = requestedVersion;
   let closed = false;
   let ready: Promise<void> | null = null;
+  let reinit: Promise<void> | null = null;
   let nextId = 1;
 
   const guard: Guard = (p, label) => withDeadline(p, timeoutMs, label);
@@ -690,6 +741,25 @@ export function createStreamableHttpMcpConnector(
    * **只重试一次**：第二次再 404 说明对面不是「会话过期」而是别的问题，直接抛（不循环）。
    * 自愈本身是静默的，但可通过 `onSessionExpired` 观测 —— 否则它和「静默失效」没区别。
    */
+  /**
+   * 会话过期自愈的互斥：并发请求同时吃到 404 时**共享同一次重握手**。
+   * 没有这层时，两个并发调用各自执行 `ready = null`（第二个会把第一个刚建的握手
+   * Promise 抹掉）⇒ 双 initialize 并发跑、`sessionId` 互相覆盖，重试带着被覆盖的
+   * 会话再 404 且不再重试。`onSessionExpired` 仍按 404 逐次记（每个 404 都是事实），
+   * 共享的只是「重握手」这个动作。
+   */
+  const reinitialize = (): Promise<void> => {
+    if (reinit) return reinit;
+    reinit = (async () => {
+      sessionId = null;
+      ready = null; // 下一次 ensureReady 会新建会话
+      await ensureReady();
+    })().finally(() => {
+      reinit = null;
+    });
+    return reinit;
+  };
+
   const rpc = async (
     method: string,
     params: unknown,
@@ -701,9 +771,7 @@ export function createStreamableHttpMcpConnector(
     if (res.status === 404 && sessionId !== null && allowReinit) {
       await readText(res); // 排空，别把连接晾着
       opts.onSessionExpired?.();
-      sessionId = null;
-      ready = null; // 下一次 ensureReady 会新建会话
-      await ensureReady();
+      await reinitialize();
       return rpc(method, params, withVersion, false);
     }
     if (!res.ok) throw httpError(res.status, method, await readText(res));
@@ -780,14 +848,29 @@ export function createStreamableHttpMcpConnector(
       sessionId = null;
       if (sid === null) return;
       try {
-        // 尽力终止会话（MCP 约定的显式关闭）；server 不认这个方法也不该让 close() 抛
-        const res = await fetchImpl(url, {
-          method: 'DELETE',
-          headers: { ...baseHeaders, 'mcp-session-id': sid, 'mcp-protocol-version': negotiated },
-        });
-        await readText(res);
+        // 尽力终止会话（MCP 约定的显式关闭）；server 不认这个方法也不该让 close() 抛。
+        //
+        // ⚠️ **必须过 `guard`**：这里此前直接 `await fetchImpl(...)`。下面的 catch 只兜得住
+        // **抛错**，兜不住**挂死** —— server 接受连接后不回（半开 / 卡在代理后面），
+        // `close()` 就永久挂住，而调用方（宿主停机路径）会一直等它。**挂住比失败更糟**，
+        // 与「best-effort、不抛错」的承诺相悖。fetch 与排空**一起**进 guard：
+        // 只护住响应头、body 照样能卡（`readText` 读的是 body）。
+        await guard(
+          (async () => {
+            const res = await fetchImpl(url, {
+              method: 'DELETE',
+              headers: {
+                ...baseHeaders,
+                'mcp-session-id': sid,
+                'mcp-protocol-version': negotiated,
+              },
+            });
+            await readText(res);
+          })(),
+          'close',
+        );
       } catch {
-        /* 关闭是尽力而为 */
+        /* 关闭是尽力而为（超时也走这里 —— guard 抛 TimeoutError） */
       }
     },
   };

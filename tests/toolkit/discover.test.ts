@@ -254,6 +254,18 @@ describe('asset（文本资产加载）', () => {
     assert.throws(() => asset(import.meta.url, 'file:///etc/passwd'), /必须是相对路径/);
     assert.throws(() => asset(import.meta.url, 'https://example.com/x.md'), /必须是相对路径/);
   });
+
+  it('绝对路径的 rel 显式拒绝（与带 scheme 同一类：base 被整个忽略）', () => {
+    // 反向验证（旧实现）：`new URL('/etc/passwd', 'file:///…/x.js')` 解析成
+    // `file:///etc/passwd` —— base 的路径部分被整个丢掉，守卫只拦了 scheme，
+    // 于是这一路直接走到 readFileSync（在 macOS 上**真能读到**，静默读了别处）。
+    assert.throws(() => asset(import.meta.url, '/etc/passwd'), /必须是相对路径/);
+    assert.throws(() => asset(import.meta.url, '//etc/passwd'), /必须是相对路径/);
+    // Windows 反斜杠：`file:` 是 special scheme，`\` 会被规范化成 `/`，同样丢掉 base
+    assert.throws(() => asset(import.meta.url, '\\etc\\passwd'), /必须是相对路径/);
+    // 反向对照：`../` **不在此列**（它是相对 base 解析的，base 没被忽略）—— 仍放行
+    assert.ok(asset(import.meta.url, '../fixtures/asset.md').includes('fixture asset content'));
+  });
 });
 
 describe('discoverProviders（路径不是目录）', () => {

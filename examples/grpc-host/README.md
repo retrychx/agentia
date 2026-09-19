@@ -13,8 +13,12 @@ gRPC 请求  →  normalizeMessages  →  app.run / runner.submit  →  响应�
 ## 跑起来
 
 ```bash
+# 框架本体先出 dist（本示例以 file:../.. 依赖它，运行期解析的是那边的产物）
+npm run build                 # 在仓库根执行一次
+
 cd examples/grpc-host
 npm install
+npm run build                 # 出本示例的 dist/（serve 跑的是 node dist/main.js）
 
 # 终端 A：起宿主。PORT=0 会打印**实际**端口（不靠外部探空闲端口，没有抢占窗口）
 npm run serve
@@ -23,6 +27,8 @@ npm run serve
 npm run client            # 默认连 127.0.0.1:50051
 npm run client -- 127.0.0.1:<端口>
 ```
+
+开发期不想两头 build 就用 `npm run dev`（tsx watch 直接跑 src，跳过 dist）。
 
 模型侧默认走框架的 Anthropic client（读 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`）。
 不想接真端点就用一个假的 OpenAI/Anthropic 兼容端点 —— 仓库的 e2e 就是这么干的：

@@ -214,7 +214,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     // - 模型本回合自然收尾 → 不因「最后一回合把额度用超了」把已成功的 run 改判失败
     //   （只留 budget.exceeded 事件，可观测）；
     // - 循环还要继续（模型要求调工具）→ 停在这里，不再发下一个请求 = 不再花钱。
-    const overBudget = ctx.budget ? ctx.budget.check(args.recorder.snapshot('ok')) : null;
+    const overBudget = ctx.budget ? ctx.budget.check({ totalUsage: args.recorder.usage() }) : null;
 
     ctx.messages.push({ role: 'assistant', content: message.content });
 

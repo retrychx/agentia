@@ -106,8 +106,11 @@ describe('core 单源原语', () => {
     const ac = new AbortController();
     ac.abort();
     await assert.rejects(interruptibleSleep(5_000, ac.signal), { name: 'AbortError' });
-    // 非正数 = 不睡（调用方不必自己判 0）
-    await interruptibleSleep(0, ac.signal);
+    // 非正数 = **不睡**（调用方不必自己判 0），且这一判**先于** aborted 检查 ——
+    // 与 `withTimeout(p, 0)` 的「不设超时」同一口径：预算 ≤0 ⇒ 这次机制关掉，
+    // 与 signal 状态无关，所以即使 signal 已中止也 **resolve**。
+    // ⚠️ 别把它「修」成 reject（2026-09-19 外部复核真这么改过一次，就是被这条拦下的）。
+    await assert.doesNotReject(interruptibleSleep(0, ac.signal));
   });
 
   it('interruptibleSleep：正常到点 resolve，且摘掉 abort 监听器（长 run 里不累积）', async () => {

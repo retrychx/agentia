@@ -1,9 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AsyncRunner, InMemoryTaskStore } from '../../src/index.js';
-import type { AppCallable } from '../../src/index.js';
+import { FileTaskStore, InMemorySessionStore } from '../../src/index.js';
+import type { AppCallable, RunInvocationOptions } from '../../src/index.js';
 import type { AgentRunResult } from '../../src/index.js';
 import type { TaskRecord, TaskStore } from '../../src/index.js';
+import { TaskInputError } from '../../src/engine/spec.js';
 import { waitFor } from '../helpers.js';
 
 /** 模拟 fsStore/sqliteStore 这类**同步** store：终态落库时同步抛错（磁盘满、库锁） */
@@ -417,5 +422,69 @@ describe('AsyncRunner', () => {
     release();
     await runner.awaitTask('task_other');
     assert.equal(app.calls, 2, '占位 1 次 + 续跑 1 次；重复派发会是 3 次');
+  });
+});
+
+describe('AsyncRunner 的 session 正式通道（sessionId + sessionStore）', () => {
+  /** 捕获 run 收到的 session 注入的假 app */
+  function captureApp(): AppCallable & {
+    seenSession: { store: unknown; id: string } | undefined;
+  } {
+    const app = {
+      name: 'capture',
+      seenSession: undefined as { store: unknown; id: string } | undefined,
+      // 参数必须收得下 AsyncRunner 实际传进来的类型（RunInvocationOptions 与
+      // `{ session }` 的交集）—— 只写 `{ session }` 与 RunInvocationOptions
+      // 「无共同属性」，两个方向都不可赋值。
+      async run(
+        _messages: unknown,
+        opts?: RunInvocationOptions & { session?: { store: unknown; id: string } },
+      ) {
+        app.seenSession = opts?.session;
+        return {
+          run: { runId: 'r-1', status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
+      },
+    };
+    return app;
+  }
+
+  it('sessionId 在执行前被换成 session（store 实例 + id）注入 run', async () => {
+    const app = captureApp();
+    const store = new InMemorySessionStore();
+    const runner = new AsyncRunner(app, { sessionStore: store });
+    const t = runner.submit('hi', { options: { sessionId: 's1' } });
+    await runner.awaitTask(t.taskId);
+    assert.equal(app.seenSession?.id, 's1');
+    assert.equal(app.seenSession?.store, store, '注入的必须是 runner 持有的那个实例');
+    assert.equal((await runner.poll(t.taskId))?.status, 'succeeded');
+  });
+
+  it('传了 sessionId 但没配 sessionStore ⇒ submit 当场 TaskInputError（不静默降级）', () => {
+    const runner = new AsyncRunner(fakeApp());
+    assert.throws(
+      () => runner.submit('hi', { options: { sessionId: 's1' } }),
+      (e: unknown) => e instanceof TaskInputError && /sessionStore/.test((e as Error).message),
+    );
+  });
+
+  it('sessionId 随 TaskRecord 序列化往返不丢（FileTaskStore 重载后仍在）', async () => {
+    // 这是「正式通道」与旧逃逸 hatch 的分界：session 实例经 JSON 序列化会变成 {}，
+    // sessionId 是纯字符串。反向验证：旧写法（session 塞进 options）reload 后
+    // store 字段即空对象，本断言的 sessionId 必须原样回来。
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-session-'));
+    const file = join(dir, 'tasks.jsonl');
+    const app = captureApp();
+    const runner = new AsyncRunner(app, {
+      store: new FileTaskStore(file),
+      sessionStore: new InMemorySessionStore(),
+    });
+    const t = runner.submit('hi', { options: { sessionId: 's-persist' } });
+    await runner.awaitTask(t.taskId);
+
+    const reloaded = new FileTaskStore(file);
+    const rec = reloaded.get(t.taskId);
+    assert.equal(rec?.spec.options?.sessionId, 's-persist', '重启后续跑还得接得上会话');
   });
 });

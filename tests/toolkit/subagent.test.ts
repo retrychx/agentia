@@ -238,6 +238,37 @@ describe('预算护栏透传子 agent 循环（C1：预算是整条 run 的口�
   });
 });
 
+describe('未定价告警回调透传子 agent 循环（F2）', () => {
+  it('子 agent 用了未定价模型：宿主的 onUnpricedModel 被调（带 model/spanId），主循环不重复触发', async () => {
+    // 回归（2026-09-19 复审）：ToolRunContext 没有 onUnpricedModel 通道，turn.ts 装配
+    // toolCtx 时也不放 —— 子循环的「算不出成本」只剩 usage.unpriced 事件，
+    // 宿主注册的告警回调静默缺席（maxCostUsd 在子循环里失效了却没人知道）。
+    const { client } = mockClient([
+      toolUseMsg('researcher', { task: 't' }, 'tu_main'),
+      endTurnMsg('调研报告'), // 子循环（未定价模型）
+      endTurnMsg('汇总完毕'), // 主循环收尾
+    ]);
+    const tool = subagentToTool(researcherCapability({ model: 'unpriced-model-x' }), () => []);
+    const unpricedCalls: Array<{ model: string; spanId: string }> = [];
+    const result = await runAgent({
+      client, // 主循环走缺省模型 claude-opus-5（在价格表内）
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [tool],
+      onUnpricedModel: (info) => unpricedCalls.push(info),
+    });
+
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(unpricedCalls.length, 1, '只有子循环的未定价模型触发一次回调');
+    assert.equal(unpricedCalls[0].model, 'unpriced-model-x');
+    // spanId 指向子循环自己的 llm.turn（挂在 capability span 下）
+    const capability = result.trace.spans.find((s) => s.kind === 'capability')!;
+    const subTurn = result.trace.spans.find(
+      (s) => s.kind === 'llm.turn' && s.parentSpanId === capability.spanId,
+    )!;
+    assert.equal(unpricedCalls[0].spanId, subTurn.spanId);
+  });
+});
+
 describe('子 agent 被引擎超时放弃等待（ToolRunContext.abandoned）', () => {
   it('capability span 立刻以 error 收尾（不留永不闭合的半截 span）+ 子循环被中止（不再后台烧 token）', async () => {
     // 回归（2026-09-19 复审）：旧实现里超时只是「不等了」—— 交付的 trace 里 capability

@@ -243,4 +243,54 @@ describe('FileTaskStore', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('compact() 后重启幂等键赢家不变（内存「最后 save 赢」与 load「行序 last-wins」对齐）', () => {
+    const { dir, file } = tmp();
+    try {
+      const s1 = new FileTaskStore(file);
+      // 复现序列：同键两任务 + 重复 save。byKey 每次覆写 ⇒ 内存赢家是最后 save 的 A；
+      // 但 Map 插入序是 [A, B]（A 再次 save 不改变首次插入位），若 compact 按插入序
+      // 写盘，load 按行序 last-wins 回放后赢家易主为 B。
+      const a = rec({ idempotencyKey: 'K', status: 'failed' });
+      s1.save(a); // byKey[K] = A
+      const b = rec({ idempotencyKey: 'K', status: 'succeeded' });
+      s1.save(b); // byKey[K] = B（失败重提的新任务）
+      s1.save({ ...a, status: 'succeeded' }); // byKey[K] = A：旧任务又被 save 赢回
+      assert.equal(s1.byIdempotency('K')?.taskId, a.taskId, '内存语义：最后 save 赢');
+
+      s1.compact();
+      const s2 = new FileTaskStore(file); // 模拟宿主重启
+      assert.equal(s2.byIdempotency('K')?.taskId, a.taskId, 'compact + 重启后赢家必须不变');
+      assert.deepEqual(s2.get(a.taskId), s1.get(a.taskId));
+      assert.deepEqual(s2.get(b.taskId), s1.get(b.taskId));
+      assert.equal(s2.list().length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('load 读失败：onLoadError 被调一次且按空库启动；缺省回调仍静默降级', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-fs-'));
+    try {
+      const file = join(dir, 'tasks.jsonl');
+      // 目录当文件用：existsSync 为 true、readFileSync 必抛 EISDIR，可靠触发读失败分支
+      mkdirSync(file);
+
+      let calls = 0;
+      let lastErr: unknown;
+      const store = new FileTaskStore(file, (err) => {
+        calls++;
+        lastErr = err;
+      });
+      assert.equal(calls, 1, '读失败必须经 onLoadError 上报一次');
+      assert.ok(lastErr instanceof Error);
+      assert.deepEqual(store.list(), [], '读失败按空宿主启动');
+
+      // 缺省回调：不抛错、照常空库启动（观测不击穿业务）
+      const quiet = new FileTaskStore(file);
+      assert.deepEqual(quiet.list(), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -4,7 +4,7 @@ import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { classifyError } from '../engine/errors.js';
 import type { RunStatus } from '../core/run.js';
-import { normalizeMessages } from '../engine/spec.js';
+import { normalizeMessages, TaskInputError } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
@@ -60,6 +60,19 @@ export class TaskApproveError extends Error {
 export interface AsyncRunnerOptions {
   client?: ModelClient;
   store?: TaskStore;
+  /**
+   * 会话历史 store（C4）：配上之后，任务 `options.sessionId`（可序列化的会话引用）
+   * 在执行前被换成 `RunAppOptions.session`（store 实例 + id）注入 run ——
+   * 这是异步宿主上会话的**正式通道**（store 实例不可序列化，所以任务里只带 id、
+   * 实例由 runner 持有；同步宿主没有这一步，会话走程序内 `RunAppOptions.session`）。
+   *
+   * 不配它而任务带了 `sessionId` ⇒ submit 当场抛 `TaskInputError`（响亮失败，
+   * 不静默降级成「没有会话」）。
+   */
+  sessionStore?: {
+    load(sessionId: string): MessageParam[] | Promise<MessageParam[]>;
+    append(sessionId: string, messages: MessageParam[]): void | Promise<void>;
+  };
   /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
   concurrency?: number;
   /** 任务完成回调（进程内）；见 TaskSink */
@@ -110,6 +123,7 @@ export class AsyncRunner {
   /** 本进程标识：写进认领的 TaskRecord.ownerId，供 resumePending 区分他我 */
   readonly ownerId: string;
   private readonly client: ModelClient | undefined;
+  private readonly sessionStore: AsyncRunnerOptions['sessionStore'];
   private readonly concurrency: number;
   private readonly runTimeoutMs: number;
   private readonly approvalTimeoutMs: number;
@@ -129,6 +143,7 @@ export class AsyncRunner {
   ) {
     this.store = opts.store ?? new InMemoryTaskStore();
     this.client = opts.client;
+    this.sessionStore = opts.sessionStore;
     this.taskSinks = opts.taskSinks ?? [];
     this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY;
     if (!(this.concurrency > 0)) {
@@ -165,6 +180,14 @@ export class AsyncRunner {
       throw new Error('runner 正在优雅停机，不再接受新任务');
     }
     const messages = normalizeMessages(input);
+    if (opts.options?.sessionId !== undefined && this.sessionStore === undefined) {
+      // 响亮失败：调用方明着要会话语义，静默降级成「没有会话」是最难查的那种错。
+      // 注意 import 的是 spec.js 的 TaskInputError —— HTTP 宿主据此回 400（调用方的错）。
+      throw new TaskInputError(
+        '任务带了 options.sessionId，但本 runner 未配 sessionStore —— 会话历史接不上；' +
+          '给 AsyncRunner 传 sessionStore，或去掉 sessionId',
+      );
+    }
     if (opts.idempotencyKey) {
       const existing = this.store.byIdempotency(opts.idempotencyKey);
       if (isThenable(existing)) {
@@ -637,12 +660,26 @@ export class AsyncRunner {
         await this.store.save(rec);
 
         try {
+          // 会话注入（C4 的异步通道）：sessionId 是可序列化的引用，store 实例由
+          // runner 持有 —— 执行前在这里换成 RunAppOptions.session。resumed 记录
+          // 绕过 submit 的入口检查，所以「带了 sessionId 却没配 sessionStore」
+          // 在本路径也要响亮失败（不静默降级成「没有会话」）。
+          if (rec.spec.options?.sessionId !== undefined && this.sessionStore === undefined) {
+            throw new Error(
+              `任务 ${rec.taskId} 带了 options.sessionId，但本 runner 未配 sessionStore`,
+            );
+          }
           // runTimeoutMs 到点即 abort（对尊重 signal 的客户端是真中止）；与调用方
           // 可能传入的 signal 合成，任一触发都中止本次 run。
           const timeoutAc = new AbortController();
           const combined = combineSignals(rec.spec.options?.signal, timeoutAc.signal);
-          const callOpts: RunInvocationOptions = {
+          const callOpts: RunInvocationOptions & {
+            session?: { store: NonNullable<AsyncRunnerOptions['sessionStore']>; id: string };
+          } = {
             ...(rec.spec.options ?? {}),
+            ...(rec.spec.options?.sessionId !== undefined && this.sessionStore !== undefined
+              ? { session: { store: this.sessionStore, id: rec.spec.options.sessionId } }
+              : {}),
             // 显式 undefined ≠ 不传（exactOptionalPropertyTypes）：无幂等键时不落这个键
             ...(rec.idempotencyKey !== undefined ? { idempotencyKey: rec.idempotencyKey } : {}),
             ...(rec.spec.options?.client !== undefined

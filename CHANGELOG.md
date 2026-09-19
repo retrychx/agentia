@@ -69,6 +69,39 @@
   不支持挂起整个 run；同步 `POST /run` 撞上审批会带 `awaiting_approval` 返回（要审批请走
   `/tasks`）。
 
+### 修复（外部复核的复核 + 三条一致性缺口收口）
+
+对上一轮「四路复审」的修复（31 个文件）逐条复核并实测通过；另补三条「守卫没覆盖自己
+声称范围」的缺口与一处护栏开销：
+
+- **MCP HTTP `close()` 的 DELETE 现在过 `guard`**：此前直接 `await fetchImpl(...)`，外层
+  `catch` 只兜得住**抛错**、兜不住**挂死** —— server 接受连接后不回（半开 / 卡在代理后面），
+  `close()` 就永久挂住，而调用方是**宿主停机路径**（挂住比失败更糟）。fetch 与 body 排空
+  一起进 guard（只护住响应头，`readText` 照样能卡）。摘掉修复 ⇒ 新用例在 8s 测试预算下
+  被 `cancelledByParent` 取消。
+- **`asset()` 拦绝对路径**：守卫此前只拦带 scheme 的 `rel`，但 `/etc/passwd` 与
+  `file:///etc/passwd` 是同一类（`new URL` 会把 base 的路径部分整个丢掉）——
+  「以为读了能力目录里的文件，实际读了别处」（macOS 上**真能读到**）。`../` 仍放行
+  （它是相对 base 解析的，base 没被忽略）。
+- **预算护栏改走廉价 usage**：新增 `TraceRecorder.usage()`（只扫 spans 求和、不拷
+  attributes/events），`snapshot().totalUsage` 改为调它 ⇒ 两条路不可能漂移。护栏每回合
+  要判**两次**（回合入口 + 回合末，是不同决策点，**刻意不合并**），此前每次都全量
+  `snapshot()` ⇒ O(回合 × 累计事件量) 的白拷。
+- 测试基建：`mcpConnector` 的 stdio 握手缺省预算 5s → 20s（`node --test` 按文件并行，
+  重负载下**子进程启动**本身就可能吃掉数秒；断超时行为的那条用例自带 `timeoutMs`）。
+- 复核结论一条「查过但不改」：`interruptibleSleep(0, 已中止的 signal)` 仍 **resolve** ——
+  它与 `withTimeout(p, 0)` 的「非正数 = 机制关掉」是同一口径，不是缺口（本轮曾误改，
+  被既有用例拦下后回退；那条用例的断言已从隐式 `await` 改成显式 `assert.doesNotReject`
+  并写明理由，见 spec §10 2026-09-19 ④）。
+
+**迁移（自己实现这两个结构面时）**
+
+- `BudgetGuard.check` 的入参由 `Trace` 收窄为 `{ readonly totalUsage: Usage }`。
+  **传整份 `Trace` 的调用方不受影响**（结构上满足）；自己实现 `BudgetGuard` 的代码需把
+  签名改宽，且**不得再读 `spans`**（类型上已读不到 —— 「只看 totalUsage」由注释变成约束）。
+- `RecorderBackend` 新增必填成员 `usage(): Usage`。自己实现该结构面（或自建 recorder
+  替身）的代码需补上。
+
 ## [0.7.0] - 2026-09-18
 
 ### 变更

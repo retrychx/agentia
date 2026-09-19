@@ -434,7 +434,8 @@ t === 'rate_limit'                ? grpc.status.RESOURCE_EXHAUSTED
 服务端流 / 异步投递 / 查任务态），README 里每条都是可执行命令：
 
 ```bash
-cd examples/grpc-host && npm install
+npm run build               # 仓库根：先出框架 dist（示例以 file:../.. 依赖它）
+cd examples/grpc-host && npm install && npm run build
 npm run serve     # 起宿主；PORT=0 时它打印实际端口（不靠外部探端口，没有抢占窗口）
 npm run client    # 另一个终端：把四个 RPC 跑一遍
 ```
@@ -553,7 +554,7 @@ process.on('SIGTERM', async () => {
 
 | API | 说明 |
 |---|---|
-| `createBudgetGuard` | 执行 `check(trace)` → `'tokens' \| 'cost' \| null` 的护栏（也可只用来自己记账） |
+| `createBudgetGuard` | 执行 `check({ totalUsage })` → `'tokens' \| 'cost' \| null` 的护栏（也可只用来自己记账） |
 
 两者是**互补的两件事**，取舍点完全不同：
 

@@ -131,9 +131,18 @@ export class TraceRecorder {
     span.links.push(link);
   }
 
-  snapshot(status: SpanStatus): Trace {
-    if (!this.rootSpanId) throw new Error('run root not started');
-    const totalUsage: Usage = {
+  /**
+   * 整条 run 的累计 usage（**只算 `llm.turn` 的自身计量**，子 agent 的往返也在内）。
+   *
+   * 廉价：只扫 `this.spans` 求和，**不拷** attributes / events / links。
+   * `snapshot().totalUsage` 就是调它 —— 两者口径不可能漂移。
+   *
+   * 为什么单拎出来：预算护栏每回合要判**两次**（回合入口 + 回合末），而 `snapshot()`
+   * 会拷全部 span 的 attributes/events ⇒ 白花 O(回合 × 累计事件量)（长 run 下可观）。
+   * 护栏只看这一项，就只给它这一项（见 `engine/budget.ts` 的 `BudgetGuard.check` 入参）。
+   */
+  usage(): Usage {
+    const total: Usage = {
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
@@ -144,19 +153,24 @@ export class TraceRecorder {
     // 若一并求和，skill/subagent 一旦写入聚合值就会把同一批 token 计两遍。
     for (const s of this.spans) {
       if (!s.usage || s.kind !== 'llm.turn') continue;
-      totalUsage.inputTokens += s.usage.inputTokens;
-      totalUsage.outputTokens += s.usage.outputTokens;
-      totalUsage.cacheReadTokens += s.usage.cacheReadTokens;
-      totalUsage.cacheCreationTokens += s.usage.cacheCreationTokens;
+      total.inputTokens += s.usage.inputTokens;
+      total.outputTokens += s.usage.outputTokens;
+      total.cacheReadTokens += s.usage.cacheReadTokens;
+      total.cacheCreationTokens += s.usage.cacheCreationTokens;
       if (s.usage.costEstimate != null) {
-        totalUsage.costEstimate = (totalUsage.costEstimate ?? 0) + s.usage.costEstimate;
+        total.costEstimate = (total.costEstimate ?? 0) + s.usage.costEstimate;
       }
     }
     // 与 capability 聚合（end() 内）同一取整口径（1e-6 美元）：浮点连加的尾差
     // （0.1+0.2=0.30000000000000004）不该进 trace/OTLP
-    if (totalUsage.costEstimate != null) {
-      totalUsage.costEstimate = Math.round(totalUsage.costEstimate * 1e6) / 1e6;
+    if (total.costEstimate != null) {
+      total.costEstimate = Math.round(total.costEstimate * 1e6) / 1e6;
     }
+    return total;
+  }
+
+  snapshot(status: SpanStatus): Trace {
+    if (!this.rootSpanId) throw new Error('run root not started');
     return {
       traceId: this.traceId,
       rootSpanId: this.rootSpanId,
@@ -172,7 +186,7 @@ export class TraceRecorder {
         ...(s.links ? { links: [...s.links] } : {}),
       })),
       status,
-      totalUsage,
+      totalUsage: this.usage(),
     };
   }
 }

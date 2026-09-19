@@ -153,6 +153,12 @@ export function skillToTool(
       // 可以 try/catch 掉 llm 失败再继续（降级路径），提前 close 会把一次整体成功的
       // 调用永久误标成 error（close 幂等，ok 再也写不进去）。
       let llmError: SpanError | undefined;
+      // 与 llmError **同点赋值**：记录 llm 闭包实际抛出的错误对象本身。外层 catch 按
+      // **引用相等**判定「这次冒上来的是不是那次 llm 失败」—— 方法体 catch 掉 llm 失败
+      // （降级）后又因**别的原因**抛错时，e !== llmThrew ⇒ 回落 classifyError(e)，
+      // 不会拿残留的 llmError 给无关异常贴错标签（type/retryable 全错、真实分类被丢弃）。
+      // 不能用「调用前重置」：那会把主路径（方法体不 catch）的 llmError 一并清掉。
+      let llmThrew: unknown;
 
       const skillCtx: SkillContext = {
         model: spec.model,
@@ -179,6 +185,9 @@ export function skillToTool(
             signal: combined,
             // 价格覆盖透传（F1）：子循环用同一模型也要能算成本
             priceOverrides: ctx.priceOverrides,
+            // 宿主的未定价告警回调透传到嵌套循环（F2）：子循环用了未定价模型时，
+            // 宿主的告警照样要响（与 priceOverrides 同写法透传）
+            onUnpricedModel: ctx.onUnpricedModel,
             // 事件截断口径透传：同一棵树上主/子 agent 的正文可见性必须一致
             maxEventChars: ctx.maxEventChars,
             // 成本护栏透传（C1）：预算是整条 run（含子循环）的口径，子循环每回合也检查
@@ -200,7 +209,9 @@ export function skillToTool(
               message: report,
               retryable: true,
             };
-            throw new Error(report);
+            const failure = new Error(report);
+            llmThrew = failure; // 与 llmError 同点赋值：外层 catch 按引用相等认领
+            throw failure;
           }
           return { text: loop.finalText, stopReason: loop.stopReason };
         },
@@ -211,7 +222,9 @@ export function skillToTool(
         close({ status: 'ok' });
         return out;
       } catch (e) {
-        close({ status: 'error', error: llmError ?? classifyError(e) });
+        // 引用相等认领：冒上来的是 llm 闭包抛的那个对象 ⇒ 用它的丰富错误收尾；
+        // 否则（方法体降级后又因别的原因抛错）按真实异常分类 —— 不拿残留 llmError 贴错标签
+        close({ status: 'error', error: e === llmThrew ? llmError! : classifyError(e) });
         throw e;
       } finally {
         // 摘除监听：宿主级共享 signal 是长寿的，不摘会按调用次数累积

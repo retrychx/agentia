@@ -127,8 +127,9 @@ export interface RunAppOptions<S extends JsonSchema = JsonSchema> extends RunInv
    * 会话持久化（C4）：语义同 `ExecuteRunOptions.session` —— run 开始把历史拼在传入
    * messages 之前，成功收尾把本轮消息 + 回复追加回去。与 `blackboard`（键值黑板）正交。
    *
-   * 只在程序内直接 `app.run` 时可用（store 实例不可序列化，因此**不在**
-   * transport 的 `RunInvocationOptions` 里 —— 异步宿主不会替你传它）。
+   * 只在程序内直接 `app.run` 时可用（store 实例不可序列化）。**异步宿主**的会话走
+   * `RunInvocationOptions.sessionId` + `AsyncRunner` 的 `sessionStore` —— 任务里只落
+   * 可序列化的 id，store 实例由 runner 持有、执行前注入（重启续跑也接得上）。
    */
   session?: { store: SessionStore; id: string };
   /**

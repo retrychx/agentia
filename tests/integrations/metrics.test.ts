@@ -511,11 +511,11 @@ describe('E5 OTLP/JSON 指标导出', () => {
       assert.equal(hist.count, 1);
       assert.equal(hist.sum, 300);
       assert.equal(hist.explicitBounds.length, hist.bucketCounts.length - 1);
-      // 能力维度带 attributes
-      const capabilityCalls = byName('agentia_capability_calls_total').find(
-        (x) => x.sum.dataPoints[0].attributes[0].value.stringValue === 'tool:search',
+      // 能力维度带 attributes（同名指标聚合后按 dataPoint 的 label 区分）
+      const capabilityCalls = byName('agentia_capability_calls_total')[0].sum.dataPoints.find(
+        (d: any) => d.attributes[0].value.stringValue === 'tool:search',
       );
-      assert.equal(capabilityCalls!.sum.dataPoints[0].asInt, '2');
+      assert.equal(capabilityCalls.asInt, '2');
     } finally {
       await close(server);
     }
@@ -610,6 +610,113 @@ describe('E5 OTLP/JSON 指标导出', () => {
       const counter = byName('agentia_score_total').sum.dataPoints[0];
       assert.equal(counter.asInt, '2');
       assert.equal(byName('agentia_score_total').sum.aggregationTemporality, 2);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('同名指标聚合成一个 Metric 的多个 dataPoints（OTLP 数据模型：同名多 Metric 是 semantic error）', async () => {
+    const { server, base, bodies } = await startCollector(200);
+    try {
+      const m = metricsSink({ export: 'otlp', endpoint: base, intervalMs: 0 });
+      const t = richTrace(); // 三个能力标签 + 一个模型；再补一个模型与两个评分键
+      t.spans.push({
+        spanId: 'turn-3',
+        traceId: 't-rich',
+        parentSpanId: 'root-1',
+        kind: 'llm.turn',
+        name: 'gpt-5',
+        startedAt: 1210,
+        endedAt: 1290,
+        status: 'ok',
+        usage: {
+          inputTokens: 7,
+          outputTokens: 3,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.001,
+        },
+        attributes: {},
+        events: [],
+      });
+      attachScore(t, { name: 'faithfulness', value: 0.8, source: 'eval-x' });
+      attachScore(t, { name: 'helpfulness', value: 1 });
+      await m.export(t);
+      m.stop();
+
+      const metrics = bodies[0].body.resourceMetrics[0].scopeMetrics[0].metrics as Array<
+        Record<string, any>
+      >;
+      // 每个 name 恰好一个 Metric 对象 —— 同名多 Metric 在 OTLP 规范里是 semantic error，
+      // consumer 可以拒收整批
+      const names = metrics.map((x) => x.name as string);
+      const dupes = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
+      assert.deepEqual(
+        dupes,
+        [],
+        `同名指标被拆成了多个 Metric 对象（OTLP semantic error）: ${dupes.join(', ')}`,
+      );
+      const one = (n: string) => {
+        const found = metrics.filter((x) => x.name === n);
+        assert.equal(found.length, 1, `${n} 应恰好一个 Metric`);
+        return found[0]!;
+      };
+
+      // tokens_total：四类 kind 收进同一个 sum，attribute label 不丢
+      const tok = one('agentia_tokens_total');
+      assert.equal(tok.sum.dataPoints.length, 4, '四个 kind 应是同一 Metric 的四个 dataPoint');
+      assert.deepEqual(
+        tok.sum.dataPoints.map((d: any) => [d.attributes[0].value.stringValue, d.asInt]),
+        [
+          ['input', '120'],
+          ['output', '30'],
+          ['cache_read', '5'],
+          ['cache_creation', '0'],
+        ],
+      );
+      // 同名只保留一份 description，且与 Prometheus 侧 family() 的总述文案一致
+      assert.equal(
+        tok.description,
+        'token 累计（kind 分项：input / output / cache_read / cache_creation）',
+      );
+
+      // capability 维度：三个能力标签收进同一 Metric（排序键：subagent < tool:fetch < tool:search）
+      const capCalls = one('agentia_capability_calls_total');
+      assert.deepEqual(
+        capCalls.sum.dataPoints.map((d: any) => [
+          d.attributes[0].key,
+          d.attributes[0].value.stringValue,
+          d.asInt,
+        ]),
+        [
+          ['capability', 'subagent:researcher', '1'],
+          ['capability', 'tool:fetch', '1'],
+          ['capability', 'tool:search', '2'],
+        ],
+      );
+      // histogram 同理：一个 Metric，三个 dataPoint
+      assert.equal(one('agentia_capability_duration_ms').histogram.dataPoints.length, 3);
+
+      // model 维度：两个模型收进同一 Metric
+      const turns = one('agentia_model_turns_total');
+      assert.deepEqual(
+        turns.sum.dataPoints.map((d: any) => [d.attributes[0].value.stringValue, d.asInt]),
+        [
+          ['claude-opus-5', '2'],
+          ['gpt-5', '1'],
+        ],
+      );
+
+      // dropped_keys：三个 kind 收进同一个 gauge
+      const dropped = one('agentia_dropped_keys');
+      assert.deepEqual(
+        dropped.gauge.dataPoints.map((d: any) => d.attributes[0].value.stringValue),
+        ['capability', 'model', 'score'],
+      );
+
+      // score / score_total：两个评分键收进各自一个 Metric
+      assert.equal(one('agentia_score').gauge.dataPoints.length, 2);
+      assert.equal(one('agentia_score_total').sum.dataPoints.length, 2);
     } finally {
       await close(server);
     }

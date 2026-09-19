@@ -226,3 +226,97 @@ describe('Skill 方法体捕获 llm 失败并降级（span 不得误标 error）
     assert.equal(capSpan.status, 'error', '未捕获的失败仍须记 error');
   });
 });
+
+describe('未定价告警回调透传 ctx.llm 子循环（F2）', () => {
+  it('skill 的受限子运行用了未定价模型：宿主的 onUnpricedModel 被调（带 model/spanId）', async () => {
+    // 同 subagent 那条：旧实现里 ToolRunContext 没有 onUnpricedModel 通道，
+    // 子循环的「算不出成本」只剩 usage.unpriced 事件，宿主的告警回调静默缺席。
+    class Pricer {
+      @Skill({ description: 'd', model: 'unpriced-model-y' })
+      async go(_input: unknown, ctx: SkillContext): Promise<string> {
+        const out = await ctx.llm({ prompt: 'q' });
+        return out.text;
+      }
+    }
+    const { client } = mockClient([
+      toolUseMsg('go', {}, 'tu_main'),
+      endTurnMsg('摘要内容'), // 子循环（未定价模型）
+      endTurnMsg('汇总完毕'), // 主循环收尾
+    ]);
+    const tool = skillToTool(onlySkill(new Pricer()), () => []);
+    const unpricedCalls: Array<{ model: string; spanId: string }> = [];
+    const result = await runAgent({
+      client, // 主循环走缺省模型 claude-opus-5（在价格表内）
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [tool],
+      onUnpricedModel: (info) => unpricedCalls.push(info),
+    });
+
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.finalText, '汇总完毕');
+    assert.equal(unpricedCalls.length, 1, '只有子循环的未定价模型触发一次回调');
+    assert.equal(unpricedCalls[0].model, 'unpriced-model-y');
+    // spanId 指向子循环自己的 llm.turn（挂在 capability span 下）
+    const capability = result.trace.spans.find((s) => s.kind === 'capability')!;
+    const subTurn = result.trace.spans.find(
+      (s) => s.kind === 'llm.turn' && s.parentSpanId === capability.spanId,
+    )!;
+    assert.equal(unpricedCalls[0].spanId, subTurn.spanId);
+  });
+});
+
+describe('Skill 陈旧 llmError 不得给无关异常贴标签', () => {
+  it('方法体 catch 掉 llm 失败（降级）后又因别的原因抛错 ⇒ span 记真实异常的分类', async () => {
+    // 回归（2026-09-19 复审）：旧实现外层 catch 用 `llmError ?? classifyError(e)`，
+    // llmError 从不清空 —— 降级路径吞掉的那次 llm 失败残留着，方法体随后抛出的
+    // **无关**异常被记成那次 llm 失败的分类（type/retryable 全错、真实分类被丢弃）。
+    class FallbackThenBoom {
+      @Skill({ description: 'd' })
+      async go(_input: unknown, ctx: SkillContext): Promise<string> {
+        try {
+          await ctx.llm({ prompt: '会失败' });
+        } catch {
+          // 降级：吞掉 llm 失败，继续走脚本
+        }
+        throw new Error('boom'); // 与 llm 失败无关的另一处故障
+      }
+    }
+    // 子运行以「未识别的 stop_reason」非成功收尾（loop.error 是 engine 判定的丰富错误）
+    const { client } = mockClient([rawMsg('model_context_window_exceeded', '半截')]);
+    const { ctx, recorder } = makeCtx(client);
+    const tool = skillToTool(onlySkill(new FallbackThenBoom()), () => []);
+
+    await assert.rejects(async () => tool.run({}, ctx), /boom/);
+
+    const capability = recorder.snapshot('error').spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'error');
+    // 必须是 boom 的分类（classifyError 对普通 Error 给 unknown/不可重试），
+    // 不是残留 llmError 的 agent_error
+    assert.equal(capability.error?.type, 'unknown');
+    assert.equal(capability.error?.retryable, false);
+    assert.match(capability.error?.message ?? '', /boom/);
+    assert.doesNotMatch(capability.error?.message ?? '', /model_context_window_exceeded/);
+  });
+
+  it('主路径不回归：方法体不 catch llm 失败 ⇒ span 仍记 llmError 的丰富分类', async () => {
+    class Fragile {
+      @Skill({ description: 'd' })
+      async go(_input: unknown, ctx: SkillContext): Promise<string> {
+        const out = await ctx.llm({ prompt: '会失败' });
+        return out.text;
+      }
+    }
+    const { client } = mockClient([rawMsg('model_context_window_exceeded', '半截')]);
+    const { ctx, recorder } = makeCtx(client);
+    const tool = skillToTool(onlySkill(new Fragile()), () => []);
+
+    await assert.rejects(async () => tool.run({}, ctx), /unknown_stop_reason/);
+
+    const capability = recorder.snapshot('error').spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'error');
+    // llm 闭包抛出的对象被外层按引用相等认领 ⇒ 用 engine 判定的丰富错误收尾
+    assert.equal(capability.error?.type, 'agent_error');
+    assert.equal(capability.error?.retryable, false);
+    assert.match(capability.error?.message ?? '', /model_context_window_exceeded/);
+  });
+});

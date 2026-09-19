@@ -2074,6 +2074,49 @@ Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无
 塞进 transport 选项（靠 excess-property 逃逸生效，换 SqliteTaskStore 会翻车 ——
 需要框架侧给「异步宿主带 session」的正式通道，是设计活不是顺手修）。
 
+### 2026-09-19 ④：③ 的「未修」清单收口 + 三条一致性修补 + 预算护栏改走廉价 usage
+
+③ 列出的「未修」由作者收口：MCP 会话过期自愈的并发互斥（`reinitialize` 互斥，双 404 共享
+同一次重握手）、`e2e-mcp.ts` 探测进程的 try/finally、gRPC 示例 README 的 `build` 步骤，
+以及**异步宿主带 session 的正式通道**（`RunInvocationOptions.sessionId` 可序列化引用 +
+未配 `sessionStore` 时 `submit` 当场 `TaskInputError`，不再靠 excess-property 逃逸）。
+测试链同时修了「框架套件一挂、CLI 与 trace-view 套件静默不跑」的 `&&` 短路
+（`scripts/test-all.mjs`：三套件都跑完再汇总退出码）。
+
+本次复审又补三条「守卫没覆盖自己声称范围」的缺口 + 一处护栏开销：
+
+1. **MCP HTTP `close()` 的 DELETE 过 `guard`**：此前直接 `await fetchImpl(...)`，外层
+   `catch` 只兜得住**抛错**、兜不住**挂死** —— server 接受连接后不回（半开 / 卡在代理后面），
+   `close()` 就永久挂住，而调用方是**宿主停机路径**（挂住比失败更糟，与「best-effort、
+   不抛错」的承诺相悖）。fetch 与 body 排空**一起**进 guard：只护住响应头，`readText`
+   照样能卡。反向验证：摘掉修复 ⇒ 新用例在 `--test-timeout=8000` 下被
+   `cancelledByParent` 取消（正是 `verify-all.sh` 专门抽取的那类非断言失败）。
+2. **`asset()` 拦绝对路径**：守卫此前只拦带 scheme 的 `rel`，但 `/etc/passwd` 与
+   `file:///etc/passwd` 是**同一类** —— `new URL('/etc/passwd', 'file:///…/x.js')` 解析成
+   `file:///etc/passwd`，base 的路径部分被整个丢掉，于是「以为读了能力目录里的文件，
+   实际读了别处」（macOS 上**真能读到**）。注释声称的那个不变量现在真的守住了。
+   `../` 仍**放行** —— 它是相对 base 解析的，base 没被忽略，两者必须区分开。
+3. **`interruptibleSleep` 的判定顺序 —— 查过，结论是「不改」（记下来免得下轮再改）**：
+   `ms <= 0` 的早退确实排在 `signal.aborted` 检查**之前**，看着像一致性缺口，但它与
+   `withTimeout(p, 0)` 的「不设超时、原样透传」是**同一口径**：预算 ≤0 ⇒ 这次机制
+   **关掉**，与 signal 状态无关（取消会在下一步 —— 下一个 fetch / 下一轮循环 —— 照常浮出来）。
+   本轮曾按「缺口」把它改反（让已中止的 signal 即使 `ms<=0` 也 reject），被既有用例
+   `tests/core/sse-text-stats.test.ts` 当场拦下 ⇒ 已回退。该用例的断言同时从「隐式
+   `await`」改成显式 `assert.doesNotReject` 并写明理由 —— 这条语义此前只有一行注释，
+   太容易被下一次复核再误判成 bug（`src/core/timeout.ts` 的函数注释里也补了同样的警示）。
+4. **预算护栏改走廉价 usage（含一处 API 收窄）**：护栏每回合要判**两次**（回合入口
+   `checkTurnEntry` + 回合末 `loop`），而 `recorder.snapshot('ok')` 会**拷**全部 span 的
+   attributes/events/links ⇒ 白花 O(回合 × 累计事件量)。现在：
+   - 新增 `TraceRecorder.usage()`：只扫 spans 求和、不拷；`snapshot().totalUsage` 改为
+     **调它** ⇒ 两条路不可能漂移（`tests/engine/tracer.test.ts` 用 `deepEqual` 钉住）；
+   - `core/tool.ts` 的 `RecorderBackend` 加 `usage(): Usage`（引擎经这个结构面读 recorder）；
+   - `BudgetGuard.check` 入参由 `Trace` **收窄**为 `{ readonly totalUsage: Usage }`。
+     传整份 `Trace` 的调用方不受影响（结构上满足），收窄的附带好处是护栏**在类型上**就
+     读不到 `spans` —— 「只看 totalUsage」从注释变成了结构约束。
+   - **刻意不合并那两次调用**：两处是不同决策点（回合末那次的结果要交给 `executeTurnTools`
+     决定循环是否继续；回合入口那次覆盖「上一回合的工具执行把额度推超」），删任一处都改语义。
+     ⇒ 优化的是**每次判定的代价**，不是判定次数。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

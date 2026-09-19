@@ -42,10 +42,9 @@ async function pickServer(): Promise<{ cmd: string[]; label: string }> {
   if (fromEnv) return { cmd: fromEnv.split(' '), label: `${fromEnv}（来自 MCP_SERVER_CMD）` };
 
   const uvx = ['uvx', 'mcp-server-time'];
+  const probe = createStdioMcpConnector(uvx);
   try {
-    const probe = createStdioMcpConnector(uvx);
     const tools = await probe.listTools();
-    await probe.close();
     if (tools.length > 0) {
       return { cmd: uvx, label: `${uvx.join(' ')}（第三方 server，${tools.length} 个工具）` };
     }
@@ -53,6 +52,9 @@ async function pickServer(): Promise<{ cmd: string[]; label: string }> {
     console.log(
       `  ! uvx mcp-server-time 不可用（${e instanceof Error ? e.message : String(e)}），回落夹具 server`,
     );
+  } finally {
+    // 探测进程无论如何都要收掉 —— listTools 抛错就走 catch，没有 finally 会泄漏 uvx 子进程
+    await probe.close().catch(() => {});
   }
   return {
     cmd: ['python3', 'scripts/mcp-fixture-server.py'],

@@ -42,8 +42,13 @@ function stdio(
   const c = createStdioMcpConnector([process.execPath, SERVER], {
     env,
     stderr: 'ignore',
-    // 缺省给个上限：任一处卡住都应在数秒内变成一条超时失败，而不是让整个套件挂够默认的 60s
-    timeoutMs: opts.timeoutMs ?? 5_000,
+    // 缺省给个上限：任一处卡住都应在**数十秒内**变成一条超时失败，而不是让整个套件
+    // 挂够连接器默认的 60s。⚠️ 别把这个值调回 5s：`node --test` 按文件并行，本文件
+    // 每例都要 spawn 一个子进程，重负载下**子进程启动**本身就可能吃掉数秒 ——
+    // 5s 预算曾把握手判成 `MCP 工具 "initialize" 调用超时（超过 5000ms）`（并发跑时才现，
+    // 单跑与 10 路 CPU 忙循环下都复现不出）。要断超时行为的那条用例**自带**
+    // `timeoutMs: 60`，不依赖这里的缺省值。
+    timeoutMs: opts.timeoutMs ?? 20_000,
   });
   open.push(c);
   return c;
@@ -225,6 +230,10 @@ function fakeServer(
     sessionExpireAt?: number;
     /** `tools/call` 恒 404（验会话自愈**只重试一次**、不循环） */
     always404Call?: boolean;
+    /** 视为「已死」的会话 id 集合：带这些会话的请求一律 404（验并发自愈的互斥） */
+    deadSessions?: Set<string>;
+    /** 死会话的 404 响应**攒够 N 个一起放**（把并发 404 钉成确定时序，否则微任务顺序看天） */
+    deadBarrier?: number;
     negotiated?: string;
     sse?: boolean;
     isError?: boolean;
@@ -237,11 +246,13 @@ function fakeServer(
   const useSession =
     opts.sessionId !== undefined ||
     opts.sessionExpireAt !== undefined ||
-    opts.always404Call === true;
+    opts.always404Call === true ||
+    opts.deadSessions !== undefined;
   /** 当前有效会话（`sessionId` 模式下恒为那个固定值；否则每次 initialize 铸一个新的） */
   let active: string | null = null;
   let minted = 0;
   let served = 0;
+  const deadWaiting: Array<() => void> = [];
 
   const fetchImpl = (async (url: unknown, init: unknown) => {
     const i = init as { method: string; headers: Record<string, string>; body?: string };
@@ -267,8 +278,17 @@ function fakeServer(
       if (
         carried !== active ||
         expired ||
+        opts.deadSessions?.has(carried ?? '') === true ||
         (opts.always404Call === true && method === 'tools/call')
       ) {
+        if (opts.deadBarrier !== undefined && opts.deadSessions?.has(carried ?? '') === true) {
+          await new Promise<void>((resolve) => {
+            deadWaiting.push(resolve);
+            if (deadWaiting.length >= (opts.deadBarrier ?? 0)) {
+              for (const release of deadWaiting.splice(0)) release();
+            }
+          });
+        }
         return new Response('session not found', {
           status: 404,
           headers: { 'content-type': 'text/plain' },
@@ -484,6 +504,43 @@ describe('createStreamableHttpMcpConnector —— StreamableHTTP 连接器', () 
     assert.equal(requests.filter((r) => r.method === 'DELETE').length, 0);
   });
 
+  it('close() 的 DELETE 挂死 ⇒ 到点返回（best-effort ≠ 永久挂住）', async () => {
+    // 反向验证（旧实现）：close() 直接 `await fetchImpl(...)`，外层 catch 只兜得住
+    // **抛错**、兜不住**挂死** —— server 接受连接后不回（半开 / 卡在代理后面），
+    // close() 就永久挂住。而调用方是**宿主停机路径**，挂住比失败更糟。
+    // 本用例让 DELETE 永不 settle，断言 close() 仍会返回。
+    const { fetchImpl } = fakeServer({ sessionId: 'sess-1' });
+    let deletes = 0;
+    const hanging: typeof fetch = (async (url: unknown, init: unknown) => {
+      if ((init as { method?: string } | undefined)?.method === 'DELETE') {
+        deletes += 1;
+        return new Promise<Response>(() => {
+          /* 永不 settle：模拟半开的 server */
+        });
+      }
+      return fetchImpl(url as never, init as never);
+    }) as unknown as typeof fetch;
+
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: hanging,
+      timeoutMs: 50,
+    });
+    open.push(connector);
+    await connector.listTools();
+
+    const t0 = Date.now();
+    await connector.close();
+    const dt = Date.now() - t0;
+    assert.equal(deletes, 1, '仍然尽力发过 DELETE');
+    // 两侧都要断言：下界证明是 **guard 到点**收的口（timeoutMs=50 真的等满了），
+    // 而不是 close() 因为别的理由提前返回；上界证明它没有永久挂住。
+    assert.ok(dt >= 40, `应当由 guard 到点收口（timeoutMs=50），实际只等了 ${dt}ms`);
+    assert.ok(dt < 5_000, `close() 必须到点返回，实际等了 ${dt}ms`);
+    // 幂等标志在 try 之前就置上了 ⇒ 超时返回后再 close() 不会重发
+    await connector.close();
+    assert.equal(deletes, 1);
+  });
+
   it('出厂连接器直接接 `mcpTools`', async () => {
     const { connector } = http();
     const tools = await mcpTools(connector, { server: 'remote' });
@@ -552,5 +609,41 @@ describe('StreamableHTTP：超时裁判权与响应配对（第八轮复审补�
     });
     open.push(connector);
     await assert.rejects(() => connector.callTool('get-time', {}), /id 为 \d+ 的 JSON-RPC 报文/);
+  });
+
+  it('并发请求同时吃到 404 ⇒ 共享同一次重握手（不双 initialize）', async () => {
+    // 反向验证：旧实现里两个并发自愈各自 `ready = null`（第二个抹掉第一个的握手
+    // Promise）⇒ initialize 会跑 3 次（初始 1 + 双自愈 2），本用例红在计数上；
+    // 且假 server 只认最后一次铸的会话 ⇒ 带被覆盖会话的重试会再 404。
+    const dead = new Set<string>();
+    const expired: number[] = [];
+    const { fetchImpl, requests } = fakeServer({ deadSessions: dead, deadBarrier: 2 });
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl,
+      onSessionExpired: () => expired.push(Date.now()),
+    });
+    open.push(connector);
+
+    await connector.callTool('get-time', {}); // 握手 + 建立 sess-1
+    dead.add('sess-1'); // 服务端把 sess-1 干掉（崩溃/重启/淘汰）
+    const [a, b] = await Promise.all([
+      connector.callTool('get-time', {}),
+      connector.callTool('get-time', {}),
+    ]);
+    assert.equal((a as { content?: Array<{ text: string }> }).content?.[0]?.text, 'ok');
+    assert.equal((b as { content?: Array<{ text: string }> }).content?.[0]?.text, 'ok');
+    assert.equal(
+      requests.filter((q) => q.msg?.method === 'initialize').length,
+      2,
+      '初始 1 次 + 并发自愈共享 1 次；出现 3 次就是双 initialize 竞态',
+    );
+    assert.equal(expired.length, 2, '每个 404 都是事实，逐次记；共享的只是重握手动作');
+    assert.deepEqual(
+      requests
+        .filter((q) => q.msg?.method === 'tools/call')
+        .map((q) => q.headers['mcp-session-id']),
+      ['sess-1', 'sess-1', 'sess-1', 'sess-2', 'sess-2'],
+      '建立 1 次 + 两次并发 404 + 两次带**同一个新会话**的重试',
+    );
   });
 });

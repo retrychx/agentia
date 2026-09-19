@@ -299,6 +299,55 @@ describe('SSE 组装：分片 → on(text) 与 finalMessage', () => {
     }
   });
 
+  it('content_block_start 内联 tool_use.input 且不发 input_json_delta：用内联值（兼容端点形态）', async () => {
+    // 官方端点在 start 事件里恒给 `input: {}`、完整入参走 input_json_delta；
+    // 个别兼容端点把完整 input 内联在 start 且不发 delta —— 不收下它，工具会拿 {} 静默执行。
+    const events = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_inline',
+          type: 'message',
+          role: 'assistant',
+          model: 'm',
+          content: [],
+          usage: { input_tokens: 3, output_tokens: 1 },
+        },
+      },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'tool_use',
+          id: 'toolu_inline',
+          name: 'get_weather',
+          input: { city: 'sf' },
+        },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'tool_use', stop_sequence: null },
+        usage: { output_tokens: 8 },
+      },
+      { type: 'message_stop' },
+    ];
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      assert.equal(final.stop_reason, 'tool_use');
+      assert.equal(final.content.length, 1);
+      const block = final.content[0] as { type: string; id: string; name: string; input: unknown };
+      assert.equal(block.type, 'tool_use');
+      assert.equal(block.id, 'toolu_inline');
+      assert.equal(block.name, 'get_weather');
+      assert.deepEqual(block.input, { city: 'sf' }, 'start 事件内联的完整 input 不得被丢成 {}');
+    } finally {
+      await ep.close();
+    }
+  });
+
   it('上游把错误塞进 200 流（type=error 事件）：抛出 AnthropicApiError 且按类型映射 status', async () => {
     const events = [
       {
@@ -679,6 +728,76 @@ describe('A：流截断 / 空流按上游故障抛错（带 status、可重试�
       });
       const msg = await client.messages.stream(BASE_PARAMS).finalMessage();
       assert.equal(msg.stop_reason, 'end_turn');
+    } finally {
+      await ep.close();
+    }
+  });
+});
+
+/**
+ * 非 SSE 回落路径（端点忽略 stream:true、直接回整份 JSON）的形态校验。
+ *
+ * 修复前这里是 `(await res.json()) as Message` 的裸强转：「HTTP 200 裹错误」
+ * （{"error":{...}}）会让 message.content 为 undefined → textOf 的 .filter() 抛裸
+ * TypeError → classifyError 判 unknown/不可重试；而**同一个事件**走流式路径
+ * （type=error 事件）会被认成带 status 的可重试错误 —— 同一故障两本账。
+ */
+describe('非 SSE 回落路径的形态校验（200 裹错误 / 缺 content）', () => {
+  it('200 裹错误 {"error":{"type":"rate_limit_error"}}：抛 AnthropicApiError(429)，classifyError 判可重试', async () => {
+    const ep = await fakeEndpoint((_hits, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'rate_limit_error', message: 'slow down' } }));
+    });
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: ep.baseURL,
+        maxRetries: 0,
+      });
+      const err = await client.messages
+        .stream(BASE_PARAMS)
+        .finalMessage()
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      assert.ok(err instanceof AnthropicApiError, `应抛 AnthropicApiError，实际：${String(err)}`);
+      assert.equal(err.status, 429, 'rate_limit_error → 429（与流式 error 事件同款映射）');
+      const span = classifyError(err);
+      assert.equal(span.type, 'rate_limit');
+      assert.equal(span.retryable, true);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('200 但无 content 数组（{}）：抛带 status 的可读错误，不是裸 TypeError', async () => {
+    const ep = await fakeEndpoint((_hits, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: ep.baseURL,
+        maxRetries: 0,
+      });
+      const err = await client.messages
+        .stream(BASE_PARAMS)
+        .finalMessage()
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      assert.ok(
+        err instanceof AnthropicApiError,
+        `应抛 AnthropicApiError 而非裸 TypeError，实际：${String(err)}`,
+      );
+      assert.equal(err.status, 500);
+      assert.match(err.message, /content/);
+      const span = classifyError(err);
+      assert.equal(span.type, 'server');
+      assert.equal(span.retryable, true);
     } finally {
       await ep.close();
     }

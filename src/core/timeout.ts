@@ -86,18 +86,21 @@ export async function withTimeout<T>(
   timeoutMs: number,
 ): Promise<T | typeof TIMED_OUT> {
   if (!(timeoutMs > 0)) return p;
-  const startedAt = Date.now();
+  // 单调钟（performance.now）：硬超时判定看的是**耗时**，墙钟（Date.now）会被
+  // NTP 回拨/跳变扭曲 —— 回拨让 settledAt - startedAt 变负，超时的工具被记成 ok，
+  // 恰是这段代码要防的静默失效。
+  const startedAt = performance.now();
   // 在**工具 settle 的那个微任务里**记时间，而不是 `await` 恢复之后再记：
   // 微任务紧跟在 resolve 它的那次回调之后跑，所以这个时刻最贴近「工具真正完成」。
   // 若改成 await 恢复后再测，宿主在「工具完成 → 恢复」之间被饿住会把按时完成的工具误判成超时。
   let settledAt = 0;
   const tracked = p.then(
     (v) => {
-      settledAt = Date.now();
+      settledAt = performance.now();
       return v;
     },
     (e) => {
-      settledAt = Date.now();
+      settledAt = performance.now();
       throw e;
     },
   );
@@ -139,6 +142,14 @@ export async function withTimeout<T>(
  *
  * 抛的是 `name === 'AbortError'` 的错误（而非 `TimeoutError`）：取消不是超时，
  * `engine/errors.ts` 按 `name` 把它归进「已中止」，`loop` 据此以 `aborted` 收尾。
+ *
+ * ⚠️ **`ms <= 0` = 「不睡」（立即 resolve），且这一判先于 aborted 检查** —— 别把它
+ * 「修」成「已中止就该 reject」。这是本仓库统一的「非正数 = 机制关掉」口径，与
+ * `withTimeout(p, 0)` 的「不设超时、原样透传」对称：预算 ≤0 时这次等待压根不存在，
+ * 也就没有「被中断」可言（取消会在**下一步**（下一个 fetch / 下一轮循环）照常浮出来）。
+ * 已有用例钉住这个语义：`tests/core/sse-text-stats.test.ts`（已中止 + `ms<=0` 仍 resolve）
+ * 与 `tests/core/timeout.test.ts`（`withTimeout` 预算非正数）。2026-09-19 的外部复核
+ * 曾把它当「一致性缺口」改反过一次，被这条用例拦住 —— 保留该用例，别删。
  */
 export function interruptibleSleep(
   ms: number,
