@@ -313,24 +313,31 @@ const implementation = {
     call: grpc.ServerUnaryCall<TaskQueryMsg, TaskReplyMsg>,
     callback: grpc.sendUnaryData<TaskReplyMsg>,
   ): Promise<void> {
-    const rec = await runner.poll(call.request.taskId);
-    if (!rec) {
-      callback(
-        Object.assign(new Error(`没有这个 taskId：${call.request.taskId}`), {
-          code: grpc.status.NOT_FOUND,
-          details: 'not found',
-          metadata: new grpc.Metadata(),
-        }) as grpc.ServiceError,
-      );
-      return;
+    // ⚠️ try/catch 不是风格，是保命：grpc-js 不接管 async handler 返回的 Promise，
+    // store 抛错（Redis 断连等）会成为 unhandledRejection —— Node ≥15 默认**终止进程**。
+    // 同文件的 run / runStream / submit 都 catch，这里一样。
+    try {
+      const rec = await runner.poll(call.request.taskId);
+      if (!rec) {
+        callback(
+          Object.assign(new Error(`没有这个 taskId：${call.request.taskId}`), {
+            code: grpc.status.NOT_FOUND,
+            details: 'not found',
+            metadata: new grpc.Metadata(),
+          }) as grpc.ServiceError,
+        );
+        return;
+      }
+      callback(null, {
+        taskId: rec.taskId,
+        status: rec.status,
+        runId: rec.runId ?? '',
+        finalText: rec.result?.finalText ?? '',
+        error: rec.error?.message ?? '',
+      });
+    } catch (e) {
+      callback(toServiceError(e));
     }
-    callback(null, {
-      taskId: rec.taskId,
-      status: rec.status,
-      runId: rec.runId ?? '',
-      finalText: rec.result?.finalText ?? '',
-      error: rec.error?.message ?? '',
-    });
   },
 };
 

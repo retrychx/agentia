@@ -635,7 +635,9 @@ export function createStreamableHttpMcpConnector(
 
   /** 非 SSE 报文（单条 JSON-RPC）→ 取 result；SSE 里可能有别的通知帧，只取与 `id` 配对的 */
   const pickResult = (msg: unknown, id: number, method: string): unknown => {
-    if (!isJsonRpcResponse(msg)) {
+    // id 必须**等值**配对（与 SSE 分支同款）：只验「是带 id 的响应」会把别的请求的
+    // 结果当本次的返回（代理串包/通知帧），静默错值比报错难查得多。
+    if (!isJsonRpcResponse(msg) || msg.id !== id) {
       throw new Error(`MCP ${method}：响应里没有 id 为 ${id} 的 JSON-RPC 报文`);
     }
     return unwrap(msg, method);
@@ -705,7 +707,11 @@ export function createStreamableHttpMcpConnector(
       return rpc(method, params, withVersion, false);
     }
     if (!res.ok) throw httpError(res.status, method, await readText(res));
-    return guard(readResult(res, id, method), method);
+    // 计时裁判权在调用方（initialize / notifications / tools/list 都在调用点自带
+    // guard —— 它们是装配期路径、没有别的裁判）；`tools/call` 不在此起计时器：
+    // 它的裁判是引擎的 `toolTimeoutMs`（spec §10 2026-09-17 ① 超时单源化）——
+    // 再包一层 guard 就是双计时器，同一事件两本账（stdio 侧就没有这层）。
+    return readResult(res, id, method);
   };
 
   const ensureReady = (): Promise<void> => {

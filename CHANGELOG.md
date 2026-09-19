@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+### 修复（外部四路复审收口：文档承诺了代码没做的事）
+
+- **`AsyncRunner.approve` 补并发重入闸 + 真落库再派发**（HITL 补丁）：并发 approve
+  （双击「批准」/两个审批人同时批）曾在 store 往返窗口内各自判「决定齐了」、
+  **各派发一次**（同一任务重复执行）；且它用着吞错的 `#safeSave` 却在注释里承诺
+  「先落库再派发」。现在并发调用共享在飞那次（第一次决定赢），落库失败 ⇒
+  调用方收到 reject、**绝不派发**。
+- **MCP StreamableHTTP 连接器：`tools/call` 不再起第二个计时器**（`timeoutMs` 只管
+  装配期的握手/`tools/list`，与 stdio 侧对称；工具调用的裁判仍是引擎的
+  `toolTimeoutMs`）。顺带修复：非 SSE 响应的 id 改为**等值配对**（原只验「id 是
+  number」，串包时会把别的请求的结果当本次的返回）。
+- **gRPC 示例 `getTask` 补 try/catch**：grpc-js 不接管 async handler 的 Promise，
+  store 抛错会以 unhandledRejection 终止进程。
+- **soak 脚本两处假绿**：采样不足时「跳过内存断言」却照打「内存有界」⇒ 采样间隔
+  随时长缩放、样本不足硬失败；宽区间失败率断言换成**逐笔对账**（每个不可重试故障
+  恰好杀死一个 run：`failed ≥ 注入数` 且超出部分 ≤ 请求的 0.1%）。
+- 文档对齐：usage-guide 曾写同步 `/run` 返回「含 `suspendedMessages`」（响应体没有
+  该字段）—— 改文档：要审批请走 `POST /tasks` 异步宿主。
+
 ### 修复（第八轮复审：时间维度的三处破口）
 
 - **子 agent / skill 被 `toolTimeoutMs` 超时后，capability span 在交付的 trace 里永不收尾，

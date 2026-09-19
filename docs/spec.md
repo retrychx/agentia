@@ -2044,6 +2044,36 @@ capability span 永远没有 `endedAt`）。
 Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无删除语义、并行子循环
 下预算超限量级）**如实登记**进 usage-guide §7，不改行为。
 
+### 2026-09-19 ③：外部复审（四路）收口 —— 这轮的病是「文档承诺了代码没做的事」
+
+四条复审路线（HITL / MCP 连接器 / gRPC 示例 / soak 脚本）对 `be8e942..9469e91` 的指认，
+逐条对代码核实后修复（每条带反向验证：摘掉修复 ⇒ 新用例必红）：
+
+1. **`AsyncRunner.approve` 补重入闸 + 真落库再派发**：并发 approve（双击/多审批人）曾在
+   store 往返窗口内各自判「决定齐了」、**各派发一次**（与 resumePending 在 2026-09-18 ⑧
+   补的闸同一 bug 类，隔一个方法漏了）；且它用着 `#safeSave`（吞错）却在 docstring 里
+   承诺「先落库再派发」—— 现在并发共享在飞那次（第一次决定赢，后到者拿到同一份结果），
+   落库改真 `store.save`（失败 ⇒ reject 给调用方、绝不派发）。
+2. **MCP StreamableHTTP 连接器去掉 `tools/call` 的第二计时器**：`rpc()` 末尾曾无条件
+   `guard(...)`，把装配期的 `timeoutMs` 管进了工具调用（stdio 侧没有这层）—— 正是
+   2026-09-17 ①「超时单源化」要消除的双计时器。装配期路径（initialize / initialized /
+   tools/list）的 guard 不变。顺带：非 SSE 分支的响应 id 改为**等值配对**（原只验
+   「id 是 number」，串包时会把别的请求的结果当本次的返回）。
+3. **gRPC 示例 `getTask` 补 try/catch**：grpc-js 不接管 async handler 的 Promise，
+   store 抛错 = unhandledRejection = 杀进程 —— 示例在教一个会杀进程的写法。
+4. **soak 的两处假绿**：采样不足时「跳过内存断言」却照打「内存有界」（静默跳过 =
+   假装验过 —— 自家病灶）⇒ 采样间隔随时长缩放、不足硬失败；宽区间失败率断言换成
+   **逐笔对账**（每个不可重试故障恰好杀死一个 run ⇒ `failed ≥ 注入数`，超出部分
+   ≤ 请求的 0.1% —— 实测 306 vs 306 分文不差）。
+5. **文档对齐**：usage-guide 曾承诺同步 `/run` 返回「含 `suspendedMessages`」，
+   `toHttpBody` 没有该字段 —— 改文档（要审批就走异步宿主，不补字段：同步路径
+   补了也没有可审批的任务记录，给了是误导）。
+
+未修、如实记下：MCP 会话过期自愈的并发互斥（双 404 → 双 initialize，窗口是毫秒级）、
+`e2e-mcp.ts` 探测进程缺 try/finally、gRPC 示例 README 缺 `build` 步骤、示例把 `session`
+塞进 transport 选项（靠 excess-property 逃逸生效，换 SqliteTaskStore 会翻车 ——
+需要框架侧给「异步宿主带 session」的正式通道，是设计活不是顺手修）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

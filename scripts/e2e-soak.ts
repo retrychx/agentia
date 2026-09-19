@@ -12,10 +12,13 @@
 //   8%  正常路径但先发 tool_call     —— 让「调工具 → 回灌 → 收尾」的多回合链路也在压力下跑
 //
 // 结尾断言（缺一不可，挂了 exit 1）：
-//   ① 失败率落在注入率推出的区间内 —— 太低 = 故障被静默吞了，太高 = 重试没生效；
-//   ② 每个失败 run 的错误分类 ∈ {api, server, rate_limit}，**绝不允许 unknown**（第六轮的主题）；
+//   ① 失败与注入**逐笔对账**：每个不可重试故障（400/流内错误）恰好杀死一个 run ⇒
+//     failed ≥ 注入数（少了 = 故障被静默吞），且超出部分 ≤ 请求的 0.1%
+//     （多了 = 可重试故障没被重试吸收）；
+//   ② 每个失败 run 的错误分类 ∈ {api, server, rate_limit}，**绝不允许 unknown**；
 //   ③ metricsSink 的 snapshot 与实测计数逐一对得上，render() 恒定发三个 dropped_keys 样本；
-//   ④ 内存有界：热身后 heapUsed 末段均值相对前段均值的增长 < 48MB；
+//   ④ 内存有界：热身后 heapUsed 末段均值相对前段均值的增长 < 48MB（采样间隔随时长
+//     缩放，样本不足硬失败 —— 不「跳过」）；
 //   ⑤ 干净退出：断言完若还有活着的句柄把进程吊住，看门狗超时后打印句柄并 exit 1。
 //
 // 不并入 verify-all（它是「跑多久」而不是「对不对」的验证，默认 60s 已偏慢）。
@@ -31,7 +34,8 @@ const SEED = Number(process.env.SOAK_SEED ?? 42);
 assert.ok(DURATION_MS >= 5000, 'SOAK_DURATION_MS 太短得不出任何结论（≥ 5s）');
 assert.ok(CONCURRENCY >= 1 && CONCURRENCY <= 256, 'SOAK_CONCURRENCY 应在 1..256');
 
-/** 确定性 RNG（mulberry32）：种子固定 ⇒ 故障序列可复现，挂了能原样重放 */
+/** 确定性 RNG（mulberry32）：种子固定 ⇒ **故障序列**可复现（第 N 个请求注不注入、
+ *  注入什么是定的）；按墙钟停表 ⇒ run 总数/吞吐不可复现（别拿它们当回归基线） */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -227,11 +231,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }, DURATION_MS + 30_000);
 
+  // 采样间隔随时长缩放：任何时长都攒够内存断言所需的样本量（≥10 个）——
+  // 「采样不足就跳过断言」= 静默跳过 = 假装验过（第八轮复审抓到的自家病灶）。
+  const SAMPLE_INTERVAL_MS = Math.max(500, Math.floor(DURATION_MS / 30));
   const memSamples: Array<{ t: number; heap: number; rss: number }> = [];
   const sampler = setInterval(() => {
     const m = process.memoryUsage();
     memSamples.push({ t: Date.now(), heap: m.heapUsed, rss: m.rss });
-  }, 2000);
+  }, SAMPLE_INTERVAL_MS);
 
   let total = 0;
   let failed = 0;
@@ -299,12 +306,26 @@ async function main(): Promise<void> {
   // —— 断言 ——
   assert.ok(total >= 100, `样本太少（${total} 个 run），统计结论无意义 —— 加长 SOAK_DURATION_MS`);
 
-  // ① 失败率区间：不可重试注入率 4%/请求，工具路径一次 run 两次请求（≈7.8%），重试吸收可重试故障。
-  //    区间放得很宽：下界钉「故障没被静默吞掉」，上界钉「重试真的在吸收可重试故障」。
-  assert.ok(failed > 0, '注入了 8% 的故障却 0 失败 —— 故障被静默吞了（比全挂更可怕）');
+  // ① 失败与注入**逐笔对账**（不是宽区间糊弄）：
+  //    400 / 流内错误是不可重试故障 —— 每个这样的响应**恰好杀死一个 run**（一个 run
+  //    不可能吃到两个：第一发就终局）。所以 failed 必须 ≥ 两者之和（少了 = 故障被
+  //    静默吞了，比全挂更可怕）；而可重试故障（429/截断）要连穿 适配器 2 次 × 引擎 3 次
+  //    重试才会杀死 run（ppm 级），故 failed 超出部分不得超过请求的 0.1%。
+  const nonRetryable = provider.stats.f400 + provider.stats.errorShard;
   assert.ok(
-    rate > 0.005 && rate < 0.3,
-    `失败率 ${(rate * 100).toFixed(2)}% 不在 (0.5%, 30%) 区间：偏离注入率太远说明重试/分类出了问题`,
+    provider.stats.f429 + provider.stats.truncated > 0,
+    '可重试故障一次都没注入 —— 注入机制坏了，后面的断言都在空转',
+  );
+  assert.ok(nonRetryable > 0, '不可重试故障一次都没注入 —— 同上');
+  assert.ok(
+    failed >= nonRetryable,
+    `失败数 ${failed} < 不可重试注入数 ${nonRetryable} —— 有故障被静默吞了（比全挂更可怕）`,
+  );
+  const retryableSlack = Math.max(2, Math.ceil(provider.stats.requests * 0.001));
+  assert.ok(
+    failed <= nonRetryable + retryableSlack,
+    `失败数 ${failed} 超出不可重试注入数 ${nonRetryable} 太多（容差 ${retryableSlack}）—— ` +
+      '重试没在吸收可重试故障（429/截断），或出现了计划外的失败类别',
   );
 
   // ② 错误分类：绝不允许 unknown / throw 出契约外
@@ -331,22 +352,27 @@ async function main(): Promise<void> {
   }
 
   // ④ 内存有界：丢掉前 20% 采样（预热），末 3 个均值相对前 3 个均值的增长 < 48MB。
-  //    真泄漏在数千次 run 下是数百 MB 量级，这个阈值的信噪比足够。
-  if (memSamples.length >= 10) {
-    const warm = memSamples.slice(Math.ceil(memSamples.length * 0.2));
-    const avg = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length;
-    const headAvg = avg(warm.slice(0, 3).map((s) => s.heap));
-    const tailAvg = avg(warm.slice(-3).map((s) => s.heap));
-    assert.ok(
-      tailAvg - headAvg < 48 * 1024 * 1024,
-      `heapUsed 热身后仍增长 ${mb(tailAvg - headAvg)}（${mb(headAvg)} → ${mb(tailAvg)}）—— 疑似泄漏`,
-    );
-  } else {
-    console.log('（采样不足 10 个，跳过内存断言 —— 加长 SOAK_DURATION_MS 才会启用）');
-  }
+  //    采样间隔已随时长缩放（SAMPLE_INTERVAL_MS），样本量不够是脚本 bug —— 硬失败，
+  //    不「跳过」（静默跳过 = 假装验过）。
+  assert.ok(
+    memSamples.length >= 10,
+    `内存采样不足（${memSamples.length} 个）—— 采样间隔缩放失效，这是脚本 bug，不是跳过`,
+  );
+  const warm = memSamples.slice(Math.ceil(memSamples.length * 0.2));
+  const avg = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const headAvg = avg(warm.slice(0, 3).map((s) => s.heap));
+  const tailAvg = avg(warm.slice(-3).map((s) => s.heap));
+  assert.ok(
+    tailAvg - headAvg < 48 * 1024 * 1024,
+    `heapUsed 热身后仍增长 ${mb(tailAvg - headAvg)}（${mb(headAvg)} → ${mb(tailAvg)}）—— 疑似泄漏`,
+  );
 
   clearTimeout(watchdog);
-  console.log('\nOK —— soak 全过：故障被看见、被分类、被重试吸收，内存有界，进程能干净退出。');
+  console.log(
+    `\nOK —— soak 全过：${total} run / ${provider.stats.requests} 请求，` +
+      `失败与不可重试注入逐笔对账（${failed} vs ${nonRetryable}），` +
+      `错误分类无 unknown，metrics 对账一致，heap ${mb(headAvg)} → ${mb(tailAvg)}（热身后），干净退出。`,
+  );
 }
 
 await main();
