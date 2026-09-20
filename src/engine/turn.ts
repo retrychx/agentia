@@ -38,7 +38,8 @@ import { classifyError, isAbortError } from './errors.js';
 import { createBudgetGuard } from './budget.js';
 import type { BudgetGuard } from './budget.js';
 import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
-import { backoffDelay, resolveRetry, sleep } from './retry.js';
+import { backoffDelay, resolveRetry, retryAllowed, sleep } from './retry.js';
+import { buildTurnRequest } from './turn-request.js';
 import type { ResolvedRetry, RetryOptions } from './retry.js';
 import type { AgentStopReason, ContextPolicy, SystemParam } from './types.js';
 import { buildPricing, costEstimate, usageFromAnthropic } from './usage.js';
@@ -298,14 +299,17 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
     turnId = args.recorder.begin('llm.turn', args.model, args.parentSpanId);
     if (attempt > 1) args.recorder.setAttribute(turnId, 'retry.attempt', attempt);
     try {
-      const stream = args.client.messages.stream({
-        model: args.model,
-        max_tokens: args.maxTokens,
-        ...(ctx.system ? { system: ctx.system } : {}),
-        ...(ctx.apiTools.length ? { tools: ctx.apiTools } : {}),
-        messages: ctx.messages,
-        ...(signal ? { signal } : {}),
-      });
+      // 请求装配外移到 turn-request.ts（三个条件展开的「键在场与否」是语义，单测钉住）
+      const stream = args.client.messages.stream(
+        buildTurnRequest({
+          model: args.model,
+          maxTokens: args.maxTokens,
+          system: ctx.system,
+          apiTools: ctx.apiTools,
+          messages: ctx.messages,
+          signal,
+        }),
+      );
       stream.on('text', (delta) => {
         emitted = true;
         try {
@@ -325,9 +329,10 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
         break;
       }
       // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
-      const canRetry =
-        retryCfg !== null && attempt < retryCfg.maxAttempts && retryCfg.isRetryable(e) && !emitted;
-      if (!canRetry) throw e; // 冒泡：runAgent 或子 agent 运行器负责标记根/capability 与收尾
+      const canRetry = retryAllowed(retryCfg, attempt, e, emitted);
+      // 后半句只为让 TS 收窄：canRetry 为真时 retryCfg 必然非 null（合取的第一项），但**收窄不会
+      // 穿过变量**，而下面几行要用 retryCfg 的字段（backoffDelay / onRetry）。语义与抽取前一致。
+      if (!canRetry || retryCfg === null) throw e; // 冒泡：runAgent 或子 agent 运行器负责收尾
       const delayMs = backoffDelay(attempt, retryCfg);
       args.recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
       try {

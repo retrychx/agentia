@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_RETRY, backoffDelay, resolveRetry, sleep } from '../../src/engine/retry.js';
+import {
+  DEFAULT_RETRY,
+  backoffDelay,
+  resolveRetry,
+  sleep,
+  retryAllowed,
+} from '../../src/engine/retry.js';
 import type { RetryOptions } from '../../src/engine/retry.js';
 import { classifyError } from '../../src/index.js';
 
@@ -122,5 +128,36 @@ describe('sleep（可中断）', () => {
       sleep(5000, ac.signal),
       (e: unknown) => (e as Error).name === 'AbortError',
     );
+  });
+});
+
+describe('retryAllowed —— 重试闸（从 streamTurn 的行内合取抽出）', () => {
+  /** 夹具：只需 maxAttempts 与 isRetryable 两个字段，其余（退避配置）不参与本判定 */
+  const cfg = { maxAttempts: 3, isRetryable: (e: unknown) => e === 'retryable' } as never;
+
+  it('四项全满足 ⇒ 允许重试', () => {
+    assert.equal(retryAllowed(cfg, 1, 'retryable', false), true);
+  });
+
+  it('重试关闭（cfg 为 null）⇒ 一律不重试', () => {
+    assert.equal(retryAllowed(null, 1, 'retryable', false), false);
+  });
+
+  it('次数未尽：attempt 严格小于 maxAttempts（到顶那次不重试）', () => {
+    assert.equal(
+      retryAllowed(cfg, 2, 'retryable', false),
+      true,
+      'maxAttempts=3 时第 2 次失败仍可重试',
+    );
+    assert.equal(retryAllowed(cfg, 3, 'retryable', false), false, '第 3 次失败已到顶');
+  });
+
+  it('错误判定为不可重试 ⇒ 不重试（即使次数还有余量）', () => {
+    assert.equal(retryAllowed(cfg, 1, 'fatal', false), false);
+    assert.equal(retryAllowed(cfg, 1, new Error('x'), false), false);
+  });
+
+  it('**已吐出文本 ⇒ 一律不重试**（重复输出护栏：吐出去的字收不回来）', () => {
+    assert.equal(retryAllowed(cfg, 1, 'retryable', true), false, '这一条压过其余三项');
   });
 });

@@ -102,3 +102,19 @@ export function backoffDelay(attempt: number, r: ResolvedRetry): number {
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return interruptibleSleep(ms, signal, 'run 已被取消');
 }
+
+/**
+ * 本次失败能否重试：**四项合取** —— 配置在场 + 次数未尽 + 判定可重试 + 本次尝试**未产出任何文本**。
+ *
+ * 从 turn.ts 的 streamTurn 行内抽出（2026-09-20，turn 拆分第二步）。最后一项是护栏，不是优化：
+ * **已经吐出去的字收不回来**，重试会重复输出 —— 所以吐过就一律不重试，哪怕错误本身可重试、
+ * 次数也还有余量。这四条此前只能透过整条 run 的行为间接观察。
+ */
+export function retryAllowed(
+  cfg: ResolvedRetry | null,
+  attempt: number,
+  error: unknown,
+  emitted: boolean,
+): boolean {
+  return cfg !== null && attempt < cfg.maxAttempts && cfg.isRetryable(error) && !emitted;
+}
