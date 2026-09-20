@@ -235,3 +235,45 @@ describe('G1 renderRunReport（CLI / 日志用）', () => {
     assert.match(text, /没有可归因的能力\/模型/);
   });
 });
+
+describe('G1 mergeRunReports：capability 的 tokens 合并分支（report.ts 271-273）', () => {
+  it('同一 capability 跨 run 的 usage 逐字段累加（含 costUsd），不是覆盖也不是丢', () => {
+    // 反向验证：把 `addUsage(acc.tokens, u.tokens)` 改成赋值 ⇒ 只剩最后一个 run 的量，
+    // 本用例红在各字段的合计上。构造两个 run 各自的 skill span 都带 usage。
+    const cap = (input: number, output: number, cost: number) =>
+      span({
+        spanId: 'capability-1',
+        kind: 'capability',
+        name: 'writer',
+        attributes: { skill: 'writer' },
+        startedAt: 100,
+        endedAt: 200,
+        usage: {
+          inputTokens: input,
+          outputTokens: output,
+          cacheReadTokens: 3,
+          cacheCreationTokens: 4,
+          costEstimate: cost,
+        },
+      });
+    const a = buildRunReport(traceWith([cap(10, 5, 0.001)]));
+    const b = buildRunReport(traceWith([cap(20, 7, 0.002)]));
+
+    const merged = mergeRunReports([a, b]);
+    const writer = merged.capabilities.find((c) => c.capability === 'skill:writer')!;
+    assert.deepEqual(
+      writer.tokens,
+      {
+        inputTokens: 30,
+        outputTokens: 12,
+        cacheReadTokens: 6,
+        cacheCreationTokens: 8,
+        costEstimate: 0.003,
+      },
+      'tokens 必须逐字段累加（costEstimate 也并进 tokens，见 addUsage）',
+    );
+    assert.equal(writer.tokensTotal, 56, 'tokensTotal 只算四类 token，不含成本');
+    assert.equal(writer.costUsd, 0.003, 'costUsd 独立累加');
+    assert.equal(writer.calls, 2);
+  });
+});

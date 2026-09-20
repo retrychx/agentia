@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Skill, collectSkills, skillToTool, TraceRecorder, runAgent } from '../../src/index.js';
-import type { AgentTool, SkillContext, SkillCapability, ToolRunContext } from '../../src/index.js';
+import type {
+  AgentTool,
+  ModelClient,
+  SkillContext,
+  SkillCapability,
+  ToolRunContext,
+} from '../../src/index.js';
 import { mockClient, endTurnMsg, toolUseMsg, U } from '../helpers.js';
 
 /** 自造 stop_reason：让受限子运行以「未识别的 stop_reason」失败（loop.error 由 engine 挂） */
@@ -318,5 +324,136 @@ describe('Skill 陈旧 llmError 不得给无关异常贴标签', () => {
     assert.equal(capability.error?.type, 'agent_error');
     assert.equal(capability.error?.retryable, false);
     assert.match(capability.error?.message ?? '', /model_context_window_exceeded/);
+  });
+});
+
+describe('Skill 被引擎超时放弃等待（ToolRunContext.abandoned）', () => {
+  it('capability span 立刻以 error(timeout) 收尾 + llm 子循环被中止（与 subagent 同款）', async () => {
+    // 反向验证：摘掉 onAbandoned 的 close ⇒ 交付的 trace 里 capability span 永远没有
+    // endedAt、status 停在缺省 ok（与同回合 tool.output 的 timeout 矛盾），本用例红；
+    // 摘掉合成 signal ⇒ subAborted 为 false，子循环在后台继续烧 token。
+    // 这是「span 超时后立刻收尾」修复的承重路径，形态同 subagent.test.ts 的既有用例。
+    class Slow {
+      @Skill({ description: 'd' })
+      async go(_input: unknown, ctx: SkillContext): Promise<string> {
+        const out = await ctx.llm({ prompt: 'q' });
+        return out.text;
+      }
+    }
+    let subAborted = false;
+    let calls = 0;
+    const client = {
+      messages: {
+        stream: (params: unknown) => ({
+          on() {},
+          finalMessage: async () => {
+            calls++;
+            if (calls === 1) return toolUseMsg('go', {}, 'tu1'); // 主循环调 skill
+            if (calls === 2) {
+              // llm 子循环的模型请求：挂住直到 signal 中止（慢 skill 的形态）
+              await new Promise<never>((_, reject) => {
+                const sig = (params as { signal?: AbortSignal }).signal;
+                sig?.addEventListener(
+                  'abort',
+                  () => {
+                    subAborted = true;
+                    reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+                  },
+                  { once: true },
+                );
+              });
+            }
+            return endTurnMsg('主循环收尾');
+          },
+        }),
+      },
+    } as unknown as ModelClient;
+
+    const tool = skillToTool(onlySkill(new Slow()), () => []);
+    const result = await runAgent({
+      model: 'test-model',
+      maxTokens: 1024,
+      client,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [tool],
+      toolTimeoutMs: 30,
+    });
+
+    assert.equal(result.stopReason, 'end_turn', 'skill 超时不该中断主 run');
+    assert.ok(subAborted, 'llm 子循环必须收到中止信号 —— 否则它在后台继续烧 token');
+    const capSpan = result.trace.spans.find((s) => s.kind === 'capability');
+    assert.ok(capSpan, 'trace 里应有 capability span');
+    assert.notEqual(
+      capSpan.endedAt,
+      undefined,
+      '交付的 trace 里 capability span 必须已收尾（浅拷交付后迟到的 close 进不去）',
+    );
+    assert.equal(capSpan.status, 'error');
+    assert.equal(capSpan.error?.type, 'timeout');
+  });
+});
+
+describe('Skill 防御分支', () => {
+  it('手动直调 run(input)（无 ctx）⇒ 抛可读错误（engine 才会注入 ToolRunContext）', async () => {
+    // 反向验证：摘掉 `if (!ctx) throw` ⇒ 下一步 `ctx.recorder` 炸裸 TypeError，
+    // 本用例红在「报文不可读」。
+    class Bare {
+      @Skill({ description: 'd' })
+      async go(): Promise<string> {
+        return 'x';
+      }
+    }
+    const tool = skillToTool(onlySkill(new Bare()), () => []);
+    await assert.rejects(async () => tool.run({}), /只能在主 agent 运行中被调用/);
+  });
+
+  it('ctx.llm({})（无 prompt 无 messages）⇒ 抛错，不拿空消息列表去调模型', async () => {
+    // 反向验证：摘掉 messages.length === 0 的拦 ⇒ 空 messages 进子循环，本用例红在「不抛」。
+    class Empty {
+      @Skill({ description: 'd' })
+      async go(_input: unknown, ctx: SkillContext): Promise<string> {
+        await ctx.llm({});
+        return '不应到达';
+      }
+    }
+    // 模型根本不该被调到（拦在发请求之前）—— 空脚本被触发即证明守卫失效
+    const { client } = mockClient([]);
+    const { ctx } = makeCtx(client);
+    const tool = skillToTool(onlySkill(new Empty()), () => []);
+    await assert.rejects(async () => tool.run({}, ctx), /需要 prompt 或 messages/);
+  });
+
+  it('llm 子运行挂起（awaiting_approval）且 loop.error 为 undefined ⇒ 兜底 agent_error 收尾', async () => {
+    // 反向验证：摘掉 `loop.error ??` 的兜底 ⇒ llmError 是 undefined，capability span 记成
+    // error 却没有原因（「非正常收尾必带结构化 error」破缺），本用例红在 error?.type 为空。
+    // 构造：skill 子循环里有一个 approval:'required' 的工具、没有任何审批决定 ⇒
+    // 子循环挂起（stopReason='awaiting_approval'，suspendedResult 的 error 恒为 undefined）——
+    // 这是「非成功收尾 + loop.error 为 undefined」唯一能从公共面构造的形态。
+    class Approving {
+      @Skill({ description: 'd', tools: ['danger'] })
+      async go(_input: unknown, ctx: SkillContext): Promise<string> {
+        const out = await ctx.llm({ prompt: 'q' });
+        return out.text;
+      }
+    }
+    const danger: AgentTool = {
+      name: 'danger',
+      description: 'd',
+      inputSchema: { type: 'object', properties: {} },
+      approval: 'required',
+      run: () => '不应执行',
+    };
+    const { client } = mockClient([toolUseMsg('danger', {}, 'd1')]);
+    const { ctx, recorder } = makeCtx(client);
+    const tool = skillToTool(onlySkill(new Approving()), () => [danger]);
+
+    await assert.rejects(async () => tool.run({}, ctx), /awaiting_approval/);
+
+    const capability = recorder.snapshot('error').spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'error');
+    // 兜底分支的产物：type='agent_error'、retryable=true，message 是那份 report
+    assert.equal(capability.error?.type, 'agent_error');
+    assert.equal(capability.error?.retryable, true);
+    assert.match(capability.error?.message ?? '', /awaiting_approval/);
   });
 });

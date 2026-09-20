@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mcpTools } from '../../src/integrations/mcp.js';
+import { brief, jsonRpcError, mcpTools } from '../../src/integrations/mcp.js';
 import type { McpClientLike, McpToolInfo } from '../../src/integrations/mcp.js';
 import { createApp, runAgent, Tool } from '../../src/index.js';
 import type { CapabilityMiddleware } from '../../src/index.js';
@@ -403,5 +403,24 @@ describe('MCP 桥的健壮性与记账', () => {
     // 键按**菜单名**分（含 server 前缀，全局唯一），值为 server 认识的**原名**
     assert.equal(turn.attributes['mcp.tool.mcp_s_get_time'], 'get-time');
     assert.equal(turn.attributes['mcp.tool.mcp_s_fetch_weather'], 'fetch-weather');
+  });
+});
+
+describe('桥共享 helper 的防御分支（brief / jsonRpcError）', () => {
+  it('brief() 收到循环引用（JSON.stringify 抛）⇒ 走 String() 兜底，不把报错路径自己搞炸', () => {
+    // 反向验证：摘掉 brief 的 try/catch ⇒ 循环引用让 JSON.stringify 抛出，
+    // 「报告错误」这个动作本身炸了（错误消息进不了日志），本用例红在「抛 TypeError」。
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    assert.equal(brief(circular), String(circular), 'stringify 失败时回落 String(value)');
+  });
+
+  it('jsonRpcError 收到非对象（server 回了畸形 error 字段）⇒ 走 `MCP error: ...` 分支', () => {
+    // 反向验证：摘掉非对象分支 ⇒ `err as {...}` 解构出 undefined code/message，
+    // 报文变成「MCP error undefined: undefined」（病因全丢），本用例红在报文。
+    const e = jsonRpcError('boom');
+    assert.equal(e.message, 'MCP error: boom');
+    const n = jsonRpcError(42);
+    assert.equal(n.message, 'MCP error: 42');
   });
 });

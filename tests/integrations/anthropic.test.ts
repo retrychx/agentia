@@ -693,6 +693,46 @@ describe('重试 parity（SDK 缺省语义：408/409/429/5xx/连接错误，尊�
 });
 
 describe('中止在飞请求（零 key、零外网：本地假端点）', () => {
+  it('timeout 到点 ⇒ 在飞请求以 TimeoutError 中止（composeSignal 的计时器路径）', async () => {
+    // 反向验证：摘掉 composeSignal 的 setTimeout（或 abort 不带 TimeoutError 语义）⇒
+    // 本用例红在「3s 都没收场 / 收场的不是 TimeoutError」。#75 只加了构造期校验，
+    // 「timeout 到点真中止请求」这条链此前没有自己的用例。
+    let hits = 0;
+    const server = createServer((_req, _res) => {
+      hits += 1; // 收到即可，永不写响应
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: `http://127.0.0.1:${port}`,
+        timeout: 30,
+      });
+      const t0 = Date.now();
+      const err = await client.messages
+        .stream(BASE_PARAMS)
+        .finalMessage()
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      const dt = Date.now() - t0;
+      assert.ok(err instanceof Error, `应抛错，实际：${String(err)}`);
+      assert.equal(err.name, 'TimeoutError', '超时必须以 TimeoutError 语义收场（不是 AbortError）');
+      // 下界不贴边（20 < 30）：证明真等到了计时器到点，而不是别的理由立刻失败；
+      // 上界证明它没有挂死。abort 后走「signal.aborted ⇒ 原样向上」，不得再重试。
+      assert.ok(dt >= 20, `应真等到超时（30ms），${dt}ms 就收场 = 计时器没走`);
+      assert.ok(dt < 3_000, `到点后必须收场，实际等了 ${dt}ms`);
+      assert.equal(hits, 1, '超时中止不得再触发重试');
+      const span = classifyError(err);
+      assert.equal(span.type, 'timeout', 'TimeoutError 由引擎归 timeout 一类账');
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it('abort 后请求必须断开（signal 直接进 fetch，不进 body）', async () => {
     // 假端点**故意不响应**：请求就此挂在飞 —— 正是「调用方想中止在飞 run」的场景。
     let hits = 0;
@@ -884,6 +924,138 @@ describe('非 SSE 回落路径的形态校验（200 裹错误 / 缺 content）',
       assert.equal(span.retryable, true);
     } finally {
       await ep.close();
+    }
+  });
+});
+
+describe('防御分支：畸形分片与网络失败', () => {
+  it('流里混入非 JSON 的 data 行：跳过它，后续正常事件照常组装', async () => {
+    // 反向验证：摘掉 `JSON.parse 失败 ⇒ continue` ⇒ 半截分片抛 SyntaxError 毁掉整个流，
+    // 本用例红在「竟然抛错」。sse() helper 只写合法事件，这里必须手写原始帧。
+    const raw =
+      'data: {"type":"message_start","message":{"id":"m","model":"m","usage":{"input_tokens":1,"output_tokens":1}}}\n\n' +
+      'data: {这行不是 JSON（半截/畸形分片）\n\n' +
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"活下来了"}}\n\n' +
+      'data: {"type":"content_block_stop","index":0}\n\n' +
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}\n\n' +
+      'data: {"type":"message_stop"}\n\n';
+    const ep = await fakeEndpoint((_hits, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(raw);
+    });
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      assert.equal(final.stop_reason, 'end_turn');
+      const text = final.content
+        .filter((b) => b.type === 'text')
+        .map((b) => (b as { text: string }).text)
+        .join('');
+      assert.equal(text, '活下来了', '畸形行之后的事件必须照常组装');
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('tool_use 块既无 input_json_delta 也无内联 input ⇒ input 回落 {}（空入参工具）', async () => {
+    // 反向验证：摘掉 `b.inlineInput ?? {}` 的回落 ⇒ input 是 undefined，本用例红。
+    const events = [
+      {
+        type: 'message_start',
+        message: { id: 'msg_e', type: 'message', role: 'assistant', model: 'm', content: [] },
+      },
+      // 刻意不给 input 字段（连官方形态的 {} 都没有），也不发任何 delta
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_e', name: 'ping' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'tool_use', stop_sequence: null },
+        usage: { output_tokens: 2 },
+      },
+      { type: 'message_stop' },
+    ];
+    const ep = await fakeEndpoint((_h, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      const block = final.content[0] as { type: string; input: unknown };
+      assert.equal(block.type, 'tool_use');
+      assert.deepEqual(block.input, {}, '空入参必须落成 {}，不是 undefined');
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('tool_use 的 input_json_delta 拼出非法 JSON ⇒ 原样透传字符串（交下游 schema 校验）', async () => {
+    // 反向验证：摘掉 parseToolInput 的 catch ⇒ JSON.parse 抛出、整条流报废，本用例红。
+    const events = [
+      {
+        type: 'message_start',
+        message: { id: 'msg_j', type: 'message', role: 'assistant', model: 'm', content: [] },
+      },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_j', name: 'ping', input: {} },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"bad":' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'tool_use', stop_sequence: null },
+        usage: { output_tokens: 2 },
+      },
+      { type: 'message_stop' },
+    ];
+    const ep = await fakeEndpoint((_h, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({ apiKey: 'sk-test', baseURL: ep.baseURL });
+      const final = await client.messages.stream(BASE_PARAMS).finalMessage();
+      const block = final.content[0] as { type: string; input: unknown };
+      assert.equal(block.type, 'tool_use');
+      assert.equal(block.input, '{"bad":', '非法 JSON 原样透传（不吞成 {}、不抛）');
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('网络失败（连接被掐）重试耗尽后抛出：总调用次数 = 1 + maxRetries', async () => {
+    // 反向验证：摘掉 catch 里的 `continue`（或把 `attempt >= maxRetries` 改错）⇒
+    // 要么不重试（hits=1）、要么无限重试（挂住），本用例红。
+    let hits = 0;
+    const server = createServer((req) => {
+      hits += 1;
+      req.socket.destroy(); // 接受后立刻掐断 ⇒ fetch reject（undici TypeError: fetch failed）
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: `http://127.0.0.1:${port}`,
+        maxRetries: 1,
+      });
+      const err = await client.messages
+        .stream(BASE_PARAMS)
+        .finalMessage()
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      assert.ok(err instanceof Error, `重试耗尽后必须抛出，实际：${String(err)}`);
+      assert.equal(hits, 2, '首次 + maxRetries(1) = 2 次请求');
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
     }
   });
 });

@@ -10,11 +10,45 @@
 // 与原脚本行为一致；用 process.execPath 起手，不依赖 PATH 里的 node（Windows 同理）。
 
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// 覆盖率棘轮走 c8（devDependency），**不是** node 内建的 --experimental-test-coverage：
+// 后者在 `--import tsx`（loader hook）下整个失灵 —— 覆盖率报告不产出、阈值永不触发
+// （实测：--test-coverage-lines=100 仍然 exit 0，门禁是死的）。c8 经
+// NODE_V8_COVERAGE 收各子进程的原始 V8 覆盖率再按 source map 重映射，tsx 下可用。
+// 阈值 = 棘轮防退化（2026-09-21 c8 实测：行 98.88 / 分支 91.71 / 函数 98.5，阈值留了余量），
+// 不是目标 —— 别追 100%，剩下的多是防御性兜底，凑数测试 = 真空变绿。
+// 只挂框架套件：CLI / trace-view 的产物不在 src/ 口径内。
+const C8 = fileURLToPath(new URL('../node_modules/c8/bin/c8.js', import.meta.url));
+const COVERAGE = {
+  lines: 95,
+  branches: 85,
+  functions: 92,
+};
 
 const suites = [
   {
-    name: '框架套件（tests/**/*.test.ts）',
-    args: ['--import', 'tsx', '--test', 'tests/**/*.test.ts'],
+    name: '框架套件（tests/**/*.test.ts，含 c8 覆盖率棘轮）',
+    args: [
+      C8,
+      '--check-coverage',
+      '--lines',
+      String(COVERAGE.lines),
+      '--branches',
+      String(COVERAGE.branches),
+      '--functions',
+      String(COVERAGE.functions),
+      '--include',
+      'src/**',
+      '--reporter',
+      'text',
+      // c8 之后的参数是被测命令本身：node --import tsx --test …
+      process.execPath,
+      '--import',
+      'tsx',
+      '--test',
+      'tests/**/*.test.ts',
+    ],
   },
   {
     name: 'CLI 套件（packages/cli/test/*.test.mjs）',

@@ -144,6 +144,13 @@ describe('createStdioMcpConnector —— stdio 连接器', () => {
     await assert.rejects(() => c.callTool('get-time', {}), /isError/);
   });
 
+  it('server 回 JSON-RPC 错误帧（{error:{...}}）⇒ 在途 waiter 被 reject（不挂死、不假装成功）', async () => {
+    // 反向验证：摘掉 waiter 的 `try { resolve(unwrap(...)) } catch { reject }` ⇒
+    // unwrap 抛出的 jsonRpcError 变成未捕获异常 / waiter 永久挂起，本用例红。
+    const c = stdio('rpcerror');
+    await assert.rejects(() => c.callTool('get-time', {}), /MCP error -32000: server says no/);
+  });
+
   it('响应正常时 callTool 原样交回 server 的结果', async () => {
     const c = stdio('normal');
     const r = (await c.callTool('get-time', { tz: 'UTC' })) as { content?: unknown };
@@ -727,5 +734,84 @@ describe('StreamableHTTP：abandoned 透传到传输层', () => {
       [ac.signal, ac.signal],
       '首次与自愈重试都必须带上裁判的 abandoned signal',
     );
+  });
+});
+
+describe('StreamableHTTP：响应形态防御（与 stdio 侧同款，HTTP 侧此前漏测）', () => {
+  /** 把 tools/list 的 result 换成任意值（握手与其余请求照常走假 server） */
+  const tamperListResult = (result: unknown): McpConnector => {
+    const { fetchImpl } = fakeServer();
+    const tampered: typeof fetch = (async (url: unknown, init: unknown) => {
+      const i = init as { body?: string };
+      const msg = i.body ? (JSON.parse(i.body) as { id?: number; method?: string }) : null;
+      if (msg?.method !== 'tools/list') return fetchImpl(url as never, init as never);
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: tampered,
+    });
+    open.push(connector);
+    return connector;
+  };
+
+  it('tools/list 返回非对象 ⇒ 响亮抛错（不静默变成空菜单）', async () => {
+    // 反向验证：摘掉 `typeof r !== 'object'` 的拦 ⇒ `(r as {tools}).tools` 读出 undefined
+    // ⇒ 静默回落空菜单（「一个工具都没有」而不是「server 坏了」），本用例红在「不抛」。
+    await assert.rejects(() => tamperListResult('nope').listTools(), /返回了非对象/);
+  });
+
+  it('tools/list 的 tools 不是数组 ⇒ 响亮抛错', async () => {
+    await assert.rejects(() => tamperListResult({ tools: 'nope' }).listTools(), /不是数组/);
+  });
+
+  it('SSE 响应里没有与请求 id 配对的报文 ⇒ 响亮抛错（不把别的帧当结果）', async () => {
+    // 反向验证：摘掉 SSE 分支的 id 配对 ⇒ 错 id 的帧被当成本次结果（静默错值），本用例红。
+    const { fetchImpl } = fakeServer({ sse: true });
+    const wrongId: typeof fetch = (async (url: unknown, init: unknown) => {
+      const i = init as { body?: string };
+      const msg = i.body ? (JSON.parse(i.body) as { id?: number; method?: string }) : null;
+      if (msg?.method !== 'tools/call') return fetchImpl(url as never, init as never);
+      // 串包：回一个**别的请求**的 id 的 SSE 帧
+      const payload = JSON.stringify({
+        jsonrpc: '2.0',
+        id: (msg.id ?? 0) + 1000,
+        result: { content: [{ type: 'text', text: 'ok' }] },
+      });
+      return new Response(`event: message\ndata: ${payload}\n\n`, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as unknown as typeof fetch;
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: wrongId,
+    });
+    open.push(connector);
+    await assert.rejects(
+      () => connector.callTool('get-time', {}),
+      /SSE 响应里没有 id 为 \d+ 的报文/,
+    );
+  });
+
+  it('响应体不是合法 JSON ⇒ 响亮抛错（不静默返回 undefined）', async () => {
+    // 反向验证：摘掉 JSON.parse 的 catch ⇒ 裸 SyntaxError 冒出去（无可读上下文），
+    // 本用例红在「报文不符」。
+    const { fetchImpl } = fakeServer();
+    const notJson: typeof fetch = (async (url: unknown, init: unknown) => {
+      const i = init as { body?: string };
+      const msg = i.body ? (JSON.parse(i.body) as { method?: string }) : null;
+      if (msg?.method !== 'tools/call') return fetchImpl(url as never, init as never);
+      return new Response('<html>bad gateway</html>', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: notJson,
+    });
+    open.push(connector);
+    await assert.rejects(() => connector.callTool('get-time', {}), /不是合法 JSON/);
   });
 });

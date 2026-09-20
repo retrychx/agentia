@@ -8,7 +8,7 @@
  *
  * 行为由 env 决定（一个文件覆盖全部分支，免得为每个场景再开一个进程脚本）：
  *
- *   FAKE_MCP_MODE      normal | split | logline | noinit | die | iserror | badtools | stubborn | silentcall
+ *   FAKE_MCP_MODE      normal | split | logline | noinit | die | iserror | badtools | stubborn | silentcall | rpcerror
  *     normal    正常握手 + tools/list + tools/call
  *     split     tools/list 响应**分两个 chunk** 下发（间隔 15ms）⇒ 验攒包
  *     logline   tools/list 之前先往 stdout 写一行非 JSON 日志 ⇒ 验忽略它
@@ -19,6 +19,8 @@
  *     stubborn  **忽略 SIGTERM**（协议面同 normal）⇒ 验 close() 走 SIGKILL 后**仍等真退出**
  *     silentcall tools/call **永不回应**（握手与 tools/list 正常）⇒ 验裁判放弃等待后
  *               pending 簿记被回收，「活着但不回包」的 server 不会造成无界泄漏
+ *     rpcerror  tools/call 回 `{ error: {...} }` 形态的 JSON-RPC 错误 ⇒ 验 waiter 走 reject
+ *               （区别于 iserror：那是 result 里的协议层失败标记，这是 JSON-RPC 层的错误帧）
  *   FAKE_MCP_LOG_FILE 若设，收到的每个 method 追加一行（测试据此断言握手顺序 / 只握手一次）
  *   FAKE_MCP_PID_FILE 若设，启动时写入自己的 pid（测试据此断言 close() 返回时进程真没了）
  */
@@ -88,6 +90,11 @@ function handle(msg) {
     if (MODE === 'silentcall') return; // 活着但永不回包：验连接器侧 pending 簿记的回收
     if (MODE === 'iserror') {
       reply(msg.id, { isError: true, content: [{ type: 'text', text: 'boom from server' }] });
+      return;
+    }
+    if (MODE === 'rpcerror') {
+      // JSON-RPC 层的错误帧（不是 result 里的 isError）⇒ 连接器 waiter 必须 reject
+      send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'server says no' } });
       return;
     }
     reply(msg.id, { content: [{ type: 'text', text: `called ${msg.params.name}` }] });

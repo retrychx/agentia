@@ -416,6 +416,77 @@ try {
     );
   }
 
+  // —— 9) npm tarball「装出来跑」：真 pack 两包 → 临时项目离线 file: 安装 → 用装出来的产物真跑 ——
+  // 步骤 8 只验 pack 的**内容清单**（dry-run），「装出来的包能不能跑」是另一件事：dist 漏文件、
+  // bin 指向不存在的路径、exports 写错，都只在「真装一次再真跑」时现形（与 4e 的「产物存在 ≠
+  // 产物能跑」同一条教训，这里守的是发布形态）。两包都是零运行时依赖 ⇒ `--offline` file: 安装
+  // 不触 registry（实测 ~1s）。mock client 内联手写 —— tests/helpers 不在发布物里，
+  // 能 import 的只能是包装出来的东西。
+  const packDir = mkdtempSync(join(tmpdir(), 'agentia-pack-'));
+  const probe = mkdtempSync(join(tmpdir(), 'agentia-install-probe-'));
+  try {
+    const tarballs: string[] = [];
+    for (const dir of [repoRoot, join(repoRoot, 'packages', 'cli')]) {
+      const out = JSON.parse(
+        execFileSync(
+          'npm',
+          ['pack', '--json', '--pack-destination', packDir, '--cache', npmCache],
+          {
+            cwd: dir,
+            encoding: 'utf8',
+          },
+        ),
+      ) as Array<{ filename: string }>;
+      tarballs.push(join(packDir, out[0]!.filename));
+    }
+    writeFileSync(
+      join(probe, 'package.json'),
+      JSON.stringify({ name: 'install-probe', private: true, type: 'module' }),
+    );
+    execFileSync(
+      'npm',
+      ['install', '--offline', '--no-audit', '--no-fund', '--cache', npmCache, ...tarballs],
+      { cwd: probe, stdio: 'inherit' },
+    );
+    // 框架包：从装出来的 node_modules 里跑一次最小 run（模型侧是内联 mock，零网络）
+    writeFileSync(
+      join(probe, 'run-probe.mjs'),
+      `import { runAgent } from '@migor/agentia';\n` +
+        `const client = { messages: { stream: () => ({ on() {}, finalMessage: async () => ({\n` +
+        `  id: 'm', model: 'm', stop_reason: 'end_turn',\n` +
+        `  usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },\n` +
+        `  content: [{ type: 'text', text: 'TARBALL_OK' }],\n` +
+        `}) }) } };\n` +
+        `const r = await runAgent({ client, messages: [{ role: 'user', content: 'hi' }] });\n` +
+        `if (r.finalText !== 'TARBALL_OK') throw new Error('意外收尾: ' + r.finalText);\n` +
+        `console.log('TARBALL_OK');\n`,
+    );
+    const probeOut = execFileSync(process.execPath, ['run-probe.mjs'], {
+      cwd: probe,
+      encoding: 'utf8',
+    });
+    assert(probeOut.includes('TARBALL_OK'), `装出来的框架包跑不通：${probeOut}`);
+    // CLI 包：装出来的 bin 入口真跑 --version（读的是**包内**的 package.json —
+    // 装漏了 package.json 或 dist/cli.js 都会在这里炸）
+    const cliVersion = execFileSync(
+      process.execPath,
+      [join(probe, 'node_modules', '@migor', 'cli', 'dist', 'cli.js'), '--version'],
+      { cwd: probe, encoding: 'utf8' },
+    ).trim();
+    const expectedCliVersion = (
+      JSON.parse(readFileSync(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8')) as {
+        version: string;
+      }
+    ).version;
+    assert(
+      cliVersion === expectedCliVersion,
+      `装出来的 CLI --version=${cliVersion}，应为 ${expectedCliVersion}`,
+    );
+  } finally {
+    rmSync(packDir, { recursive: true, force: true });
+    rmSync(probe, { recursive: true, force: true });
+  }
+
   console.log('E2E-CLI PASS');
   console.log(
     JSON.stringify(

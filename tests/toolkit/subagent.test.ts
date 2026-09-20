@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { TraceRecorder, runAgent, subagentToTool } from '../../src/index.js';
+import { TraceRecorder, runAgent, subagentToTool, SystemPrompt } from '../../src/index.js';
 import type {
   AgentTool,
   JsonSchema,
@@ -324,5 +324,68 @@ describe('子 agent 被引擎超时放弃等待（ToolRunContext.abandoned）', 
     );
     assert.equal(capSpan.status, 'error');
     assert.equal(capSpan.error?.type, 'timeout');
+  });
+});
+
+describe('子 agent 防御分支', () => {
+  it('手动直调 run(input)（无 ctx）⇒ 抛可读错误（engine 才会注入 ToolRunContext）', async () => {
+    // 反向验证：摘掉 `if (!ctx) throw` ⇒ 下一步 `ctx.recorder` 炸裸 TypeError，
+    // 本用例红在「报文不可读」。
+    const tool = subagentToTool(researcherCapability(), () => []);
+    await assert.rejects(async () => tool.run({ task: 't' }), /只能在主 agent 运行中被调用/);
+  });
+
+  it('spec.system 传 SystemPrompt 实例：子循环收到缓存块数组，末尾追加 REPORT_HINT', async () => {
+    // 反向验证：摘掉 resolveSubSystem 的 `instanceof SystemPrompt` 分支 ⇒ 实例落进
+    // 字符串模板（system 变成 "[object Object]…"），本用例红在「不是块数组 / 没有 HINT」。
+    const { seen, client } = mockClient([endTurnMsg('报告')]);
+    const { ctx } = makeCtx(client);
+    const tool = subagentToTool(
+      researcherCapability({
+        system: new SystemPrompt().add('role', '你是实例化提示词的调研员', true),
+      }),
+      () => [],
+    );
+
+    const out = await tool.run({ task: 't' }, ctx);
+    assert.equal(out, '报告');
+
+    const params = seen[0] as {
+      system: Array<{ type: string; text: string; cache_control?: unknown }>;
+    };
+    assert.ok(Array.isArray(params.system), 'SystemPrompt 实例应 build 成块数组（不是拼字符串）');
+    assert.equal(params.system[0]!.text, '你是实例化提示词的调研员');
+    assert.ok(
+      params.system[0]!.cache_control !== undefined,
+      '稳定段应带缓存 breakpoint（build({cache:true})）',
+    );
+    assert.match(
+      params.system[params.system.length - 1]!.text,
+      /运行提示/,
+      'REPORT_HINT 必须追加在末尾（最终回复即交回主 agent 的报告）',
+    );
+  });
+
+  it('子运行挂起（awaiting_approval）且 loop.error 为 undefined ⇒ 兜底 agent_error 收尾', async () => {
+    // 与 skill 同款兜底分支：子循环里 approval:'required' 的工具无决定 ⇒ 挂起
+    // （suspendedResult 的 error 恒为 undefined）⇒ `loop.error ??` 兜底必须给出结构化原因。
+    const danger: AgentTool = {
+      name: 'danger',
+      description: 'd',
+      inputSchema: { type: 'object', properties: {} },
+      approval: 'required',
+      run: () => '不应执行',
+    };
+    const { client } = mockClient([toolUseMsg('danger', {}, 'd1')]);
+    const { ctx, recorder } = makeCtx(client);
+    const tool = subagentToTool(researcherCapability({ tools: ['danger'] }), () => [danger]);
+
+    await assert.rejects(async () => tool.run({ task: 't' }, ctx), /awaiting_approval/);
+
+    const capability = recorder.snapshot('error').spans.find((s) => s.kind === 'capability')!;
+    assert.equal(capability.status, 'error');
+    assert.equal(capability.error?.type, 'agent_error');
+    assert.equal(capability.error?.retryable, true);
+    assert.match(capability.error?.message ?? '', /awaiting_approval/);
   });
 });
