@@ -4,7 +4,7 @@
  * 分工：loop.ts 留入口与编排骨架（runAgent / runAgentScoped / agentLoop 本体 +
  * 缺省旋钮解析）；本文件装回合内部 —— 回合上下文装配（buildLoopContext）、
  * 回合入口检查（checkTurnEntry）、流式请求与重试（streamTurn）、回合记账
- * （recordTurnUsage）、stop_reason 分流（resolveStopReason）、工具执行
+ * （recordTurnUsage）、stop_reason 分流（已外移到 stop-reason.ts）、工具执行
  * （executeTurnTools / executeOneTool）。
  * 依赖方向单向：loop.ts → turn.ts（分层守卫禁环）；两侧共用的类型与 helper
  * （AgentLoopArgs / textOf / replaceMessages）在本文件做 module 级 export，供 loop.ts
@@ -19,7 +19,7 @@ import type {
   ToolResultBlockParam,
   ToolUseBlock,
 } from '../core/message.js';
-import { textOf as coreTextOf } from '../core/text.js';
+import { textOf } from './text.js';
 import type {
   AgentTool,
   ApprovalDecision,
@@ -381,88 +381,6 @@ export function recordTurnUsage<S extends JsonSchema>(
 }
 
 /** 回合收尾分流：finish = 终止/边界分支（带 stopReason 与收尾文本）；tools = 还有工具要执行 */
-export type StopResolution =
-  | { kind: 'finish'; stopReason: AgentStopReason; finalText: string; error?: SpanError }
-  | { kind: 'tools'; toolUses: ToolUseBlock[] };
-
-/**
- * —— 终止/边界分支（每个都给出终止结论，退出循环不再兜底改判）——
- * 五种已知 stop_reason 各有归宿；剩余形态按「有没有可执行块」区分：
- * 畸形 tool_use（块为空）与框架不认识的 stop_reason。
- */
-export function resolveStopReason(message: Message, maxTokens: number): StopResolution {
-  if (message.stop_reason === 'end_turn') {
-    return { kind: 'finish', stopReason: 'end_turn', finalText: textOf(message) };
-  }
-  if (message.stop_reason === 'refusal') {
-    return {
-      kind: 'finish',
-      stopReason: 'refusal',
-      finalText: textOf(message),
-      error: { type: 'refusal', message: 'model refused the request', retryable: false },
-    };
-  }
-  if (message.stop_reason === 'max_tokens') {
-    // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span），
-    // 否则 trace 里这类 run「失败却没有原因」
-    return {
-      kind: 'finish',
-      stopReason: 'max_tokens',
-      finalText: textOf(message),
-      error: {
-        type: 'max_tokens',
-        message: `模型输出触顶被截断（max_tokens=${maxTokens}）`,
-        retryable: false,
-      },
-    };
-  }
-  if (message.stop_reason === 'pause_turn') {
-    // 无 server tools 时正常不会到；避免无限循环直接停
-    return {
-      kind: 'finish',
-      stopReason: 'pause_turn',
-      finalText: textOf(message),
-      error: {
-        type: 'pause_turn',
-        message: '模型返回 pause_turn（无 server tools 的场景不应出现），防死循环直接收尾',
-        retryable: false,
-      },
-    };
-  }
-  if (message.stop_reason === 'stop_sequence') {
-    // 命中 stop 序列 = 正常收尾（与 end_turn 同类），不是失败
-    return { kind: 'finish', stopReason: 'stop_sequence', finalText: textOf(message) };
-  }
-
-  const toolUses = message.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-  if (toolUses.length === 0) {
-    // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
-    // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开。
-    //
-    // **两种都属非正常收尾，都必须挂结构化 error** —— engine/loop.ts 的不变量是
-    // 「非正常收尾都带结构化 error」（与 budget_exceeded / refusal / max_iterations 同口径）。
-    // 此前只有 unknown_stop_reason 带 error，tool_use_no_blocks 不带：run 以
-    // status:'failed' 收尾、result.error 却是 undefined，HTTP body 与任务记录里
-    // 看不出「为什么失败」，只能看到一句 stopReason 字符串。
-    const stopReason =
-      message.stop_reason === 'tool_use' ? 'tool_use_no_blocks' : 'unknown_stop_reason';
-    return {
-      kind: 'finish',
-      stopReason,
-      finalText: textOf(message),
-      error: {
-        type: 'agent_error',
-        message:
-          stopReason === 'tool_use_no_blocks'
-            ? '模型以 stop_reason=tool_use 收尾，但响应里没有任何 tool_use 块（畸形响应）'
-            : `模型返回了未识别的 stop_reason: ${String(message.stop_reason)}`,
-        retryable: false,
-      },
-    };
-  }
-  return { kind: 'tools', toolUses };
-}
-
 /**
  * 回合工具执行的结果：
  * - `executed`：全部执行完（results 与输入一一对应，顺序保持）；
@@ -703,17 +621,9 @@ function toApiTool(t: AgentTool): ToolParam {
   };
 }
 
-/**
- * 取消息里的全部文本块（引擎侧口径：**多块按 `\n` 连接** —— 多文本块是模型分段的
- * 输出，拼成 `finalText` 要保住分段）。
- *
- * 实现单源在 `core/text.ts`（2026-09-17 去重）：两个适配器的「非流式回落路径」各有
- * 一份逐字相同的实现，只差连接符。这里保留同名包装，是为了让 loop.ts 与测试既有的
- * 大量调用点零改动，同时把「引擎用 `\n`」这个选择钉在一处。
- */
-export function textOf(message: Message): string {
-  return coreTextOf(message, '\n');
-}
+// textOf 的引擎口径已外移到 text.ts（stop-reason.ts 也要用；两边都从本文件取会成环），
+// 这里 re-export，让 loop.ts 与测试的既有调用点零改动。
+export { textOf };
 
 /**
  * 用 `next` 原地替换 `target` 的全部内容（保持数组引用不变 —— 循环各处持同一数组）。
