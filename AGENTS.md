@@ -30,6 +30,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   在飞计数不搬（它同时是 /healthz 的 inFlight 口径），以谓词传入
 │   │                        #   resume-policy.ts = 崩溃恢复的**认领判定**（跳过原因具名化：terminal /
 │   │                        #   own-process / too-fresh）—— 「同一任务重复执行」那个 bug 就出在这几条规则上
+│   │                        #   task-waiters.ts = 任务终态等待表（事件唤醒 + 兜底定时器）；**只覆盖本进程写终态**，
+│   │                        #   他进程写终态唤不醒 —— 那是 awaitTask 里 intervalMs 兜底轮询存在的原因（不是缺陷）
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
