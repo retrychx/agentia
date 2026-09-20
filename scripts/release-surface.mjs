@@ -68,6 +68,12 @@ export const SURFACES = [
     why: '脚手架生成的新项目装到的框架版本（漏 bump 则新项目装旧框架）',
   },
   {
+    file: 'packages/cli/src/templates.ts',
+    pattern: /'@migor\/cli': '\^(\d+\.\d+\.\d+)'/g,
+    count: 1,
+    why: '脚手架装进新项目的 CLI 版本（漏 bump 则新项目 pin 着旧 CLI，与框架版本漂开）',
+  },
+  {
     file: '.github/ISSUE_TEMPLATE/bug_report.yml',
     pattern: /placeholder: '(\d+\.\d+\.\d+)'/g,
     count: 1,

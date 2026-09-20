@@ -2171,6 +2171,43 @@ review 指出两个超大文件该拆：`integrations/metrics.ts`（1050 行）�
 `src/index.ts`、既有测试、官网 api.html 一行未改（公共面零漂移即验收标准）。
 其余大文件（async / turn / http / module / openai / anthropic）经评审结论为**保持不动**。
 
+### 2026-09-20 ③：CLI 接口面补齐 + **脚手架生产路径修复**（`dist/main.js` 从跑不通到跑通）
+
+起因是「CLI 包写的是不是比较一般」的复查，落到三件事，都属**补丁位**（无破坏性变更）：
+
+**① 脚手架的生产路径此前从未跑通 —— 这是真缺陷，不是优化。** `src/main.ts` 的
+`discover` 用的是 cwd 相对字符串（`'src/tools'` 等）：dev（`tsx src/main.ts`）恰好对，
+但 `npm run build && npm start` 下它解析到 **`src/` 里的 `.ts` 源码**并去动态 import ——
+装饰器不是可擦除的类型语法，Node 直接抛 `Invalid or unexpected token`；换个 cwd 跑则报
+「能力目录不存在」。改为**按本文件位置**解析（`fileURLToPath(new URL('<分类>/', import.meta.url))`）：
+`tsconfig` 是 `rootDir: src → outDir: dist`（镜像成立），所以 dev 解析到 `src/`、构建后解析到
+`dist/`，两边都对且与 cwd 无关。**必须同时过滤不存在的分类目录**：`tsc` 不为空目录产出
+`dist/<分类>/`，而 `discover` 对显式给出的不存在路径是**响亮报错**的（那条锁定决定保持不动，
+所以过滤放在脚手架侧）。为什么此前 8/8 全绿也没拦住：`scripts/e2e-cli.ts` 只断言 dist 产物
+**存在**，从不**运行**它 —— 现补 4e 步用本地假 Anthropic 端点真跑 `node dist/main.js`
+（两种 cwd 各一次）+ 断言脚手架的能力真进了模型菜单；反向验证：把模板改回 cwd 相对形态，
+该断言即红（`src/tools/echo-back/index.ts: Invalid or unexpected token`）。
+
+**② 命令行契约补齐。** `report` / `diff` / `doctor` 支持 `--json`（stdout 只有一个 JSON 文档、
+无人类装饰；出错仍走 stderr + 退出码 1 且 stdout 保持为空 —— 脚本据此区分「有结果」与「没跑成」）。
+`diff --json` **不改退出码语义**（有差异仍为 1），只是让「差在哪」也能被读。`harvest` 刻意**不加**：
+它的 stdout 本身就是产物（生成的 eval 源码），加 `--json` 会自相矛盾。新增 `--version` / `-v`，
+读**包自身 package.json**（不另存常量 —— 常量会漂）。
+
+**③ 命令行从哪来：npx 为主、CLI 进工程。** 脚手架把 `@migor/cli` 写进新工程的
+`devDependencies`（走本地 bin：离线可用、版本与框架同批 pin），`dev` script 改指 `agentia dev`
+（与 npx 同一条路、带 inspector 面板）—— 为此 `dev` 必须把额外参数**透传**给用户脚本
+（`npm run dev -- "问题"` 是文档化用法，不能吃掉）。**首次创建仍必须写带 scope 的
+`npx @migor/cli create`**：npm 上另有一个别人的 `agentia` 包，短名会装错东西（实测
+`npm view agentia` → `0.0.0`／"AI Agent generator"）。⇒ 发布面随之多一条：`templates.ts` 里的
+CLI pin 与框架 pin 是**两条**版本面（漏 bump 会留下与框架漂开的旧 CLI），已进
+`scripts/release-surface.mjs` 并在 bump 的计数断言里。
+
+**明确不做**：统一参数解析框架（收益是少几处手写循环，代价是 8 个命令全线回归）；
+`harvest` / `diff` 那份「去类型移植副本」的合并（要么破坏 CLI 零运行时依赖，要么动分层守卫，
+是独立架构决策）；把四分类目录改成「扫描 `src/` 下所有子目录」（装配顺序是 load-bearing 的，
+数组顺序即装配顺序，扫描会把它变成字母序）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

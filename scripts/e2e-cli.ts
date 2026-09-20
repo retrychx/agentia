@@ -2,7 +2,9 @@
 // agentia create 脚手架 → agentia g 生成四类能力 → 注册表 codemod →
 // discoverProviders/createApp({discover}) 装配 → mock 模型跑通一次 run。
 // 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createServer } from 'node:http';
 import {
   existsSync,
   mkdtempSync,
@@ -25,6 +27,26 @@ const assert = (cond: boolean, msg: string): void => {
   if (!cond) throw new Error(`SMOKE FAIL: ${msg}`);
 };
 
+const execFileAsync = promisify(execFile);
+/** 异步跑子进程并拿回退出码/输出。**不能用 spawnSync** —— 假 Anthropic 端点跑在本进程里，
+ *  同步等待会阻塞事件循环，子进程永远等不到响应（实测直接死锁到超时）。 */
+const runChild = async (
+  file: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv },
+): Promise<{ status: number; stdout: string; stderr: string }> => {
+  try {
+    const r = await execFileAsync(file, args, { ...opts, encoding: 'utf8' });
+    return { status: 0, stdout: r.stdout, stderr: r.stderr };
+  } catch (e) {
+    const err = e as { code?: number; stdout?: string; stderr?: string };
+    return {
+      status: typeof err.code === 'number' ? err.code : 1,
+      stdout: err.stdout ?? '',
+      stderr: err.stderr ?? '',
+    };
+  }
+};
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const cliPath = join(repoRoot, 'packages', 'cli', 'dist', 'cli.js');
 const tmp = mkdtempSync(join(tmpdir(), 'agentia-cli-'));
@@ -228,6 +250,93 @@ try {
   };
   for (const s of ['dev', 'build', 'start', 'typecheck']) {
     assert(typeof scaffoldPkg.scripts[s] === 'string', `脚手架 package.json 缺 scripts.${s}`);
+  }
+
+  // —— 4e) 生产产物【真跑】一遍，两种 cwd 各跑一次 ——
+  //    只断言「dist 产物存在」不够：那条断言在上述状态下全绿，却没发现 dist/main.js 一跑就崩
+  //    —— 能力目录曾是 cwd 相对字符串（'src/tools' 等），生产形态下会去加载 src 里的 .ts 源码，
+  //    而装饰器不是可擦除的类型语法 ⇒ "Invalid or unexpected token"；换个 cwd 跑连目录都找不到。
+  //    模型侧接本地假 Anthropic 端点：零网络、零 token，且能断言「能力真进了模型菜单」。
+  const seenBodies: string[] = [];
+  const fake = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c: Buffer) => {
+      raw += c.toString('utf8');
+    });
+    req.on('end', () => {
+      seenBodies.push(raw);
+      // ⚠️ 必须写成块体（`{ res.write(...) }`）：箭头函数标了 `: void` 又返回表达式的值，
+      //    简洁体下 `res.write()` 的 boolean 就成了返回值 ⇒ tsc 报 TS2322（typecheck:tests 挂）。
+      const ev = (event: string, data: unknown): void => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' });
+      ev('message_start', {
+        type: 'message_start',
+        message: {
+          id: 'msg_fake',
+          type: 'message',
+          role: 'assistant',
+          model: 'fake-model',
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      });
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      });
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'PROD_OK' },
+      });
+      ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+      ev('message_delta', {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 3 },
+      });
+      ev('message_stop', { type: 'message_stop' });
+      res.end();
+    });
+  });
+  await new Promise<void>((r) => fake.listen(0, '127.0.0.1', r));
+  const fakeAddr = fake.address();
+  assert(typeof fakeAddr === 'object' && fakeAddr !== null, '假端点没拿到端口');
+  const fakeEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ANTHROPIC_API_KEY: 'sk-fake-for-e2e',
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${(fakeAddr as { port: number }).port}`,
+  };
+  delete fakeEnv.ANTHROPIC_AUTH_TOKEN; // 环境里可能有真实凭据，别让它盖过假端点
+  try {
+    for (const [label, cwd, entry] of [
+      ['从工程根', proj, 'dist/main.js'],
+      ['从无关目录（cwd 无关性）', repoRoot, join(proj, 'dist', 'main.js')],
+    ] as const) {
+      const r = await runChild(process.execPath, [entry, '生产路径冒烟'], { cwd, env: fakeEnv });
+      assert(
+        r.status === 0,
+        `${label} 跑 dist/main.js 应退出 0\n  stdout=${r.stdout}\n  stderr=${r.stderr}`,
+      );
+      assert(
+        r.stdout.includes('PROD_OK'),
+        `${label} 应打印模型回复（生产路径没真跑通）：stdout=${r.stdout}`,
+      );
+    }
+    assert(seenBodies.length === 2, `假端点应收到两次模型请求，实际 ${seenBodies.length}`);
+    for (const b of seenBodies) {
+      assert(
+        b.includes('"hello"'),
+        `生产形态的能力菜单里应有脚手架生成的 hello 能力（请求体开头：${b.slice(0, 300)}）`,
+      );
+    }
+  } finally {
+    fake.close();
   }
 
   // —— 5) 发现机制：discoverProviders（四分类目录数组，顺序即装配顺序）——
