@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import { TaskWaiters } from '../../src/transport/task-waiters.js';
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -22,12 +23,12 @@ describe('TaskWaiters —— 任务终态等待表（从 AsyncRunner 抽出）',
 
   it('wait 到期由兜底定时器唤醒（resolve，不是 reject）；到期后自己也出表', async () => {
     const tw = new TaskWaiters();
-    const t0 = Date.now();
+    // 量时间一律用**单调时钟**（`performance.now()`），不用 `Date.now()`：定时器按单调时钟
+    // 到点，而墙钟会被截断到整毫秒、还会漂移/回拨（实测 3000 次 40ms 定时器里两个时钟的
+    // 读数差能到 +8.57ms）。下界再留足余量（预算 40 / 断言 25）——「断言 == 预算」是 ~1% 随机红。
+    const t0 = performance.now();
     await tw.wait('t1', 40);
-    // ⚠️ 下界给足容差：定时器不以毫秒精度触发，Date.now() 又被截断到整毫秒 ——
-    //    断言 >= 预算（25）会把一次 24ms 的抖动判成失败（第一版就是这么红的）。
-    //    这里要证的是「确实等了将近一个预算」，不是「定时器精确到毫秒」。
-    assert.ok(Date.now() - t0 >= 25, '必须真的等（约一个预算），而不是立刻返回');
+    assert.ok(performance.now() - t0 >= 25, '必须真的等（约一个预算），而不是立刻返回');
     assert.equal(tw.count, 0, '到期与唤醒走同一套收尾，不得留下悬挂的等待者');
   });
 

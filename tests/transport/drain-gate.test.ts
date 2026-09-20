@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import { DrainGate } from '../../src/transport/drain-gate.js';
 
 /** 排空微任务/宏任务队列（不依赖真时钟） */
@@ -38,15 +39,17 @@ describe('DrainGate —— 优雅停机的等待闸（从 AsyncRunner 抽出）'
 
   it('超时：返回 false、停在停机态、等待者按原样留在表里（与抽取前逐字一致）', async () => {
     const gate = new DrainGate();
-    const t0 = Date.now();
+    const t0 = performance.now();
     const ok = await gate.waitForIdle(() => false, 40);
     assert.equal(ok, false);
-    // ⚠️ 下界必须给足容差，别写成「预算 25 / 断言 ≥ 25」：定时器按**单调时钟**到点触发，
-    //    而这里用 `Date.now()` 量（整毫秒、截断）—— 实测 4000 次 `await setTimeout(25)` 的
-    //    墙钟读数有 **~1% 落在 24ms**（从不低于 24）。等值断言因此会随机红，CI 上真的红过一次
-    //    （同一个 commit：PR run 绿、main run 红）。这条断言要证的是「确实等了将近一个预算」，
-    //    不是「定时器精确到毫秒」。
-    assert.ok(Date.now() - t0 >= 25, '必须真的等（约一个预算），而不是立刻返回');
+    // ⚠️ 两条都别丢：① 用**单调时钟**量（`performance.now()`），别用 `Date.now()`。
+    //    定时器按单调时钟到点，而 `Date.now()` 是墙钟、还被截断到整毫秒 —— 实测 3000 次
+    //    40ms 定时器里，两个时钟的读数差从 −0.97ms 跑到 **+8.57ms**（墙钟会「丢」测量时间：
+    //    截断 + 漂移/回拨）。用它量会把「等满了 40ms」读成偏小十几毫秒。
+    //    ② 下界留足余量（预算 40 / 断言 25），别写成「预算 25 / 断言 ≥ 25」：那是 **~1% 随机红**
+    //    （实测 4000 次 `await setTimeout(25)` 的墙钟读数有 1.4% 落在 24ms），CI 上真红过一次
+    //    （同一个 commit：PR run 绿、main run 红）。这条断言要证的是「等了将近一个预算」。
+    assert.ok(performance.now() - t0 >= 25, '必须真的等（约一个预算），而不是立刻返回');
     assert.equal(gate.isDraining, true, '超时也停在停机态 —— drain 不是回滚，是「不再往前推」');
     assert.equal(
       gate.waiterCount,
