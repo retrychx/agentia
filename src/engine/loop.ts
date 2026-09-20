@@ -10,7 +10,12 @@ import type {
 } from '../core/tool.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { classifyError } from './errors.js';
-import { resolveRetry } from './retry.js';
+import {
+  DEFAULT_MAX_ITERATIONS,
+  DEFAULT_MAX_TOKENS,
+  resolveDefaultModel,
+  runConfigSnapshot,
+} from './run-config.js';
 import type { RetryOptions } from './retry.js';
 import { TraceRecorder } from './tracer.js';
 import {
@@ -35,20 +40,6 @@ import type {
 import { isSuccessStopReason } from './types.js';
 
 /**
- * 缺省模型解析：显式传入 > AGENTIA_MODEL env > 'claude-opus-5'。
- * 不把端点私有模型写死在代码里 —— 走 Anthropic 兼容网关（如 DeepSeek 端点）时
- * export AGENTIA_MODEL=deepseek-… 即可全局覆盖，无需逐处传 model。
- */
-export function resolveDefaultModel(over?: string): string {
-  if (over) return over;
-  return process.env.AGENTIA_MODEL?.trim() || 'claude-opus-5';
-}
-
-/** 缺省单次 maxTokens / 循环上限：runAgent 与 runAgentScoped 共用，避免两处各写一遍漂移。 */
-const DEFAULT_MAX_TOKENS = 64_000;
-const DEFAULT_MAX_ITERATIONS = 40;
-
-/**
  * Agentia —— 主循环（manual loop，流式）—— spec §5。
  *
  * 结构：核心是 `agentLoop` —— 不自开 run 根，所有 llm.turn 挂在给定的
@@ -60,8 +51,9 @@ const DEFAULT_MAX_ITERATIONS = 40;
  * 交给 tool.run —— 普通工具忽略；子 agent 用它在正确位置开 capability span。
  *
  * 文件分工：本文件只留入口（runAgent / runAgentScoped）与 agentLoop 编排骨架 +
- * 缺省旋钮；「一回合执行步骤」的实现机（回合上下文、请求/重试、记账、stop_reason
- * 分流、工具执行）拆在同层 turn.ts，依赖方向单向 loop.ts → turn.ts。
+ * run 根的装配；「一回合执行步骤」的实现机（回合上下文、请求/重试、记账、stop_reason
+ * 分流、工具执行）拆在同层 turn.ts，「缺省旋钮解析 + 生效配置快照」拆在同层
+ * run-config.ts —— 依赖方向单向 loop.ts → { turn.ts, run-config.ts }。
  */
 
 export interface AgentLoopResult<T = unknown> {
@@ -441,49 +433,4 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     maxTotalTokens: opts.maxTotalTokens,
     maxCostUsd: opts.maxCostUsd,
   });
-}
-
-/**
- * 生效配置快照（G3）：把本 run 实际生效的旋钮整理成 run 根的 `config.*` attributes。
- * 只放标量（OTLP/日志/看板都能直接吃）；缺省值也记，这样"没配"与"配了缺省值"可区分于
- * "该项不存在"。函数型选项只记"配没配"，不记函数体。
- */
-function runConfigSnapshot(
-  options: RunAgentOptions<JsonSchema>,
-): Record<string, string | number | boolean> {
-  const out: Record<string, string | number | boolean> = {
-    'config.model': resolveDefaultModel(options.model),
-    'config.maxTokens': options.maxTokens ?? DEFAULT_MAX_TOKENS,
-    'config.maxIterations': options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
-  };
-  if (options.maxTotalTokens != null) out['config.maxTotalTokens'] = options.maxTotalTokens;
-  if (options.maxCostUsd != null) out['config.maxCostUsd'] = options.maxCostUsd;
-  if (options.toolTimeoutMs != null) out['config.toolTimeoutMs'] = options.toolTimeoutMs;
-  // 非正 / 非有限值在 `mapWithConcurrency` 里一律等于「不限并发」，但原样记进 trace 会写成
-  // `NaN`（过不了 JSON/OTLP 序列化，到看板上是 null）或 `-1`（读起来像「卡在负数个并发」）。
-  // 记**生效的**整数（`floor` 且至少 1，见 `concurrency.ts`），不限则同 `maxEventChars` 记 'off'。
-  if (options.maxToolConcurrency != null)
-    out['config.maxToolConcurrency'] =
-      Number.isFinite(options.maxToolConcurrency) && options.maxToolConcurrency > 0
-        ? Math.max(1, Math.floor(options.maxToolConcurrency))
-        : 'off';
-  // 事件截断关掉时记 'off' 而不是 false：`maxEventChars: false` 在日志/看板里
-  // 容易被读成「上限为 0」，'off' 一句话说清是**没有上限**
-  if (options.maxEventChars != null)
-    out['config.maxEventChars'] = options.maxEventChars === false ? 'off' : options.maxEventChars;
-  // 重试：记生效的 maxAttempts（0 = 关闭）—— 比记 "custom/default" 更有信息量
-  const retryCfg = resolveRetry(options.retry);
-  out['config.retry.maxAttempts'] = retryCfg ? retryCfg.maxAttempts : 0;
-  const policy: ContextPolicy | undefined = options.contextPolicy;
-  if (policy) {
-    out['config.contextPolicy'] = true;
-    if (policy.budgetTokens != null) out['config.contextPolicy.budgetTokens'] = policy.budgetTokens;
-  } else {
-    out['config.contextPolicy'] = false;
-  }
-  // 价格覆盖：只记覆盖了哪几个模型（不记单价 —— 单价在价格表里，重复记会漂移）
-  const overridden = options.priceOverrides ? Object.keys(options.priceOverrides) : [];
-  if (overridden.length > 0) out['config.priceOverrides'] = overridden.sort().join(',');
-  if (options.resultSchema) out['config.resultSchema'] = true;
-  return out;
 }
