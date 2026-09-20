@@ -36,8 +36,13 @@ if (!existsSync(guide)) {
 }
 cpSync(guide, join(cliRoot, 'dist', 'AGENTS.md'));
 
+/* 脚手架模板（templates/ 真文件）整树拷进 dist/templates/ —— create/g 在运行时
+ * 从 dist 读模板（见 src/templates.ts 的 templatePath）。点文件以无点文件名
+ * 存放（gitignore/env/env.example），写出时才补点，原因见 templates.ts 文件头。 */
+cpSync(join(cliRoot, 'templates'), join(cliRoot, 'dist', 'templates'), { recursive: true });
+
 console.log(
-  '[cli] inspector 资源就位：dist/inspector/ + dist/inspector-page.html；AI 说明：dist/AGENTS.md',
+  '[cli] inspector 资源就位：dist/inspector/ + dist/inspector-page.html；AI 说明：dist/AGENTS.md；脚手架模板：dist/templates/',
 );
 
 /* 根 CHANGELOG.md 随 CLI 包发布（npm 的「总是包含」只覆盖 README/LICENSE，

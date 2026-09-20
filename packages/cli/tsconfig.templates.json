@@ -1,0 +1,23 @@
+{
+  // 脚手架模板（templates/）的类型检查配置：让「生成给用户的代码」在仓库内就过 tsc。
+  // compilerOptions 与生成物 templates/tsconfig.json 同口径（strict + NodeNext），
+  // 唯一的增量是 paths —— 模板里的 `import '@migor/agentia'` 映射到框架 src
+  // （同根 tsconfig.tests.json 对 examples 的做法），无需在 templates/ 里 npm install。
+  // 挂在 build（根 build:cli / 本包 build）里：模板类型错 = 构建失败，不再有
+  // 「模板过了字符串拼接、却在用户项目里编不过」的盲区。
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "types": ["node"],
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "@migor/agentia": ["../../src/index.ts"]
+    }
+  },
+  "include": ["templates"]
+}

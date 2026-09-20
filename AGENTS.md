@@ -127,7 +127,15 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   脚手架的 `dev` script 指向 `agentia dev`（与 npx 同一条路、带面板），
 │   │                        #   所以 dev 必须把额外参数透传给用户脚本（`npm run dev -- "问题"`）。
 │   │                        #   脚手架还把 CLI 自己写进新工程的 devDependencies（走本地 bin、离线可用、
-│   │                        #   版本与框架同批 pin）⇒ templates.ts 因此有**两条**版本发布面。
+│   │                        #   版本与框架同批 pin）⇒ templates/package.json 因此有**两条**版本发布面。
+│   │                        #   脚手架模板是 templates/ 下的**真文件**（占位符替换渲染，token 只许在
+│   │                        #   字符串/注释/标识符位置），被仓库自己的 tsc（tsconfig.templates.json，
+│   │                        #   '@migor/agentia' paths 映射到框架 src）与 Biome 全程照看 —— 不再是
+│   │                        #   不过编译器的字符串（「生产必崩」缺陷曾这么漏出去）；构建时整树拷进
+│   │                        #   dist/templates/，运行时从 dist 读。点文件以无点文件名存放
+│   │                        #   （gitignore/env/env.example）：.env 会被根 .gitignore 吞掉、
+│   │                        #   .gitignore 会被 npm pack 剥掉。Biome 对 templates/** 只关 formatter
+│   │                        #   （生成物字节是兼容契约），lint 照常。
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector；
 │   │                        #   inspector 有 Host 头校验，非 localhost 403）；dev/add 支持 Windows
 │   │                        #   （npmSpawn：win32 走 cmd.exe /d /s /c 包装 + 逐参数脱敏 ——

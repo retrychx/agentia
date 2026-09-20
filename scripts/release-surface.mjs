@@ -62,14 +62,14 @@ export const SURFACES = [
     why: '使用者能读到的框架版本（漏 bump 就对外谎报旧版）',
   },
   {
-    file: 'packages/cli/src/templates.ts',
-    pattern: /'@migor\/agentia': '\^(\d+\.\d+\.\d+)'/g,
+    file: 'packages/cli/templates/package.json',
+    pattern: /"@migor\/agentia": "\^(\d+\.\d+\.\d+)"/g,
     count: 1,
     why: '脚手架生成的新项目装到的框架版本（漏 bump 则新项目装旧框架）',
   },
   {
-    file: 'packages/cli/src/templates.ts',
-    pattern: /'@migor\/cli': '\^(\d+\.\d+\.\d+)'/g,
+    file: 'packages/cli/templates/package.json',
+    pattern: /"@migor\/cli": "\^(\d+\.\d+\.\d+)"/g,
     count: 1,
     why: '脚手架装进新项目的 CLI 版本（漏 bump 则新项目 pin 着旧 CLI，与框架版本漂开）',
   },

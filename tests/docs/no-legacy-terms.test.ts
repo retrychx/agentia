@@ -120,6 +120,9 @@ function userFacingFiles(): string[] {
   // CLI 源码里的**用户可见文本**（`--help` 用法串、报错措辞）—— 类型系统看不见这类字符串漂移，
   // 必须靠本条守卫（`layout.ts` 是迁移机制，按路径排除，见 EXCLUDED_FILES）
   collect(join(repoRoot, 'packages/cli/src'), out);
+  // 脚手架模板（真文件，含用户可见的 README/注释/描述串）—— 从 src 字符串模板迁出后
+  // 必须仍在扫描面里，否则守卫对它转盲
+  collect(join(repoRoot, 'packages/cli/templates'), out);
 
   // 示例（只 import 公共面，是「抄了就用」的样板）
   collect(join(repoRoot, 'examples'), out);

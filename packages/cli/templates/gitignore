@@ -1,0 +1,6 @@
+node_modules
+dist
+
+# 本地环境变量（可能含 key）—— 绝不提交
+.env
+.env.local
