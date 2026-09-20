@@ -14,6 +14,7 @@ import { SlotPool } from './slot-pool.js';
 import { approvalExpired, approvalsComplete, fillTimeoutDenials } from './approval-policy.js';
 import { DrainGate } from './drain-gate.js';
 import { resumeSkipReason } from './resume-policy.js';
+import { TaskWaiters } from './task-waiters.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -138,8 +139,8 @@ export class AsyncRunner {
   private active = 0;
   /** 停机等待闸（见 drain-gate.ts）：停机态标志与等待者一并外移 */
   readonly #drain = new DrainGate();
-  /** 任务终态唤醒表：taskId → 等待者。仅覆盖**本进程**写终态（他进程写靠兜底轮询） */
-  readonly #taskWaiters = new Map<string, Array<() => void>>();
+  /** 任务终态等待表（见 task-waiters.ts）：仅覆盖本进程写终态，他进程写靠兜底轮询 */
+  readonly #taskWaiters = new TaskWaiters();
   private readonly taskSinks: TaskSink[];
   /**
    * HITL 挂起时快照的「本轮用户输入」（taskId → messages）—— 恢复段成功后做会话回写用
@@ -429,37 +430,7 @@ export class AsyncRunner {
     return rec;
   }
 
-  /** 任务终态唤醒：在 #execute 的统一出口调用，覆盖成功 / 失败 / 采纳既有结果各路径 */
-  #notifyTaskDone(taskId: string): void {
-    const waiters = this.#taskWaiters.get(taskId);
-    if (!waiters || waiters.length === 0) return;
-    this.#taskWaiters.delete(taskId);
-    for (const w of waiters) w();
-  }
-
-  /** 等「本进程把该任务写到终态」或被 timeoutMs 兜底唤醒（二者先到先返回） */
-  #waitTaskDone(taskId: string, timeoutMs: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        const waiters = this.#taskWaiters.get(taskId);
-        if (waiters) {
-          const i = waiters.indexOf(finish);
-          if (i >= 0) waiters.splice(i, 1);
-          if (waiters.length === 0) this.#taskWaiters.delete(taskId);
-        }
-        resolve();
-      };
-      const timer = setTimeout(finish, timeoutMs);
-      const waiters = this.#taskWaiters.get(taskId);
-      if (waiters) waiters.push(finish);
-      else this.#taskWaiters.set(taskId, [finish]);
-    });
-  }
-
+  /** 任务终态唤醒与等待：实现见 task-waiters.ts（`notify` / `wait`） */
   /** 排空通知：只在确无在飞任务时唤醒等待者（drain 的唯一出口）—— 判定在 drain-gate.ts */
   #notifyDrained(): void {
     this.#drain.signalIdle(() => this.active === 0);
@@ -472,7 +443,7 @@ export class AsyncRunner {
   ): Promise<TaskRecord> {
     const timeoutMs = opts.timeoutMs ?? 30_000;
     // intervalMs 现在只是**兜底轮询**间隔，不是主路径：本进程把任务写到终态会主动唤醒
-    // （见 #notifyTaskDone）。默认从 5ms 放宽到 250ms —— 旧实现每 5ms 读一次 store，
+    // （见 task-waiters.ts 的 notify）。默认从 5ms 放宽到 250ms —— 旧实现每 5ms 读一次 store，
     // 等 30s 就是约 6000 次读（SQLite/Redis 下是 6000 次往返）。用异步 store 且终态由
     // **他进程**写入时唤不醒，才靠这个间隔兜底。
     const intervalMs = opts.intervalMs ?? 250;
@@ -484,7 +455,7 @@ export class AsyncRunner {
       if (rec.status === 'succeeded' || rec.status === 'failed') return rec;
       const left = deadline - Date.now();
       if (left <= 0) throw new Error(`task ${taskId} 等待超时（${rec.status}）`);
-      await this.#waitTaskDone(taskId, Math.min(intervalMs, left));
+      await this.#taskWaiters.wait(taskId, Math.min(intervalMs, left));
     }
   }
 
@@ -612,7 +583,7 @@ export class AsyncRunner {
         if (rec.status !== 'awaiting_approval') this.sessionInputs.delete(rec.taskId);
         // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
         // 挂起也唤醒：等待者看一眼状态继续等（awaiting_approval 不是终态），无副作用。
-        this.#notifyTaskDone(rec.taskId);
+        this.#taskWaiters.notify(rec.taskId);
         this.#notifyDrained();
       }
     }
