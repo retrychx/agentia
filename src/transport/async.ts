@@ -12,6 +12,7 @@ import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { TimeoutError } from '../core/timeout.js';
 import { SlotPool } from './slot-pool.js';
 import { approvalExpired, approvalsComplete, fillTimeoutDenials } from './approval-policy.js';
+import { DrainGate } from './drain-gate.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -134,8 +135,8 @@ export class AsyncRunner {
   readonly #slots: SlotPool;
   /** 已受理但未达终态的任务数（queued + running）—— /healthz 与 drain 共用 */
   private active = 0;
-  private draining = false;
-  private readonly drainWaiters: Array<() => void> = [];
+  /** 停机等待闸（见 drain-gate.ts）：停机态标志与等待者一并外移 */
+  readonly #drain = new DrainGate();
   /** 任务终态唤醒表：taskId → 等待者。仅覆盖**本进程**写终态（他进程写靠兜底轮询） */
   readonly #taskWaiters = new Map<string, Array<() => void>>();
   private readonly taskSinks: TaskSink[];
@@ -192,7 +193,7 @@ export class AsyncRunner {
     opts: { idempotencyKey?: string; source?: string; options?: RunInvocationOptions } = {},
   ): TaskRecord {
     // 停机中不接单（drain 之后）；宿主据此回 503。放在最前：连入参规整都省了。
-    if (this.draining) {
+    if (this.#drain.isDraining) {
       throw new Error('runner 正在优雅停机，不再接受新任务');
     }
     const messages = normalizeMessages(input);
@@ -343,7 +344,7 @@ export class AsyncRunner {
 
   /** 是否已进入优雅停机（drain 之后为 true）—— HTTP 宿主据此对新单回 503 */
   get isDraining(): boolean {
-    return this.draining;
+    return this.#drain.isDraining;
   }
 
   /**
@@ -355,25 +356,8 @@ export class AsyncRunner {
    * - 等待的是**所有已受理**的任务（queued 的也在内），不只是正在占槽位的那些。
    */
   async drain(opts: { timeoutMs?: number } = {}): Promise<boolean> {
-    this.draining = true;
-    const timeoutMs = opts.timeoutMs ?? 0;
-    if (this.active === 0) return true;
-    const drained = new Promise<boolean>((resolve) => this.drainWaiters.push(() => resolve(true)));
-    if (timeoutMs <= 0) return drained;
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        drained,
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), timeoutMs);
-          // ⚠️ 不 unref：`drain()` 返回的正是这个 false —— 计时器的触发就是「调用方的 await 得以结束」
-          // 的条件。unref 过它 ⇒ 空事件循环下进程先退出，停机等待没有任何结论
-          // （见 `tests/timeoutLiveness.test.ts` 与 spec §10 ④）。
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    // 实现已外移到 drain-gate.ts（写前保留的契约注释仍在本方法上）
+    return this.#drain.waitForIdle(() => this.active === 0, opts.timeoutMs ?? 0);
   }
 
   /**
@@ -475,11 +459,9 @@ export class AsyncRunner {
     });
   }
 
-  /** 排空通知：只在确无在飞任务时唤醒等待者（drain 的唯一出口） */
+  /** 排空通知：只在确无在飞任务时唤醒等待者（drain 的唯一出口）—— 判定在 drain-gate.ts */
   #notifyDrained(): void {
-    if (this.active !== 0 || this.drainWaiters.length === 0) return;
-    const waiters = this.drainWaiters.splice(0, this.drainWaiters.length);
-    for (const w of waiters) w();
+    this.#drain.signalIdle(() => this.active === 0);
   }
 
   /** 等到任务终态；超时抛错。`awaiting_approval` 不是终态 —— 继续等（人在路上）。 */

@@ -26,6 +26,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   后续抽块（审批监督 / 恢复重投 / drain 协调）才有基线
 │   │                        #   approval-policy.ts = 审批的**纯判定**（超时判定 / 超时兜底拒绝 / 决定齐没齐）：
 │   │                        #   编排（在飞闸、重读、先落库再派发）仍留在 AsyncRunner，纪律一字未改
+│   │                        #   drain-gate.ts = 优雅停机的等待闸（停机态标志 / 排空等待 / 超时竞速）；
+│   │                        #   在飞计数不搬（它同时是 /healthz 的 inFlight 口径），以谓词传入
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
