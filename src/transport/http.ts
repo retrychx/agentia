@@ -3,6 +3,7 @@ import { parseTraceparent } from '../core/trace.js';
 import { AsyncRunner, TaskApproveError } from './async.js';
 import type { AppCallable } from './async.js';
 import { parseApproveBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
+import { isPreAuthRoute, routeRequest } from './http-route.js';
 import { sseWriter } from './sse.js';
 import { TaskInputError, normalizeMessages } from '../engine/spec.js';
 import type { TaskRecord } from '../store/store.js';
@@ -348,32 +349,35 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const method = req.method ?? 'GET';
     const pathname = (req.url ?? '/').split('?')[0];
+    // 路由判定是**纯函数**（见 http-route.ts）：这里只按判定结果去编排。
+    // 顺序陷阱写在那边的头注里，最要命的一条：免鉴权组（/healthz、/metrics）
+    // 连同它们自己的 405 都在鉴权**之前**回，其余一律**先鉴权再判方法/路径**。
+    const route = routeRequest(pathname, method, metricsProvider !== undefined);
 
     try {
-      // 健康检查：不鉴权（探针带不了凭据）、停机中也回（探针要先能问到才有意义）
-      if (pathname === '/healthz') {
-        if (method !== 'GET') {
-          methodNotAllowed(res, method, 'GET');
+      // 免鉴权组：健康检查（探针带不了凭据）与指标抓取（抓取端在集群内网），停机中也照回
+      // —— 探针要先能问到才有意义。它们的方法不符（405）同样在鉴权之前。
+      if (isPreAuthRoute(route)) {
+        if (route.kind === 'methodNotAllowed') {
+          methodNotAllowed(res, method, route.allowed);
           return;
         }
-        sendJson(res, 200, {
-          ok: true,
-          inFlight: inFlightRuns + runner.inFlight,
-          uptimeMs: Date.now() - startedAt,
-          draining,
-        } satisfies HealthResponse);
-        return;
-      }
-
-      // 指标：与 /healthz 同档（不鉴权、停机中仍可拉 —— 抓取端在集群内网）
-      if (pathname === '/metrics' && metricsProvider) {
-        if (method !== 'GET') {
-          methodNotAllowed(res, method, 'GET');
+        if (route.kind === 'healthz') {
+          sendJson(res, 200, {
+            ok: true,
+            inFlight: inFlightRuns + runner.inFlight,
+            uptimeMs: Date.now() - startedAt,
+            draining,
+          } satisfies HealthResponse);
           return;
         }
+        // 指标：与 /healthz 同档（不鉴权、停机中仍可拉 —— 抓取端在集群内网）。
+        // `?.` 只为让类型收窄（这条分支只在配了 metrics 出口时可达），行为与原来一致。
         sendPrometheus(
           res,
-          typeof metricsProvider === 'function' ? metricsProvider() : metricsProvider.render(),
+          typeof metricsProvider === 'function'
+            ? metricsProvider()
+            : (metricsProvider?.render() ?? ''),
         );
         return;
       }
@@ -388,173 +392,159 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
         }
       }
 
-      if (pathname === '/run') {
-        if (method !== 'POST') {
-          methodNotAllowed(res, method, 'POST');
+      // 方法与路径已在 routeRequest 里判完，往下只剩编排
+      switch (route.kind) {
+        case 'methodNotAllowed':
+          methodNotAllowed(res, method, route.allowed);
           return;
-        }
-        if (draining) {
-          sendShuttingDown(req, res);
-          return;
-        }
-        const input = await parseJsonBody(req, res, maxBodyBytes);
-        if (input === PARSE_FAILED) return;
-        let messages: ReturnType<typeof normalizeMessages>;
-        try {
-          messages = normalizeMessages(input);
-        } catch (e) {
-          sendJson(res, 400, { error: errMessage(e) });
-          return;
-        }
-        // 并发闸门：body 已读完（连接可复用），只是暂时不给跑 —— 回 503 让调用方退避重试
-        if (inFlightRuns >= maxConcurrentRuns) {
-          res.setHeader('retry-after', RETRY_AFTER_SECONDS);
-          sendJson(res, 503, {
-            error: `并发 run 已达上限 ${maxConcurrentRuns}，请稍后重试`,
-          });
-          return;
-        }
-        inFlightRuns++;
-        // 客户端中途断开 → 中止本次 run（省 token）。res 'close' 正常结束也会触发，
-        // 故以 writableEnded 区分：只有响应还没写完才算「断开」。
-        const runAc = new AbortController();
-        const onClose = (): void => {
-          if (!res.writableEnded) runAc.abort();
-        };
-        res.once('close', onClose);
-        // 内容协商：`Accept: text/event-stream` → SSE 逐帧下发；否则一元 JSON（旧行为逐字不变）
-        const wantsSse = String(req.headers.accept ?? '').includes('text/event-stream');
-        // 入站链路（spec §9.2）：W3C `traceparent` 头 → run 根的 links。
-        // 畸形/缺头一律静默当作「没有上游上下文」（parseTraceparent 统一判定）——
-        // 链路是观测行为，不该因为一个坏头把业务请求打成 400。
-        const traceContext = parseTraceparent(headerValue(req, 'traceparent'));
-        try {
-          if (wantsSse) {
-            const sse = sseWriter(res, {
-              maxBufferedBytes: sseMaxBufferedBytes,
-              // 下游积压超限 → 收口并中止本次 run（见 sseWriter 的背压说明）
-              onBackpressure: () => runAc.abort(),
-            });
-            const heartbeat = setInterval(() => sse.comment('ping'), 15_000);
-            heartbeat.unref?.();
-            // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）。
-            // 收口必须同时 abort 对应 run：sse.close() → res.end() 后 writableEnded 同步
-            // 变 true，上面的 onClose 守卫（`!writableEnded`）在 close 事件时不成立，
-            // 只 close 不 abort 会让 run 在后台继续烧 token（与背压收口路径的
-            // onBackpressure → abort 对齐；run 已正常结束时 abort 是无害 no-op）。
-            const closeSse = (): void => {
-              clearInterval(heartbeat);
-              runAc.abort();
-              sse.close();
-            };
-            openSse.add(closeSse);
-            try {
-              // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 run.end 下发（status/error 字段）
-              const out = await app.run(messages, {
-                rethrow: false,
-                signal: runAc.signal,
-                onText: (delta) => sse.event('text.delta', { text: delta }),
-                ...(traceContext !== undefined ? { traceContext } : {}),
-              });
-              sse.event('run.end', toHttpBody(out));
-            } catch (e) {
-              // 流已开（200 与头已发出）→ 只能以 error 事件收尾，不能再改 HTTP 状态码
-              sse.event('error', { message: errMessage(e) });
-            } finally {
-              openSse.delete(closeSse);
-              closeSse();
-            }
-            return;
-          }
-          // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 status/error 字段返回 200
-          const out = await app.run(messages, {
-            rethrow: false,
-            signal: runAc.signal,
-            ...(traceContext !== undefined ? { traceContext } : {}),
-          });
-          sendJson(res, 200, toHttpBody(out));
-        } finally {
-          res.off('close', onClose);
-          inFlightRuns--;
-        }
-        return;
-      }
 
-      if (pathname === '/tasks') {
-        if (method !== 'POST') {
-          methodNotAllowed(res, method, 'POST');
-          return;
-        }
-        // 停机中不再接单（含直接 drain 了 runner 的情况）；GET /tasks/<id> 不受影响
-        if (draining || runner.isDraining) {
-          sendShuttingDown(req, res);
-          return;
-        }
-        const body = await parseJsonBody(req, res, maxBodyBytes);
-        if (body === PARSE_FAILED) return;
-        const submitBody = toTaskSubmitBody(body);
-        if (!submitBody) {
-          sendJson(res, 400, { error: 'body 需为 { input, idempotencyKey?, options? }' });
-          return;
-        }
-        // 入站链路（spec §9.2）：body 显式给的 `options.traceContext` 优先，否则取
-        // `traceparent` 头。它随 `spec.options` 落进 TaskRecord —— 所以**跨进程续跑**
-        // 的那次 run（另一个进程 `resumePending` 接着跑）也带得上，关联不断链。
-        const submitTrace = parseTraceparent(headerValue(req, 'traceparent'));
-        let rec: TaskRecord;
-        try {
-          rec = runner.submit(submitBody.input, {
-            ...(submitBody.idempotencyKey !== undefined
-              ? { idempotencyKey: submitBody.idempotencyKey }
-              : {}),
-            options:
-              submitBody.options?.traceContext !== undefined
-                ? submitBody.options
-                : {
-                    ...submitBody.options,
-                    ...(submitTrace !== undefined ? { traceContext: submitTrace } : {}),
-                  },
-            source: 'http',
-          });
-        } catch (e) {
-          // `submit` 是同步的：入参校验失败与 store 落库故障从同一个 catch 出去。
-          // 前者是调用方的错（400 + 原因），后者是服务端的错 —— 必须走与 500 路径同一套
-          // `exposeErrors` 策略，否则一次磁盘/Redis 故障会被报成「你参数写错了」，
-          // 并把内部错误消息原样回给调用方（500/401 路径都不这么干）。
-          if (e instanceof TaskInputError) {
-            sendJson(res, 400, { error: errMessage(e) });
-            return;
-          }
-          // 上面的停机闸门与 `submit` 之间隔着一次 `await parseJsonBody`：读 body 期间
-          // drain 可能刚开始，此时 submit 抛「正在优雅停机」。这是 503 而不是 500 ——
-          // 调用方应该退避重试，跟闸门本身回的是同一句话。
-          if (runner.isDraining) {
+        case 'run': {
+          if (draining) {
             sendShuttingDown(req, res);
             return;
           }
-          sendInternalError(res, e);
+          const input = await parseJsonBody(req, res, maxBodyBytes);
+          if (input === PARSE_FAILED) return;
+          let messages: ReturnType<typeof normalizeMessages>;
+          try {
+            messages = normalizeMessages(input);
+          } catch (e) {
+            sendJson(res, 400, { error: errMessage(e) });
+            return;
+          }
+          // 并发闸门：body 已读完（连接可复用），只是暂时不给跑 —— 回 503 让调用方退避重试
+          if (inFlightRuns >= maxConcurrentRuns) {
+            res.setHeader('retry-after', RETRY_AFTER_SECONDS);
+            sendJson(res, 503, {
+              error: `并发 run 已达上限 ${maxConcurrentRuns}，请稍后重试`,
+            });
+            return;
+          }
+          inFlightRuns++;
+          // 客户端中途断开 → 中止本次 run（省 token）。res 'close' 正常结束也会触发，
+          // 故以 writableEnded 区分：只有响应还没写完才算「断开」。
+          const runAc = new AbortController();
+          const onClose = (): void => {
+            if (!res.writableEnded) runAc.abort();
+          };
+          res.once('close', onClose);
+          // 内容协商：`Accept: text/event-stream` → SSE 逐帧下发；否则一元 JSON（旧行为逐字不变）
+          const wantsSse = String(req.headers.accept ?? '').includes('text/event-stream');
+          // 入站链路（spec §9.2）：W3C `traceparent` 头 → run 根的 links。
+          // 畸形/缺头一律静默当作「没有上游上下文」（parseTraceparent 统一判定）——
+          // 链路是观测行为，不该因为一个坏头把业务请求打成 400。
+          const traceContext = parseTraceparent(headerValue(req, 'traceparent'));
+          try {
+            if (wantsSse) {
+              const sse = sseWriter(res, {
+                maxBufferedBytes: sseMaxBufferedBytes,
+                // 下游积压超限 → 收口并中止本次 run（见 sseWriter 的背压说明）
+                onBackpressure: () => runAc.abort(),
+              });
+              const heartbeat = setInterval(() => sse.comment('ping'), 15_000);
+              heartbeat.unref?.();
+              // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）。
+              // 收口必须同时 abort 对应 run：sse.close() → res.end() 后 writableEnded 同步
+              // 变 true，上面的 onClose 守卫（`!writableEnded`）在 close 事件时不成立，
+              // 只 close 不 abort 会让 run 在后台继续烧 token（与背压收口路径的
+              // onBackpressure → abort 对齐；run 已正常结束时 abort 是无害 no-op）。
+              const closeSse = (): void => {
+                clearInterval(heartbeat);
+                runAc.abort();
+                sse.close();
+              };
+              openSse.add(closeSse);
+              try {
+                // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 run.end 下发（status/error 字段）
+                const out = await app.run(messages, {
+                  rethrow: false,
+                  signal: runAc.signal,
+                  onText: (delta) => sse.event('text.delta', { text: delta }),
+                  ...(traceContext !== undefined ? { traceContext } : {}),
+                });
+                sse.event('run.end', toHttpBody(out));
+              } catch (e) {
+                // 流已开（200 与头已发出）→ 只能以 error 事件收尾，不能再改 HTTP 状态码
+                sse.event('error', { message: errMessage(e) });
+              } finally {
+                openSse.delete(closeSse);
+                closeSse();
+              }
+              return;
+            }
+            // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 status/error 字段返回 200
+            const out = await app.run(messages, {
+              rethrow: false,
+              signal: runAc.signal,
+              ...(traceContext !== undefined ? { traceContext } : {}),
+            });
+            sendJson(res, 200, toHttpBody(out));
+          } finally {
+            res.off('close', onClose);
+            inFlightRuns--;
+          }
           return;
         }
-        sendJson(res, 202, rec);
-        return;
-      }
 
-      if (pathname.startsWith('/tasks/')) {
-        const rest = pathname.slice('/tasks/'.length);
+        case 'submit': {
+          // 停机中不再接单（含直接 drain 了 runner 的情况）；GET /tasks/<id> 不受影响
+          if (draining || runner.isDraining) {
+            sendShuttingDown(req, res);
+            return;
+          }
+          const body = await parseJsonBody(req, res, maxBodyBytes);
+          if (body === PARSE_FAILED) return;
+          const submitBody = toTaskSubmitBody(body);
+          if (!submitBody) {
+            sendJson(res, 400, { error: 'body 需为 { input, idempotencyKey?, options? }' });
+            return;
+          }
+          // 入站链路（spec §9.2）：body 显式给的 `options.traceContext` 优先，否则取
+          // `traceparent` 头。它随 `spec.options` 落进 TaskRecord —— 所以**跨进程续跑**
+          // 的那次 run（另一个进程 `resumePending` 接着跑）也带得上，关联不断链。
+          const submitTrace = parseTraceparent(headerValue(req, 'traceparent'));
+          let rec: TaskRecord;
+          try {
+            rec = runner.submit(submitBody.input, {
+              ...(submitBody.idempotencyKey !== undefined
+                ? { idempotencyKey: submitBody.idempotencyKey }
+                : {}),
+              options:
+                submitBody.options?.traceContext !== undefined
+                  ? submitBody.options
+                  : {
+                      ...submitBody.options,
+                      ...(submitTrace !== undefined ? { traceContext: submitTrace } : {}),
+                    },
+              source: 'http',
+            });
+          } catch (e) {
+            // `submit` 是同步的：入参校验失败与 store 落库故障从同一个 catch 出去。
+            // 前者是调用方的错（400 + 原因），后者是服务端的错 —— 必须走与 500 路径同一套
+            // `exposeErrors` 策略，否则一次磁盘/Redis 故障会被报成「你参数写错了」，
+            // 并把内部错误消息原样回给调用方（500/401 路径都不这么干）。
+            if (e instanceof TaskInputError) {
+              sendJson(res, 400, { error: errMessage(e) });
+              return;
+            }
+            // 上面的停机闸门与 `submit` 之间隔着一次 `await parseJsonBody`：读 body 期间
+            // drain 可能刚开始，此时 submit 抛「正在优雅停机」。这是 503 而不是 500 ——
+            // 调用方应该退避重试，跟闸门本身回的是同一句话。
+            if (runner.isDraining) {
+              sendShuttingDown(req, res);
+              return;
+            }
+            sendInternalError(res, e);
+            return;
+          }
+          sendJson(res, 202, rec);
+          return;
+        }
+
         // POST /tasks/<id>/approve（HITL）：审批挂起的任务。drain 期间仍允许 ——
         // 与 GET 轮询同理由：挂起的任务只有人能推进，停机不该连「批准」也拒掉。
-        if (rest.endsWith('/approve')) {
-          if (method !== 'POST') {
-            methodNotAllowed(res, method, 'POST');
-            return;
-          }
-          let taskId: string;
-          try {
-            taskId = decodeURIComponent(rest.slice(0, -'/approve'.length));
-          } catch {
-            sendJson(res, 400, { error: 'taskId 不是合法的 URL 编码' });
-            return;
-          }
+        case 'approve': {
+          const taskId = route.taskId;
           const body = await parseJsonBody(req, res, maxBodyBytes);
           if (body === PARSE_FAILED) return;
           const parsed = parseApproveBody(body);
@@ -582,28 +572,29 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
           }
           return;
         }
-        if (method !== 'GET') {
-          methodNotAllowed(res, method, 'GET');
+
+        case 'poll': {
+          const taskId = route.taskId;
+          const rec = await runner.poll(taskId); // MaybePromise：异步 store 下必须 await
+          if (!rec) {
+            sendJson(res, 404, { error: `task 不存在: ${taskId}` });
+            return;
+          }
+          sendJson(res, 200, rec);
           return;
         }
-        let taskId: string;
-        try {
-          taskId = decodeURIComponent(rest);
-        } catch {
+
+        case 'badTaskId':
           // 残缺的 % 转义会抛 URIError —— 是调用方的输入问题（400），不是服务端 500
           sendJson(res, 400, { error: 'taskId 不是合法的 URL 编码' });
           return;
-        }
-        const rec = await runner.poll(taskId); // MaybePromise：异步 store 下必须 await
-        if (!rec) {
-          sendJson(res, 404, { error: `task 不存在: ${taskId}` });
-          return;
-        }
-        sendJson(res, 200, rec);
-        return;
-      }
 
-      sendJson(res, 404, { error: `路径不存在: ${pathname}` });
+        // healthz / metrics 已在上面的免鉴权组里 return 掉
+        case 'notFound':
+        default:
+          sendJson(res, 404, { error: `路径不存在: ${pathname}` });
+          return;
+      }
     } catch (e) {
       sendInternalError(res, e);
     }
