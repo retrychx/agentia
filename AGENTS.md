@@ -21,6 +21,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
+│   │                        #   slot-pool.ts = 并发槽位原语（纯依赖、带单测）—— AsyncRunner 拆分的第一步：
+│   │                        #   910 行的类里只有这块不碰 store/引擎，先抽它 + 配 FIFO/移交语义的回归用例，
+│   │                        #   后续抽块（审批监督 / 恢复重投 / drain 协调）才有基线
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
