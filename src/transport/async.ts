@@ -10,6 +10,7 @@ import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { TimeoutError } from '../core/timeout.js';
+import { SlotPool } from './slot-pool.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -128,8 +129,8 @@ export class AsyncRunner {
   private readonly concurrency: number;
   private readonly runTimeoutMs: number;
   private readonly approvalTimeoutMs: number;
-  private running = 0;
-  private readonly waitQueue: Array<() => void> = [];
+  /** 并发槽位池（见 slot-pool.ts）：本类不再自管 running/waitQueue */
+  readonly #slots: SlotPool;
   /** 已受理但未达终态的任务数（queued + running）—— /healthz 与 drain 共用 */
   private active = 0;
   private draining = false;
@@ -161,6 +162,8 @@ export class AsyncRunner {
     if (!(this.concurrency > 0)) {
       throw new Error(`concurrency 必须为正数，收到 ${opts.concurrency}`);
     }
+    // 放在校验之后：字段初始化式在构造函数体之前求值，那时 concurrency 还是 undefined
+    this.#slots = new SlotPool(this.concurrency);
     this.runTimeoutMs = opts.runTimeoutMs ?? 0;
     if (!Number.isFinite(this.runTimeoutMs) || this.runTimeoutMs < 0) {
       // NaN/Infinity 都不能放给 setTimeout：两者都会被钳到 1ms，每个任务立即「超时」失败
@@ -697,7 +700,7 @@ export class AsyncRunner {
         }
       }
 
-      await this.#acquireSlot();
+      await this.#slots.acquire();
       try {
         rec.status = 'running';
         rec.startedAt = Date.now();
@@ -809,7 +812,7 @@ export class AsyncRunner {
         try {
           await this.#safeSave(rec);
         } finally {
-          this.#releaseSlot();
+          this.#slots.release();
         }
       }
     } catch (e) {
@@ -887,24 +890,6 @@ export class AsyncRunner {
       ]);
     } catch {
       /* 辅助动作失败不影响任务 */
-    }
-  }
-
-  /** 并发槽位：超限则排队等待（任务记录保持 queued，由 store 可见） */
-  #acquireSlot(): Promise<void> {
-    if (this.running < this.concurrency) {
-      this.running++;
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => this.waitQueue.push(resolve));
-  }
-
-  #releaseSlot(): void {
-    const next = this.waitQueue.shift();
-    if (next) {
-      next(); // 槽位直接移交给等待者，running 计数不变
-    } else {
-      this.running--;
     }
   }
 }
