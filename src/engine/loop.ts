@@ -9,7 +9,8 @@ import type {
   SchemaType,
 } from '../core/tool.js';
 import type { SpanError, SpanId } from '../core/trace.js';
-import { classifyError } from './errors.js';
+import type { AgentLoopResult } from './loop-result.js';
+import { abortedResult, failedResult, finishedResult, suspendedResult } from './loop-result.js';
 import {
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_MAX_TOKENS,
@@ -53,26 +54,9 @@ import { isSuccessStopReason } from './types.js';
  * 文件分工：本文件只留入口（runAgent / runAgentScoped）与 agentLoop 编排骨架 +
  * run 根的装配；「一回合执行步骤」的实现机（回合上下文、请求/重试、记账、stop_reason
  * 分流、工具执行）拆在同层 turn.ts，「缺省旋钮解析 + 生效配置快照」拆在同层
- * run-config.ts —— 依赖方向单向 loop.ts → { turn.ts, run-config.ts }。
+ * run-config.ts，「出口的结果形状」拆在同层 loop-result.ts ——
+ * 依赖方向单向 loop.ts → { turn.ts, run-config.ts, loop-result.ts }。
  */
-
-export interface AgentLoopResult<T = unknown> {
-  stopReason: AgentStopReason;
-  finalText: string;
-  /** 非正常收尾时的结构化原因；正常收尾为 undefined（**字段在场**，见 core/run.ts 的说明） */
-  error: SpanError | undefined;
-  /** 本轮循环自己发起的模型往返次数 */
-  iterations: number;
-  /** submit_result 校验通过的结构化结果；未提交则为 undefined（类型由 resultSchema 推导） */
-  typed: T | undefined;
-  /**
-   * HITL 挂起（stopReason === 'awaiting_approval'）时的完整消息历史
-   * （末尾是含未决 tool_use 的 assistant 消息）；未挂起为 undefined（字段在场）。
-   */
-  suspendedMessages: MessageParam[] | undefined;
-  /** HITL 挂起时待决的 tool_use_id 列表；未挂起为 undefined（字段在场） */
-  pendingApprovals: string[] | undefined;
-}
 
 /**
  * 上下文策略按 run 隔离：实现提供 `forRun` 时每条 run 拿一个全新实例 ——
@@ -107,22 +91,6 @@ function textOfParam(message: MessageParam): string {
     .join('\n');
 }
 
-/** 挂起收尾的结果对象（两处出口共用：循环中途挂起 / 恢复模式进来发现决定仍不齐） */
-function suspendResult<T>(
-  ctx: { messages: MessageParam[]; progress: { iterations: number }; typed: T | undefined },
-  pending: string[],
-): AgentLoopResult<T> {
-  return {
-    stopReason: 'awaiting_approval',
-    finalText: '',
-    error: undefined,
-    iterations: ctx.progress.iterations,
-    typed: ctx.typed,
-    suspendedMessages: [...ctx.messages],
-    pendingApprovals: pending,
-  };
-}
-
 /**
  * 循环体核心：带父 span 跑一轮 manual loop。请求失败按 error 收掉 turn 后抛出，由外层收尾。
  *
@@ -150,34 +118,24 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   if (resumeUses.length > 0) {
     // 已取消：不执行任何工具（副作用不该在取消后发生），按 aborted 收尾
     if (args.signal?.aborted) {
-      return {
-        stopReason: 'aborted',
-        finalText: '',
-        error: abortedError(),
-        iterations: 0,
-        typed: undefined,
-        suspendedMessages: undefined,
-        pendingApprovals: undefined,
-      };
+      return abortedResult();
     }
     // 工具事件记到父 span：被恢复的回合属于挂起段的旧 trace，本段没有对应 llm.turn
     const outcome = await executeTurnTools(ctx, args.parentSpanId ?? '', resumeUses, null);
     if (outcome.kind === 'suspended') {
-      return suspendResult(ctx, outcome.pending);
+      return suspendedResult(ctx, outcome.pending);
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
     if (ctx.submitted) {
       // 恢复的回合里 submit_result 校验通过：直接落定（finalText 取该 assistant 消息的文本块）
       const tail = ctx.messages[ctx.messages.length - 2]; // 刚 push 了 tool_results，前一条是那条 assistant
-      return {
+      // iterations 0：本段没发过模型请求（恢复的工具执行不计往返）
+      return finishedResult({
         stopReason: 'end_turn',
         finalText: tail ? textOfParam(tail) : '',
-        error: undefined,
         iterations: 0,
         typed: ctx.typed,
-        suspendedMessages: undefined,
-        pendingApprovals: undefined,
-      };
+      });
     }
   }
 
@@ -226,7 +184,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       // error 保持 undefined —— 挂起不是失败。
       stopReason = 'awaiting_approval';
       finalText = textOf(message);
-      return { ...suspendResult(ctx, outcome.pending), finalText };
+      return suspendedResult(ctx, outcome.pending, finalText);
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
 
@@ -259,15 +217,13 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     };
   }
 
-  return {
+  return finishedResult({
     stopReason,
     finalText,
-    error,
     iterations: ctx.progress.iterations,
     typed: ctx.typed,
-    suspendedMessages: undefined,
-    pendingApprovals: undefined,
-  };
+    error,
+  });
 }
 
 /** 主入口：开 run 根 span，循环跑在其下。返回完整 trace（traceId 即 runId）。 */
@@ -335,15 +291,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     });
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
-    result = {
-      stopReason: 'error',
-      finalText: '',
-      error: classifyError(e),
-      iterations: progress.iterations,
-      typed: undefined,
-      suspendedMessages: undefined,
-      pendingApprovals: undefined,
-    };
+    result = failedResult(e, progress.iterations);
   }
 
   // awaiting_approval 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
