@@ -25,6 +25,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   tool-events.ts（单工具执行的记账面：两个事件体 + tool_result 块；
 │   │                        #   失败出参的截断上限**更小** —— 「哪个工具老超时」要一行看得完）
 │   │                        #   retry.ts 的 retryAllowed（重试闸四项合取，含「吐过字不重试」护栏）
+│   │                        #   loop.ts 同样在往外移纯件：run-config.ts（run 生效旋钮的缺省解析 +
+│   │                        #   快照编码 —— 认下缺省值的人就是写进 trace 的人，NaN/-1 一律记 'off'）、
+│   │                        #   loop-result.ts（循环出口的结果形状：7 个字段必在场 + 四个具名出口 ——
+│   │                        #   挂起不是失败、取消也带结构化 error、抛出必被 classifyError 翻译）
 │   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
