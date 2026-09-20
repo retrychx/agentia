@@ -28,7 +28,6 @@ import type {
   ModelPricing,
   RecorderBackend,
   SchemaType,
-  ToolRunContext,
 } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
@@ -40,6 +39,7 @@ import type { BudgetGuard } from './budget.js';
 import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
 import { backoffDelay, resolveRetry, retryAllowed, sleep } from './retry.js';
 import { buildTurnRequest } from './turn-request.js';
+import { buildToolRunContext } from './tool-context.js';
 import type { ResolvedRetry, RetryOptions } from './retry.js';
 import type { AgentStopReason, ContextPolicy, SystemParam } from './types.js';
 import { buildPricing, costEstimate, usageFromAnthropic } from './usage.js';
@@ -487,29 +487,21 @@ async function executeOneTool<S extends JsonSchema>(
   // 超时「放弃等待」时的通知信号（见 ToolRunContext.abandoned）：控制器随本次
   // 调用创建、随调用消亡，只在 withTimeout 判超时的分支里 abort。
   const abandonAc = new AbortController();
-  const toolCtx: ToolRunContext = {
+  // 上下文装配外移到 tool-context.ts：八处条件展开各自对应一个「漏了就静默降级」的守卫
+  const toolCtx = buildToolRunContext({
     client: args.client,
     recorder: args.recorder,
     parentSpanId: turnId,
     abandoned: abandonAc.signal,
-    ...(args.signal ? { signal: args.signal } : {}),
-    // 价格覆盖透传给嵌套能力（F1）：否则子 agent 用同一模型会退化成"未定价"
-    ...(args.priceOverrides ? { priceOverrides: args.priceOverrides } : {}),
-    // 宿主的未定价告警回调透传到嵌套循环（F2）：否则子循环里模型不在价格表时
-    // 只有 usage.unpriced 事件，宿主的告警回调静默缺席
-    ...(args.onUnpricedModel ? { onUnpricedModel: args.onUnpricedModel } : {}),
-    // 事件截断口径同样透传：调试期开了全文，子 agent 的工具事件不该还是被截断的
-    ...(args.maxEventChars != null ? { maxEventChars: args.maxEventChars } : {}),
-    // 成本护栏（C1）同样透传：预算是整条 run（含各级子 agent）的口径，
-    // 子循环拿不到就等于护栏在子循环期间离线（各级共享同一 recorder，按同一账单判断）
-    ...(args.maxTotalTokens != null ? { maxTotalTokens: args.maxTotalTokens } : {}),
-    ...(args.maxCostUsd != null ? { maxCostUsd: args.maxCostUsd } : {}),
-    // 裁判权（2026-09-17）：把本次的工具预算告诉工具自己 —— 带计时器的工具（MCP 桥）
-    // 据此交出裁判权，不再另开一个计时器判同一件事（否则同一事件会有两种账，见 spec §10 2026-09-17 ①）。
-    ...(args.toolTimeoutMs != null ? { toolTimeoutMs: args.toolTimeoutMs } : {}),
-    // HITL：批准执行的决定带给工具体（审计 / 按 decidedBy 分级授权等）
-    ...(decision !== undefined ? { approval: decision } : {}),
-  };
+    signal: args.signal,
+    priceOverrides: args.priceOverrides,
+    onUnpricedModel: args.onUnpricedModel,
+    maxEventChars: args.maxEventChars,
+    maxTotalTokens: args.maxTotalTokens,
+    maxCostUsd: args.maxCostUsd,
+    toolTimeoutMs: args.toolTimeoutMs,
+    approval: decision,
+  });
   let ok = true;
   let content: unknown = '';
   // 失败归类（E1）：只记「为什么没成」，不记栈 —— 观测看得清「哪个工具老超时」。
