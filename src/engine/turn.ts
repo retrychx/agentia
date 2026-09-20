@@ -30,7 +30,6 @@ import type {
   SchemaType,
 } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
-import { stringifySafe, truncateWithMark } from '../core/json.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
@@ -40,20 +39,11 @@ import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
 import { backoffDelay, resolveRetry, retryAllowed, sleep } from './retry.js';
 import { buildTurnRequest } from './turn-request.js';
 import { buildToolRunContext } from './tool-context.js';
+import { toolInputPayload, toolOutputPayload, toolResultBlock } from './tool-events.js';
+import type { ToolErrorKind } from './tool-events.js';
 import type { ResolvedRetry, RetryOptions } from './retry.js';
 import type { AgentStopReason, ContextPolicy, SystemParam } from './types.js';
 import { buildPricing, costEstimate, usageFromAnthropic } from './usage.js';
-
-/**
- * 事件正文（tool.input / tool.output 的 body）缺省截断上限（字符）。
- *
- * 与「入参」/「成功出参」/「失败出参」三类一一对应：失败出参减半是为了让
- * 「哪个工具老超时」这类判断在**一行**里看得完（正文本身多为一句错误摘要，
- * 1000 已远超常见长度，只有工具把异常里的长上下文一起吐回来时才会触发）。
- * `RunAgentOptions.maxEventChars` 一经给出，三类统一改用该值（见 `limit`）。
- */
-const DEFAULT_EVENT_CHARS = 2000;
-const DEFAULT_ERROR_EVENT_CHARS = 1000;
 
 /** 隐藏提交工具名：resultSchema 模式下由 engine 内部追加，不属开发者工具菜单 */
 const SUBMIT_RESULT = 'submit_result';
@@ -463,11 +453,7 @@ async function executeOneTool<S extends JsonSchema>(
   // 的完整处理时长，是「哪一步慢」的可信基线。并行工具各记各的（tool_use_id 配对）。
   const toolStartedAt = Date.now();
   // tool_use_id 一并记账：同名工具并行时，重放只有靠 id 才能把入参出参正确配对
-  args.recorder.event(turnId, 'tool.input', {
-    tool: use.name,
-    tool_use_id: use.id,
-    input: limit(use.input, args.maxEventChars ?? DEFAULT_EVENT_CHARS),
-  });
+  args.recorder.event(turnId, 'tool.input', toolInputPayload(use, args.maxEventChars));
   // 审批决定的审计账（HITL）：谁、什么时候、以什么理由批/拒，等审批等了多久。
   // waitedMs 需要 requestedAt（挂起时刻，由宿主在挂起时回填）—— 手工直传
   // approvals 而没有 requestedAt 时不记 waitedMs（不编造）。
@@ -506,7 +492,7 @@ async function executeOneTool<S extends JsonSchema>(
   let content: unknown = '';
   // 失败归类（E1）：只记「为什么没成」，不记栈 —— 观测看得清「哪个工具老超时」。
   // 'denied'（HITL）：审批被拒绝 —— 不是工具故障，是**人**的决定，单列一类账。
-  let errorKind: 'invalid_input' | 'timeout' | 'threw' | 'unknown_tool' | 'denied' | undefined;
+  let errorKind: ToolErrorKind | undefined;
   if (args.resultSchema && use.name === SUBMIT_RESULT) {
     // 隐藏提交工具：校验通过即携结果收尾（循环在 agentLoop 下方 break）；
     // 校验失败回 is_error（含路径，模型可自我修正），同回合其他工具照常执行。
@@ -588,25 +574,22 @@ async function executeOneTool<S extends JsonSchema>(
       }
     }
   }
-  args.recorder.event(turnId, 'tool.output', {
-    tool: use.name,
-    tool_use_id: use.id,
-    ok,
-    // 耗时（毫秒）：成功/失败/超时/入参被拒四条路径都记（E1）
-    durationMs: Math.max(0, Date.now() - toolStartedAt),
-    ...(errorKind ? { errorKind } : {}),
-    content: limit(
+  // 记账面外移到 tool-events.ts：截断上限不对称（失败更短）、耗时四路径都记且非负、errorKind 有值才在场
+  args.recorder.event(
+    turnId,
+    'tool.output',
+    toolOutputPayload({
+      use,
+      ok,
+      errorKind,
+      startedAt: toolStartedAt,
+      now: Date.now(),
       content,
-      args.maxEventChars ?? (ok ? DEFAULT_EVENT_CHARS : DEFAULT_ERROR_EVENT_CHARS),
-    ),
-  });
+      maxEventChars: args.maxEventChars,
+    }),
+  );
 
-  return {
-    type: 'tool_result',
-    tool_use_id: use.id,
-    content: stringifySafe(content),
-    is_error: !ok,
-  };
+  return toolResultBlock(use, ok, content);
 }
 
 function toApiTool(t: AgentTool): ToolParam {
@@ -633,14 +616,4 @@ export { textOf };
 export function replaceMessages(target: MessageParam[], next: readonly MessageParam[]): void {
   target.length = 0;
   for (const m of next) target.push(m);
-}
-
-/**
- * 截断到上限字符，超长加省略标记（格式由 core/json.ts 的 truncateWithMark 单一提供）。
- * `n === false` 表示**不截断**（`RunAgentOptions.maxEventChars: false`）——
- * 传数字时三类事件共用同一个上限，缺省值由调用点给出。
- */
-function limit(x: unknown, n: number | false): string {
-  const s = stringifySafe(x);
-  return n === false ? s : truncateWithMark(s, n);
 }

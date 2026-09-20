@@ -22,6 +22,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   → 收尾结论的映射表；「非正常收尾必须带结构化 error」的唯一落点）、
 │   │                        #   turn-request.ts（回合请求装配）、tool-context.ts（工具上下文透传装配 ——
 │   │                        #   八处条件展开各自是一个「漏了就静默降级」的守卫；false/0 是有意义的值）、
+│   │                        #   tool-events.ts（单工具执行的记账面：两个事件体 + tool_result 块；
+│   │                        #   失败出参的截断上限**更小** —— 「哪个工具老超时」要一行看得完）
 │   │                        #   retry.ts 的 retryAllowed（重试闸四项合取，含「吐过字不重试」护栏）
 │   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
