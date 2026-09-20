@@ -1,3 +1,5 @@
+/* biome-ignore-all lint/style/noDescendingSpecificity: 同上：规则只比末段标签，.tr-meta / .tr-ev .tr-name 与 .tr-row.error .tr-meta 等的对手选择器结构上不相交（清单见 PR #84） */
+
 /* Agentia trace 调用树样式 —— 从 packages/website/src/styles/global.css 的 .tr-* 段原样抽出。
  * 宿主需提供这些 CSS 变量：--ice（accent）--faint（次要文本）--text（主文本）。
  * 官网用站点调色板；CLI inspector 页面自带同名变量，视觉一致。 */

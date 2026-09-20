@@ -59,10 +59,9 @@ import { playScript } from './trace-player.js';
 
   /* 首屏入场时间线是等字体就绪才播的（见 site.js）—— 自播同样等字体，避免两段动效叠在一起；
      上限 1.5s，字体取不到也要照常开始。 */
-  const fontsReady =
-    document.fonts && document.fonts.ready
-      ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))])
-      : Promise.resolve();
+  const fontsReady = document.fonts?.ready
+    ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))])
+    : Promise.resolve();
   fontsReady.then(play);
 
   replayBtn?.addEventListener('click', () => {

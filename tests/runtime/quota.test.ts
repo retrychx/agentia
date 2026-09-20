@@ -31,7 +31,7 @@ function tenantApp(limit: number) {
     }
   }
 
-  const quotaMiddleware: CapabilityMiddleware = async (call, next) => {
+  const quotaMiddleware: CapabilityMiddleware = async (_call, next) => {
     const tenant = RunContext.current()?.get('tenant' as BlackboardKey) as string | undefined;
     if (tenant && (spentTokens.get(tenant) ?? 0) >= limit) {
       // 抛错 → 该条 tool_result 记 is_error 回模型（不中断 run），

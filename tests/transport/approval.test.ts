@@ -401,7 +401,7 @@ describe('approve 的并发与落库纪律（第八轮复审补缺）', () => {
     const [r1, r2] = await Promise.all([p1, p2]);
 
     assert.equal(r1.status, r2.status, '两个并发调用拿到同一次审批的结果');
-    assert.equal(r2.approvals?.['tu1']?.decidedBy, 'alice', '第一次决定赢（后到的不覆盖）');
+    assert.equal(r2.approvals?.tu1?.decidedBy, 'alice', '第一次决定赢（后到的不覆盖）');
     const done = await waitStatus(runner, taskId, 'succeeded');
     assert.equal(done.status, 'succeeded');
     assert.equal(spy.calls.length, 1, '恢复只派发一次 —— 重复执行会是 2');
@@ -494,6 +494,6 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
     assert.equal(done.status, 'succeeded');
     assert.equal(runs, 1, '并发惰性恢复只能派发一次 —— 重复执行会是 2');
     const rec = await store.get('task_expired');
-    assert.equal(rec?.approvals?.['tu1']?.reason, '审批超时', '超时决定照常落库');
+    assert.equal(rec?.approvals?.tu1?.reason, '审批超时', '超时决定照常落库');
   });
 });

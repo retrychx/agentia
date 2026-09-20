@@ -133,14 +133,14 @@ void MismatchedTools;
 class LooseTools {
   // 裸 JsonSchema → 入参回落 any，不校验（旧行为，保持兼容）
   @Tool({ description: 'd', schema: WEATHER })
-  anything(input: { whatever_at_all: boolean }): void {}
+  anything(_input: { whatever_at_all: boolean }): void {}
 }
 void LooseTools;
 
 class UntypedFromZodTools {
   // fromZod 未给 <T> → 同样不校验（回落 any，保持兼容）
   @Tool({ description: 'd', schema: fromZod(WEATHER, {}) })
-  anything(input: { still_whatever: boolean }): void {}
+  anything(_input: { still_whatever: boolean }): void {}
 }
 void UntypedFromZodTools;
 

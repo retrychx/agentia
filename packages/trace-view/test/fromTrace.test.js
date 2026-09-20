@@ -42,7 +42,7 @@ function fakeView() {
     calls,
     reset: (n) => calls.push(['reset', n]),
     start: (s) => calls.push(['start', s.id, s.kind, s.name, s.parent]),
-    event: (id, type, tool, text, ok) => calls.push(['event', id, type, tool, ok]),
+    event: (id, type, tool, _text, ok) => calls.push(['event', id, type, tool, ok]),
     end: (s) => calls.push(['end', s.id, s.status]),
     finish: (ms, status) => calls.push(['finish', ms, status]),
   };

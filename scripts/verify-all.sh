@@ -14,7 +14,11 @@ steps=(
   # 于是「本地 8/8 全绿、CI 挂 Biome」**真的发生过**（2026-09-14：本地全绿，CI 的 lint job
   # 在新写的源码与测试上挂了 4 条格式 error）。折进已有步骤有两个好处：job 名不必改，
   # 且 lint 从此落在**必需检查**里面 —— 新开一个非必需 job 反而是更弱的保证。
-  "npm run typecheck && npx biome ci ."
+  # 2026-09-20：从「只报 error」翻成**零告警**。此前 `npm run lint`/`biome ci` 都是
+  # 「没 error 就绿」—— 存量 93 warnings + 12 infos 照样过闸门。翻严的配套：
+  #   ① 存量清零（PR #84）；② info 级规则在 biome.jsonc 里升到 warn（--error-on-warnings
+  #   **不管 info**）；③ 三处样式表用带理由的 biome-ignore-all 关掉误报型的 noDescendingSpecificity。
+  "npm run typecheck && npx biome ci . --error-on-warnings"
   "npm run build"
   "npm run typecheck:types"
   "npm run typecheck:tests"

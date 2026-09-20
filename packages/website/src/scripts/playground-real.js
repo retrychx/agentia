@@ -154,7 +154,7 @@
     let isError = false;
     try {
       if (name === 'get_weather') {
-        const city = String((input && input.city) || '');
+        const city = String(input?.city || '');
         text =
           WEATHER[city] ||
           '未收录城市「' +
@@ -163,7 +163,7 @@
             Object.keys(WEATHER).join(' / ') +
             '）。';
       } else if (name === 'calculator') {
-        const expr = String((input && input.expression) || '');
+        const expr = String(input?.expression || '');
         if (!expr || !/^[0-9+\-*/().\s]+$/.test(expr)) {
           throw new Error('表达式只允许数字与 +-*/(). 字符');
         }
@@ -173,7 +173,7 @@
         }
         text = expr + ' = ' + value;
       } else if (name === 'read_asset') {
-        const key = String((input && input.name) || '');
+        const key = String(input?.name || '');
         text =
           ASSETS[key] ||
           '资产「' + key + '」不存在（可选：' + Object.keys(ASSETS).join(' / ') + '）。';
@@ -181,7 +181,7 @@
         throw new Error('未知工具：' + name);
       }
     } catch (e) {
-      text = '工具执行失败：' + (e && e.message ? e.message : String(e));
+      text = '工具执行失败：' + (e?.message ? e.message : String(e));
       isError = true;
     }
     return { text, isError, ms: Math.max(1, Math.round(performance.now() - t0)) };
@@ -225,7 +225,7 @@
       let msg = '';
       try {
         const body = await resp.json();
-        msg = (body && body.error && body.error.message) || '';
+        msg = body?.error?.message || '';
       } catch (_) {
         /* 忽略非 JSON 错误体 */
       }
@@ -324,10 +324,10 @@
           }
         }
         const usage = {
-          input: (resp.usage && resp.usage.input_tokens) || 0,
-          output: (resp.usage && resp.usage.output_tokens) || 0,
-          cacheRead: (resp.usage && resp.usage.cache_read_input_tokens) || 0,
-          cacheCreation: (resp.usage && resp.usage.cache_creation_input_tokens) || 0,
+          input: resp.usage?.input_tokens || 0,
+          output: resp.usage?.output_tokens || 0,
+          cacheRead: resp.usage?.cache_read_input_tokens || 0,
+          cacheCreation: resp.usage?.cache_creation_input_tokens || 0,
         };
         pg.traceEnd({ id: spanId, ms, usage }, usageAcc);
         openSpanId = null;
