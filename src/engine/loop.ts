@@ -1,4 +1,4 @@
-import type { MessageParam, ToolUseBlock } from '../core/message.js';
+import type { MessageParam } from '../core/message.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import type {
   AgentTool,
@@ -11,6 +11,7 @@ import type {
 import type { SpanError, SpanId } from '../core/trace.js';
 import type { AgentLoopResult } from './loop-result.js';
 import { abortedResult, failedResult, finishedResult, suspendedResult } from './loop-result.js';
+import { tailToolUses, textOfParam } from './resume-input.js';
 import {
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_MAX_TOKENS,
@@ -55,7 +56,8 @@ import { isSuccessStopReason } from './types.js';
  * run 根的装配；「一回合执行步骤」的实现机（回合上下文、请求/重试、记账、stop_reason
  * 分流、工具执行）拆在同层 turn.ts，「缺省旋钮解析 + 生效配置快照」拆在同层
  * run-config.ts，「出口的结果形状」拆在同层 loop-result.ts ——
- * 依赖方向单向 loop.ts → { turn.ts, run-config.ts, loop-result.ts }。
+ * 「续跑入口的读取件」拆在同层 resume-input.ts ——
+ * 依赖方向单向 loop.ts → { turn.ts, run-config.ts, loop-result.ts, resume-input.ts }。
  */
 
 /**
@@ -68,27 +70,6 @@ import { isSuccessStopReason } from './types.js';
  */
 function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | undefined {
   return policy?.forRun ? policy.forRun() : policy;
-}
-
-/**
- * 取消息历史**末尾**那条 assistant 消息里待解决的 tool_use 块（恢复模式检测）。
- * 空数组 = 不是恢复场景（正常从 user 消息起跑）。
- */
-function tailToolUses(messages: MessageParam[]): ToolUseBlock[] {
-  const tail = messages[messages.length - 1];
-  if (tail?.role !== 'assistant' || !Array.isArray(tail.content)) return [];
-  // ToolUseBlockParam 结构上兼容 ToolUseBlock（多一个可选 cache_control）
-  return tail.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-}
-
-/** 取 MessageParam（请求侧）里的文本块拼成的文本（恢复模式收尾时用） */
-function textOfParam(message: MessageParam): string {
-  if (!Array.isArray(message.content))
-    return typeof message.content === 'string' ? message.content : '';
-  return message.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b as { text?: string }).text ?? '')
-    .join('\n');
 }
 
 /**

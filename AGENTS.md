@@ -28,7 +28,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   loop.ts 同样在往外移纯件：run-config.ts（run 生效旋钮的缺省解析 +
 │   │                        #   快照编码 —— 认下缺省值的人就是写进 trace 的人，NaN/-1 一律记 'off'）、
 │   │                        #   loop-result.ts（循环出口的结果形状：7 个字段必在场 + 四个具名出口 ——
-│   │                        #   挂起不是失败、取消也带结构化 error、抛出必被 classifyError 翻译）
+│   │                        #   挂起不是失败、取消也带结构化 error、抛出必被 classifyError 翻译）、
+│   │                        #   resume-input.ts（续跑入口的读取件：末尾未决 tool_use 的识别只看**末尾一条** ——
+│   │                        #   漏判就是把续跑当新对话，同一批工具再跑一遍、花费翻倍）
 │   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
