@@ -150,6 +150,48 @@ describe('createStdioMcpConnector —— stdio 连接器', () => {
     assert.deepEqual(r.content, [{ type: 'text', text: 'called get-time' }]);
   });
 
+  it('裁判放弃等待（abandoned）⇒ pending 簿记立刻回收，server 永不回包也不泄漏', async () => {
+    // 反向验证：摘掉 send() 里 `abandoned → pending.delete(id)` 的清理，本用例红在
+    // 「请求 id 入了 set 却始终没进 delete」—— 对「活着但不回包」的 server（silentcall），
+    // pending 里的 {resolve,reject} 会留到进程死 / close()，每条超时调用漏一条 = 无界泄漏。
+    // pending 是闭包私有，这里 patch Map.prototype 按「请求 id（number 键）」计数来观测：
+    // 入簿一次就必须出簿一次。
+    const c = stdio('silentcall');
+    await c.listTools(); // 先握手，把 initialize 的条目清出观察窗
+
+    const sets: number[] = [];
+    const deletes: number[] = [];
+    const origSet = Map.prototype.set;
+    const origDelete = Map.prototype.delete;
+    Map.prototype.set = function <K, V>(this: Map<K, V>, k: K, v: V): Map<K, V> {
+      if (typeof k === 'number') sets.push(k);
+      return origSet.call(this, k, v);
+    } as typeof Map.prototype.set;
+    Map.prototype.delete = function <K, V>(this: Map<K, V>, k: K): boolean {
+      if (typeof k === 'number') deletes.push(k);
+      return origDelete.call(this, k);
+    } as typeof Map.prototype.delete;
+    try {
+      const ac = new AbortController();
+      const p = c.callTool('get-time', {}, { abandoned: ac.signal });
+      // close() 会拒掉仍在簿的条目；若清理失效这条 rejection 得有人接，别变未捕获
+      void p.catch(() => {});
+      // callTool 内部先 await ensureReady，set 发生在那之后 —— 等请求真发出去
+      for (let i = 0; i < 200 && sets.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.equal(sets.length, 1, 'tools/call 的请求条目应当入簿（number 键）');
+      ac.abort(); // abort 事件同步派发 ⇒ drop() 同步执行
+      assert.ok(
+        deletes.includes(sets[0] as number),
+        `裁判一放弃，id=${sets[0]} 的簿记条目必须同步删掉（deletes=${JSON.stringify(deletes)}）`,
+      );
+    } finally {
+      Map.prototype.set = origSet;
+      Map.prototype.delete = origDelete;
+    }
+  });
+
   it('tools 不是数组 → 响亮抛错（不静默变成空菜单）', async () => {
     const c = stdio('badtools');
     await assert.rejects(() => c.listTools(), /不是数组/);
