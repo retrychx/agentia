@@ -11,6 +11,7 @@ import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { TimeoutError } from '../core/timeout.js';
 import { SlotPool } from './slot-pool.js';
+import { approvalExpired, approvalsComplete, fillTimeoutDenials } from './approval-policy.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -321,8 +322,8 @@ export class AsyncRunner {
       };
     }
     // 惰性审批超时：人的决定先并入（先到先赢），仍空着的待决项由超时兜底成 deny
-    if (this.#approvalExpired(rec, now)) this.#fillTimeoutDenials(rec, now);
-    const complete = (rec.pendingApprovals ?? []).every((id) => rec.approvals?.[id] !== undefined);
+    if (approvalExpired(rec, now, this.approvalTimeoutMs)) fillTimeoutDenials(rec, now);
+    const complete = approvalsComplete(rec);
     if (complete) {
       rec.status = 'running'; // 由 #executeInner 接管（acquireSlot → 恢复执行）
       rec.ownerId = this.ownerId;
@@ -376,37 +377,9 @@ export class AsyncRunner {
   }
 
   /**
-   * 审批超时判定（HITL，**惰性**：不起定时器，只在 approve / poll / resumePending
-   * 读到 awaiting 记录时判）。基准是 `approvalPendingSince`（挂起时刻，挂起时落库）；
-   * 缺失时按 startedAt → createdAt 退化（容忍手工塞进来的记录）。
+   * 审批超时的**判定**已外移到 approval-policy.ts（`approvalExpired` / `fillTimeoutDenials` /
+   * `approvalsComplete`）—— 下面是**编排**：进在飞闸、重读一遍、先落库再派发。
    */
-  #approvalExpired(rec: TaskRecord, now: number): boolean {
-    return (
-      this.approvalTimeoutMs > 0 &&
-      rec.status === 'awaiting_approval' &&
-      now - (rec.approvalPendingSince ?? rec.startedAt ?? rec.createdAt) > this.approvalTimeoutMs
-    );
-  }
-
-  /**
-   * 超时自动拒绝：**仍空着的**待决项补上 deny（已有人工决定的不覆盖 —— 第一次决定赢）。
-   * 决定写到 `rec.approvals`，由调用方负责落库与重派。
-   */
-  #fillTimeoutDenials(rec: TaskRecord, now: number): void {
-    rec.approvals ??= {};
-    for (const id of rec.pendingApprovals ?? []) {
-      if (rec.approvals[id]) continue;
-      rec.approvals[id] = {
-        approved: false,
-        reason: '审批超时',
-        decidedBy: 'system',
-        decidedAt: now,
-        ...(rec.approvalPendingSince !== undefined
-          ? { requestedAt: rec.approvalPendingSince }
-          : {}),
-      };
-    }
-  }
 
   /**
    * 惰性超时扫描（HITL）：读到一个已超时的 awaiting 任务 ⇒ 自动全拒 + 落库 + 重派。
@@ -417,7 +390,7 @@ export class AsyncRunner {
    * 闸（inflightApprovals）。异步 store 的 `get` 返回**新副本**且有网络往返 —— 两个
    * 并发 poll（或 poll 与 approve）各自看到 awaiting 快照 ⇒ 双双填超时拒绝 + 双双
    * `#execute`（同一任务跑两遍）。在飞即跳过：另一路径自己会兜底（#approveInner
-   * 里也有 #approvalExpired 判定），决定逐 id 幂等（第一次决定赢）。
+   * 里也有 approvalExpired 判定，见 approval-policy.ts），决定逐 id 幂等（第一次决定赢）。
    * 反之 approve 撞上在飞的超时恢复时共享其结果 —— 与人的决定竞速，先到先得。
    */
   #expireAndResume(rec: TaskRecord, now: number): void {
@@ -436,10 +409,13 @@ export class AsyncRunner {
     // 凭陈旧快照放行会把同一任务再派发一次。
     const fresh = await this.store.get(rec.taskId);
     const target = fresh ?? rec;
-    if (target.status !== 'awaiting_approval' || !this.#approvalExpired(target, now)) {
+    if (
+      target.status !== 'awaiting_approval' ||
+      !approvalExpired(target, now, this.approvalTimeoutMs)
+    ) {
       return target;
     }
-    this.#fillTimeoutDenials(target, now);
+    fillTimeoutDenials(target, now);
     target.status = 'running';
     target.ownerId = this.ownerId;
     let saved: MaybePromise<void>;
@@ -460,11 +436,11 @@ export class AsyncRunner {
     return target;
   }
 
-  /** poll 的读路径钩子：读到 awaiting 且已超时 ⇒ 惰性判掉（见 #approvalExpired） */
+  /** poll 的读路径钩子：读到 awaiting 且已超时 ⇒ 惰性判掉（判定见 approval-policy.ts） */
   #lazyExpireApproval(rec: TaskRecord | undefined): TaskRecord | undefined {
     if (!rec) return rec;
     const now = Date.now();
-    if (this.#approvalExpired(rec, now)) this.#expireAndResume(rec, now);
+    if (approvalExpired(rec, now, this.approvalTimeoutMs)) this.#expireAndResume(rec, now);
     return rec;
   }
 
@@ -605,7 +581,8 @@ export class AsyncRunner {
     // 到点自动全拒并重派（框架补的 deny 决定先进 store，再进引擎）。
     let expired = 0;
     for (const rec of recs) {
-      if (rec.status !== 'awaiting_approval' || !this.#approvalExpired(rec, now)) continue;
+      if (rec.status !== 'awaiting_approval' || !approvalExpired(rec, now, this.approvalTimeoutMs))
+        continue;
       expired++;
       this.#expireAndResume(rec, now);
     }
