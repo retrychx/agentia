@@ -209,6 +209,12 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   → **签名不动**，在调用点条件展开 `...(x !== undefined ? { x } : {})`，或一次转交多字段时用
   `omitUndefined({...})`（`src/core/object.ts`）。理由与实测见 spec §10 2026-09-18 ⑦、`docs/guards.md` 附录。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
+- **承诺过的 script 必须真跑，且测产物要用产物自己的输入**：脚手架/模板在 package.json 里
+  承诺的每个 script（dev / build / start …），e2e 至少**真执行一次**（「产物存在」≠「产物能跑」——
+  只断言 dist/main.js 存在的那版门禁全绿时，`node dist/main.js` 一跑就崩）；凡「测产物 X」必须用
+  **X 自己的输入/代码路径**（如模板生成的入口文件、模板里那句路径表达式），禁止测试脚本另算一份
+  等价输入绕过产物 —— discover「生产必崩」（#83）就是这么漏的：测试脚本自己 `join(proj, 'src/tools')`，
+  模板里有病的 cwd 相对路径从未被执行。
 - **验证顺序**：`npm run typecheck && npx biome ci . && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完
   （在仓库里就是 `bash scripts/verify-all.sh`，8 步 —— 第 1 步同时管类型检查与 lint）。
   - **要加检查，折进已有步骤，不要加第 9 步**：`verify` job 的 name 是分支保护的必需状态检查，
