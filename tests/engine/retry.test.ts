@@ -110,8 +110,10 @@ describe('backoffDelay（指数 + 上限 + 抖动）', () => {
 describe('sleep（可中断）', () => {
   it('正常等到点', async () => {
     const t0 = Date.now();
-    await sleep(20);
-    assert.ok(Date.now() - t0 >= 15);
+    await sleep(30);
+    // 下界留 10ms 余量（同 drain-gate / task-waiters 的处理）：定时器按单调时钟到点，
+    // 而这里用 `Date.now()` 量（整毫秒、截断）——实测 25ms 的定时器有 ~1% 读数落在 24ms。
+    assert.ok(Date.now() - t0 >= 20);
   });
 
   it('中止立即 reject（AbortError）', async () => {
