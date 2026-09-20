@@ -77,13 +77,19 @@ export function projectPackageJson(name: string): string {
       private: true,
       type: 'module',
       scripts: {
-        dev: 'tsx src/main.ts',
+        // dev 走 CLI 的 dev（tsx watch + 本地 inspector 面板）：与文档/其它命令同一条路，
+        // 而不是「npm run dev 少一个面板、CLI dev 多一个面板」两种 dev。
+        // `npm run dev -- "你的问题"` 的参数由 CLI 原样透传给脚本。
+        dev: 'agentia dev',
         build: 'tsc -p tsconfig.json && node scripts/copy-assets.mjs',
         start: 'node dist/main.js',
         typecheck: 'tsc --noEmit -p tsconfig.json',
       },
       dependencies: { '@migor/agentia': '^0.7.2' },
       devDependencies: {
+        // CLI 装进工程（而不是让用户每次 npx 去 registry 拉）：`npx agentia …` 因此走本地
+        // bin —— 离线可用，且版本被 pin 住与框架同批（不 pin 的话老工程会被 npx 拉到最新 CLI）。
+        '@migor/cli': '^0.7.2',
         tsx: '^4.19.0',
         typescript: '^7.0.2',
         '@types/node': '^22.0.0',
@@ -122,16 +128,30 @@ export function projectTsconfig(): string {
 }
 
 export function mainTs(name: string): string {
-  return `import { createApp, loadEnvFile, SystemPrompt } from '@migor/agentia';
+  // 只取分类名（tools / skills / …）：dist/ 与 src/ 下它们都是 main.js 的同级目录，
+  // 所以「相对本文件」在开发态与构建后都成立。
+  const dirNames = CAPABILITY_DIR_LIST.map((p) => `'${p.replace(/^src\//, '')}'`).join(', ');
+  return `import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createApp, loadEnvFile, SystemPrompt } from '@migor/agentia';
 
 // 读同目录的 .env（key 写文件里即可，不必每次 export）。框架**不自动**读 .env ——
 // 读哪个文件、什么时候读由这里决定；已存在的真实环境变量优先，不会被文件覆盖。
 // 想换路径/顺序：loadEnvFile({ path: '.env.local' }) 或直接删掉这一行改用自己的加载器。
 loadEnvFile();
 
+// 能力目录按**本文件位置**解析，不是 cwd：开发态（src/main.ts）解析到 src/<分类>/，
+// 构建后（dist/main.js）解析到 dist/<分类>/ —— 从任何目录启动都成立。
+// ⚠️ 别改回 cwd 相对写法（形如 src/tools 的字符串）：那样 \`node dist/main.js\` 会去加载 src 下的
+// .ts 源码，而装饰器不是可擦除的类型语法，Node 直接跑不了（"Invalid or unexpected token"）。
+// filter：空分类目录在构建后不存在（tsc 不为空目录产出 dist/<分类>/），而 discover 对
+// 显式给出的不存在路径是报错的 —— 「这类暂时没有能力」不该让启动失败。
+const CAPABILITY_DIRS = [${dirNames}];
 const app = await createApp({
   name: '${name}',
-  discover: [${CAPABILITY_DIR_LIST.map((p) => `'${p}'`).join(', ')}], // 四分类目录，顺序即装配顺序
+  discover: CAPABILITY_DIRS.map((d) => fileURLToPath(new URL(d + '/', import.meta.url))).filter(
+    (dir) => existsSync(dir),
+  ),
   system: new SystemPrompt().add('role', '你是 ${name} 的主 agent，按任务自主调度菜单里的能力。', true),
 });
 

@@ -112,6 +112,20 @@ export interface TraceDiff {
   spans: SpanDiff[];
 }
 
+/**
+ * `--json` 的输出形状（人类输出的机器可读等价物）。
+ * span 只带 `path` / `missing` / `fields` —— 与人类输出展示的信息一致：要看「哪一侧没有这个
+ * span」用 `missing`，要看「差在哪个字段」用 `fields`（差异值都在 `fields[].a/b` 里）。
+ * 不塞整棵 span（含 events 正文，可能很大）。字段增补是兼容的，改名/删字段是破坏性变更。
+ */
+export interface DiffJson {
+  a: { file: string; traceId: string | null; skippedLines: number };
+  b: { file: string; traceId: string | null; skippedLines: number };
+  equal: boolean;
+  summary: DiffEntry[];
+  spans: Array<{ path: string; missing: 'a' | 'b' | null; fields: DiffEntry[] }>;
+}
+
 const USAGE_FIELDS = [
   'inputTokens',
   'outputTokens',
@@ -323,7 +337,7 @@ function pushEventDiffs(out: DiffEntry[], x: SpanEvent[], y: SpanEvent[]): void 
 /* ── 命令本体：两个 JSONL 各取第一条 trace → diff → 人读输出 ──────────────────── */
 
 /** 用法串（cli.ts 的子命令 `--help` 也从这里取，避免两处各写一份） */
-export const USAGE = '用法：agentia diff <a.jsonl> <b.jsonl>';
+export const USAGE = '用法：agentia diff <a.jsonl> <b.jsonl> [--json]';
 
 /** 逐行 JSON.parse + extractTrace（同 harvest），取第一条可提取的 trace；坏行跳过计数 */
 async function readFirstTrace(file: string): Promise<{ trace: Trace; badLines: number }> {
@@ -362,8 +376,12 @@ function fmtEntry(e: DiffEntry): string {
 
 /** 失败一律**抛错**（同 report/harvest 的受理模式）；「有差异」不是错误，就地设 exitCode = 1 */
 export async function diffCommand(args: string[]): Promise<number> {
+  // `--json`：机器可读输出（stdout 只有一个 JSON 文档，无任何人类装饰）；退出码语义不变 ——
+  // 有差异仍退出 1（脚本照旧可拿退出码当门禁，`--json` 只是让「差在哪」也能被读）。
+  const json = args.includes('--json');
   const files: string[] = [];
   for (const a of args) {
+    if (a === '--json') continue;
     if (a.startsWith('--')) throw new Error(`未知参数：${a}\n${USAGE}`);
     files.push(a);
   }
@@ -373,6 +391,23 @@ export async function diffCommand(args: string[]): Promise<number> {
   const ra = await readFirstTrace(fileA);
   const rb = await readFirstTrace(fileB);
   const d = diffTraces(ra.trace, rb.trace);
+
+  if (json) {
+    const payload: DiffJson = {
+      a: { file: fileA, traceId: ra.trace.traceId ?? null, skippedLines: ra.badLines },
+      b: { file: fileB, traceId: rb.trace.traceId ?? null, skippedLines: rb.badLines },
+      equal: d.equal,
+      summary: d.summary,
+      spans: d.spans.map((s) => ({
+        path: s.path,
+        missing: s.a === undefined ? ('a' as const) : s.b === undefined ? ('b' as const) : null,
+        fields: s.fields,
+      })),
+    };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    if (!d.equal) process.exitCode = 1;
+    return 0;
+  }
 
   const badNote = (n: number): string => (n > 0 ? `（跳过无法解析 ${n} 行）` : '');
   const lines: string[] = [

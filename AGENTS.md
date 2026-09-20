@@ -88,6 +88,14 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   diff = 两条 trace.jsonl 的调用树 A/B 比对（有差异退出码 1），
 │   │                        #   其 diffTraces 是框架 src/engine/trace-diff.ts 的去类型移植副本，
 │   │                        #   同样有逐字对拍守护，改算法必须两边同步
+│   │                        #   机器可读面：report / diff / doctor 支持 --json（stdout 只一个 JSON
+│   │                        #   文档、无人类装饰；出错仍 stderr + 退出码 1，stdout 保持空）；harvest
+│   │                        #   刻意没有 —— 它的 stdout 就是产物（生成的 eval 源码）。
+│   │                        #   --version / -v 读**包自身 package.json**（不另存常量，免得漂）。
+│   │                        #   脚手架的 `dev` script 指向 `agentia dev`（与 npx 同一条路、带面板），
+│   │                        #   所以 dev 必须把额外参数透传给用户脚本（`npm run dev -- "问题"`）。
+│   │                        #   脚手架还把 CLI 自己写进新工程的 devDependencies（走本地 bin、离线可用、
+│   │                        #   版本与框架同批 pin）⇒ templates.ts 因此有**两条**版本发布面。
 │   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector；
 │   │                        #   inspector 有 Host 头校验，非 localhost 403）；dev/add 支持 Windows
 │   │                        #   （npmSpawn：win32 走 cmd.exe /d /s /c 包装 + 逐参数脱敏 ——
