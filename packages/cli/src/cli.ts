@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 /** agentia CLI 入口：手写参数解析 + 命令分发（零依赖） */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createProject } from './create.js';
 import { generateCapability } from './generate.js';
 import { isCapabilityType, isValidName, CAPABILITY_TYPES } from './templates.js';
@@ -18,14 +20,18 @@ const USAGE = `agentia —— Agentia 框架命令行工具
   agentia g <type> <name>                  在当前目录生成能力（别名：generate）
                                            type: ${CAPABILITY_TYPES.join(' | ')}
   agentia dev                              启动开发模式（tsx watch 热重载 + 本地 inspector 面板）
-  agentia doctor                           装配体检（未登记/悬空能力/命名规范/重复条目）
-  agentia report <trace.jsonl>             从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
+  agentia doctor [--json]                  装配体检（未登记/悬空能力/命名规范/重复条目）
+  agentia report <trace.jsonl> [--json]    从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
   agentia harvest <trace.jsonl>            把线上 trace 翻成 eval 用例骨架
-                                           （[--out <file.ts>] [--failed] [--limit N]）
-  agentia diff <a.jsonl> <b.jsonl>         两条 trace 的调用树 A/B 比对（有差异时退出码 1）
+                                           （[--out <file.ts>] [--force] [--failed] [--limit N]）
+  agentia diff <a.jsonl> <b.jsonl> [--json] 两条 trace 的调用树 A/B 比对（有差异时退出码 1）
   agentia add <pkg>                        安装第三方能力包并登记到 src/registry.ts
   agentia --help                           显示本帮助
+  agentia --version                        显示版本（等价 -v）
 
+--json：report / diff / doctor 的机器可读输出 —— stdout 只有一个 JSON 文档、无人类装饰，
+        便于脚本与 CI 串接；出错仍走 stderr + 退出码 1。（harvest 没有 --json：它的 stdout
+        本身就是产物，即生成的 eval 文件源码。）
 name 规则：小写字母开头的小写 kebab-case（如 hello、doc-reviewer）
 `;
 
@@ -41,7 +47,7 @@ const SUB_USAGE: Record<string, string | undefined> = {
   g: G_USAGE,
   generate: G_USAGE,
   dev: '用法：agentia dev',
-  doctor: '用法：agentia doctor',
+  doctor: '用法：agentia doctor [--json]',
   report: REPORT_USAGE,
   harvest: HARVEST_USAGE,
   diff: DIFF_USAGE,
@@ -54,6 +60,22 @@ function fail(message: string): number {
   return 1;
 }
 
+/**
+ * CLI 版本 = 本包 package.json 的 `version`（**单源**：`scripts/check-release.mjs` 已保证它
+ * 与根包一致，所以这里不另存一份常量 —— 常量会漂，读到的文件不会）。
+ * 源码直跑（`src/cli.ts`）与发布物（`dist/cli.js`）的 `../package.json` 都是包根那一份。
+ */
+function readCliVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+    ) as { version?: string };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 function checkName(name: string | undefined): name is string {
   if (name === undefined) return false;
   return isValidName(name);
@@ -64,6 +86,14 @@ function main(argv: string[]): number {
 
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(USAGE);
+    return 0;
+  }
+
+  // 版本：`--version` / `-v`。此前只有 `--help`，用户问不出自己装的是哪一版 —— 而本仓库
+  // 把版本纪律做到了发布面+闸门，CLI 却报不出自己的版本，是个说不通的缺口（bug 报告第一句
+  // 就是「你装的哪一版」）。
+  if (command === '--version' || command === '-v') {
+    console.log(readCliVersion());
     return 0;
   }
 
@@ -114,13 +144,15 @@ function main(argv: string[]): number {
   }
 
   if (command === 'dev') {
-    if (rest.length > 0) return fail(`未知参数：${rest[0]}`);
-    return devServer();
+    // 额外参数透传给用户脚本：脚手架把 `npm run dev` 指向本命令，而工程 README 文档化的
+    // 用法是 `npm run dev -- "你的问题"` —— 参数必须原样传下去，不能当未知参数拒掉。
+    return devServer(rest);
   }
 
   if (command === 'doctor') {
-    if (rest.length > 0) return fail(`未知参数：${rest[0]}`);
-    return doctor();
+    const extra = rest.filter((a) => a !== '--json');
+    if (extra.length > 0) return fail(`未知参数：${extra[0]}`);
+    return doctor({ json: rest.includes('--json') });
   }
 
   if (command === 'report') {

@@ -19,12 +19,16 @@
 ## 安装与配置
 
 ```bash
-npm i @migor/agentia                 # 框架（项目依赖）
-npm i -g @migor/cli                  # 命令行工具（脚手架 / 生成 / 调试）
-
-agentia create my-app                # 脚手架（含 .env / .env.example）
-$EDITOR my-app/.env                  # 填 ANTHROPIC_API_KEY（也可直接 export，真实环境变量优先）
+npx @migor/cli create my-app         # 脚手架（含 .env / .env.example）
+cd my-app && npm install             # 框架与 CLI 都装进工程
+$EDITOR .env                         # 填 ANTHROPIC_API_KEY（也可直接 export，真实环境变量优先）
+npm run dev                          # = agentia dev：tsx watch + 本地 inspector 面板
 # 可选：ANTHROPIC_BASE_URL（兼容端点）、AGENTIA_MODEL（缺省 claude-opus-5）
+
+# 工程内直接用：npx agentia g tool fetch-weather / npx agentia doctor / npx agentia --version
+#   （脚手架把 @migor/cli 装进 devDependencies ⇒ 走本地 bin，离线可用、版本与工程一同 pin）
+# 首次创建必须带 scope —— npm 上另有一个别人的 `agentia` 包，短名会装错东西。
+# 想全局装（到处都能敲 agentia）：npm i -g @migor/cli
 ```
 
 > 框架**不自动**读 `.env`：脚手架 `src/main.ts` 首行的 `loadEnvFile()` 负责把它读进 `process.env`。
