@@ -17,6 +17,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   超时原语 timeout.ts —— 引擎与 MCP 桥**共用一份**，见 §10 2026-09-17 ①），零依赖
 │   ├── engine/              # 运行时内核：agent loop、trace 记账、长上下文裁剪(trimming)、
 │   │                        #   预算策略(policy)、错误分类、replay、run 调用契约
+│   │                        #   turn.ts = 回合执行机（自 loop.ts 拆出）；它的纯判定继续外移：
+│   │                        #   text.ts（引擎文本口径：多块 `\n` 连接）、stop-reason.ts（stop_reason
+│   │                        #   → 收尾结论的映射表；「非正常收尾必须带结构化 error」的唯一落点）
 │   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)

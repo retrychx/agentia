@@ -20,10 +20,10 @@ import {
   checkTurnEntry,
   executeTurnTools,
   recordTurnUsage,
-  resolveStopReason,
   streamTurn,
   textOf,
 } from './turn.js';
+import { resolveStopReason } from './stop-reason.js';
 import type { AgentLoopArgs } from './turn.js';
 import type {
   AgentRunResult,
