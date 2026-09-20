@@ -732,16 +732,6 @@ export function createStreamableHttpMcpConnector(
   };
 
   /**
-   * 一次 JSON-RPC 往返，带**会话过期自愈**（2026-09-18；MCP Streamable HTTP 的规范语义）。
-   *
-   * 带会话 id 收到 `404` 的含义是「这个会话我不认识」⇒ **该请求没有被执行** ——
-   * 所以丢掉会话、重新握手、把这一次**重试一次**是安全的（不会重复执行副作用）。
-   * 规范也是这么要求的：客户端**必须**新建会话（不带会话 id 重新 `initialize`）。
-   *
-   * **只重试一次**：第二次再 404 说明对面不是「会话过期」而是别的问题，直接抛（不循环）。
-   * 自愈本身是静默的，但可通过 `onSessionExpired` 观测 —— 否则它和「静默失效」没区别。
-   */
-  /**
    * 会话过期自愈的互斥：并发请求同时吃到 404 时**共享同一次重握手**。
    * 没有这层时，两个并发调用各自执行 `ready = null`（第二个会把第一个刚建的握手
    * Promise 抹掉）⇒ 双 initialize 并发跑、`sessionId` 互相覆盖，重试带着被覆盖的
@@ -760,6 +750,16 @@ export function createStreamableHttpMcpConnector(
     return reinit;
   };
 
+  /**
+   * 一次 JSON-RPC 往返，带**会话过期自愈**（2026-09-18；MCP Streamable HTTP 的规范语义）。
+   *
+   * 带会话 id 收到 `404` 的含义是「这个会话我不认识」⇒ **该请求没有被执行** ——
+   * 所以丢掉会话、重新握手、把这一次**重试一次**是安全的（不会重复执行副作用）。
+   * 规范也是这么要求的：客户端**必须**新建会话（不带会话 id 重新 `initialize`）。
+   *
+   * **只重试一次**：第二次再 404 说明对面不是「会话过期」而是别的问题，直接抛（不循环）。
+   * 自愈本身是静默的，但可通过 `onSessionExpired` 观测 —— 否则它和「静默失效」没区别。
+   */
   const rpc = async (
     method: string,
     params: unknown,
