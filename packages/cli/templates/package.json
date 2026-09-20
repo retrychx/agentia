@@ -1,0 +1,20 @@
+{
+  "name": "__PROJECT_NAME__",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "agentia dev",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@migor/agentia": "^0.7.2"
+  },
+  "devDependencies": {
+    "@migor/cli": "^0.7.2",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2",
+    "@types/node": "^22.0.0"
+  }
+}

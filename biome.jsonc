@@ -65,5 +65,15 @@
       "arrowParentheses": "always",
       "bracketSpacing": true
     }
-  }
+  },
+  "overrides": [
+    {
+      // 脚手架模板：lint 照常（真文件化的意义所在），只关 formatter。
+      // 生成物的字节是与存量项目/e2e 断言的兼容契约（逐字节零漂移），而 Biome 的
+      // 排版与契约不一致（如 tsconfig 模板的多行数组来自 JSON.stringify 的既有输出）——
+      // 模板文件的排版由「渲染产物逐字节对拍」守门，不由 formatter 重排。
+      "includes": ["packages/cli/templates/**"],
+      "formatter": { "enabled": false }
+    }
+  ]
 }

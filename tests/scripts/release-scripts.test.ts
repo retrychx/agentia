@@ -51,7 +51,9 @@ const FIXTURE: Record<string, string> = {
   'src/index.ts': `export const AGENTIA_VERSION = '${V0}';\n`,
   // 脚手架模板里有**两条**版本面：框架 pin 与 CLI pin（CLI 也装进新工程）。
   // 两面各 count:1 —— 只写一条会被 bump 的计数断言拦下（这正是它该有的反应）。
-  'packages/cli/src/templates.ts': `export const deps = { '@migor/agentia': '^${V0}', '@migor/cli': '^${V0}' };\n`,
+  'packages/cli/templates/package.json':
+    `{\n  "dependencies": { "@migor/agentia": "^${V0}" },\n` +
+    `  "devDependencies": { "@migor/cli": "^${V0}" }\n}\n`,
   '.github/ISSUE_TEMPLATE/bug_report.yml': `body:\n  - attributes:\n      placeholder: '${V0}'\n`,
   'README.md': `> **版本**：\`${V0}\`（两个包均已发布到 npm）。\n`,
   'docs/roadmap.md': `# Roadmap\n\n状态：v${V0} 已发布（框架 + CLI）。\n`,

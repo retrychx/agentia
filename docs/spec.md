@@ -2270,6 +2270,39 @@ lint 闸门从「只报 error」翻成**零告警**（93 warnings + 12 infos →
 SOAK_CONCURRENCY=8 npm run e2e:soak`，报的是「失败与不可重试注入逐笔对账」那一行）；反向验证逐条
 写在 commit message 里（「摘掉这条修复 ⇒ 哪条用例红」）。
 
+### 2026-09-21 ②：CLI 脚手架模板从「字符串」升级为「真文件」（CODE-REVIEW-2026-09-21 待决策 2）
+
+**背景**：`packages/cli/src/templates.ts` 把生成给用户项目的 `main.ts` / 能力文件 / tsconfig /
+package.json 全部写成字符串模板。字符串不过编译器 —— 模板代码对仓库自己的 typecheck/lint
+不可见，discover 路径「生产必崩」缺陷就是这么漏到 0.7.2 的（e2e-cli 的 4c/4d/4e 是事后补的
+门禁，发现时机太晚）。
+
+**决定**：模板变成 `packages/cli/templates/` 下的真文件（按生成物的目录结构摆放），被仓库
+工具链全程照看：
+
+- **占位符纪律**：token（`__PROJECT_NAME__` / `__NAME__` / `__CLASS_NAME__` /
+  `__METHOD_NAME__`）只许出现在**字符串 / 注释 / 标识符**位置 —— 这样模板文件自身就是
+  合法 TS/JSON，能过 tsc 与 Biome。标识符位置（类名/方法名）用大写下划线 token，它们本就是
+  合法标识符。
+- **纳入工具链**：`packages/cli/tsconfig.templates.json` 把 templates/ 纳入 tsc（挂在
+  build 里，选项与生成物 tsconfig 同口径），`'@migor/agentia'` 经 paths 映射到框架 src
+  （同根 tsconfig.tests.json 对 examples 的做法），无需在 templates/ 里 npm install；
+  Biome lint 照常收。
+- **Biome 只关 formatter**（`packages/cli/templates/**`）：生成物字节是与存量项目/e2e 断言的
+  兼容契约（逐字节零漂移），而 Biome 排版与契约不一致（tsconfig 模板的多行数组来自
+  JSON.stringify 的既有输出）—— 排版由「渲染产物逐字节对拍」守门，不由 formatter 重排。
+- **点文件用无点文件名**（`gitignore` / `env` / `env.example`，create 写出时才补点）：
+  `.env` 会被仓库根 .gitignore 吞掉（进不了版本库），`.gitignore` 会被 npm pack 静默剥掉。
+- **运行时读取**：`templates.ts` 从 `dist/templates/`（构建时 copy-assets 整树拷入）读文件 +
+  replaceAll 渲染；导出函数签名不变，`packages/cli/test` 一行未改全绿。
+- **版本发布面搬家**：两条 pin（框架依赖 + CLI devDependency）从 templates.ts 落到
+  `templates/package.json`，`scripts/release-surface.mjs` 清单的路径与正则（单引号 →
+  JSON 双引号）已同步，`tests/scripts/release-scripts.test.ts` 夹具同步 —— 这是本迁移
+  最容易漏的一处，漏了 bump 就改不到新版本。
+
+**零漂移判据**：一次性对拍脚本（不进仓库）对旧字符串模板与新文件方案的全部渲染产物
+（项目级 9 件 + 4 类能力 × 5 个 kebab 名）逐文件 diff —— 为空；e2e-cli 全链绿。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
