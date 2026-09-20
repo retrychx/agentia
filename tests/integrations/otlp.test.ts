@@ -294,7 +294,7 @@ describe('createOtlpExporter', () => {
       assert.equal(spans[0].traceId.length, 32, 'trace id 是 32 hex');
       assert.equal(spans[0].spanId.length, 16, 'span id 必须是 16 hex');
       assert.equal(spans[1].parentSpanId.length, 16, '父 span id 同宽');
-      const attrByKey = (span: any) =>
+      const attrByKey = (span: { attributes: Array<{ key: string; value: unknown }> }) =>
         Object.fromEntries(
           span.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
         );

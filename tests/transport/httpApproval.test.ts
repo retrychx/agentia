@@ -52,6 +52,7 @@ function close(server: Server): Promise<void> {
   return new Promise((r) => server.close(() => r()));
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: 端点回的是运行时数据（契约见 http.ts 的 RunHttpResponse / TaskRecord），逐字段断言时不必逐个窄化 unknown
 async function readJson(res: Response): Promise<any> {
   return res.json();
 }
@@ -97,7 +98,8 @@ describe('POST /tasks/:id/approve（HITL）', () => {
       assert.equal(rec.approvals.tu1.approved, true);
       assert.equal(rec.approvals.tu1.decidedBy, 'alice');
 
-      // 轮询到终态
+      // 轮询到终态（与 readJson 同源：运行时数据）
+      // biome-ignore lint/suspicious/noExplicitAny: 同文件的 readJson 豁免，来源一致
       let final: any;
       for (;;) {
         const poll = await fetch(`${base}/tasks/${taskId}`);
@@ -212,6 +214,7 @@ describe('POST /tasks/:id/approve（HITL）', () => {
         decisions: { tu1: { approved: false, reason: '超出权限' } },
       });
       assert.equal(res.status, 200);
+      // biome-ignore lint/suspicious/noExplicitAny: 同文件的 readJson 豁免，来源一致
       let final: any;
       for (;;) {
         const poll = await fetch(`${base}/tasks/${taskId}`);

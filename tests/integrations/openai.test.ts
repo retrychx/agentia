@@ -14,9 +14,10 @@ import { toolUseMsg, endTurnMsg, mockClient } from '../helpers.js';
  * 显式传 `maxRetries: 0` 或给足脚本长度。
  */
 function fakeFetch(script: Array<{ status?: number; body: unknown }>) {
+  // biome-ignore lint/suspicious/noExplicitAny: 捕获的是客户端**发出去**的报文，字段由被测实现决定 —— 这里要断的正是「未知形态里有没有某字段」，写死类型反而变成抄一遍实现
   const requests: Array<{ url: string; init: RequestInit; json: any }> = [];
   let i = 0;
-  const fetchImpl = (async (url: any, init: any) => {
+  const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     const step = script[Math.min(i, script.length - 1)]!;
     i++;
     requests.push({ url: String(url), init, json: JSON.parse(String(init?.body)) });
@@ -379,7 +380,7 @@ describe('createOpenAIClient', () => {
     // 反向验证：旧实现从不调失败响应的 text() → firstBodyReads 恒 0。
     let firstBodyReads = 0;
     let calls = 0;
-    const fetchImpl = (async (_url: any, _init: any) => {
+    const fetchImpl = (async (_url: string | URL, _init: RequestInit = {}) => {
       calls += 1;
       if (calls === 1) {
         // `Response.prototype.text` 在本项目的类型环境下是**只读**方法，不能改写，
@@ -495,7 +496,8 @@ describe('createOpenAIClient', () => {
     const second = requests[1].json;
     assert.ok(
       second.messages.some(
-        (m: any) => m.role === 'tool' && m.tool_call_id === 'tu1' && m.content.includes('pong'),
+        (m: { role: string; tool_call_id?: string; content: string }) =>
+          m.role === 'tool' && m.tool_call_id === 'tu1' && m.content.includes('pong'),
       ),
       'tool_result 翻译为 role:tool 消息回传',
     );

@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noExplicitAny: E5 段的 OTLP/JSON 断言是逐字段探针 —— 写全 envelope 类型等于把协议抄一遍，抄错时测试反而失去意义；这些 any 只活在 bodies / Record<string, any> / .map((d: any)) 三处形态上，作用域限本文件
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
