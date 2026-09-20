@@ -2161,6 +2161,16 @@ Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无
 
 反向验证逐条做过（摘掉修复 ⇒ 新用例红 ⇒ 恢复 ⇒ 绿），证据在各提交的说明里。
 
+### 2026-09-20 ②：`metrics.ts` / `mcp.ts` 纯结构拆分（零行为变化）
+
+review 指出两个超大文件该拆：`integrations/metrics.ts`（1050 行）拆为
+`metrics-state.ts`（`MetricsState` 累加/快照/重置）+ `metrics-render.ts`（Prometheus 文本）
++ `metrics-otlp.ts`（OTLP 组装与 flush）+ `metrics.ts`（只留选项校验/定时器/组装）；
+`integrations/mcp.ts`（897 行）拆为 `mcp-stdio.ts` / `mcp-http.ts` 两个连接器 +
+`mcp.ts`（桥 + 共享 helper + re-export）。全部新文件是同层 module 级 export、**不进公共面**；
+`src/index.ts`、既有测试、官网 api.html 一行未改（公共面零漂移即验收标准）。
+其余大文件（async / turn / http / module / openai / anthropic）经评审结论为**保持不动**。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
