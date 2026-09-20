@@ -1,5 +1,3 @@
-import { spawn } from 'node:child_process';
-import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
@@ -11,9 +9,11 @@ import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
  * `McpClientLike` 的客户端都能接（同 `RedisLike` 的 duck-typing）。本文件只依赖 core，
  * 符合分层约定（`integrations` → `core`）。
  *
- * **连接器**（2026-09-18 起**内置**，见文件末「连接器」一节与 spec §10 同日条）：
+ * **连接器**（2026-09-18 起**内置**，见文末「连接器」一节与 spec §10 同日条）：
  * `createStdioMcpConnector` / `createStreamableHttpMcpConnector`。二者只用标准库
  * （`node:child_process` + 全局 `fetch`），**不新增任何第三方依赖**。
+ * 2026-09-20 起两个连接器各居其文件（`mcp-stdio.ts` / `mcp-http.ts`，纯结构拆分、
+ * 零行为变化），本文件保留桥 + 共享 helper 并 re-export —— 公共面不变。
  *
  * 用法（接入点是 `AppOptions.tools` 这条**裸工具缝**）：
  * ```ts
@@ -260,6 +260,9 @@ export async function mcpTools(
  * 结构面**不变**：`McpClientLike` 仍是最小缝，用户照旧可以接官方 SDK / 远程 server /
  * 自研传输。这里给出的只是**默认件** —— 与 `FileTaskStore` / `SqliteTaskStore` 之于
  * `TaskStore` 完全同构（默认件内置 + 缝保留 + 特殊后端仍由用户带 client）。
+ *
+ * 2026-09-20 结构拆分：两个连接器实现各居 `mcp-stdio.ts` / `mcp-http.ts`（零行为变化），
+ * 下方是它们与桥共用的公共面与 helper（module 级 export），连接器工厂从这里 re-export。
  */
 
 /**
@@ -280,9 +283,6 @@ export interface McpConnector extends McpClientLike {
   close(): Promise<void>;
 }
 
-/** `close()` 里 SIGTERM → SIGKILL 的宽限期（毫秒） */
-export const MCP_CLOSE_GRACE_MS = 2_000;
-
 /**
  * 缺省 `clientInfo`（`initialize` 握手要发，协议要求该字段存在）。
  *
@@ -290,13 +290,13 @@ export const MCP_CLOSE_GRACE_MS = 2_000;
  * `src/index.ts`），且 `scripts/release-surface.mjs` 的发版面按**精确版本串**计数 ——
  * 这里多一处版本字面量会让它的 count 断言失配。需要真实版本请自行传 `clientInfo`。
  */
-const DEFAULT_CLIENT_INFO: { name: string; version: string } = {
+export const DEFAULT_CLIENT_INFO: { name: string; version: string } = {
   name: 'agentia',
   version: '0.0.0',
 };
 
 /** `initialize` 缺省请求的协议版本（e2e 已验证的版本；要对齐新版 server 请显式传） */
-const DEFAULT_PROTOCOL_VERSION = '2024-11-05';
+export const DEFAULT_PROTOCOL_VERSION = '2024-11-05';
 
 /**
  * 装配期超时的落点：**握手 + `tools/list`**。
@@ -305,10 +305,10 @@ const DEFAULT_PROTOCOL_VERSION = '2024-11-05';
  * 走 `mcpTools` 时 `callTool` 由引擎 / 桥判定；而握手与 `tools/list` 发生在**装配期**，
  * 没有任何别的裁判 —— server 卡住会让 `createApp` 永久挂起，必须在这里兜住。
  */
-type Guard = <T>(p: Promise<T>, label: string) => Promise<T>;
+export type Guard = <T>(p: Promise<T>, label: string) => Promise<T>;
 
 /** 把可能很大的值截成可读片段（错误消息要能进日志，不能是一兆的 JSON） */
-function brief(value: unknown, max = 200): string {
+export function brief(value: unknown, max = 200): string {
   let s: string;
   try {
     s = typeof value === 'string' ? value : JSON.stringify(value);
@@ -320,7 +320,7 @@ function brief(value: unknown, max = 200): string {
 }
 
 /** JSON-RPC 错误对象 → `Error`（`code` 进文案：`classifyError` 只认数值 `status`，这里不冒充它） */
-function jsonRpcError(err: unknown): Error {
+export function jsonRpcError(err: unknown): Error {
   if (typeof err === 'object' && err !== null) {
     const { code, message } = err as { code?: unknown; message?: unknown };
     return new Error(`MCP error ${String(code)}: ${String(message)}`);
@@ -329,569 +329,25 @@ function jsonRpcError(err: unknown): Error {
 }
 
 /** server 混进 stdout / SSE 的非 JSON 行 */
-function isJsonRpcResponse(msg: unknown): msg is { id: number; result?: unknown; error?: unknown } {
+export function isJsonRpcResponse(msg: unknown): msg is {
+  id: number;
+  result?: unknown;
+  error?: unknown;
+} {
   return (
     typeof msg === 'object' && msg !== null && typeof (msg as { id?: unknown }).id === 'number'
   );
 }
 
 /** 从一条已解析的报文里取结果；带 `error` 则抛 */
-function unwrap(msg: { result?: unknown; error?: unknown }, method: string): unknown {
+export function unwrap(msg: { result?: unknown; error?: unknown }, method: string): unknown {
   if (msg.error !== undefined) throw jsonRpcError(msg.error);
   if (!('result' in msg)) throw new Error(`MCP ${method}：响应里既没有 result 也没有 error`);
   return msg.result;
 }
 
-export interface StdioMcpConnectorOptions {
-  /** 追加 / 覆盖的环境变量（缺省继承 `process.env`） */
-  env?: Record<string, string>;
-  /** 子进程工作目录 */
-  cwd?: string;
-  /** 子进程 stderr 去向：`'inherit'`（缺省，server 日志直通终端）| `'ignore'` */
-  stderr?: 'inherit' | 'ignore';
-  /** 见 {@link DEFAULT_CLIENT_INFO} */
-  clientInfo?: { name: string; version: string };
-  /** 请求的协议版本，缺省 `'2024-11-05'` */
-  protocolVersion?: string;
-  /**
-   * 装配期超时（毫秒）—— 只作用于**握手 + `tools/list`**，缺省
-   * {@link MCP_DEFAULT_TIMEOUT_MS}；非正数 = 不限。语义见 {@link Guard}。
-   *
-   * 超时同样只是一类账（`code='timeout'`）：**不终止子进程**，与仓库其余「等待的终点」
-   * 一致（超时 = 放弃等待）。
-   */
-  timeoutMs?: number;
-}
-
-/**
- * **stdio 连接器**：spawn 一个 MCP server 子进程，走换行分隔的 JSON-RPC 2.0
- * （`initialize` → `notifications/initialized` → `tools/list` / `tools/call`）。
- *
- * 进程与握手都是**惰性**的 —— 构造不产生副作用，第一次 `listTools` / `callTool` 才 spawn；
- * 握手只做一次（并发调用共享同一次握手）。
- *
- * 三处非显然的坑，这里都兜住了（此前 `scripts/e2e-mcp.ts` 内联的那 94 行踩过）：
- * 1. spawn **失败**（命令不存在 → `ENOENT`）是异步的 `'error'` 事件，不是抛出 ——
- *    没有监听器就是未捕获异常、直接把宿主进程带崩，所以必须接住并拒绝在途请求；
- * 2. 分帧：一条报文可能跨多个 chunk，必须自己攒 buffer 按 `\n` 切；
- * 3. **协议层 `isError: true` 必须转成抛错** —— 否则模型收到一条「成功」的结果，
- *    trace 也把它记成成功的调用（`McpClientLike` 的约定，见其注释）。
- */
-export function createStdioMcpConnector(
-  cmd: readonly string[],
-  opts: StdioMcpConnectorOptions = {},
-): McpConnector {
-  const bin = cmd[0];
-  if (typeof bin !== 'string' || bin === '') {
-    throw new Error('createStdioMcpConnector：cmd 不能为空（需要可执行文件 + 参数）');
-  }
-  const rest = cmd.slice(1);
-  const timeoutMs = opts.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
-  const clientInfo = opts.clientInfo ?? DEFAULT_CLIENT_INFO;
-  const protocolVersion = opts.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
-
-  let proc: ChildProcess | null = null;
-  let fatal: Error | null = null;
-  let closed = false;
-  let exited = false;
-  let buf = '';
-  let nextId = 1;
-  let ready: Promise<void> | null = null;
-  let resolveExit: (() => void) | null = null;
-  const exitPromise = new Promise<void>((r) => {
-    resolveExit = r;
-  });
-  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-
-  const markExited = (): void => {
-    exited = true;
-    resolveExit?.();
-  };
-
-  /** 进程已死 / 已 close 时一次性拒绝全部在途请求 —— 不留永久挂起的 promise */
-  const fail = (err: Error): void => {
-    fatal = err;
-    for (const p of pending.values()) p.reject(err);
-    pending.clear();
-  };
-
-  const guard: Guard = (p, label) => withDeadline(p, timeoutMs, label);
-
-  const ensureProc = (): ChildProcess => {
-    if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
-    if (fatal) throw fatal;
-    if (proc) return proc;
-
-    const spawnOpts: SpawnOptions = {
-      stdio: ['pipe', 'pipe', opts.stderr ?? 'inherit'],
-      // exactOptionalPropertyTypes：可选字段不能赋 undefined，只能条件展开
-      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
-      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-    };
-    const p = spawn(bin, rest, spawnOpts);
-    proc = p;
-
-    p.on('error', (err: unknown) => {
-      // 见函数头第 1 条：这个监听器不是可选的
-      fail(err instanceof Error ? err : new Error(String(err)));
-      markExited();
-    });
-    p.on('exit', (code, signal) => {
-      if (!closed) {
-        fail(
-          new Error(`MCP server 进程已退出（code=${code ?? 'null'} signal=${signal ?? 'null'}）`),
-        );
-      }
-      markExited();
-    });
-    // 'exit' 在 spawn 失败时可能不触发，'close' 一定会 —— close() 靠它才不会白等
-    p.on('close', markExited);
-    // 进程已死时写 stdin 会异步报 EPIPE；真实原因由上面的 'error' / 'exit' 给出
-    p.stdin?.on('error', () => {
-      /* 吞掉：EPIPE 是「进程没了」的次生现象，不是根因 */
-    });
-
-    p.stdout?.setEncoding('utf8');
-    p.stdout?.on('data', (chunk: string) => {
-      buf += chunk;
-      for (;;) {
-        const nl = buf.indexOf('\n');
-        if (nl < 0) break;
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (line.trim() === '') continue;
-        let msg: unknown;
-        try {
-          msg = JSON.parse(line);
-        } catch {
-          continue; // MCP 规定 stdout 只走协议，但 server 混日志进来是常事
-        }
-        if (!isJsonRpcResponse(msg)) continue; // 通知（无 id）不配对
-        const waiter = pending.get(msg.id);
-        if (!waiter) continue;
-        pending.delete(msg.id);
-        try {
-          waiter.resolve(unwrap(msg, 'response'));
-        } catch (e) {
-          waiter.reject(e instanceof Error ? e : new Error(String(e)));
-        }
-      }
-    });
-
-    return p;
-  };
-
-  const write = (payload: unknown): void => {
-    const p = ensureProc();
-    p.stdin?.write(`${JSON.stringify(payload)}\n`);
-  };
-
-  const send = (method: string, params: unknown, abandoned?: AbortSignal): Promise<unknown> => {
-    if (closed) return Promise.reject(new Error('MCP 连接器已 close —— 请重新创建一个'));
-    if (fatal) return Promise.reject(fatal);
-    const id = nextId++;
-    return new Promise<unknown>((resolve, reject) => {
-      try {
-        ensureProc();
-      } catch (e) {
-        reject(e instanceof Error ? e : new Error(String(e)));
-        return;
-      }
-      pending.set(id, { resolve, reject });
-      // 裁判放弃等待 ≠ 条目自动回收：超时的调用（引擎 toolTimeoutMs 或桥兜底）只是
-      // 不再 await，pending 里的 {resolve,reject} 会留到「server 终于回包 / 进程死 /
-      // close」—— 对「活着但不回包」的 server 就是无界泄漏。裁判表过态就删条目：
-      // 之后回包到了也没人等（:441 的 pending.get 落空即忽略，语义安全）。
-      if (abandoned !== undefined) {
-        const drop = (): void => {
-          pending.delete(id);
-        };
-        if (abandoned.aborted) drop();
-        else abandoned.addEventListener('abort', drop, { once: true });
-      }
-      write({ jsonrpc: '2.0', id, method, params });
-    });
-  };
-
-  /** 握手只做一次；失败是**粘性**的（连接器已不可用 → 重建，而不是半初始化态） */
-  const ensureReady = (): Promise<void> => {
-    if (ready) return ready;
-    ready = (async () => {
-      const init = await guard(
-        send('initialize', { protocolVersion, capabilities: {}, clientInfo }),
-        'initialize',
-      );
-      // 协商结果以 server 回的那个为准（协议允许 server 降级或选自己的版本）
-      void init;
-      write({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
-    })();
-    return ready;
-  };
-
-  const request = async (
-    method: string,
-    params: unknown,
-    abandoned?: AbortSignal,
-  ): Promise<unknown> => {
-    await ensureReady();
-    return send(method, params, abandoned);
-  };
-
-  const listTools = async (): Promise<McpToolInfo[]> => {
-    const r = await guard(request('tools/list', {}), 'tools/list');
-    if (typeof r !== 'object' || r === null) {
-      throw new Error(`MCP tools/list 返回了非对象：${brief(r)}`);
-    }
-    const listed = (r as { tools?: unknown }).tools;
-    if (listed === undefined) return [];
-    if (!Array.isArray(listed)) {
-      // 响亮失败：把协议不符吞成空菜单，用户看到的是「一个工具都没有」而不是「server 坏了」
-      throw new Error(`MCP tools/list 的 tools 不是数组：${brief(listed)}`);
-    }
-    return listed as McpToolInfo[];
-  };
-
-  const callTool = async (
-    name: string,
-    args: Record<string, unknown>,
-    callOpts?: { abandoned?: AbortSignal },
-  ): Promise<unknown> => {
-    const r = await request('tools/call', { name, arguments: args }, callOpts?.abandoned);
-    // 承重：协议层 isError 只有连接器看得见（见函数头第 3 条）
-    if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
-      throw new Error(
-        `MCP 工具 ${name} 返回 isError: ${brief((r as { content?: unknown }).content)}`,
-      );
-    }
-    return r;
-  };
-
-  return {
-    listTools,
-    callTool,
-    async close(): Promise<void> {
-      if (closed) return;
-      closed = true;
-      fail(new Error('MCP 连接器已 close —— 请重新创建一个'));
-      const p = proc;
-      proc = null;
-      if (!p) return;
-      p.kill('SIGTERM');
-      if (exited) return;
-      const killTimer = setTimeout(() => {
-        try {
-          p.kill('SIGKILL');
-        } catch {
-          /* 已经死了 */
-        }
-        // ⚠️ 这里**不** resolve：SIGKILL 不可被捕获，'exit'/'close' 必达 —— 继续等真的退出。
-        // 到点即返回是 2026-09-18 之前的行为：调用方以为进程没了，实际还留着一个孤儿。
-      }, MCP_CLOSE_GRACE_MS);
-      try {
-        await exitPromise;
-      } finally {
-        clearTimeout(killTimer);
-      }
-    },
-  };
-}
-
-export interface StreamableHttpMcpConnectorOptions {
-  /** 附加请求头（鉴权等）。会覆盖缺省的 `content-type` / `accept` 同名字段 */
-  headers?: Record<string, string>;
-  /** 见 {@link DEFAULT_CLIENT_INFO} */
-  clientInfo?: { name: string; version: string };
-  /** 请求的协议版本，缺省 `'2024-11-05'`；协商结果以 server 回的为准 */
-  protocolVersion?: string;
-  /** 装配期超时（毫秒）—— 只作用于**握手 + `tools/list`**，语义同 {@link StdioMcpConnectorOptions.timeoutMs} */
-  timeoutMs?: number;
-  /**
-   * 会话过期时被调一次（见 `rpc` 的 404 自愈）。**给可观测用**：默认自愈是静默的，
-   * 而「静默恢复」和「静默失效」在监控上看不出区别 —— 要计数 / 告警 / 打日志就挂这个钩子。
-   */
-  onSessionExpired?: () => void;
-  /** 注入 `fetch`（测试用；缺省全局 `fetch`，与 `createOpenAIClient` 同款） */
-  fetchImpl?: typeof fetch;
-}
-
-/**
- * **StreamableHTTP 连接器**：一个 endpoint，POST JSON-RPC（MCP 2025-03-26 起的
- * Streamable HTTP 传输）。
- *
- * - 两种响应形态**都要接**：`application/json`（整条报文）与 `text/event-stream`
- *   （报文按 SSE 帧下发，server 应在发完响应后关流）；
- * - 会话：`initialize` 响应里的 `Mcp-Session-Id` 会被记住并在后续请求上回带
- *   （后续响应不带该头时**不覆盖**）；`close()` 尽力 `DELETE` 终止会话；
- *   **会话过期自愈**：带会话 id 收到 `404` ⇒ 视为「会话已终止、该请求未被 server 执行」
- *   ⇒ 丢会话 → 重新握手 → 把这一次**重试一次**（只一次，不再循环）。自愈是静默的，
- *   所以给了 `onSessionExpired` 钩子给你计数 / 告警 —— 否则它和「静默失效」没区别。
- * - 协议版本：请求头 `MCP-Protocol-Version` 带**协商到的**版本（2025-06-18 起要求，
- *   老 server 忽略未知头）；
- * - HTTP 层失败**挂数值 `status`** ⇒ `engine/errors.ts::classifyError` 自动分流
- *   （429 → `rate_limit` 可重试 / ≥500 → `server` 可重试 / 其余 4xx → `api` 不可重试）。
- */
-export function createStreamableHttpMcpConnector(
-  url: string,
-  opts: StreamableHttpMcpConnectorOptions = {},
-): McpConnector {
-  if (typeof url !== 'string' || url === '') {
-    throw new Error('createStreamableHttpMcpConnector：url 不能为空');
-  }
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
-  const clientInfo = opts.clientInfo ?? DEFAULT_CLIENT_INFO;
-  const requestedVersion = opts.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
-  const baseHeaders: Record<string, string> = {
-    'content-type': 'application/json',
-    // MCP 规定客户端必须同时接受两种响应形态（否则 server 无法按规范回 SSE）
-    accept: 'application/json, text/event-stream',
-    ...opts.headers,
-  };
-
-  let sessionId: string | null = null;
-  let negotiated = requestedVersion;
-  let closed = false;
-  let ready: Promise<void> | null = null;
-  let reinit: Promise<void> | null = null;
-  let nextId = 1;
-
-  const guard: Guard = (p, label) => withDeadline(p, timeoutMs, label);
-
-  /** HTTP 层失败：带上数值 `status`，让 `classifyError` 能按状态分流 */
-  const httpError = (status: number, method: string, body: string): Error => {
-    const e = new Error(`MCP ${method} HTTP ${status}${body ? `：${body}` : ''}`);
-    (e as { status?: number }).status = status;
-    return e;
-  };
-
-  const readText = async (res: Response): Promise<string> => {
-    try {
-      return await res.text();
-    } catch {
-      return '';
-    }
-  };
-
-  const post = async (
-    payload: unknown,
-    o: { withVersion?: boolean; signal?: AbortSignal } = {},
-  ): Promise<Response> => {
-    if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
-    const headers: Record<string, string> = { ...baseHeaders };
-    if (sessionId !== null) headers['mcp-session-id'] = sessionId;
-    if (o.withVersion) headers['mcp-protocol-version'] = negotiated;
-    const res = await fetchImpl(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      // 裁判（引擎 toolTimeoutMs / 桥兜底）的 abandoned 直达传输层：放弃等待时在飞 fetch
-      // 被真掐掉，不留泄漏（HTTP 侧没有 stdio 那样的 pending 簿记，掐连接就是清簿记）。
-      // exactOptionalPropertyTypes：无 signal 时不落这个键。
-      ...(o.signal !== undefined ? { signal: o.signal } : {}),
-    });
-    // 会话 id 只在 initialize 响应里出现；后续响应不带时**不能**把它清成 null
-    const sid = res.headers.get('mcp-session-id');
-    if (sid !== null && sid !== '') sessionId = sid;
-    return res;
-  };
-
-  /** 非 SSE 报文（单条 JSON-RPC）→ 取 result；SSE 里可能有别的通知帧，只取与 `id` 配对的 */
-  const pickResult = (msg: unknown, id: number, method: string): unknown => {
-    // id 必须**等值**配对（与 SSE 分支同款）：只验「是带 id 的响应」会把别的请求的
-    // 结果当本次的返回（代理串包/通知帧），静默错值比报错难查得多。
-    if (!isJsonRpcResponse(msg) || msg.id !== id) {
-      throw new Error(`MCP ${method}：响应里没有 id 为 ${id} 的 JSON-RPC 报文`);
-    }
-    return unwrap(msg, method);
-  };
-
-  /**
-   * 从响应取结果。SSE 分支一次性读完整个 body 再解析 —— StreamableHTTP 约定 server 发完
-   * 响应即关流，读全比手写增量解析器稳（`text/event-stream` 里 `data:` 行按规范可跨多行拼接）。
-   */
-  const readResult = async (res: Response, id: number, method: string): Promise<unknown> => {
-    const ct = (res.headers.get('content-type') ?? '').toLowerCase();
-    const text = await readText(res);
-    if (ct.includes('text/event-stream')) {
-      for (const frame of text.split(/\r?\n\r?\n/)) {
-        const data = frame
-          .split(/\r?\n/)
-          .filter((l) => l.startsWith('data:'))
-          .map((l) => l.slice(5).trim())
-          .join('');
-        if (data === '') continue;
-        let msg: unknown;
-        try {
-          msg = JSON.parse(data);
-        } catch {
-          continue;
-        }
-        if (isJsonRpcResponse(msg) && msg.id === id) return unwrap(msg, method);
-      }
-      throw new Error(`MCP ${method}：SSE 响应里没有 id 为 ${id} 的报文`);
-    }
-    if (text.trim() === '') {
-      throw new Error(`MCP ${method}：响应体为空（期望 id 为 ${id} 的 JSON-RPC 报文）`);
-    }
-    let msg: unknown;
-    try {
-      msg = JSON.parse(text);
-    } catch {
-      throw new Error(`MCP ${method}：响应不是合法 JSON：${brief(text)}`);
-    }
-    return pickResult(msg, id, method);
-  };
-
-  /**
-   * 会话过期自愈的互斥：并发请求同时吃到 404 时**共享同一次重握手**。
-   * 没有这层时，两个并发调用各自执行 `ready = null`（第二个会把第一个刚建的握手
-   * Promise 抹掉）⇒ 双 initialize 并发跑、`sessionId` 互相覆盖，重试带着被覆盖的
-   * 会话再 404 且不再重试。`onSessionExpired` 仍按 404 逐次记（每个 404 都是事实），
-   * 共享的只是「重握手」这个动作。
-   */
-  const reinitialize = (): Promise<void> => {
-    if (reinit) return reinit;
-    reinit = (async () => {
-      sessionId = null;
-      ready = null; // 下一次 ensureReady 会新建会话
-      await ensureReady();
-    })().finally(() => {
-      reinit = null;
-    });
-    return reinit;
-  };
-
-  /**
-   * 一次 JSON-RPC 往返，带**会话过期自愈**（2026-09-18；MCP Streamable HTTP 的规范语义）。
-   *
-   * 带会话 id 收到 `404` 的含义是「这个会话我不认识」⇒ **该请求没有被执行** ——
-   * 所以丢掉会话、重新握手、把这一次**重试一次**是安全的（不会重复执行副作用）。
-   * 规范也是这么要求的：客户端**必须**新建会话（不带会话 id 重新 `initialize`）。
-   *
-   * **只重试一次**：第二次再 404 说明对面不是「会话过期」而是别的问题，直接抛（不循环）。
-   * 自愈本身是静默的，但可通过 `onSessionExpired` 观测 —— 否则它和「静默失效」没区别。
-   */
-  const rpc = async (
-    method: string,
-    params: unknown,
-    withVersion: boolean,
-    allowReinit = true,
-    abandoned?: AbortSignal,
-  ): Promise<unknown> => {
-    const id = nextId++;
-    const res = await post(
-      { jsonrpc: '2.0', id, method, params },
-      { withVersion, ...(abandoned !== undefined ? { signal: abandoned } : {}) },
-    );
-    if (res.status === 404 && sessionId !== null && allowReinit) {
-      await readText(res); // 排空，别把连接晾着
-      opts.onSessionExpired?.();
-      await reinitialize();
-      // 自愈重试那次同样带上 abandoned —— 裁判放弃时两条在飞 fetch 都要被掐
-      return rpc(method, params, withVersion, false, abandoned);
-    }
-    if (!res.ok) throw httpError(res.status, method, await readText(res));
-    // 计时裁判权在调用方（initialize / notifications / tools/list 都在调用点自带
-    // guard —— 它们是装配期路径、没有别的裁判）；`tools/call` 不在此起计时器：
-    // 它的裁判是引擎的 `toolTimeoutMs`（spec §10 2026-09-17 ① 超时单源化）——
-    // 再包一层 guard 就是双计时器，同一事件两本账（stdio 侧就没有这层）。
-    return readResult(res, id, method);
-  };
-
-  const ensureReady = (): Promise<void> => {
-    if (ready) return ready;
-    ready = (async () => {
-      const init = await guard(
-        rpc(
-          'initialize',
-          { protocolVersion: requestedVersion, capabilities: {}, clientInfo },
-          false,
-        ),
-        'initialize',
-      );
-      if (typeof init === 'object' && init !== null) {
-        const v = (init as { protocolVersion?: unknown }).protocolVersion;
-        if (typeof v === 'string' && v !== '') negotiated = v;
-      }
-      const res = await guard(
-        post(
-          { jsonrpc: '2.0', method: 'notifications/initialized', params: {} },
-          { withVersion: true },
-        ),
-        'notifications/initialized',
-      );
-      if (!res.ok) {
-        throw httpError(res.status, 'notifications/initialized', await readText(res));
-      }
-      await readText(res); // 排空：202 + 空体是合法应答，但别把连接晾着
-    })();
-    return ready;
-  };
-
-  const listTools = async (): Promise<McpToolInfo[]> => {
-    await ensureReady();
-    const r = await guard(rpc('tools/list', {}, true), 'tools/list');
-    if (typeof r !== 'object' || r === null) {
-      throw new Error(`MCP tools/list 返回了非对象：${brief(r)}`);
-    }
-    const listed = (r as { tools?: unknown }).tools;
-    if (listed === undefined) return [];
-    if (!Array.isArray(listed)) {
-      throw new Error(`MCP tools/list 的 tools 不是数组：${brief(listed)}`);
-    }
-    return listed as McpToolInfo[];
-  };
-
-  const callTool = async (
-    name: string,
-    args: Record<string, unknown>,
-    callOpts?: { abandoned?: AbortSignal },
-  ): Promise<unknown> => {
-    await ensureReady();
-    const r = await rpc('tools/call', { name, arguments: args }, true, true, callOpts?.abandoned);
-    // 承重同 stdio：协议层 isError 只有连接器看得见
-    if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
-      throw new Error(
-        `MCP 工具 ${name} 返回 isError: ${brief((r as { content?: unknown }).content)}`,
-      );
-    }
-    return r;
-  };
-
-  return {
-    listTools,
-    callTool,
-    async close(): Promise<void> {
-      if (closed) return;
-      closed = true;
-      const sid = sessionId;
-      sessionId = null;
-      if (sid === null) return;
-      try {
-        // 尽力终止会话（MCP 约定的显式关闭）；server 不认这个方法也不该让 close() 抛。
-        //
-        // ⚠️ **必须过 `guard`**：这里此前直接 `await fetchImpl(...)`。下面的 catch 只兜得住
-        // **抛错**，兜不住**挂死** —— server 接受连接后不回（半开 / 卡在代理后面），
-        // `close()` 就永久挂住，而调用方（宿主停机路径）会一直等它。**挂住比失败更糟**，
-        // 与「best-effort、不抛错」的承诺相悖。fetch 与排空**一起**进 guard：
-        // 只护住响应头、body 照样能卡（`readText` 读的是 body）。
-        await guard(
-          (async () => {
-            const res = await fetchImpl(url, {
-              method: 'DELETE',
-              headers: {
-                ...baseHeaders,
-                'mcp-session-id': sid,
-                'mcp-protocol-version': negotiated,
-              },
-            });
-            await readText(res);
-          })(),
-          'close',
-        );
-      } catch {
-        /* 关闭是尽力而为（超时也走这里 —— guard 抛 TimeoutError） */
-      }
-    },
-  };
-}
+// 两个内置连接器（2026-09-20 起各居其文件；公共面不变，index.ts 仍从这里取）
+export { createStdioMcpConnector, MCP_CLOSE_GRACE_MS } from './mcp-stdio.js';
+export type { StdioMcpConnectorOptions } from './mcp-stdio.js';
+export { createStreamableHttpMcpConnector } from './mcp-http.js';
+export type { StreamableHttpMcpConnectorOptions } from './mcp-http.js';
