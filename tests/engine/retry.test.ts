@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import {
   DEFAULT_RETRY,
   backoffDelay,
@@ -109,11 +110,11 @@ describe('backoffDelay（指数 + 上限 + 抖动）', () => {
 
 describe('sleep（可中断）', () => {
   it('正常等到点', async () => {
-    const t0 = Date.now();
+    // 单调时钟量时间（同 drain-gate / task-waiters）：墙钟截断到整毫秒且会漂移，
+    // 用它量会把「等满了」读小；下界再留 10ms 余量，别写成「断言 == 预算」。
+    const t0 = performance.now();
     await sleep(30);
-    // 下界留 10ms 余量（同 drain-gate / task-waiters 的处理）：定时器按单调时钟到点，
-    // 而这里用 `Date.now()` 量（整毫秒、截断）——实测 25ms 的定时器有 ~1% 读数落在 24ms。
-    assert.ok(Date.now() - t0 >= 20);
+    assert.ok(performance.now() - t0 >= 20);
   });
 
   it('中止立即 reject（AbortError）', async () => {
