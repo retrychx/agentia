@@ -51,7 +51,8 @@ export type {
 } from './core/message.js';
 
 // engine：运行时内核
-export { runAgent, resolveDefaultModel } from './engine/loop.js';
+export { runAgent } from './engine/loop.js';
+export { resolveDefaultModel } from './engine/run-config.js';
 export { TraceRecorder } from './engine/tracer.js';
 export { classifyError, isAbortError } from './engine/errors.js';
 export { isSuccessStopReason } from './engine/types.js';
