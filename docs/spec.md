@@ -2197,7 +2197,12 @@ review 指出两个超大文件该拆：`integrations/metrics.ts`（1050 行）�
   （`RunInvocationOptions.sessionId` + `AsyncRunner.sessionStore`）+ 测试基建不再被 `&&` 静默
   跳过；**类型面破坏性变更**：`RecorderBackend` 加必填 `usage()`、`BudgetGuard.check` 入参收窄
   —— 运行时行为不变，迁移见 CHANGELOG）；
-  `AGENTIA_VERSION = '0.7.1'`。决策均见 §10。
+  → v0.7.2（**第九轮评审收口**：HITL × `sessionStore` 组合破口（恢复段历史翻倍 / 成功后毒化
+  会话）+ 六条静默失效修复（惰性审批超时无重入闸 / StreamableHTTP 丢 `abandoned` /
+  Anthropic 流内 4xx 落 500 / `runTimeoutMs` 落 `unknown` / `FileTaskStore.save` 先写内存 /
+  SSE 稀疏数组）+ `metrics.ts` 与 `mcp.ts` 纯结构拆分 + stdio `pending` 回归补课；
+  **无破坏性变更**）；
+  `AGENTIA_VERSION = '0.7.2'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

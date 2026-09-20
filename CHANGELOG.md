@@ -5,6 +5,67 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.7.2] - 2026-09-20
+
+### 变更
+
+> 本版主题（窗口 `0.7.1 → 0.7.2`，含 #77–#81）：**第九轮评审收口** —— 一条高优先级的
+> **HITL × `sessionStore` 组合破口**（挂起任务恢复后历史翻倍、成功后又把坏会话写回去），
+> 外加六条中/低优先级的静默失效修复；其余是纯结构重构、回归测试补课与依赖升级。
+> **无破坏性变更，不需要改代码**：所有修复都是「旧行为本来就不该那样」。
+> **两处错误归类收紧（记账口径，不是行为变更）**：Anthropic 流内 4xx 不再落成可重试的
+> `server`，异步宿主的 `runTimeoutMs` 超时不再落 `unknown`。宿主若按 `error.type` /
+> `errorKind` / `retryable` 分支（重试、告警、看板），取值会更准 —— 见下方两条。
+> 本条目的多数内容**是在本次发版时回填的**：窗口内 5 个 PR 都没写 CHANGELOG，
+> 条目按各提交正文重建。
+
+### 修复（第九轮评审收口）
+
+- **HITL × `sessionStore`：挂起任务恢复后会话历史翻倍 + 成功后毒化会话**（本版最高优先级）：
+  恢复段曾把 session 再注入 `app.run`，而挂起段落库的 `suspendedMessages` 已含完整历史 ⇒
+  run 层 `loadSession` 又 prepend 一遍（历史翻倍、token 复利）；且成功后 `appendSession`
+  会把含未决 `tool_use` 的整段扩展历史写回会话 —— 该会话**下一轮直接撞 API 400**
+  （孤立 `tool_use` + 连续 assistant）。现在恢复段不再注入 session，会话回写改由
+  `AsyncRunner` 按「本轮用户输入 + 最终回复」补，口径与 `run.ts` 的三条不变量一致。
+- **惰性审批超时 `#expireAndResume` 补重入闸 + 进闸后重读 store**：异步 store 下两个并发
+  `poll` 各拿到一份 `awaiting` 副本 ⇒ 双双填超时拒绝、**双双派发**（同一任务跑两遍）。
+  现在与 `approve` 共用同一把 per-taskId 在飞闸。
+- **MCP StreamableHTTP 连接器不再丢弃 `abandoned`**：`tools/call` 把引擎的「放弃等待」
+  信号透传到在飞 `fetch`（含会话 404 自愈那次重试）—— 裁判放弃后真能掐掉请求，
+  而不是继续在后台烧。stdio 侧 #75 的 `pending` 出簿修复这次补上了回归用例。
+- **Anthropic 流内 `error` 事件的 status 反推补 4xx 档**：`invalid_request_error` /
+  `authentication_error` / `permission_error` / `not_found_error` → 400（归 `api`、
+  **不可重试**），与 `openai.ts` 同口径。此前这些确定性病因落 500 + `retryable:true`，
+  引擎会白重试 3 次（3 次网络请求 + 3 倍等待）。
+- **异步宿主 `runTimeoutMs` 的超时错误不再落 `unknown`**：改用 `core/timeout.ts` 的
+  `TimeoutError`（`code='timeout'`），与引擎工具超时 / MCP 桥兜底同口径。归类由
+  `unknown`（`retryable:false`）变为 `timeout`（`retryable:true`）—— 这只是**记账口径**：
+  超时按定义属可重试故障，框架**不会**因此自动重跑整个 run，要不要重试仍由宿主决定。
+- **`FileTaskStore.save` 改为先落盘、成功后再更新内存**：落盘失败时内存不再推进，
+  避免内存与磁盘两本账、重启后静默回退（`get` / `byIdempotency` 查不到未落盘的记录）。
+- **Anthropic SSE 组装拦畸形 `content_block_start.index`**：超大 index（如 `1e9`）会造出
+  稀疏数组、后续 `for...of` / `reduce` 按 `length` 空转；现在畸形 index（负数 / 非整数 /
+  超上限）响亮抛 `AnthropicApiError(500)`。
+
+### 重构（纯结构，零行为变化）
+
+- `integrations/metrics.ts`（1050 行）→ `metrics-state.ts` / `metrics-render.ts` /
+  `metrics-otlp.ts` / `metrics.ts`（只留选项校验、定时器与组装）；
+  `integrations/mcp.ts`（897 行）→ `mcp-stdio.ts` / `mcp-http.ts` / `mcp.ts`
+  （桥 + 共享 helper + re-export 两个连接器工厂）。**公共面与运行时行为不变**。
+
+### 测试
+
+- 补上 #75 遗留的回归用例：stdio MCP 连接器「裁判放弃等待 ⇒ `pending` 记账出簿」的防泄漏
+  修复此前**没有任何用例守着**（夹具新增 `silentcall` 模式：握手 / `tools/list` 正常、
+  `tools/call` 永不回包）。
+
+### 依赖
+
+- 开发依赖：`@anthropic-ai/sdk` → 0.126.0、`@biomejs/biome` → 2.5.14、
+  `@types/node` → 26.6.1、`zod` → 4.6.5（均不影响运行时面）。
+- 官网（不随包发布）：`astro` → 7.3.3。
+
 ## [0.7.1] - 2026-09-19
 
 ### 变更
@@ -615,7 +676,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/retrychx/agentia/releases/tag/v0.7.2
 [0.7.1]: https://github.com/retrychx/agentia/releases/tag/v0.7.1
 [0.7.0]: https://github.com/retrychx/agentia/releases/tag/v0.7.0
 [0.6.3]: https://github.com/retrychx/agentia/releases/tag/v0.6.3
