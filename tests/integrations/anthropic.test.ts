@@ -105,6 +105,18 @@ describe('createAnthropicClient（默认 ModelClient 工厂）', () => {
     assert.equal(typeof client.messages.stream, 'function');
   });
 
+  it('timeout 非法值构造期抛错（NaN/Infinity 会被 setTimeout 钳到 1ms，等于每请求立即超时）', () => {
+    // 反向验证：摘掉构造期校验 ⇒ 四个值全不抛，本用例红。
+    // 与 AsyncRunner 对 runTimeoutMs 的校验同款（要「不限」就不传 timeout）。
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => createAnthropicClient({ apiKey: 'sk-test', timeout: bad }),
+        /timeout/,
+        `timeout=${String(bad)} 必须构造期抛错`,
+      );
+    }
+  });
+
   it('请求落在 {baseURL}/v1/messages，带 x-api-key / anthropic-version / stream:true，signal 不进 body', async () => {
     // `as` 防 TS 按初始值把 seen 窄化成 null（赋值发生在闭包里，控制流看不见）
     let seen = null as {
@@ -371,6 +383,78 @@ describe('SSE 组装：分片 → on(text) 与 finalMessage', () => {
       const span = classifyError(err);
       assert.equal(span.type, 'server');
       assert.equal(span.retryable, true);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  it('流内 invalid_request_error → 400：classifyError 归 api / 不可重试（与 openai.ts 同口径）', async () => {
+    // 反向验证：摘掉 statusOfStreamError 的 4xx 档 ⇒ 默认落 500（server/可重试），
+    // 本用例红在「竟然可重试」—— 改配置才有救的病因会让引擎白重试三轮。
+    for (const type of [
+      'invalid_request_error',
+      'authentication_error',
+      'permission_error',
+      'not_found_error',
+    ]) {
+      const events = [
+        {
+          type: 'message_start',
+          message: { id: 'msg_e', type: 'message', role: 'assistant', model: 'm', content: [] },
+        },
+        { type: 'error', error: { type, message: 'bad request' } },
+      ];
+      const ep = await fakeEndpoint((_hits, res) => writeSse(res, events));
+      try {
+        const client = createAnthropicClient({
+          apiKey: 'sk-test',
+          baseURL: ep.baseURL,
+          maxRetries: 0,
+        });
+        const err = await client.messages
+          .stream(BASE_PARAMS)
+          .finalMessage()
+          .then(
+            () => null,
+            (e: unknown) => e,
+          );
+        assert.ok(err instanceof AnthropicApiError, `${type} 应抛 AnthropicApiError`);
+        assert.equal(err.status, 400, `${type} → 400（对齐 openai.ts 的 4xx 档）`);
+        const info = classifyError(err);
+        assert.equal(info.type, 'api', `${type} 应归 api（不是 server）`);
+        assert.equal(info.retryable, false, `${type} 不可重试 —— 改配置才有救`);
+      } finally {
+        await ep.close();
+      }
+    }
+  });
+
+  it('content_block_start 的畸形 index（超大）⇒ 响亮抛错，不造稀疏数组拖垮组装', async () => {
+    // 反向验证：摘掉 index 上限守卫 ⇒ blocks[1e9] = acc 造出长度十亿的稀疏数组，
+    // 末尾 `for (const b of blocks)` 按 length 空转 —— 本用例红在「竟然正常返回」。
+    const events = [
+      {
+        type: 'message_start',
+        message: { id: 'msg_b', type: 'message', role: 'assistant', model: 'm', content: [] },
+      },
+      { type: 'content_block_start', index: 1_000_000_000, content_block: { type: 'text' } },
+      { type: 'message_stop' },
+    ];
+    const ep = await fakeEndpoint((_hits, res) => writeSse(res, events));
+    try {
+      const client = createAnthropicClient({
+        apiKey: 'sk-test',
+        baseURL: ep.baseURL,
+        maxRetries: 0,
+      });
+      await assert.rejects(
+        () => client.messages.stream(BASE_PARAMS).finalMessage(),
+        (e: unknown) => {
+          assert.ok(e instanceof AnthropicApiError);
+          assert.match(e.message, /index 非法/);
+          return true;
+        },
+      );
     } finally {
       await ep.close();
     }

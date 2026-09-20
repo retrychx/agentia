@@ -672,12 +672,23 @@ export function createStreamableHttpMcpConnector(
     }
   };
 
-  const post = async (payload: unknown, o: { withVersion?: boolean } = {}): Promise<Response> => {
+  const post = async (
+    payload: unknown,
+    o: { withVersion?: boolean; signal?: AbortSignal } = {},
+  ): Promise<Response> => {
     if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
     const headers: Record<string, string> = { ...baseHeaders };
     if (sessionId !== null) headers['mcp-session-id'] = sessionId;
     if (o.withVersion) headers['mcp-protocol-version'] = negotiated;
-    const res = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      // 裁判（引擎 toolTimeoutMs / 桥兜底）的 abandoned 直达传输层：放弃等待时在飞 fetch
+      // 被真掐掉，不留泄漏（HTTP 侧没有 stdio 那样的 pending 簿记，掐连接就是清簿记）。
+      // exactOptionalPropertyTypes：无 signal 时不落这个键。
+      ...(o.signal !== undefined ? { signal: o.signal } : {}),
+    });
     // 会话 id 只在 initialize 响应里出现；后续响应不带时**不能**把它清成 null
     const sid = res.headers.get('mcp-session-id');
     if (sid !== null && sid !== '') sessionId = sid;
@@ -765,14 +776,19 @@ export function createStreamableHttpMcpConnector(
     params: unknown,
     withVersion: boolean,
     allowReinit = true,
+    abandoned?: AbortSignal,
   ): Promise<unknown> => {
     const id = nextId++;
-    const res = await post({ jsonrpc: '2.0', id, method, params }, { withVersion });
+    const res = await post(
+      { jsonrpc: '2.0', id, method, params },
+      { withVersion, ...(abandoned !== undefined ? { signal: abandoned } : {}) },
+    );
     if (res.status === 404 && sessionId !== null && allowReinit) {
       await readText(res); // 排空，别把连接晾着
       opts.onSessionExpired?.();
       await reinitialize();
-      return rpc(method, params, withVersion, false);
+      // 自愈重试那次同样带上 abandoned —— 裁判放弃时两条在飞 fetch 都要被掐
+      return rpc(method, params, withVersion, false, abandoned);
     }
     if (!res.ok) throw httpError(res.status, method, await readText(res));
     // 计时裁判权在调用方（initialize / notifications / tools/list 都在调用点自带
@@ -826,9 +842,13 @@ export function createStreamableHttpMcpConnector(
     return listed as McpToolInfo[];
   };
 
-  const callTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+  const callTool = async (
+    name: string,
+    args: Record<string, unknown>,
+    callOpts?: { abandoned?: AbortSignal },
+  ): Promise<unknown> => {
     await ensureReady();
-    const r = await rpc('tools/call', { name, arguments: args }, true);
+    const r = await rpc('tools/call', { name, arguments: args }, true, true, callOpts?.abandoned);
     // 承重同 stdio：协议层 isError 只有连接器看得见
     if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
       throw new Error(

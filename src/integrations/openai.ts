@@ -431,9 +431,10 @@ function statusOfStreamError(err: { type?: string; code?: string | null }): numb
   // 一律 500 + retryable 会让引擎白重试 3 次（3 次网络请求 + 3 倍等待），
   // 且 trace 记成 `server` 而非 `api` —— 排障方向被带偏。
   //
-  // 注意**不能照抄 anthropic.ts 的那三档**：anthropic 协议只有
-  // `rate_limit_error` / `overloaded_error` / `api_error` 三种 type，默认 500 是合理的；
-  // OpenAI 兼容生态的类型多得多（这里全部来自真实兼容端点的错误码）。
+  // 注意**两边口径已对齐**（2026-09-20）：anthropic.ts 的同名函数同样把
+  // `invalid_request_error` / `authentication_error` / `permission_error` /
+  // `not_found_error` 归 400（不细分 401/403/404）。这里仍用 includes 而不是枚举：
+  // OpenAI 兼容生态的类型多得多（以上全部来自真实兼容端点的错误码）。
   if (
     key.includes('invalid_request') ||
     key.includes('context_length') ||
