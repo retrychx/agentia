@@ -54,9 +54,10 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      # `biome ci` 在 CI 下只报告、不写盘（--write 是本地用的）
+      # `biome ci` 在 CI 下只报告、不写盘（--write 是本地用的）。
+      # `--error-on-warnings`：零告警闸门（此前是「没 error 就绿」，存量 93 warnings 照样过）。
       - name: biome ci
-        run: npx biome ci .
+        run: npx biome ci . --error-on-warnings
 
   # 守住 package.json 的 engines 声明（>=18）—— 见 scripts/check-import-floor.mjs 的说明。
   # 为什么不在 verify 里加矩阵：matrix 会给 job name 加后缀、进而改掉分支保护依赖的

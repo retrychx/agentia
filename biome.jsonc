@@ -45,7 +45,10 @@
       },
       "complexity": {
         // 泛型约束里的 `{}` / `Function` 是刻意写法（如 Blackboard 声明合并锚点、回调签名）。
-        "noBannedTypes": "off"
+        "noBannedTypes": "off",
+        // 该规则默认是 **info** 级，而 CI 的 `--error-on-warnings` 不管 info —— 不升到 warn
+        // 就等于闸门在低一级别上留了一个洞（这条是 2026-09-20 收紧 lint 时查出来的）。
+        "useLiteralKeys": "warn"
       },
       "suspicious": {
         // 边界适配层（模型响应解析、duck-typed 桥）用 any 是刻意的 —— 保留为警告而非错误。

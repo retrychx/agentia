@@ -1,3 +1,5 @@
+/* biome-ignore-all lint/style/noDescendingSpecificity: 本规则只比较选择器的末段标签，对「按组件上下文组织」的样式表会成片误报：旗标 .docs-content p 的对手是 .tp-stream.md p（playground 终端里模拟渲染的 markdown 容器，与文档正文结构上不相交）、.hero-stats b 的对手是 .hero-demo-foot .hu b（另一个容器）、inspector 里 .usage b 的对手是 header .live b。23 组旗标←对手的逐条清单见 PR #84（可复核）。真正可能同元素的只有 .doc-table vs .table-wrap > .doc-table 两处，且属性不相交（margin vs width/border-collapse）。故整条关掉 —— 理由写在这里，而不是把闸门改回「没 error 就绿」。
+
 /* ---------- 字体：自己声明 @font-face（不用 @fontsource 的 CSS）----------
  * 为什么不直接用 `@fontsource/*\/latin-400.css`：它的 font-display 固定为 `swap`，
  * 即「先用系统字体画一遍、字体到了再换一遍」—— 换字本身就是那次可见的二次渲染。
@@ -86,6 +88,7 @@ html.lenis body {
   height: auto;
 }
 .lenis.lenis-smooth {
+  /* biome-ignore lint/complexity/noImportantStyles: Lenis 集成的既定契约（上游文档写法）：全局 html{scroll-behavior:smooth} 会与 Lenis 的滚动驱动打架。本文件里唯一竞争声明是 html 的 (0,0,1)、已被本选择器的 (0,2,0) 压过，但内联/第三方样式可随时插进来，保留不做无收益改动。 */
   scroll-behavior: auto !important;
 }
 
@@ -201,13 +204,16 @@ code {
 }
 .nav-cta {
   font-family: var(--mono);
+  /* biome-ignore lint/complexity/noImportantStyles: 承重 —— .nav-cta 只有 (0,1,0)，低于 .nav-links a 的 (0,1,1)，去掉就被 193 行的 13.5px/muted 压过（导航 CTA 的字号与颜色当场变样）。 */
   font-size: 12.5px !important;
+  /* biome-ignore lint/complexity/noImportantStyles: 同上（承重：压 .nav-links a 的 color: var(--muted)）。 */
   color: var(--text) !important;
   border: 1px solid var(--border-strong);
   padding: 6px 14px;
   border-radius: 4px;
   transition:
     border-color 0.2s,
+    /* biome-ignore lint/complexity/noImportantStyles: 承重 —— 否则 .nav-links a 的 transition: color 0.2s 会把 CTA 的边框/底色过渡顶掉（(0,1,1) > (0,1,0)）；格式化器强制这段值换行，故豁免只能贴在值列表内。 */
     background 0.2s !important;
 }
 .nav-cta:hover {
@@ -937,7 +943,9 @@ pre code {
   *,
   *::before,
   *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: prefers-reduced-motion 的标准写法 —— 这是一条**可访问性覆盖**，必须能压过所有组件的动画/过渡声明；去掉 !important 等于让部分组件在减弱动效下继续动。 */
     animation: none !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 同上（可访问性覆盖，不是脏写法）。 */
     transition: none !important;
   }
 }
@@ -2098,6 +2106,7 @@ pre code {
     margin: 10px 0 6px;
     padding: 12px 14px;
     text-align: center;
+    /* biome-ignore lint/complexity/noImportantStyles: 承重 —— 菜单里的 CTA 要压过本文件 202 行基础态的 12.5px !important（同为 !important 时靠后手胜）。 */
     font-size: 13.5px !important;
     border: 1px solid var(--border-strong);
   }
