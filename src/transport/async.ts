@@ -13,6 +13,7 @@ import { TimeoutError } from '../core/timeout.js';
 import { SlotPool } from './slot-pool.js';
 import { approvalExpired, approvalsComplete, fillTimeoutDenials } from './approval-policy.js';
 import { DrainGate } from './drain-gate.js';
+import { resumeSkipReason } from './resume-policy.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -568,15 +569,11 @@ export class AsyncRunner {
       expired++;
       this.#expireAndResume(rec, now);
     }
-    const pending = recs.filter((r) => {
-      if (r.status !== 'queued' && r.status !== 'running') return false;
-      if (r.ownerId === this.ownerId) return false; // 自己的一定还活着
-      if (staleAfterMs > 0 && r.ownerId !== undefined) {
-        const since = r.startedAt ?? r.createdAt;
-        if (now - since < staleAfterMs) return false; // 他进程刚起的，别抢
-      }
-      return true;
-    });
+    // 认领判定外移到 resume-policy.ts：跳过原因具名化（terminal / own-process / too-fresh），
+    // 每条规则与边界都由那份纯函数的单测钉住
+    const pending = recs.filter(
+      (r) => resumeSkipReason(r, { ownerId: this.ownerId, staleAfterMs, now }) === undefined,
+    );
 
     const claims: Promise<void>[] = [];
     for (const rec of pending) {

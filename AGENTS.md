@@ -28,6 +28,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   编排（在飞闸、重读、先落库再派发）仍留在 AsyncRunner，纪律一字未改
 │   │                        #   drain-gate.ts = 优雅停机的等待闸（停机态标志 / 排空等待 / 超时竞速）；
 │   │                        #   在飞计数不搬（它同时是 /healthz 的 inFlight 口径），以谓词传入
+│   │                        #   resume-policy.ts = 崩溃恢复的**认领判定**（跳过原因具名化：terminal /
+│   │                        #   own-process / too-fresh）—— 「同一任务重复执行」那个 bug 就出在这几条规则上
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
