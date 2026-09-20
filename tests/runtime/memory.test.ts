@@ -281,6 +281,7 @@ describe('MemoryStore 跨 run 记忆', () => {
       Object.hasOwn(loaded, '__proto__'),
       'load 结果必须含自有 __proto__ 键（不能静默丢失）',
     );
+    // biome-ignore lint/suspicious/noProto lint/complexity/useLiteralKeys: 本条就是在钉 __proto__ 污染防护，必须显式写出该字面量（点访问写法反而看不出测的是什么）
     assert.equal((loaded as Record<string, unknown>)['__proto__'], 'kept');
     assert.equal(Object.getPrototypeOf(loaded), null, '无原型，绝不污染 Object.prototype');
   });

@@ -59,9 +59,9 @@ function eventToolName(evName, bodyTool, typeMap) {
 /** 事件摘要：input 走 fmtArg（与 span 入参同一形态），output 走文本内容 */
 function eventText(ev) {
   const body = ev.body;
-  if (ev.name === 'tool.input') return fmtArg(body && body.input);
+  if (ev.name === 'tool.input') return fmtArg(body?.input);
   if (ev.name === 'tool.output') {
-    const c = body && body.content;
+    const c = body?.content;
     return typeof c === 'string' ? c : c == null ? '' : JSON.stringify(c);
   }
   return body == null ? '' : typeof body === 'string' ? body : JSON.stringify(body);
@@ -76,7 +76,7 @@ function eventText(ev) {
  * 原文口径统一在 view.js 的 `rawArg`：官网 playground 的模拟回放也要用它，两处一处定义。
  */
 function eventFull(ev) {
-  if (ev.name === 'tool.input') return rawArg(ev.body && ev.body.input);
+  if (ev.name === 'tool.input') return rawArg(ev.body?.input);
   return eventText(ev);
 }
 
@@ -85,7 +85,7 @@ function eventFull(ev) {
  * 返回 false 表示 trace 空、未做任何渲染。
  */
 export function playTrace(view, trace) {
-  const spans = Array.isArray(trace && trace.spans) ? trace.spans : [];
+  const spans = Array.isArray(trace?.spans) ? trace.spans : [];
   if (!spans.length) return false;
 
   const byId = new Map(spans.map((s) => [s.spanId, s]));
@@ -102,7 +102,7 @@ export function playTrace(view, trace) {
     let d = 0;
     let cur = s;
     const seen = new Set();
-    while (cur && cur.parentSpanId && byId.has(cur.parentSpanId) && !seen.has(cur.spanId)) {
+    while (cur?.parentSpanId && byId.has(cur.parentSpanId) && !seen.has(cur.spanId)) {
       seen.add(cur.spanId);
       d += 1;
       cur = byId.get(cur.parentSpanId);
@@ -141,9 +141,9 @@ export function playTrace(view, trace) {
       view.event(
         it.s.spanId,
         it.ev.name,
-        eventToolName(it.ev.name, it.ev.body && it.ev.body.tool, typeMap),
+        eventToolName(it.ev.name, it.ev.body?.tool, typeMap),
         eventText(it.ev),
-        !it.ev.body || it.ev.body.ok !== false,
+        it.ev.body?.ok !== false,
         eventFull(it.ev),
       );
     } else {

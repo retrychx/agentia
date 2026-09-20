@@ -164,7 +164,7 @@ import Lenis from 'lenis';
   let lenis = null;
   if (typeof Lenis !== 'undefined') {
     lenis = new Lenis({ lerp: 0.1, wheelMultiplier: 0.95 });
-    lenis.on('scroll', () => ScrollTrigger && ScrollTrigger.update());
+    lenis.on('scroll', () => ScrollTrigger?.update());
     gsap.ticker.add((t) => lenis.raf(t * 1000));
     gsap.ticker.lagSmoothing(0);
     // 锚点链接走 lenis
@@ -188,10 +188,9 @@ import Lenis from 'lenis';
    * 都是**测量时缓存**的 —— 不在字体落定后 refresh，缓存就是过期的，滚动会抖/跳。
    * （当前换字引起的位移很小，但这是必须堵上的缝。）
    * 上限 1.5s：字体万一取不到（离线/被拦截）也要让入场照常开始，不能把首屏吊死。 */
-  const fontsReady =
-    document.fonts && document.fonts.ready
-      ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))])
-      : Promise.resolve();
+  const fontsReady = document.fonts?.ready
+    ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))])
+    : Promise.resolve();
   const syncScrollMetrics = () => {
     if (lenis) lenis.resize();
     ScrollTrigger.refresh();

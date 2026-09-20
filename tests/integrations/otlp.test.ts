@@ -50,7 +50,8 @@ function sampleTrace(): Trace {
 interface Captured {
   url?: string | undefined;
   contentType?: string | undefined;
-  body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: OTLP/JSON 是外部协议信封，测试逐字段断言 —— 写全类型只是把 envelope 抄一遍，抄错反而更危险
+  body: any;
 }
 
 async function startCollector(
@@ -128,8 +129,8 @@ describe('createOtlpExporter', () => {
       const attrByKey = Object.fromEntries(
         child.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
       );
-      assert.deepEqual(attrByKey['ok'], { boolValue: true });
-      assert.deepEqual(attrByKey['score'], { doubleValue: 1.5 });
+      assert.deepEqual(attrByKey.ok, { boolValue: true });
+      assert.deepEqual(attrByKey.score, { doubleValue: 1.5 });
       assert.deepEqual(attrByKey['usage.inputTokens'], { intValue: '10' });
       assert.deepEqual(attrByKey['usage.outputTokens'], { intValue: '5' });
 

@@ -42,6 +42,7 @@ export type SchemaType<S> = S extends TypedSchema<infer T> ? T : unknown;
  * （不校验方法签名），只有 `fromZod<T>()` 明确了 T 后才开始校验
  * 「方法签名 vs schema」的一致性。
  */
+// biome-ignore lint/suspicious/noExplicitAny: 上面那段注释就是理由 —— 裸 schema / 未写 <T> 时必须回落 any 才不破坏既有写法
 export type SchemaInput<S> = S extends TypedSchema<infer T> ? (unknown extends T ? any : T) : any;
 
 /**

@@ -93,7 +93,7 @@ function summarize(t: TraceLike): RunSummary {
   const startedAt = root ? root.startedAt : 0;
   const endedAt = root && root.endedAt != null ? root.endedAt : startedAt;
   const u = t.totalUsage || {};
-  const status = t.status || (root && root.status) || 'ok';
+  const status = t.status || root?.status || 'ok';
   return {
     traceId: t.traceId,
     status,

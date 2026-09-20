@@ -55,7 +55,7 @@ export async function playScript({ view, script, sleep, onStep, isCancelled }) {
     if (ev.result) {
       await onStep?.(ev);
       const call = pending.pop();
-      if (call && call.turnId) {
+      if (call?.turnId) {
         view.event(call.turnId, 'tool.output', call.name, ev.result.text);
       }
     }

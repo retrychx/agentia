@@ -214,8 +214,8 @@ describe('G3 生效配置快照（run 根 config.* attributes）', () => {
     assert.equal(a['config.contextPolicy'], false);
     assert.equal(a['config.priceOverrides'], 'deepseek-chat');
     // 既有 attribute 不受影响
-    assert.equal(a['model'], 'claude-opus-5');
-    assert.equal(a['stop_reason'], 'end_turn');
+    assert.equal(a.model, 'claude-opus-5');
+    assert.equal(a.stop_reason, 'end_turn');
   });
 
   it('retry:false → config.retry.maxAttempts=0；有 contextPolicy → 记 budgetTokens', async () => {

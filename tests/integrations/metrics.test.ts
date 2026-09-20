@@ -382,8 +382,8 @@ describe('E2 能力级指标', () => {
     m.export(richTrace());
     const { capabilities } = m.snapshot();
     assert.deepEqual(Object.keys(capabilities).sort(), ['subagent', 'tool']);
-    assert.equal(capabilities['tool']!.calls, 3, '两次 search + 一次 fetch');
-    assert.equal(capabilities['subagent']!.calls, 1);
+    assert.equal(capabilities.tool!.calls, 3, '两次 search + 一次 fetch');
+    assert.equal(capabilities.subagent!.calls, 1);
   });
 
   it('maxCapabilities 上限：新能力归 __other__，droppedCapabilities 记被归并的不同能力数', () => {
@@ -391,7 +391,7 @@ describe('E2 能力级指标', () => {
     m.export(richTrace());
     const s = m.snapshot();
     assert.equal(s.capabilities['tool:search']!.calls, 2, '首个能力保住自己的标签');
-    assert.equal(s.capabilities['__other__']!.calls, 2, 'fetch 与 subagent 被归并');
+    assert.equal(s.capabilities.__other__!.calls, 2, 'fetch 与 subagent 被归并');
     assert.equal(s.droppedCapabilities, 2);
   });
 });
@@ -746,7 +746,7 @@ describe('R7 评分（score 事件）聚合', () => {
 
     const { scores } = m.snapshot();
     assert.deepEqual(scores['faithfulness@eval-x'], { value: 0.6, count: 2, sum: 1.4 });
-    assert.deepEqual(scores['helpfulness'], { value: 1, count: 1, sum: 1 });
+    assert.deepEqual(scores.helpfulness, { value: 1, count: 1, sum: 1 });
   });
 
   it('无 score 事件的 trace 不产出 score 家族；畸形 body 跳过', () => {
