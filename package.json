@@ -57,7 +57,7 @@
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
-    "@biomejs/biome": "^2.5.13",
+    "@biomejs/biome": "^2.5.14",
     "@grpc/grpc-js": "^1.14.5",
     "@grpc/proto-loader": "^0.8.1",
     "@types/node": "^26.5.1",
