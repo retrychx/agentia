@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AsyncRunner, FileTaskStore, InMemoryTaskStore, executeRun } from '../../src/index.js';
-import type { AgentTool, AppCallable, TaskRecord, TaskSink } from '../../src/index.js';
+import type {
+  AgentRunResult,
+  AgentTool,
+  AppCallable,
+  TaskRecord,
+  TaskSink,
+} from '../../src/index.js';
+import type { TaskStore } from '../../src/index.js';
 import { TaskApproveError } from '../../src/transport/async.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 
@@ -420,5 +427,73 @@ describe('approve 的并发与落库纪律（第八轮复审补缺）', () => {
     assert.equal(spy.calls.length, 0, '落库失败就绝不派发 —— 决定没落库的恢复不算数');
     const rec = await store.get(taskId);
     assert.equal(rec?.status, 'awaiting_approval', '任务仍在等待，重试 approve 可恢复');
+  });
+});
+
+describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一把闸）', () => {
+  /**
+   * 「返回拷贝 + 微延迟」的异步 store —— 与 Redis 等同形：get 交出的副本与库内记录
+   * 不共享引用，且每次读写都有网络往返。两个并发 poll 会各自拿到 awaiting 副本，
+   * 这正是 #expireAndResume 旧实现双派发的必要条件。
+   */
+  class DelayedCopyStore implements TaskStore {
+    readonly #byTask = new Map<string, TaskRecord>();
+    async save(rec: TaskRecord): Promise<void> {
+      await new Promise((r) => setTimeout(r, 5));
+      this.#byTask.set(rec.taskId, JSON.parse(JSON.stringify(rec)) as TaskRecord);
+    }
+    async get(taskId: string): Promise<TaskRecord | undefined> {
+      await new Promise((r) => setTimeout(r, 5));
+      const r = this.#byTask.get(taskId);
+      return r ? (JSON.parse(JSON.stringify(r)) as TaskRecord) : undefined;
+    }
+    async byIdempotency(): Promise<undefined> {
+      return undefined;
+    }
+    async list(): Promise<TaskRecord[]> {
+      return [...this.#byTask.values()].map((r) => JSON.parse(JSON.stringify(r)) as TaskRecord);
+    }
+    async clear(): Promise<void> {
+      this.#byTask.clear();
+    }
+    /** 测试用：直接塞一条初始记录（不走 save） */
+    seed(rec: TaskRecord): void {
+      this.#byTask.set(rec.taskId, JSON.parse(JSON.stringify(rec)) as TaskRecord);
+    }
+  }
+
+  it('并发 poll 各自读到 awaiting 副本 ⇒ 超时恢复只派发一次', async () => {
+    // 反向验证：摘掉 #expireAndResume 的重入闸 ⇒ 两个 poll 各自 fill denials + 各自
+    // #execute，runs 会是 2（同一任务跑两遍，副作用与花费翻倍）。
+    const store = new DelayedCopyStore();
+    let runs = 0;
+    const app: AppCallable = {
+      name: 'counting',
+      async run() {
+        runs++;
+        return {
+          run: { runId: `r-${runs}`, status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
+      },
+    };
+    store.seed({
+      taskId: 'task_expired',
+      status: 'awaiting_approval',
+      spec: { messages: [{ role: 'user', content: 'x' }] },
+      createdAt: Date.now() - 120_000,
+      approvalPendingSince: 0, // 早已超时：任何一次读都会触发惰性判定
+      pendingApprovals: ['tu1'],
+      ownerId: 'p999-otherproc',
+    });
+    const runner = new AsyncRunner(app, { store, approvalTimeoutMs: 1000 });
+
+    // 两个并发 poll：两个 get 都在任一 save 落地前返回 awaiting 副本
+    await Promise.all([runner.poll('task_expired'), runner.poll('task_expired')]);
+    const done = await runner.awaitTask('task_expired');
+    assert.equal(done.status, 'succeeded');
+    assert.equal(runs, 1, '并发惰性恢复只能派发一次 —— 重复执行会是 2');
+    const rec = await store.get('task_expired');
+    assert.equal(rec?.approvals?.['tu1']?.reason, '审批超时', '超时决定照常落库');
   });
 });

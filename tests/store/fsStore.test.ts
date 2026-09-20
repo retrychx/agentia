@@ -269,6 +269,27 @@ describe('FileTaskStore', () => {
     }
   });
 
+  it('save 落盘失败：内存不得先推进（先落盘、后写内存）', () => {
+    // 反向验证：换回「先写内存后落盘」的旧顺序 ⇒ append 抛错时内存已推进，
+    // 本用例红在「get 竟然能查到没落盘的记录」—— 内存与磁盘两本账，重启后静默回退。
+    const { dir, file } = tmp();
+    try {
+      const store = new FileTaskStore(file);
+      const a = rec({ idempotencyKey: 'k' });
+      store.save(a);
+
+      // 让下一次 append 必败：摘掉整个目录（磁盘满 / 目录被摘除的同族形态）
+      rmSync(dir, { recursive: true, force: true });
+      const b = rec({ idempotencyKey: 'k2' });
+      assert.throws(() => store.save(b));
+      assert.equal(store.get(b.taskId), undefined, '落盘失败 ⇒ 内存也不得推进');
+      assert.equal(store.byIdempotency('k2'), undefined, '幂等键索引同样不得推进');
+      assert.equal(store.get(a.taskId)?.taskId, a.taskId, '既有记录不受影响');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('load 读失败：onLoadError 被调一次且按空库启动；缺省回调仍静默降级', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentia-fs-'));
     try {

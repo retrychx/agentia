@@ -44,6 +44,11 @@ export interface AnthropicClientOptions {
   /**
    * 单次请求超时（毫秒）。缺省不给（中止由引擎的 signal 管，见 `ModelClient` 契约）；
    * 给了就用超时信号与 params.signal 合成（任一触发即中止）。超时按连接错误处理（可重试）。
+   *
+   * 必须为**正的有限数**（构造期校验，与 AsyncRunner 对 `runTimeoutMs` 的校验同款）：
+   * NaN / Infinity 会被 `setTimeout` 钳到 1ms —— 每个请求立即「超时」，静默全挂。
+   * ⚠️ 校验只挡非法配置，**不改超时的既有行为**：client 层超时经合成信号中止请求、
+   * 自身不再重试，抛出的 `TimeoutError`（DOMException）由引擎归 `timeout` 一类账。
    */
   timeout?: number;
   /**
@@ -81,6 +86,13 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
   ).replace(/\/+$/, '');
   const maxRetries = typeof options.maxRetries === 'number' ? options.maxRetries : 2;
   const timeoutMs = typeof options.timeout === 'number' ? options.timeout : undefined;
+  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    // NaN / Infinity 会被 setTimeout 钳到 1ms（每个请求立即「超时」），0 / 负数同理无意义 ——
+    // 响亮抛错，不静默生效（与 AsyncRunner 对 runTimeoutMs 的构造期校验同款）。
+    throw new Error(
+      `createAnthropicClient：timeout 必须为正的有限毫秒数（不设 = 不限），收到 ${String(options.timeout)}`,
+    );
+  }
 
   return {
     messages: {
@@ -331,6 +343,13 @@ interface StreamEvent {
   error?: { type?: string; message?: string };
 }
 
+/**
+ * content_block `index` 的合法上限。官方端点的块数是个位数；index 是**外部输入**，
+ * `blocks[index] = acc` 对超大 index 会造出稀疏数组 —— 之后 `for (const b of blocks)` 与
+ * `reduce` 都按 length 迭代（含空洞），index=1e9 就是十亿次空转（畸形/恶意端点的 DoS 面）。
+ */
+const MAX_STREAM_BLOCK_INDEX = 1024;
+
 /** 每个 content block 的累积器（文本/思考/工具入参都是分片拼接的） */
 interface BlockAcc {
   type: string;
@@ -368,7 +387,7 @@ interface BlockAcc {
  * | content_block_stop | 无动作（块按 index 累积，无需收尾） |
  * | message_delta | stop_reason / stop_sequence + 累计 usage 合并（后者覆盖前者出现的字段） |
  * | message_stop / ping | 结束 / 忽略 |
- * | error | 抛 AnthropicApiError（类型映射 status：rate_limit→429、overloaded→529、其余→500） |
+ * | error | 抛 AnthropicApiError（类型映射 status：rate_limit→429、overloaded→529、请求/鉴权类→400、其余→500） |
  *
  * thinking 块只做「收拼 + signature 累积 + redacted/未知块原样透传」——
  * 框架**从不主动请求 extended thinking**，这些是端点自己开了之后的兜底不丢。
@@ -411,6 +430,16 @@ async function readAnthropicStream(
       }
       case 'content_block_start': {
         const cb = event.content_block ?? {};
+        const index = event.index ?? blocks.length;
+        // index 是外部输入：超大 / 负数 / 非整数会把 blocks 造成稀疏数组（见
+        // MAX_STREAM_BLOCK_INDEX 注释）—— 畸形输入响亮抛错，不静默拖垮组装
+        if (!Number.isInteger(index) || index < 0 || index > MAX_STREAM_BLOCK_INDEX) {
+          throw new AnthropicApiError(
+            500,
+            `Anthropic 流式响应的 content_block index 非法（${String(event.index)}）：` +
+              `必须是 0..${MAX_STREAM_BLOCK_INDEX} 的整数，按上游故障处理`,
+          );
+        }
         const type = cb.type ?? 'text';
         const acc: BlockAcc = {
           type,
@@ -436,7 +465,7 @@ async function readAnthropicStream(
         if (type !== 'text' && type !== 'tool_use' && type !== 'thinking') {
           acc.raw = { ...cb, type };
         }
-        blocks[event.index ?? blocks.length] = acc;
+        blocks[index] = acc;
         break;
       }
       case 'content_block_delta': {
@@ -557,6 +586,15 @@ function statusOfStreamError(type: string | undefined): number {
       return 429;
     case 'overloaded_error':
       return 529;
+    // 4xx 档（与 openai.ts 的 statusOfStreamError 同口径 —— 那边把
+    // invalid_request / authentication / permission / model_not_found 一律归 400，
+    // 不细分 401/403/404）：这些是**改配置才有救**的病因，归 500 + retryable 会让
+    // 引擎白重试三轮，且 trace 记成 server —— 排障方向被带偏。
+    case 'invalid_request_error':
+    case 'authentication_error':
+    case 'permission_error':
+    case 'not_found_error':
+      return 400;
     default:
       return 500;
   }

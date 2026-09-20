@@ -9,6 +9,7 @@ import type { RunInvocationOptions } from '../engine/spec.js';
 import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
+import { TimeoutError } from '../core/timeout.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -136,6 +137,17 @@ export class AsyncRunner {
   /** 任务终态唤醒表：taskId → 等待者。仅覆盖**本进程**写终态（他进程写靠兜底轮询） */
   readonly #taskWaiters = new Map<string, Array<() => void>>();
   private readonly taskSinks: TaskSink[];
+  /**
+   * HITL 挂起时快照的「本轮用户输入」（taskId → messages）—— 恢复段成功后做会话回写用
+   * （恢复段不把 session 交给 run 层，见 #executeInner 的 callOpts 注释）。
+   * 只在首个挂起段快照；任务达终态时清掉（#execute 的出口）。
+   *
+   * **刻意只放内存**：进程崩在「挂起 → 重启 → approve」之间会丢这一次会话回写 ——
+   * 会话少一轮，但绝写不进坏历史（孤立 tool_use / 历史翻倍），审批决定本身已落库、
+   * 不受影响。快照若落库就要动 TaskRecord 的序列化 schema（sqlite / redis），
+   * 而它相对审批决定只是锦上添花 —— 这个取舍是有意的。
+   */
+  private readonly sessionInputs = new Map<string, MessageParam[]>();
 
   constructor(
     private readonly app: AppCallable,
@@ -274,7 +286,8 @@ export class AsyncRunner {
     return run;
   }
 
-  /** 同一任务的在飞审批（approve 的重入闸，见上）。 */
+  /** 同一任务的在飞审批（approve 的重入闸，见上）。**与惰性超时恢复共用同一把闸** ——
+   *  approve 与 #expireAndResume 都会「填决定 + 落库 + 派发」，不互斥就是同一任务跑两遍。 */
   private readonly inflightApprovals = new Map<string, Promise<TaskRecord>>();
 
   async #approveInner(
@@ -396,23 +409,52 @@ export class AsyncRunner {
    * 惰性超时扫描（HITL）：读到一个已超时的 awaiting 任务 ⇒ 自动全拒 + 落库 + 重派。
    * 与 #redispatch 同一条纪律：**先落库再派发**（没落库就恢复，进程崩在窗口里会
    * 丢掉超时决定、把同一件事再判一次）。
+   *
+   * 重入闸（2026-09-20，见 spec §10 当日条）：与 `approve` **共用同一把** per-taskId
+   * 闸（inflightApprovals）。异步 store 的 `get` 返回**新副本**且有网络往返 —— 两个
+   * 并发 poll（或 poll 与 approve）各自看到 awaiting 快照 ⇒ 双双填超时拒绝 + 双双
+   * `#execute`（同一任务跑两遍）。在飞即跳过：另一路径自己会兜底（#approveInner
+   * 里也有 #approvalExpired 判定），决定逐 id 幂等（第一次决定赢）。
+   * 反之 approve 撞上在飞的超时恢复时共享其结果 —— 与人的决定竞速，先到先得。
    */
   #expireAndResume(rec: TaskRecord, now: number): void {
-    this.#fillTimeoutDenials(rec, now);
-    rec.status = 'running';
-    rec.ownerId = this.ownerId;
+    if (this.inflightApprovals.has(rec.taskId)) return;
+    const run = this.#expireAndResumeInner(rec, now).finally(() => {
+      this.inflightApprovals.delete(rec.taskId);
+    });
+    this.inflightApprovals.set(rec.taskId, run);
+    // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
+    run.catch(() => undefined);
+  }
+
+  async #expireAndResumeInner(rec: TaskRecord, now: number): Promise<TaskRecord> {
+    // 进闸后**重读一遍**再判：闸只互斥「进入」，挡不住「进闸前已取到的旧副本」——
+    // 本记录的快照可能是在另一次恢复落库**之前**取的（异步 store 的 get 有往返），
+    // 凭陈旧快照放行会把同一任务再派发一次。
+    const fresh = await this.store.get(rec.taskId);
+    const target = fresh ?? rec;
+    if (target.status !== 'awaiting_approval' || !this.#approvalExpired(target, now)) {
+      return target;
+    }
+    this.#fillTimeoutDenials(target, now);
+    target.status = 'running';
+    target.ownerId = this.ownerId;
     let saved: MaybePromise<void>;
     try {
-      saved = this.store.save(rec);
+      saved = this.store.save(target);
     } catch {
-      return; // 同步落库失败则不派发（与下一条异步分支同纪律：先落库再派发）
+      return target; // 同步落库失败则不派发（与下一条异步分支同纪律：先落库再派发）
     }
     if (isThenable(saved)) {
       // 落库失败则不派发（认领没落地就派发 = 重新打开重复执行窗口）
-      saved.then(() => void this.#execute(rec)).catch(() => undefined);
-    } else {
-      void this.#execute(rec);
+      try {
+        await saved;
+      } catch {
+        return target;
+      }
     }
+    void this.#execute(target);
+    return target;
   }
 
   /** poll 的读路径钩子：读到 awaiting 且已超时 ⇒ 惰性判掉（见 #approvalExpired） */
@@ -607,6 +649,8 @@ export class AsyncRunner {
         if (rec.status !== 'awaiting_approval') await this.#notifySinks(rec);
       } finally {
         this.active--;
+        // 终态即清理 HITL 会话回写快照（挂起则保留 —— 恢复段成功后还要用它）
+        if (rec.status !== 'awaiting_approval') this.sessionInputs.delete(rec.taskId);
         // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
         // 挂起也唤醒：等待者看一眼状态继续等（awaiting_approval 不是终态），无副作用。
         this.#notifyTaskDone(rec.taskId);
@@ -669,6 +713,8 @@ export class AsyncRunner {
               `任务 ${rec.taskId} 带了 options.sessionId，但本 runner 未配 sessionStore`,
             );
           }
+          // HITL 恢复段（带审批决定重进引擎）的判定 —— 决定会话注入与回写的走向（见下）
+          const isResume = rec.approvals !== undefined;
           // runTimeoutMs 到点即 abort（对尊重 signal 的客户端是真中止）；与调用方
           // 可能传入的 signal 合成，任一触发都中止本次 run。
           const timeoutAc = new AbortController();
@@ -677,7 +723,16 @@ export class AsyncRunner {
             session?: { store: NonNullable<AsyncRunnerOptions['sessionStore']>; id: string };
           } = {
             ...(rec.spec.options ?? {}),
-            ...(rec.spec.options?.sessionId !== undefined && this.sessionStore !== undefined
+            // HITL 恢复段**不注入 session**（2026-09-20，spec §10 当日条）：恢复段的
+            // rec.spec.messages 是挂起段落库的 suspendedMessages —— 已含 loadSession
+            // 拼入的完整会话历史，再注入会让 run 层把 store 历史**再 prepend 一遍**
+            // （历史翻倍、token 复利）；且成功后 appendSession 会把整段扩展历史
+            // （含未决 tool_use 的 assistant）写进会话 —— 违反「只存对话轮次」不变量，
+            // 留下孤立 tool_use + 连续两条 assistant，下一轮该会话直接撞 API 400。
+            // 恢复段的会话回写由本类在成功后补写（见 #appendResumedSession）。
+            ...(!isResume &&
+            rec.spec.options?.sessionId !== undefined &&
+            this.sessionStore !== undefined
               ? { session: { store: this.sessionStore, id: rec.spec.options.sessionId } }
               : {}),
             // 显式 undefined ≠ 不传（exactOptionalPropertyTypes）：无幂等键时不落这个键
@@ -713,6 +768,17 @@ export class AsyncRunner {
               // 槽位照常释放（finally）、onFinished 不触发（#execute 的出口判断）、
               // finishedAt 不置（下面 finally 里按状态跳过）：它不是终态。
               rec.status = 'awaiting_approval';
+              // 「本轮用户输入」快照必须在 overwrite **之前**取 —— 此刻 rec.spec.messages
+              // 还是原始输入；恢复段成功后由 #appendResumedSession 拿它 + finalText 补写会话。
+              // 只在首个挂起段快照（!isResume）：恢复段再挂起时 spec.messages 已是
+              // 扩展历史（含会话前缀），拿它当「用户输入」就错了 —— 原快照仍在，不能丢。
+              if (
+                !isResume &&
+                rec.spec.options?.sessionId !== undefined &&
+                this.sessionStore !== undefined
+              ) {
+                this.sessionInputs.set(rec.taskId, rec.spec.messages);
+              }
               rec.spec = { ...rec.spec, messages: out.result.suspendedMessages };
               rec.pendingApprovals = out.result.pendingApprovals;
               rec.approvalPendingSince = Date.now();
@@ -721,6 +787,11 @@ export class AsyncRunner {
               // 终态后清掉挂起痕迹（决定保留：审批记录是审计的一部分，随任务走）
               rec.pendingApprovals = undefined;
               rec.approvalPendingSince = undefined;
+              // HITL 恢复段 + 会话：本段没把 session 交给 run 层（见上面 callOpts 注释），
+              // 会话回写由 runner 自己补 —— 口径与 run.ts 的 appendSession 一致。
+              if (isResume && out.run.status === 'succeeded') {
+                await this.#appendResumedSession(rec, out.result.finalText);
+              }
             }
           } finally {
             // 正常收尾（没有源中止）时主动摘除挂在各源上的监听器 —— 宿主级共享
@@ -782,7 +853,10 @@ export class AsyncRunner {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             onTimeout?.();
-            reject(new Error(`task ${taskId} 执行超时（${this.runTimeoutMs}ms）`));
+            // TimeoutError（code='timeout'）：classifyError 归 `timeout` 一类账 ——
+            // 与引擎工具超时 / MCP 桥兜底同口径（spec §10 2026-09-17 ②「超时自成一类」）。
+            // 此前这里是裸 Error → 落 unknown，同一件事在异步宿主这条路径上记成另一本账。
+            reject(new TimeoutError(`task ${taskId} 执行超时（${this.runTimeoutMs}ms）`));
           }, this.runTimeoutMs);
           // ⚠️ 不 unref：这个 reject 是 `awaitTask` / 调用方 await 的终点（spec §10 ④）。
           // 见 `tests/timeoutLiveness.test.ts`。
@@ -790,6 +864,29 @@ export class AsyncRunner {
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * HITL 恢复段的会话回写（run 层 `appendSession` 的替身 —— 恢复段刻意不注入 session，
+   * 见 #executeInner 的 callOpts 注释）。同 run.ts 的三条不变量：只在成功路径调用、
+   * 只写「本轮用户输入 + 最终回复」（run 内部 tool 往返不进历史）、历史以 assistant
+   * 结尾（无文本补占位）。回写失败吞掉 —— 辅助动作不得击穿任务（同 memory 回写防护）。
+   *
+   * 无快照（进程在挂起期间重启过）时**跳过**：宁可少一轮历史，也不凭猜测写。
+   */
+  async #appendResumedSession(rec: TaskRecord, finalText: string): Promise<void> {
+    const sessionId = rec.spec.options?.sessionId;
+    const input = this.sessionInputs.get(rec.taskId);
+    if (sessionId === undefined || this.sessionStore === undefined || input === undefined) return;
+    try {
+      await this.sessionStore.append(sessionId, [
+        ...input,
+        // 占位文案与 runtime/run.ts 的 EMPTY_REPLY_MARK 保持同文（同一条会话不变量）
+        { role: 'assistant', content: finalText || '（本次无文本输出）' },
+      ]);
+    } catch {
+      /* 辅助动作失败不影响任务 */
     }
   }
 

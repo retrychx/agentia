@@ -4,12 +4,12 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AsyncRunner, InMemoryTaskStore } from '../../src/index.js';
-import { FileTaskStore, InMemorySessionStore } from '../../src/index.js';
+import { FileTaskStore, InMemorySessionStore, executeRun } from '../../src/index.js';
 import type { AppCallable, RunInvocationOptions } from '../../src/index.js';
-import type { AgentRunResult } from '../../src/index.js';
+import type { AgentRunResult, AgentTool, MessageParam } from '../../src/index.js';
 import type { TaskRecord, TaskStore } from '../../src/index.js';
 import { TaskInputError } from '../../src/engine/spec.js';
-import { waitFor } from '../helpers.js';
+import { mockClient, toolUseMsg, endTurnMsg, waitFor } from '../helpers.js';
 
 /** 模拟 fsStore/sqliteStore 这类**同步** store：终态落库时同步抛错（磁盘满、库锁） */
 class SyncThrowOnTerminalStore extends InMemoryTaskStore {
@@ -287,6 +287,8 @@ describe('AsyncRunner', () => {
     const rec = await runner.awaitTask(t1.taskId, { timeoutMs: 2_000 });
     assert.equal(rec.status, 'failed');
     assert.match(rec.error?.message ?? '', /执行超时/);
+    // 超时自成一类（spec §10 2026-09-17 ②）：异步宿主这条路径也不得落 unknown
+    assert.equal(rec.error?.type, 'timeout', 'runTimeoutMs 超时必须归 timeout 一类账');
 
     // 槽位已回收：concurrency=1 下第二个任务仍能起跑（不被超时任务永久占住）
     const t2 = runner.submit('b');
@@ -486,5 +488,70 @@ describe('AsyncRunner 的 session 正式通道（sessionId + sessionStore）', (
     const reloaded = new FileTaskStore(file);
     const rec = reloaded.get(t.taskId);
     assert.equal(rec?.spec.options?.sessionId, 's-persist', '重启后续跑还得接得上会话');
+  });
+});
+
+describe('HITL × sessionStore：恢复段不重拼历史、不毒化会话', () => {
+  const OBJ = { type: 'object', properties: {} } as const;
+
+  it('带 session 的任务挂起 → 批准 → 成功：恢复段 messages 无重复历史；会话只多一轮对话', async () => {
+    // 反向验证：恢复段重新注入 session（旧行为）⇒ ① 恢复段 messages 里
+    // 「旧问题」出现 2 次（suspendedMessages 已含历史，loadSession 又 prepend 一遍）；
+    // ② 成功后整段 suspendedMessages 被 append 进会话（含孤立 tool_use），
+    // 本用例两条断言都红。
+    const { client, seen } = mockClient([toolUseMsg('danger', {}, 'tu1'), endTurnMsg('最终回复')]);
+    const tools: AgentTool[] = [
+      {
+        name: 'danger',
+        description: '危险操作',
+        inputSchema: OBJ,
+        approval: 'required',
+        run: () => 'done',
+      },
+    ];
+    const app: AppCallable = {
+      name: 'hitl-session',
+      run: (messages, opts) => executeRun({ messages, client, tools, ...opts }),
+    };
+    const sessionStore = new InMemorySessionStore();
+    sessionStore.append('s1', [
+      { role: 'user', content: '旧问题' },
+      { role: 'assistant', content: '旧答复' },
+    ]);
+    const runner = new AsyncRunner(app, { sessionStore });
+    const t = runner.submit('新指令', { options: { sessionId: 's1' } });
+
+    // 等挂起（InMemoryTaskStore 的 poll 是同步返回，可直接用 waitFor）
+    await waitFor(
+      () => (runner.poll(t.taskId) as TaskRecord | undefined)?.status === 'awaiting_approval',
+      '任务应挂起等审批',
+    );
+    await runner.approve(t.taskId, { tu1: { approved: true } });
+    const done = await runner.awaitTask(t.taskId);
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.result?.finalText, '最终回复');
+
+    // ① 恢复段发给模型的 messages：会话历史恰好一份（翻倍 = token 复利）
+    assert.equal(seen.length, 2, '挂起段 + 恢复段各一次模型调用');
+    const resumeMsgs = (seen[1] as { messages: MessageParam[] }).messages;
+    assert.equal(
+      resumeMsgs.filter((m) => m.content === '旧问题').length,
+      1,
+      '恢复段不得重复 prepend 会话历史',
+    );
+
+    // ② 成功后的会话 = 旧历史 + 本轮用户输入 + 最终回复：
+    //    无 tool_use / tool_result 残留、不以 tool_use 结尾（否则下一轮撞 API 400）
+    const history = sessionStore.load('s1');
+    assert.deepEqual(history, [
+      { role: 'user', content: '旧问题' },
+      { role: 'assistant', content: '旧答复' },
+      { role: 'user', content: '新指令' },
+      { role: 'assistant', content: '最终回复' },
+    ]);
+    for (const m of history) {
+      assert.equal(typeof m.content, 'string', '会话历史只存对话轮次（不得混入 tool 块）');
+    }
+    assert.equal(history[history.length - 1]?.role, 'assistant', '历史必须以 assistant 结尾');
   });
 });

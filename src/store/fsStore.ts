@@ -18,7 +18,7 @@ import type { TaskRecord, TaskStore } from './store.js';
  * AsyncRunner/Scheduler/触发层**零改动** —— 证明耐久只是换个 store 实现。
  *
  * 语义：
- * - 一行一条记录快照；save 覆写内存 Map 并 append（boot 重读时 last-wins，无顺序依赖）；
+ * - 一行一条记录快照；save 先 append 落盘、成功后才覆写内存 Map（boot 重读时 last-wins，无顺序依赖）；
  * - 构造即 load：文件不存在则从空开始，写入自动建目录；
  * - 宿主重启后：new FileTaskStore(path) 读回记录 → AsyncRunner.resumePending() 续跑
  *   queued/running（running 视为中断）。幂等键去重照常生效（失败可重提）。
@@ -95,9 +95,12 @@ export class FileTaskStore implements TaskStore {
   }
 
   save(rec: TaskRecord): void {
+    // **先落盘、后更新内存**（2026-09-20）：落盘抛错时内存不得先推进 —— 否则内存说
+    // 「已存」而磁盘没有（append-only 日志里也没这一笔），进程重启后记录静默回退，
+    // 任务状态与持久层两本账。顺序反过来时抛错点在内存推进之后，丢的就是这个不变量。
+    this.append(rec);
     this.byTask.set(rec.taskId, rec);
     if (rec.idempotencyKey) this.byKey.set(rec.idempotencyKey, rec.taskId);
-    this.append(rec);
   }
 
   get(taskId: string): TaskRecord | undefined {

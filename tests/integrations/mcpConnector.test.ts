@@ -689,3 +689,43 @@ describe('StreamableHTTP：超时裁判权与响应配对（第八轮复审补�
     );
   });
 });
+
+describe('StreamableHTTP：abandoned 透传到传输层', () => {
+  it('tools/call 带上裁判的 abandoned signal（自愈重试那次也带）；不带则没有 signal 键', async () => {
+    // 反向验证：旧实现的 callTool 不接第三参、fetch 无 signal ⇒ 本用例红在
+    // 「tools/call 的 init.signal 是 undefined」—— 引擎超时后在飞 fetch 泄漏。
+    const { fetchImpl } = fakeServer({ sessionExpireAt: 2 });
+    const seen: Array<{ hasKey: boolean; signal: unknown }> = [];
+    const recording: typeof fetch = (async (url: unknown, init: unknown) => {
+      const i = init as { body?: string; signal?: AbortSignal };
+      const method = i.body ? (JSON.parse(i.body) as { method?: string }).method : undefined;
+      if (method === 'tools/call') seen.push({ hasKey: 'signal' in i, signal: i.signal });
+      return fetchImpl(url as never, init as never);
+    }) as unknown as typeof fetch;
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl: recording,
+    });
+    open.push(connector);
+
+    // 不带 abandoned：fetch init 上不应出现 signal 键（exactOptionalPropertyTypes 口径）
+    await connector.callTool('get-time', {});
+    assert.deepEqual(
+      seen.map((s) => s.hasKey),
+      [false],
+      '无 abandoned 时不得落 signal 键',
+    );
+
+    // 带 abandoned + 会话过期自愈：首次 404 与重试那次都必须收到同一个 signal
+    const ac = new AbortController();
+    const r = (await connector.callTool('get-time', {}, { abandoned: ac.signal })) as {
+      content?: Array<{ text: string }>;
+    };
+    assert.equal(r.content?.[0]?.text, 'ok', '自愈重试应成功');
+    assert.equal(seen.length, 3, '首次成功 1 次 + 过期 404 1 次 + 自愈重试 1 次');
+    assert.deepEqual(
+      seen.slice(1).map((s) => s.signal),
+      [ac.signal, ac.signal],
+      '首次与自愈重试都必须带上裁判的 abandoned signal',
+    );
+  });
+});

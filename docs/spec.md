@@ -2117,6 +2117,50 @@ Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无
      决定循环是否继续；回合入口那次覆盖「上一回合的工具执行把额度推超」），删任一处都改语义。
      ⇒ 优化的是**每次判定的代价**，不是判定次数。
 
+### 2026-09-20：第九轮复审收口 —— HITL×session 组合破口 + 六条小修
+
+1. **HITL × sessionStore 组合破口（高）**：异步宿主恢复段（`rec.approvals !== undefined`）
+   **不再把 `session` 注入 `app.run`** —— 挂起段落库的 `suspendedMessages` 已含
+   `loadSession` 拼入的完整会话历史，再注入会让 run 层把 store 历史**再 prepend 一遍**
+   （历史翻倍、token 复利）；且成功后 `appendSession` 会把整段扩展历史（含未决 tool_use
+   的 assistant）写进会话 —— 违反「只存对话轮次」不变量，留下孤立 tool_use + 连续两条
+   assistant，下一轮该会话直接撞 API 400。恢复段的会话回写改由 `AsyncRunner` 自己补：
+   挂起时（overwrite `spec.messages` 之前）快照「本轮用户输入」到进程内 Map
+   （`sessionInputs`，只在首个挂起段快照 —— 恢复段再挂起时 `spec.messages` 已是扩展历史，
+   原快照不能丢），恢复成功后 append「用户输入 + 最终回复」（口径同 run.ts 的三条不变量，
+   占位文案同 `EMPTY_REPLY_MARK`）。**取舍**：快照只在内存 —— 进程崩在「挂起 → 重启 →
+   approve」之间会丢这一次回写（会话少一轮，但绝不写进坏历史；审批决定本身已落库）。
+   快照落库要动 `TaskRecord` 的序列化 schema（sqlite/redis），相对审批决定它只是
+   锦上添花，故不动 schema。
+2. **惰性审批超时补重入闸**：`#expireAndResume` 与 `approve` **共用同一把** per-taskId
+   在飞闸（`inflightApprovals`）—— 异步 store 的 `get` 返回新副本，两个并发 poll
+   （或 poll 与 approve）各自看到 awaiting 快照 ⇒ 双双填超时拒绝 + 双双派发。进闸后
+   **重读一遍** store 再判：闸只互斥「进入」，挡不住「进闸前已取到的旧副本」。
+   approve 撞上在飞的超时恢复时共享其结果（与人的决定竞速，先到先得）。
+3. **StreamableHTTP MCP 连接器透传 `abandoned`**：`callTool` 接第三参并透传到
+   `rpc`/`post` 的 `fetchImpl(url, {...init, signal})`（含会话 404 自愈重试那次）。
+   HTTP 侧没有 stdio 的 pending 簿记 —— **掐在飞 fetch 就是清簿记**。此前引擎超时后
+   在飞 fetch 泄漏。
+4. **Anthropic 流内 error 补 4xx 档**：`invalid_request_error` / `authentication_error` /
+   `permission_error` / `not_found_error` → 400（归 api/不可重试），与 openai.ts 的
+   `statusOfStreamError` **同口径**（那边 authentication/permission 也归 400，不细分
+   401/403）。此前默认 500 → server/可重试：改配置才有救的病因让引擎白重试三轮。
+5. **`runTimeoutMs` 超时归 timeout 一类账**：`#raceTimeout` 的裸 `Error` 换成
+   `core/timeout.ts` 的 `TimeoutError`（`code='timeout'`）—— 此前落 unknown，
+   与「超时自成一类」（2026-09-17 ②）在异步宿主这条路径上两本账。
+6. **`FileTaskStore.save` 先落盘后写内存**：旧顺序下落盘抛错时内存已推进 ——
+   内存说「已存」而磁盘没有，重启后记录静默回退。
+7. **Anthropic SSE 的 content_block `index` 设上限**（1024）：index 是外部输入，
+   `blocks[index] = acc` 对超大 index 造稀疏数组，组装的 `for...of`/`reduce` 按 length
+   空转（反向验证实测：index=1e9 的用例摘掉守卫后单这一条就跑 30s）。畸形 index
+   （超上限 / 负数 / 非整数）响亮抛 `AnthropicApiError(500)`。
+8. **`createAnthropicClient` 的 `timeout` 构造期校验**：必须为正有限数（NaN/Infinity
+   会被 setTimeout 钳到 1ms，每请求立即超时），与 AsyncRunner 对 `runTimeoutMs` 的
+   校验同款。**不改** client 层超时的既有行为（合成信号中止 → 自身不重试 →
+   引擎归 timeout 一类账）。
+
+反向验证逐条做过（摘掉修复 ⇒ 新用例红 ⇒ 恢复 ⇒ 绿），证据在各提交的说明里。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
