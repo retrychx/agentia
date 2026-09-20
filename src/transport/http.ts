@@ -1,14 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { SpanError, Trace } from '../core/trace.js';
 import { parseTraceparent } from '../core/trace.js';
-import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
 import { AsyncRunner, TaskApproveError } from './async.js';
-import type { AppCallable, ApprovalDecisions } from './async.js';
+import type { AppCallable } from './async.js';
+import { parseApproveBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
 import { sseWriter } from './sse.js';
 import { TaskInputError, normalizeMessages } from '../engine/spec.js';
-import type { RunInvocationOptions } from '../engine/spec.js';
 import type { TaskRecord } from '../store/store.js';
-import type { RunStatus } from '../core/run.js';
 
 /**
  * Agentia —— HTTP 宿主（spec §6.6：换宿主不换语义，roadmap R3）。
@@ -45,24 +42,11 @@ import type { RunStatus } from '../core/run.js';
  * （否则调用方拿不到在飞任务的结果）。
  */
 
-/** POST /run 的响应形态 */
-export interface RunHttpResponse {
-  runId: string;
-  status: RunStatus;
-  stopReason: AgentStopReason;
-  finalText: string;
-  /** 结构化结果（R2 起应用可携带；无则为 undefined，字段在场） */
-  typed: unknown;
-  trace: Trace;
-  error: SpanError | undefined;
-}
-
-/** POST /tasks 的请求体形态 */
-export interface TaskSubmitBody {
-  input: unknown;
-  idempotencyKey?: string;
-  options?: RunInvocationOptions;
-}
+/**
+ * 出入站的形状口径（响应体 / 任务提交体 / 审批体）与它们的类型住在
+ * `./http-shapes.js`；这里转出以保持既有 import 路径不变（公开面名字与位置都未变）。
+ */
+export type { RunHttpResponse, TaskSubmitBody } from './http-shapes.js';
 
 export interface HttpHandlerOptions {
   /** 异步任务宿主；缺省 new AsyncRunner(app)（InMemoryTaskStore） */
@@ -193,22 +177,6 @@ function sendPrometheus(res: ServerResponse, body: string): void {
     'cache-control': 'no-store',
   });
   res.end(body);
-}
-
-/** 把 app.run 的产物收成 HTTP 响应体（JSON 与 SSE 的 run.end 共用同一形状） */
-function toHttpBody(out: {
-  run: { runId: string; status: RunStatus };
-  result: AgentRunResult;
-}): RunHttpResponse {
-  return {
-    runId: out.run.runId,
-    status: out.run.status,
-    stopReason: out.result.stopReason,
-    finalText: out.result.finalText,
-    typed: (out.result as { typed?: unknown }).typed,
-    trace: out.result.trace,
-    error: out.result.error,
-  };
 }
 
 type BodyResult = { ok: true; raw: string } | { ok: false; reason: 'too-large' | 'aborted' };
@@ -524,11 +492,11 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
         }
         const body = await parseJsonBody(req, res, maxBodyBytes);
         if (body === PARSE_FAILED) return;
-        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        const submitBody = toTaskSubmitBody(body);
+        if (!submitBody) {
           sendJson(res, 400, { error: 'body 需为 { input, idempotencyKey?, options? }' });
           return;
         }
-        const submitBody = body as TaskSubmitBody;
         // 入站链路（spec §9.2）：body 显式给的 `options.traceContext` 优先，否则取
         // `traceparent` 头。它随 `spec.options` 落进 TaskRecord —— 所以**跨进程续跑**
         // 的那次 run（另一个进程 `resumePending` 接着跑）也带得上，关联不断链。
@@ -646,36 +614,6 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
 }
 
 const PARSE_FAILED = Symbol('parse-failed');
-
-/**
- * 解析 `POST /tasks/<id>/approve` 的 body；形状不合法返回 undefined（调用方回 400）。
- * `decisions` 必须是纯对象，每个值是 `{ approved: boolean, reason?: string }`。
- */
-function parseApproveBody(
-  body: unknown,
-): { decisions: ApprovalDecisions; decidedBy?: string } | undefined {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
-  const o = body as { decisions?: unknown; decidedBy?: unknown };
-  if (!o.decisions || typeof o.decisions !== 'object' || Array.isArray(o.decisions)) {
-    return undefined;
-  }
-  if (o.decidedBy !== undefined && typeof o.decidedBy !== 'string') return undefined;
-  const decisions: ApprovalDecisions = {};
-  for (const [id, d] of Object.entries(o.decisions)) {
-    if (!d || typeof d !== 'object' || Array.isArray(d)) return undefined;
-    const v = d as { approved?: unknown; reason?: unknown };
-    if (typeof v.approved !== 'boolean') return undefined;
-    if (v.reason !== undefined && typeof v.reason !== 'string') return undefined;
-    decisions[id] = {
-      approved: v.approved,
-      ...(v.reason !== undefined ? { reason: v.reason } : {}),
-    };
-  }
-  return {
-    decisions,
-    ...(o.decidedBy !== undefined ? { decidedBy: o.decidedBy as string } : {}),
-  };
-}
 
 /** 读取并解析 JSON body；失败时直接回错误响应并返回哨兵（连接已断则无响应可回）。 */
 async function parseJsonBody(

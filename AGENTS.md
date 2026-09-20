@@ -46,6 +46,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   own-process / too-fresh）—— 「同一任务重复执行」那个 bug 就出在这几条规则上
 │   │                        #   task-waiters.ts = 任务终态等待表（事件唤醒 + 兜底定时器）；**只覆盖本进程写终态**，
 │   │                        #   他进程写终态唤不醒 —— 那是 awaitTask 里 intervalMs 兜底轮询存在的原因（不是缺陷）
+│   │                        #   http-shapes.ts = HTTP 宿主的**出入站形状口径**（响应体 / 任务提交体 / 审批体）：
+│   │                        #   纯形状判定（不合法一律回 undefined，由路由选状态码）；审批体**全有或全无**，
+│   │                        #   空 decisions 集合法 —— 「决定齐没齐」是 AsyncRunner 的判断，不是形状问题
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
