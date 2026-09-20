@@ -50,7 +50,8 @@ function sampleTrace(): Trace {
 interface Captured {
   url?: string | undefined;
   contentType?: string | undefined;
-  body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: OTLP/JSON 是外部协议信封，测试逐字段断言 —— 写全类型只是把 envelope 抄一遍，抄错反而更危险
+  body: any;
 }
 
 async function startCollector(
@@ -128,8 +129,8 @@ describe('createOtlpExporter', () => {
       const attrByKey = Object.fromEntries(
         child.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
       );
-      assert.deepEqual(attrByKey['ok'], { boolValue: true });
-      assert.deepEqual(attrByKey['score'], { doubleValue: 1.5 });
+      assert.deepEqual(attrByKey.ok, { boolValue: true });
+      assert.deepEqual(attrByKey.score, { doubleValue: 1.5 });
       assert.deepEqual(attrByKey['usage.inputTokens'], { intValue: '10' });
       assert.deepEqual(attrByKey['usage.outputTokens'], { intValue: '5' });
 
@@ -293,7 +294,7 @@ describe('createOtlpExporter', () => {
       assert.equal(spans[0].traceId.length, 32, 'trace id 是 32 hex');
       assert.equal(spans[0].spanId.length, 16, 'span id 必须是 16 hex');
       assert.equal(spans[1].parentSpanId.length, 16, '父 span id 同宽');
-      const attrByKey = (span: any) =>
+      const attrByKey = (span: { attributes: Array<{ key: string; value: unknown }> }) =>
         Object.fromEntries(
           span.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
         );

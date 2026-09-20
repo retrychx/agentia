@@ -51,6 +51,7 @@ const toolSpecs = new WeakMap<Function, ToolSpec>();
  *
  * 第二个泛型 `O` 用于显式约束返回值（缺省 `any`，不校验）。
  */
+// biome-ignore lint/suspicious/noExplicitAny: 返回值泛型缺省 any 是刻意留的放宽口（上面注释），收紧会让既有调用方编译失败
 export function Tool<S extends JsonSchema = JsonSchema, O = any>(spec: ToolSpec<S>) {
   return (
     value: (input: SchemaInput<S>) => O | Promise<O>,

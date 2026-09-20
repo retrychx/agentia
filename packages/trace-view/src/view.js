@@ -176,16 +176,16 @@ export function createTraceView(rootEl, opts = {}) {
           const cc = node.usage.cacheCreation || 0;
           if (cr || cc) parts.push('cache ↑' + fmtNum(cr) + ' ↓' + fmtNum(cc));
         }
-        if (bad) parts.push((node.error && node.error.type) || 'error');
+        if (bad) parts.push(node.error?.type || 'error');
         meta = parts.join(' · ');
       } else meta = '…';
       const metaEl = el('span', 'tr-meta', meta);
-      if (bad && node.error && node.error.message) metaEl.title = node.error.message;
+      if (bad && node.error?.message) metaEl.title = node.error.message;
       row.appendChild(metaEl);
       rootEl.appendChild(row);
       // 失败原文必须**看得见** —— 只塞进 title（hover 才显）等于没显示。首次运行最常见的失败
       // （没配 API key）就靠这一行定位；单起一行，不去挤占 nowrap 的 span 行。
-      if (bad && node.error && node.error.message) {
+      if (bad && node.error?.message) {
         const errLine = el('div', 'tr-errm');
         errLine.appendChild(el('span', 'tr-pre', branch + '  '));
         errLine.appendChild(el('span', 'tr-errm-msg', node.error.message));

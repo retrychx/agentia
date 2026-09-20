@@ -25,7 +25,11 @@ function supportsImport(): boolean {
   return false;
 }
 
-export function devServer(): number {
+/**
+ * @param argv 透传给用户脚本的参数（`agentia dev -- "问题"`）。脚手架把 `npm run dev` 指到本
+ *   命令，而工程 README 文档化的用法正是 `npm run dev -- "你的问题"` —— 不能把参数吃掉。
+ */
+export function devServer(argv: string[] = []): number {
   const cwd = process.cwd();
   const entry = join(cwd, 'src', 'main.ts');
   if (!existsSync(entry)) {
@@ -47,8 +51,9 @@ export function devServer(): number {
   process.on('SIGTERM', forward('SIGTERM'));
 
   const startChild = (env: NodeJS.ProcessEnv): void => {
-    // 参数全是静态字面量（无用户输入）；win32 下经 npmSpawn 走 cmd.exe 包装（见 npm-bin.ts）
-    const spec = npmSpawn('npx', ['tsx', 'watch', 'src/main.ts']);
+    // argv 是用户输入（`npm run dev -- "问题"`）⇒ 正是 npmSpawn 逐参数脱敏的存在理由：
+    // win32 下走 cmd.exe 包装并转义（shell:true 不转义参数，见 npm-bin.ts）
+    const spec = npmSpawn('npx', ['tsx', 'watch', 'src/main.ts', ...argv]);
     child = spawn(spec.command, spec.args, { cwd, stdio: 'inherit', env, ...spec.options });
     child.on('error', (err) => {
       console.error(`错误：启动 dev 失败：${err.message}`);

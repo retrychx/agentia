@@ -80,15 +80,27 @@ console.log(result.finalText, result.stopReason, result.trace.totalUsage);
 ## 2. 项目结构（CLI 约定）
 
 ```bash
-npx @migor/cli create my-app     # 脚手架（含 .env / .env.example）
-cd my-app && npm install
+npx @migor/cli create my-app     # 首次创建：必须带 scope（短名 agentia 在 npm 上是别人的包）
+cd my-app && npm install         # 框架与 CLI 都装进工程
 $EDITOR .env                     # 填 ANTHROPIC_API_KEY（脚手架已生成，且已被 .gitignore 挡住）
-npx @migor/cli dev               # tsx watch + 本地 inspector 面板
-npx @migor/cli g tool fetch-weather   # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
-npx @migor/cli doctor            # 静态体检（未登记/悬空/命名/重复）
+npm run dev                      # = agentia dev：tsx watch + 本地 inspector 面板
+npx agentia g tool fetch-weather   # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
+npx agentia doctor               # 静态体检（未登记/悬空/命名/重复）
+npx agentia --version            # CLI 版本（= -v）
 ```
 
+> **命令从哪来**：脚手架把 `@migor/cli` 装进工程的 `devDependencies`，所以**工程内**用短名
+> `npx agentia …` 即可（走本地 bin：离线可用、版本与工程一同 pin）。**首次创建**必须用带 scope 的
+> `npx @migor/cli create` —— npm 上另有一个别人的 `agentia` 包，短名会装错东西。
+> 想全局装上（到处都能敲 `agentia`）：`npm i -g @migor/cli`。
+
 四分类目录，一能力一文件夹：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— **目录名就是类型**，不用记别名。每个文件夹的 `index.ts` 是入口，`default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。显式注册表在 `src/registry.ts`（`agentia g` 自动维护，也可手改）。
+
+> **脚手架 `src/main.ts` 怎么找这些目录**：按**本文件位置**解析（`fileURLToPath(new URL('tools/', import.meta.url))`），
+> 所以 dev 解析到 `src/`、`npm run build` 之后解析到 `dist/` —— 从任何目录启动都成立，也不受 cwd 影响。
+> 别改成 cwd 相对写法（形如 `src/tools` 的字符串）：那样 `node dist/main.js` 会去加载 `src/` 下的 `.ts`
+> 源码，而装饰器不是可擦除的类型语法，Node 直接跑不了。空分类目录（还没有该类型的能力 ⇒ 构建后没有
+> 对应 `dist/<分类>/`）要过滤掉，否则 `discover` 会因「显式给出的路径不存在」而报错。
 
 > **陷阱**：装饰器注册表是模块级 `WeakMap`。框架必须是**单一模块实例** —— 混用 `src` 与 `dist`、或在一个仓库里装两份 agentia，会让能力收集为空。让 CLI 生成的 `package.json` 里只依赖一份框架即可。
 
@@ -772,6 +784,9 @@ console.log(renderRunReport(report));
 
 CLI 侧有薄壳：`agentia report <trace.jsonl>` —— 每行一个 JSON（裸 Trace，或含 `result.trace` /
 `trace` 的 TaskRecord，如 `FileTaskStore` 的导出），跨行按能力合并后打印排行。
+加 `--json` 得到机器可读输出：stdout 只有一个 JSON 文档（`{ file, runs, failed, skippedLines,
+failures, capabilities, totals }`）、没有人类装饰，适合脚本与 CI 断言；出错仍走 stderr
+（`错误：…`）并把退出码置 1、stdout 保持为空 —— 脚本据此区分「有结果」与「没跑成」。
 
 > ⚠️ **单条 run 内样本常 < 5，分位没有意义** —— 所以报告以 `total` / `max` 为主；
 > 要看分位请用 `mergeRunReports` 汇总多条，或用 `metricsSink` 的直方图。
@@ -976,7 +991,12 @@ const c = await app.run(messages); // 起一条新 run，沿着分叉点前的�
 
 不落代码也可以直比两份 trace 导出：`agentia diff a.jsonl b.jsonl`（输入形态同 `agentia report`），
 打印 run 级 summary + 逐 span 差异，**有差异时退出码 1**（diff(1) 语义）——可直接进 CI 挡
-「换 prompt / 模型后轨迹漂移」。
+「换 prompt / 模型后轨迹漂移」。`--json` 给出结构化差异（`{ a, b, equal, summary, spans }`，
+每个 span 带 `path` / `missing` / `fields`），**退出码语义不变**（有差异仍为 1）—— 门禁照旧可用，
+只是「差在哪」也能被读。`agentia doctor --json` 同理（体检结果结构化，有错误仍退出 1）。
+
+> `report` / `diff` / `doctor` 支持 `--json`；`harvest` **没有**：它的 stdout 本身就是产物
+> （生成的 eval 文件源码），加 `--json` 会自相矛盾。
 
 - **配对语义**（结构性配对，字段差异不影响配对）：llm.turn 按回合序配对、**忽略 span name** ——
   name 是模型 id，而「换模型重跑」正是 A/B 主用例，按 name 配对会把两侧所有 turn 报成缺失；

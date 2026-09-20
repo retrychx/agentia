@@ -37,10 +37,41 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     assert.equal(T.REGISTRY_PATH, 'src/registry.ts');
   });
 
-  it('main.ts 模板的 discover 列全四分类目录（顺序即装配顺序）', () => {
+  it('main.ts 模板的 discover 按【本文件位置】解析，且列全四分类目录（顺序即装配顺序）', () => {
+    // 原实现是 cwd 相对的 'src/tools' 等：dev（tsx src/main.ts）恰好对，但 `node dist/main.js`
+    // 会去加载 src 下的 .ts 源码 —— 装饰器不是可擦除的类型语法，Node 直接抛
+    // "Invalid or unexpected token"，即**生产路径从未通过**；换个 cwd 跑则连目录都找不到。
     const main = T.mainTs('demo');
-    for (const dir of T.CAPABILITY_DIR_LIST)
-      assert.ok(main.includes(`'${dir}'`), `main.ts 缺 ${dir}`);
+    for (const dir of T.CAPABILITY_DIR_LIST) {
+      const bare = dir.replace(/^src\//, '');
+      assert.ok(main.includes(`'${bare}'`), `main.ts 缺分类目录 ${bare}`);
+    }
+    assert.ok(main.indexOf("'tools'") < main.indexOf("'skills'"), '分类顺序即装配顺序，不能被重排');
+    assert.ok(main.includes('import.meta.url'), 'main.ts 必须按本文件位置解析（而非 cwd）');
+    assert.ok(!main.includes("'src/tools'"), "main.ts 不该再出现 cwd 相对的 'src/tools'");
+    assert.ok(
+      main.includes('existsSync'),
+      'main.ts 必须过滤不存在的分类目录：tsc 不为空目录产出 dist/<分类>/，而 discover 对显式给出的不存在路径是报错的',
+    );
+  });
+
+  it('脚手架 package.json：dev 走 CLI 的 dev，且 CLI 装进 devDependencies（版本与框架同批）', () => {
+    const pkg = JSON.parse(T.projectPackageJson('demo'));
+    assert.equal(
+      pkg.scripts.dev,
+      'agentia dev',
+      'npm run dev 应与 agentia dev 同一条路（含 inspector）',
+    );
+    assert.ok(
+      pkg.devDependencies['@migor/cli'],
+      'CLI 必须进 devDependencies：否则工程内 npx agentia 会去 registry 拉最新版（无 pin、需联网）',
+    );
+    assert.ok(pkg.dependencies['@migor/agentia'], '框架仍应是 dependencies');
+    assert.equal(
+      pkg.devDependencies['@migor/cli'],
+      pkg.dependencies['@migor/agentia'],
+      '两包同批发布，pin 的版本必须一致',
+    );
   });
 
   it('main.ts 模板在 run 失败时给出原因并置非零退出码', () => {

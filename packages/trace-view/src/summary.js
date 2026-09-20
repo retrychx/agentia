@@ -40,7 +40,7 @@ export function summarizeTrace(trace) {
     if (v > a.maxMs) a.maxMs = v;
   };
 
-  const spans = (trace && trace.spans) || [];
+  const spans = trace?.spans || [];
   for (const span of spans) {
     if (span.kind === 'capability') {
       const a = get(`${kindOf(span)}:${span.name}`);

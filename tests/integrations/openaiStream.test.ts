@@ -15,9 +15,11 @@ function sseBody(events: Array<Record<string, unknown> | '[DONE]'>, eol = '\n'):
 function sseFetch(
   body: string,
   opts: { contentType?: string; status?: number } = {},
+  // biome-ignore lint/suspicious/noExplicitAny: 同上 —— 捕获报文的形态由被测实现决定
 ): { fetchImpl: typeof fetch; requests: Array<{ json: any; init: RequestInit }> } {
+  // biome-ignore lint/suspicious/noExplicitAny: 同 openai.test.ts —— 捕获的是客户端发出的报文，形态由被测实现决定
   const requests: Array<{ json: any; init: RequestInit }> = [];
-  const fetchImpl = (async (_url: any, init: any) => {
+  const fetchImpl = (async (_url: string | URL, init: RequestInit = {}) => {
     requests.push({ json: JSON.parse(String(init?.body)), init });
     return new Response(body, {
       status: opts.status ?? 200,

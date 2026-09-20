@@ -110,4 +110,79 @@ describe('CLI 用法与错误路径', { skip: SKIP }, () => {
       assert.ok(!existsSync(join(dir, 'out.ts')), '失败时不该留下产物文件');
     });
   });
+  it('--version / -v 报出包版本（单源：读本包 package.json，不另存常量）', () => {
+    const pkg = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+    );
+    for (const flag of ['--version', '-v']) {
+      const r = run([flag], tmpdir());
+      assert.equal(r.status, 0, `${flag} 退出码应为 0（stderr=${r.stderr}）`);
+      assert.equal(r.stdout.trim(), pkg.version, `${flag} 应报出包版本`);
+      assert.equal(r.stderr, '', `${flag} 不该往 stderr 写东西`);
+    }
+  });
+
+  it('report --json：stdout 只有一个 JSON 文档，人类表格不再出现', () => {
+    withTmp((dir) => {
+      writeFileSync(join(dir, 't.jsonl'), `${JSON.stringify(TRACE)}\n`, 'utf8');
+
+      const human = run(['report', 't.jsonl'], dir);
+      assert.equal(human.status, 0);
+      assert.match(human.stdout, /trace 文件/, '缺省仍是人类可读输出');
+
+      const r = run(['report', 't.jsonl', '--json'], dir);
+      assert.equal(r.status, 0, `stderr=${r.stderr}`);
+      const j = JSON.parse(r.stdout); // 能整段解析 = stdout 里只有 JSON
+      assert.equal(j.runs, 1);
+      assert.equal(j.file, 't.jsonl');
+      assert.equal(typeof j.totals.totalMs, 'number');
+      assert.ok(Array.isArray(j.capabilities));
+      assert.ok(!r.stdout.includes('trace 文件'), 'JSON 模式不该夹人类装饰');
+    });
+  });
+
+  it('diff --json：等价退出 0、有差异退出 1（脚本仍可拿退出码当门禁），差异本身可读', () => {
+    withTmp((dir) => {
+      writeFileSync(join(dir, 'a.jsonl'), `${JSON.stringify(TRACE)}\n`, 'utf8');
+      writeFileSync(join(dir, 'b.jsonl'), `${JSON.stringify(TRACE)}\n`, 'utf8');
+
+      const same = run(['diff', 'a.jsonl', 'b.jsonl', '--json'], dir);
+      assert.equal(same.status, 0, `等价应退出 0（stderr=${same.stderr}）`);
+      assert.equal(JSON.parse(same.stdout).equal, true);
+
+      const changed = JSON.parse(JSON.stringify(TRACE));
+      changed.spans[1].status = 'error';
+      writeFileSync(join(dir, 'c.jsonl'), `${JSON.stringify(changed)}\n`, 'utf8');
+
+      const diff = run(['diff', 'a.jsonl', 'c.jsonl', '--json'], dir);
+      assert.equal(diff.status, 1, '有差异必须仍是退出码 1 —— --json 只改输出形状，不改语义');
+      const j = JSON.parse(diff.stdout);
+      assert.equal(j.equal, false);
+      assert.equal(j.spans[0].path, 'run:agent.run/llm.turn#0');
+      assert.equal(j.spans[0].missing, null);
+      assert.deepEqual(j.spans[0].fields, [{ field: 'status', a: 'ok', b: 'error' }]);
+    });
+  });
+
+  it('doctor --json：体检结果结构化（无人类横幅），错误仍退出 1', () => {
+    withTmp((dir) => {
+      const empty = run(['doctor', '--json'], dir);
+      assert.equal(empty.status, 0, `stderr=${empty.stderr}`);
+      const j = JSON.parse(empty.stdout);
+      assert.ok(Array.isArray(j.ok) && Array.isArray(j.warnings) && Array.isArray(j.errors));
+      assert.equal(j.summary.warnings, j.warnings.length);
+      assert.equal(j.summary.errors, j.errors.length);
+      assert.ok(j.warnings.length > 0, '空目录下应有「分类目录不存在」的警告');
+      assert.ok(!empty.stdout.includes('装配体检'), 'JSON 模式不该有人类横幅');
+    });
+  });
+
+  it('--json 下出错仍走 stderr + 退出码 1（stdout 为空，脚本据此区分「没跑成」）', () => {
+    withTmp((dir) => {
+      const r = run(['report', 'nope.jsonl', '--json'], dir);
+      assert.equal(r.status, 1);
+      assert.equal(r.stdout, '', 'stdout 必须为空 —— 否则脚本会把错误当结果解析');
+      assert.match(r.stderr, /错误：/);
+    });
+  });
 });

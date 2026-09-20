@@ -64,14 +64,40 @@ function parseRegistry(content: string): {
 /** 分类目录相对注册表的 import 前缀：./tools 等（悬空条目判定用） */
 const LOCAL_PREFIXES = CAPABILITY_DIR_LIST.map((p) => './' + p.replace(/^src\//, '') + '/');
 
-export function doctor(): number {
+export interface DoctorJson {
+  ok: string[];
+  warnings: string[];
+  errors: string[];
+  /** 命中老布局时的迁移提示（正常布局下缺席） */
+  legacyLayoutHint?: string;
+  summary: { errors: number; warnings: number };
+}
+
+/**
+ * @param opts.json `--json`：机器可读输出（stdout 只有一个 JSON 文档，无人类横幅）。
+ *   退出码语义不变 —— 有错误仍退出 1。
+ */
+export function doctor(opts: { json?: boolean } = {}): number {
+  const json = opts.json === true;
   const cwd = process.cwd();
 
   // 老布局：先给迁移提示再收工 —— 去扫一个还不存在的新布局只会刷一屏无关警告
   const legacy = legacyLayout(cwd);
   if (legacy) {
+    const hint = legacyMigrationHint(legacy);
+    if (json) {
+      const payload: DoctorJson = {
+        ok: [],
+        warnings: [hint],
+        errors: [],
+        legacyLayoutHint: hint,
+        summary: { errors: 0, warnings: 1 },
+      };
+      console.log(JSON.stringify(payload, null, 2));
+      return 0;
+    }
     console.log('agentia doctor —— 装配体检\n');
-    console.log(`  警告：${legacyMigrationHint(legacy)}`);
+    console.log(`  警告：${hint}`);
     console.log('\n体检结果：0 错误，1 警告');
     return 0;
   }
@@ -156,6 +182,21 @@ export function doctor(): number {
         `${REGISTRY_PATH} 条目 { provide: '${e.token}' } 指向 ${source}，但该目录已不存在（悬空条目，请删除条目或恢复目录）`,
       );
     }
+  }
+
+  if (json) {
+    const payload: DoctorJson = {
+      ok: oks,
+      warnings,
+      errors,
+      summary: { errors: errors.length, warnings: warnings.length },
+    };
+    console.log(JSON.stringify(payload, null, 2));
+    if (errors.length > 0) {
+      process.exitCode = 1;
+      return 1;
+    }
+    return 0;
   }
 
   console.log('agentia doctor —— 装配体检\n');

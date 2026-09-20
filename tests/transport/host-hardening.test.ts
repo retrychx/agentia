@@ -69,6 +69,7 @@ function close(server: Server): Promise<void> {
   return new Promise((r) => server.close(() => r()));
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: 端点回的是运行时数据，逐字段断言时不必逐个窄化 unknown
 async function readJson(res: Response): Promise<any> {
   return res.json();
 }

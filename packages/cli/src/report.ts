@@ -30,6 +30,17 @@ interface TraceLike {
   spans?: unknown[];
 }
 
+/** 机器可读输出的形状（`--json`）—— 字段增补是兼容的，改名/删字段是破坏性变更 */
+export interface ReportJson {
+  file: string;
+  runs: number;
+  failed: number;
+  skippedLines: number;
+  failures: Array<{ traceId: string | null; message: string | null }>;
+  capabilities: SummaryRow[];
+  totals: { totalMs: number; errors: number; capabilities: number };
+}
+
 /** 从一行 JSON 里把 trace 抠出来（裸 Trace 或包在记录里的 Trace）。harvest 命令也复用它。 */
 export function extractTrace(v: unknown): TraceLike | null {
   if (!v || typeof v !== 'object') return null;
@@ -45,13 +56,17 @@ export function extractTrace(v: unknown): TraceLike | null {
 
 /** 打印一张按总耗时降序的能力排行（跨多行记录时按能力合并） */
 /** 用法串（cli.ts 的子命令 `--help` 也从这里取，避免两处各写一份） */
-export const USAGE = '用法：agentia report <trace.jsonl>';
+export const USAGE = '用法：agentia report <trace.jsonl> [--json]';
 
 export async function reportCommand(args: string[]): Promise<number> {
-  const file = args[0];
+  // `--json`：机器可读输出（stdout 只有一个 JSON 文档，无任何人类装饰）—— 便于脚本/CI 串接。
+  // 出错仍走 stderr 的 `错误：…` + 退出码 1、stdout 为空，脚本据此区分「有结果」与「没跑成」。
+  const json = args.includes('--json');
+  const positional = args.filter((a) => a !== '--json');
+  const file = positional[0];
   // 失败一律**抛错**（而不是就地设 process.exitCode）—— 本命令是异步的，
   // 就地设的 exitCode 会被 cli.ts 末尾那句 `process.exitCode = main(...)` 覆盖成 0。
-  if (file === undefined || args.length > 1) {
+  if (file === undefined || positional.length > 1 || file.startsWith('--')) {
     throw new Error(USAGE);
   }
 
@@ -117,6 +132,32 @@ export async function reportCommand(args: string[]): Promise<number> {
   }
   const rows = [...merged.values()].sort((a, b) => b.totalMs - a.totalMs || b.calls - a.calls);
 
+  const failRows = traces
+    .filter((t) => t.status === 'error')
+    .map((t) => {
+      const spans = (t.spans ?? []) as Array<{ error?: { message?: string } }>;
+      return {
+        traceId: t.traceId ?? null,
+        message: spans.find((s) => s?.error?.message)?.error?.message ?? null,
+      };
+    });
+  const totalMs = rows.reduce((n, r) => n + r.totalMs, 0);
+  const errTotal = rows.reduce((n, r) => n + r.errors, 0);
+
+  if (json) {
+    const payload: ReportJson = {
+      file,
+      runs: traces.length,
+      failed: traces.length - okRuns,
+      skippedLines: badLines,
+      failures: failRows,
+      capabilities: rows,
+      totals: { totalMs, errors: errTotal, capabilities: rows.length },
+    };
+    console.log(JSON.stringify(payload, null, 2));
+    return 0;
+  }
+
   const pad = (s: string, n: number): string => (s.length >= n ? s : s + ' '.repeat(n - s.length));
   const fmtMs = (ms: number): string => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`);
   console.log(`trace 文件  ${file}`);
@@ -125,13 +166,10 @@ export async function reportCommand(args: string[]): Promise<number> {
   );
   // 失败 run 要说清原因：只报「失败 N」而不给理由，对调优没用。而且首次运行最常见的失败
   // （没配 API key）恰恰不产出任何 capability 行 —— 会走到下面「没有可归因的能力」提前返回。
-  const failed = traces.filter((t) => t.status === 'error');
-  for (const t of failed.slice(0, 3)) {
-    const spans = (t.spans ?? []) as Array<{ error?: { message?: string } }>;
-    const msg = spans.find((s) => s?.error?.message)?.error?.message;
-    console.log(`  ✗ ${t.traceId ?? '(无 traceId)'}${msg ? `  ${msg}` : ''}`);
+  for (const f of failRows.slice(0, 3)) {
+    console.log(`  ✗ ${f.traceId ?? '(无 traceId)'}${f.message ? `  ${f.message}` : ''}`);
   }
-  if (failed.length > 3) console.log(`  …另有 ${failed.length - 3} 条失败 run`);
+  if (failRows.length > 3) console.log(`  …另有 ${failRows.length - 3} 条失败 run`);
   console.log('');
   if (rows.length === 0) {
     console.log(
@@ -142,11 +180,7 @@ export async function reportCommand(args: string[]): Promise<number> {
   console.log(
     `${pad('capability', 34)} ${pad('calls', 6)} ${pad('err', 5)} ${pad('total', 9)} ${pad('max', 9)} ${pad('tokens', 9)} ${pad('cost', 12)}`,
   );
-  let total = 0;
-  let errs = 0;
   for (const r of rows) {
-    total += r.totalMs;
-    errs += r.errors;
     console.log(
       `${pad(r.capability, 34)} ${pad(String(r.calls), 6)} ${pad(String(r.errors), 5)} ` +
         `${pad(fmtMs(r.totalMs), 9)} ${pad(fmtMs(r.maxMs), 9)} ` +
@@ -155,6 +189,6 @@ export async function reportCommand(args: string[]): Promise<number> {
     );
   }
   console.log('');
-  console.log(`合计耗时 ${fmtMs(total)}  ·  失败 ${errs} 次  ·  能力 ${rows.length} 个`);
+  console.log(`合计耗时 ${fmtMs(totalMs)}  ·  失败 ${errTotal} 次  ·  能力 ${rows.length} 个`);
   return 0;
 }

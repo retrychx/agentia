@@ -100,11 +100,16 @@ export function createProject(name: string, parent: string | undefined): number 
   cd ${dir}
   npm install
   把 API key 填进 .env（已生成，且已被 .gitignore 忽略）
-  npm run dev
+  npm run dev                  # = agentia dev：tsx watch + 本地 inspector 面板
 
 生产构建：npm run build && npm start（tsc → dist/，.md 资产由 scripts/copy-assets.mjs 跟随拷贝）
+          dev 跑 src/、start 跑 dist/ —— 能力目录按文件位置解析，两边都成立。
 
 目录约定：src/tools/ · src/skills/ · src/prompts/ · src/subagents/（一能力一文件夹）
+
+CLI 已装进本工程（devDependencies），所以在工程内直接 npx agentia g / doctor / dev 即可
+（走本地 bin，离线可用、版本与工程一同 pin）。注意创建时要用带 scope 的 npx @migor/cli create
+—— 短名 agentia 在 npm 上是别人的包。
 
 提示：项目内 AGENTS.md 是本框架的使用说明（API 速查 + 已知边界），
       交给 AI 辅助编码时会自动被读，能显著减少猜 API 的错。`);

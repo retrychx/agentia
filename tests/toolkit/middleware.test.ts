@@ -23,7 +23,7 @@ describe('能力调用中间件（R1）', () => {
       log.push('m1-after');
       return out;
     };
-    const m2: CapabilityMiddleware = async (call, next) => {
+    const m2: CapabilityMiddleware = async (_call, next) => {
       log.push('m2-before');
       const out = await next();
       log.push('m2-after');
@@ -40,7 +40,7 @@ describe('能力调用中间件（R1）', () => {
   });
 
   it('next(newInput) 改写入参；不调 next 短路（结果缓存）', async () => {
-    const rewrite: CapabilityMiddleware = (call, next) => next({ replaced: true });
+    const rewrite: CapabilityMiddleware = (_call, next) => next({ replaced: true });
     const app = createApp({
       providers: [{ provide: 'e', useClass: Echo }],
       system: sys(),

@@ -63,6 +63,7 @@ function close(server: Server): Promise<void> {
  * 读响应 JSON。宿主回的是运行时数据（端点契约见 http.ts 的 RunHttpResponse /
  * TaskRecord），测试里按 any 取用 —— 否则每个字段访问都要单独断言 unknown。
  */
+// biome-ignore lint/suspicious/noExplicitAny: 上面那段注释就是理由 —— 端点回的是运行时数据，逐字段断言时不必每个字段先窄化 unknown
 async function readJson(res: Response): Promise<any> {
   return res.json();
 }

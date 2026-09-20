@@ -52,6 +52,7 @@
       .empty { color: var(--faint); padding: 16px; }
       #ttl { color: var(--faint); margin-bottom: 10px; font-family: var(--mono); font-size: 11.5px; }
       .usage { display: flex; gap: 16px; margin-top: 12px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+      /* biome-ignore lint/style/noDescendingSpecificity: 本行只颜色/字重，对手是 33 行的 header .live b —— 两者祖先容器不同（.usage 在面板区、.live 在 header），结构上不可能命中同一元素，是规则「只比末段标签」的误报。 */
       .usage b { color: var(--text); font-weight: 500; }
     </style>
   </head>
