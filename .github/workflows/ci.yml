@@ -14,7 +14,10 @@ on:
 # 同一分支来了新推送时取消上一轮（省额度，结论也只关心最新）
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # PR 上新 push 掐掉旧 run（省资源）；**main 上不掐** —— 每次合并都要留下一份完整的检查，
+  # 否则连合两条时，先合的那次 run 会被后一次 push 取消，merge commit 上显示 `cancelled`，
+  # 看上去像合失败（2026-09-20 实际造成过一次困惑：部署 job 显示 cancelled，代码其实没事）。
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # ⚠️ 本 job 的 name 是分支保护的**必需状态检查**（repos/.../branches/main/protection）。
