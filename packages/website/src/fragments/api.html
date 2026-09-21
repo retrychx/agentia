@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>211</b> 个导出</span>
+          <span class="api-chip"><b>212</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -69,6 +69,7 @@
             <tr><td>SpanStatus / SpanId / TraceId</td><td><code>'ok' | 'error'</code> / <code>string</code> / <code>string</code></td><td>基础类型别名。</td></tr>
             <tr><td>TraceContext / SpanLink</td><td><code>{ traceId: string; spanId?: string }</code> / <code>{ traceId; spanId? }</code></td><td><strong>跨进程 / 跨服务关联</strong>：调用方（网关 / 队列消费者 / 上游服务）把它自己的 span 标识作为 <code>RunInvocationOptions.traceContext</code> 传进来，本次 run 的根 span 记成一条 <code>SpanLink</code>（OTLP 导出即标准 span links）。<strong>不改 <code>traceId == runId</code></strong> —— run 仍是自己的新树，上游是被链接而不是被继承，所以调用树永远自洽、因果仍可查。</td></tr>
             <tr><td>parseTraceparent</td><td><code>(value: string | null | undefined) → TraceContext | undefined</code></td><td>解析 W3C <code>traceparent</code> 头（<code>00-&lt;32位trace&gt;-&lt;16位span&gt;-01</code>）成 <code>TraceContext</code>。非法 / 缺失 / 版本 <code>ff</code> / 全零 id / 位宽不符一律返回 <code>undefined</code>（不抛）：链路是观测行为，不该把业务请求打成 400。<code>createHttpHandler</code> 在 <code>POST /run</code> 与 <code>POST /tasks</code> 上自动用它。</td></tr>
+            <tr><td>currentTraceparent</td><td><code>() → string | undefined</code></td><td><strong>出站链路传播</strong>：当前调用期的 W3C <code>traceparent</code>（<code>00-&lt;32位trace&gt;-&lt;16位span&gt;-00</code>），带给出站请求，下游就能关联到<strong>具体 span</strong>（回合 / 能力调用粒度，而不是整次 run）。不在 run 内、或在 run 根 span 打开之前（<code>contextInit</code> / 记忆水合）返回 <code>undefined</code>；flags 恒 <code>00</code>（本框架不采样）。与 <code>parseTraceparent</code> 对称：一个解析、一个生成，共用同一份 id 投影。<strong>只给读取器</strong> —— 框架不创建出站请求，注入那一行由宿主的 <code>fetch</code> / metadata 自己写。</td></tr>
             <tr><td>TraceSink</td><td><code>{ export(trace) → void | Promise&lt;void&gt; }</code></td><td>trace 出口：run 收尾（成功 / 失败）都投递，sink 抛错被吞、不影响 run。OTLP 导出器与 <code>metricsSink()</code> 都天然满足它。</td></tr>
             <tr><td>Score</td><td><code>{ name; value; source?; comment? }</code></td><td>质量评分（R7 质量闭环）：LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 value 为 0–1（布尔结论用 0/1），source 记评分来源（eval 名 / 'human' / judge 模型 id）。</td></tr>
             <tr><td>attachScore</td><td><code>(trace: Trace, score: Score) → void</code></td><td>把评分挂到 trace 根 span（一条 <code>score</code> 事件，body 即 Score）；评分通常来自 run 之外，故走事件而非 span 字段。出口映射：OTLP 译为 <code>gen_ai.evaluation.result</code>，metricsSink 聚合为 <code>agentia_score</code> 指标族。</td></tr>

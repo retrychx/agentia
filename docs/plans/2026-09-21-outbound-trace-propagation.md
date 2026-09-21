@@ -1,8 +1,21 @@
 # 出站链路传播（`traceparent` 出站）设计
 
-> **状态：待评审** —— 分叉表在 §6，回「都按建议」或逐条给字母即可；拍板前不写分阶段任务计划。
-> 关联：`docs/spec.md` §9.2 / §9.4 · `docs/usage-guide.md` §6·§7 · `docs/roadmap.md` R7
+> **状态：已评审（2026-09-21），分叉 1–5 全部按建议 A 拍板，Phase A→B→C 已落地。**
+> 关联：`docs/spec.md` §9.2 / §9.4 · `docs/usage-guide.md` §6·§7 · `docs/roadmap.md` R7 · `docs/guards.md` §1
 > 来源：2026-09-21 弱方向审计 —— 出站传播是**唯一一处「语义已定、只差实现」的开放项**。
+>
+> **拍板后的实际落点**（分叉 → 实现）：
+> - 分叉 1=A → `src/engine/span-scope.ts`（per-call ALS）+ `currentTraceparent()` 公共导出；
+>   `RunContext` / `ToolRunContext` / `Span` 契约一字未改。
+> - 分叉 2=A → `wireTraceId` / `wireSpanId` 落在 **`src/core/trace.ts`**（与 `parseTraceparent` 同处），
+>   `integrations/otlp.ts` 的私有副本删除、改为 import —— 投影从此单一真源。
+> - 分叉 3=A → 只给 `currentTraceparent(): string | undefined`（W3C 串）。
+> - 分叉 4=A → flags 恒 `00`，文档写明「本框架不采样」。
+> - 分叉 5=A → 只给读取器，不做自动注入。
+>
+> **实现期发现的第三处口径缺口（本设计未预判）**：run 根 span 开在 `runAgent`，而
+> `executeRun` 里 `contextInit` / 记忆水合发生在它**之前** ⇒ 那两段没有作用域、`currentTraceparent()`
+> 返回 `undefined`。这是**正确**的而不是缺陷（那时确实还没有 span 可指），已在 §7 边界行写明。
 
 ## 1. 目标
 
@@ -137,7 +150,9 @@ export function currentTraceparent(): string | undefined;
 ## 5. 测试策略
 
 1. **单源（承重）**：`core/wire-ids` 形态直测 + 一条「OTLP 导出与出站头用的是同一个投影」的断言。
-   ★ **承重性反向验证**：把 `otlp.ts` 改回私有副本 ⇒ 这条必红。
+   ★ **承重性反向验证**：把 `otlp.ts` 换回**不等价的**自造投影（换个切法）⇒ 这条必红；
+   换成**等价副本**不会红 —— 那是重复而非分歧（靠 Phase A 的注释与 review 守，不用源码文本断言
+   —— 那类断言会随转译器变形，本仓已踩过）。
 2. **作用域正确性**：并行两个工具各自读 `currentTraceparent()` **互不串**；嵌套（skill 体内拿到的是自己的
    capability span，不是发起它的 turn）；run 外 → `undefined`；工具抛错 / 超时后作用域不残留。
 3. **往返闭环（最有说服力）**：`parseTraceparent(currentTraceparent()!)` ===
@@ -146,6 +161,17 @@ export function currentTraceparent(): string | undefined;
 4. **OTLP 一致性**：同一次 run 导出后，出站头里的 span id 与 OTLP 里该 span 的 `spanId` **逐字相等**。
 5. 门禁：`bash scripts/verify-all.sh` 全绿（8/8），不新增步骤。
 6. 可选：`examples/grpc-host` 补一行 metadata 出站（它已有入站解析，正好对称），`scripts/e2e-grpc.ts` 加一处断言。
+
+### 反向验证（实测已做，2026-09-21）
+
+在隔离导出树上做两条变异，都被真咬住（结论钉在 commit 上）：
+
+| 变异 | 结果 |
+|---|---|
+| `otlp.ts` 的 span 投影换成不等价切法（`slice(8,24)`） | `tests/integrations/otlp.test.ts` 的结构用例**真红**（1/8 fail）—— 单源守卫咬住了 |
+| `span-scope.ts` 退化成 run 级单值存储（`let globalScope`，不进 ALS） | `tests/engine/spanScope.test.ts` **5 条里红 3 条**（含「并行链互不干扰」那条）—— §9.2 的核心理由被机器守住 |
+
+两条都已记入 `docs/guards.md` §1（投影单源 → §1.1；调用期作用域 → §1.2）。
 
 ## 6. 分叉表
 

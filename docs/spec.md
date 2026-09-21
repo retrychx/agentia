@@ -140,12 +140,20 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   「改写为内置拦截器」的 dogfooding 设想经评审放弃（capability span 生命周期与模型调用
   纠缠在 loop 内，强行外置反而割裂），见 §10 2026-09-11 R1 条。能力调用层的拦截由
   装配层的 `CapabilityMiddleware` 洋葱链承担，与 trace 记账是两条独立的缝。
-- **跨进程关联已落地（2026-09-17，见 §10）**：入站 `traceparent` 头（W3C）或
+- **跨进程关联（2026-09-17 入站 / 2026-09-21 出站，见 §10）**：入站 `traceparent` 头（W3C）或
   `RunInvocationOptions.traceContext` → run 根的一条 **span link**（`SpanLink`），OTLP 导出映射为
   span links。形态选 link 而**不是**继承上游 traceId —— `traceId == runId` 的 1:1 不变量不变，
-  run 永远是自洽的一棵新树。**出站传播仍开放**：缺的前置件是「`RunContext` 暴露当前 span」，
-  在它之前只能编出假 spanId。队列宿主侧已验证：`traceContext` 随 `spec.options` 落进
-  `TaskRecord`，所以另一个进程 `resumePending` 续跑的那次 run 也带得上。
+  run 永远是自洽的一棵新树。**出站已落地（2026-09-21，决策见 §10 当日条）**：
+  `currentTraceparent()` 给出当前**调用期** span 的 W3C 串（`src/engine/span-scope.ts` 的
+  per-call 作用域，三层由粗到细：run 根 → 本回合 `llm.turn` → `capability`），宿主把它带在
+  自己的出站请求上；框架只给读取器、不替宿主做注入（它不创建出站请求）。
+  队列宿主侧已验证：`traceContext` 随 `spec.options` 落进 `TaskRecord`，所以另一个进程
+  `resumePending` 续跑的那次 run 也带得上。
+  ⚠️ 本节原先写的「缺的前置件是『`RunContext` 暴露当前 span』」是**错的**，与上一段自相矛盾
+  （span 句柄刻意不放 `RunContext`）：run 级只存一个值，并行工具会互相覆盖；真实前置件是
+  **另开一条调用期作用域**。另：出站 id 宽度走 `core/trace.ts` 的**同一份投影**
+  （`wireTraceId` / `wireSpanId`，OTLP 导出也用它）—— 各写一份会让同一次调用在两个系统里
+  出现两个 span id。
 
 ### 9.3 产出与导出
 
@@ -2302,6 +2310,52 @@ package.json 全部写成字符串模板。字符串不过编译器 —— 模�
 
 **零漂移判据**：一次性对拍脚本（不进仓库）对旧字符串模板与新文件方案的全部渲染产物
 （项目级 9 件 + 4 类能力 × 5 个 kebab 名）逐文件 diff —— 为空；e2e-cli 全链绿。
+
+### 2026-09-21 ③：**出站链路传播**落地 —— 解开 spec 自己写下的一处自相矛盾
+
+**背景**：弱方向审计把「出站 `traceparent`」点为全仓唯一「语义已定、只差实现」的开放项。
+动手时发现 §9.2 的两句话互相打架：`:135` 锁定「span 句柄**不放** `RunContext`」（理由是并行的
+工具调用会互相覆盖），`:146` 却把「`RunContext` 暴露当前 span」当成出站的前置件。原句写的
+「硬造一个会是假的 spanId」也经不起查。
+
+**两条实测结论（本条的实质）**：
+
+1. **前置件不是 RunContext，是「调用期作用域」。** run 级 ALS 只有一个值 —— `withRunContext`
+   是 run 作用域，往里塞「当前 span」必然被并行工具互相覆盖（这正是 `:135` 锁定的理由）。
+   正确形态是**每次调用一份**的独立作用域（`src/engine/span-scope.ts`，
+   `AsyncLocalStorage<SpanScope>`），三层由粗到细嵌套：run 根（`engine/loop.ts`）→ 本回合
+   `llm.turn`（`engine/turn.ts` 包住每次工具执行）→ `capability`（`toolkit/skill.ts` /
+   `subagent.ts` 包住自己的方法体 / 子循环）。`RunContext` / `ToolRunContext` / `Span`
+   三个契约**一字未改**。
+2. **「假 spanId」不成立：OTLP 早就有这条投影。** W3C 要 trace 32-hex + span **16-hex**，
+   本仓 id 一律 UUID（去横线 32-hex）。`integrations/otlp.ts` 的 `spanHex` 早就做了
+   `replaceAll('-','').slice(0,16)`（注释原文：「不截 collector 会判 `invalid span_id`」）。
+   所以那 16-hex 就是**我们已经在发给 collector 的 span 身份** —— 出站复用同一份投影，
+   下游看到的 span id 与 collector 里的是**同一个数**。反过来，出站若各写一份，同一次调用
+   在两个系统里就是**两个 span id**，那是跨系统关联最不能出的错。
+
+**决定**：
+
+- 投影**单源化**到 `core/trace.ts`：`wireTraceId` / `wireSpanId` / `formatTraceparent`，
+  与 `parseTraceparent` 同处（一个解析、一个生成）。`integrations/otlp.ts` 删掉自己的私有
+  副本、改为 import（`integrations → core` 是既有边）。断言随之改为引用单源
+  （`tests/integrations/otlp.test.ts`），「导出 id === 出站 id」被机器钉住。
+- 公共面**只加一个**：`currentTraceparent(): string | undefined`。flags 恒 `00` ——
+  本框架不采样，不替下游声明「已采样」（入站解析器也从不读 flags）。
+- **只给读取器，不做自动注入**：框架不创建出站请求（模型客户端那次调用不该带我们的
+  traceparent），注入是宿主 `fetch` / metadata 里的一行 —— 与「webhook 后置、用 sink + 用户
+  fetch」同一条既有决策。
+- **如实标注的边界**：`run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` /
+  记忆水合取到 `undefined`（那时确实还没有 span 可指）。写进 usage-guide §7 边界表。
+
+**取舍（被否方案）**：把 span 塞进 `RunContext`（并行覆盖，见上）；给 `@Tool` 加第二参
+`ctx`（`toolkit/tool.ts` 现在 `Reflect.apply(…, [input])`，要改成公开签名破坏 + 违背
+「ctx 不层层下传」的既有取向）；把 spanId 生成改成 W3C 原生 16-hex（会与既有投影并列成
+两套口径，且历史 trace 对不上）；另发一对 W3C id 记进 attributes（一个东西两个 id）。
+
+**门禁**：`tests/engine/spanScope.test.ts`（往返闭环 / 并行不串 / 嵌套到 capability /
+run 结束不残留）+ `tests/core/trace.test.ts` 的投影组 + otlp 单源断言；反向验证见设计文档
+`docs/plans/2026-09-21-outbound-trace-propagation.md` §5。**不加 verify-all 步数**。
 
 ## 11. 开放项
 
