@@ -30,7 +30,15 @@ const { title, description, page = 'home', footerLinks = [] } = Astro.props;
 // og:image 指向 public/og.png（1280×640、<1MB，与 GitHub Social preview 同一张）。
 // 用 Astro.site 拼绝对 URL —— OG 规范要求 og:image / og:url 必须是绝对地址。
 const site = Astro.site ?? new URL('https://agentia-web.pages.dev');
-const canonical = new URL(Astro.url.pathname, site).href;
+// ⚠️ canonical / og:url 必须是**干净形态**（`/docs` 而非 `/docs.html`）。
+// Cloudflare Pages 对产物里存在的 `x.html` 一律 308 到 `/x`（实测 /index.html → /、
+// /docs.html → /docs、/404.html → /404），所以 `.html` 正是**会重定向**的形态；
+// og:url 指到它等于声明了一个「跳转前的地址」。`build.format: 'file'` 下
+// `Astro.url.pathname` 是 `/docs.html`，这里去掉扩展名。
+// ⚠️ 替换成**空串**而不是 `'/'`：`'/index.html'.replace(/index\.html$/, '/')` 会得到 `'//'`
+// （前导斜杠还在）—— 那是协议相对 URL，`new URL('//', site)` 直接抛 Invalid URL（构建红）。
+const cleanPath = Astro.url.pathname.replace(/index\.html$/, '').replace(/\.html$/, '');
+const canonical = new URL(cleanPath, site).href;
 const ogImage = new URL('og.png', site).href;
 
 // AI agent 指引（llms.txt directive）。四页共用，所以放在外壳里而不是各页手抄四遍
@@ -55,7 +63,9 @@ const llmsFull = new URL('llms-full.txt', site).href;
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <!-- 绝对路径：404 页会以**任意**请求路径被送出（/foo/bar/baz 也回它），
+         相对地址在那里会按 /foo/bar/ 解析 ⇒ 图标取不到。 -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <!-- 社交分享：Open Graph（Facebook/微信/Slack 等） + Twitter 大图卡片 -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Agentia" />

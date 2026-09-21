@@ -6,19 +6,21 @@ import type { APIRoute } from 'astro';
  * 为什么需要它：AFDocs 的 `llms-txt-coverage` 检查**以 sitemap 为基准**核对 llms.txt 覆盖了
  * 哪些页；本站此前没有 sitemap，该项直接 SKIP（「No sitemap found; cannot assess」）。
  *
- * ⚠️ **URL 口径是 `.html`**，不是干净路径。理由：站点自声明口径（每页 `<meta property="og:url">`
- * 由 `Base.astro` 按 `Astro.url.pathname` 算出 → `/docs.html`）、站内所有互链（Nav/Footer/正文）
- * 以及 README / package.json 的 homepage 全都用 `.html`。这里必须跟它们一致 ——
- * 两处口径不一致时，afdocs 只是把两种写法归一化后比对，但**人和索引器看到的是两份声明**。
+ * ⚠️ **URL 一律干净形态**（`/docs`，不是 `/docs.html`）—— sitemap 里必须是**最终 URL**。
+ * 上一轮这里判反过：当时以为站点自声明口径是 `.html`（`og:url`、站内互链、README 都用它），
+ * 于是声明成 `.html`。线上回读后否掉 —— Cloudflare Pages 对产物里存在的 `x.html` 一律
+ * **308** 到 `/x`（实测 /index.html → /、/docs.html → /docs、/404.html → /404），
+ * 所以 `.html` 恰是**会重定向**的形态。那一版把三处声明成了跳转前的地址。
+ * 同批已把 `og:url` 与站内链接（Nav / Footer / 正文 / 404 页）一并改到干净形态。
  *
  * 增删页面时要同步三处：本清单、`llms.txt.ts` 的「文档」节、以及 `scripts/check-website-agent-readiness.mjs`
  * 的交叉核对（它会断言 llms.txt 里出现了清单中的每一条 URL，任一处漂移即构建红）。
  */
 const PAGES = [
   { path: '/', priority: '1.0' },
-  { path: '/docs.html', priority: '0.9' },
-  { path: '/api.html', priority: '0.8' },
-  { path: '/playground.html', priority: '0.7' },
+  { path: '/docs', priority: '0.9' },
+  { path: '/api', priority: '0.8' },
+  { path: '/playground', priority: '0.7' },
 ] as const;
 
 const FALLBACK_SITE = 'https://agentia-web.pages.dev';

@@ -10,6 +10,16 @@
  * 所以这里按**产物自己的形状**核（不做源码字面匹配，也不复刻 AFDocs 的算法）——
  * 与 scripts/e2e-*.ts 同一条纪律：测产物，就用产物自己的输入。
  *
+ * 检查项（8 类）：① 硬 404 的前提（产物里有 404.html）② robots.txt 的绝对 Sitemap 行
+ * ③ sitemap 与产物页面集合互为真值 ④ llms.txt 链接全绝对且覆盖全部页面
+ * ⑤ llms-full.txt 与单源 docs/usage-guide.md 逐字节相等 ⑥ 每页 llms 指引的形态
+ * ⑦ 声明的 URL 不得是 `.html` ⑧ 站内链接必须绝对路径、且不是 `.html` 形态。
+ *
+ * ⚠️ 教训（2026-09-21，写在这里免得再犯）：第一版守卫把「站点 URL 的形态」等同于
+ * **产物文件名**（`docs.html`），于是把「声明 `.html`」锁成了绿灯 —— 而线上 `.html` 是
+ * **会 308 重定向**的形态（Cloudflare Pages 对存在的 `x.html` 一律跳 `/x`）。
+ * **产物名对了不等于线上地址对了。** 第 ⑦ 条就是为此补的。
+ *
  * 归口：verify-all.sh 第 8 步（`npm run build:website` 之后）。步骤数写在 CI job 名里，
  * 所以新检查一律**折进**已有步骤，不新开第 9 步（见 verify-all.sh 顶部注释）。
  */
@@ -66,13 +76,17 @@ check('robots.txt 有绝对 Sitemap 行', () => {
 
 /* ── 3. sitemap.xml：与实际产物页面集合**互为真值** ──────────────────────
    期望集合从 dist 自己枚举（排除 404.html：错误页不该进 sitemap），
-   而不是在脚本里再抄一份页面清单 —— 那样加页面时守卫会跟着一起漏。 */
+   而不是在脚本里再抄一份页面清单 —— 那样加页面时守卫会跟着一起漏。
+
+   ⚠️ 枚举到的是**文件名**（docs.html），要映射成**站点 URL**（/docs）再比对。
+   Cloudflare Pages 对产物里存在的 `x.html` 一律 308 到 `/x`，所以站点 URL 是干净形态。 */
 const builtPages = readdirSync(dist)
   .filter((f) => f.endsWith('.html') && f !== '404.html')
   .sort();
-const expectedLocs = builtPages
-  .map((f) => new URL(f === 'index.html' ? '/' : `/${f}`, ORIGIN).href)
-  .sort();
+/** 产物文件名 → 站点 URL 路径（`index.html` → `/`，`docs.html` → `/docs`） */
+const toCleanPath = (file) =>
+  (file === 'index.html' ? '/' : `/${file}`).replace(/index\.html$/, '/').replace(/\.html$/, '');
+const expectedLocs = builtPages.map((f) => new URL(toCleanPath(f), ORIGIN).href).sort();
 
 check('sitemap.xml 与产物页面集合一致', () => {
   must(existsSync(join(dist, 'sitemap.xml')), '缺 sitemap.xml');
@@ -141,7 +155,46 @@ for (const file of [...builtPages, '404.html']) {
   });
 }
 
-console.log(`[website-agent] 核了 ${builtPages.length} 个页面 + robots/sitemap/llms 共 6 类产物`);
+/* ── 7. 声明的 URL 不得是「会重定向的形态」（.html） ──────────────────────
+   Cloudflare Pages 对产物里存在的 `x.html` 一律 **308** 到 `/x`（实测 2026-09-21：
+   /index.html → /、/docs.html → /docs、/404.html → /404）。所以 sitemap 与 llms.txt 里
+   声明的必须是**最终地址**，不能是「跳转前的地址」。
+
+   ⚠️ 这条正是上一轮判错的地方。当时守卫拿 dist 的**文件名**去比对声明，把「.html 口径」
+   锁成了绿灯 —— **产物名对了 ≠ 线上地址对了**。别再用文件名当站点 URL 的真值。 */
+check('声明的 URL 不得是 .html（线上会 308 重定向）', () => {
+  const bad = [];
+  for (const name of ['sitemap.xml', 'llms.txt']) {
+    for (const m of read(name).matchAll(/https?:\/\/[^\s)"'<>`]+/g)) {
+      if (/\.html?(?=$|[?#])/.test(m[0])) bad.push(`${name}: ${m[0]}`);
+    }
+  }
+  must(bad.length === 0, `声明了会重定向的 .html 地址（应写干净形态 /docs）：${bad.join(', ')}`);
+});
+
+/* ── 8. 站内链接必须是绝对路径，且不得是 `.html` 形态 ─────────────────────
+   两个理由都有实测后果：
+     · `.html` 结尾会多一跳 308（见第 7 条）—— 而且是**全站每一处点击**都跳；
+     · **相对地址**（`./docs`）本站一律不该用 —— 404 页会以**任意**请求路径被送出
+       （/foo/bar/baz 也回它），浏览器按 /foo/bar/ 解析 `./docs` ⇒ 又落回 404。 */
+check('站内链接必须是绝对路径，且不是 .html 形态', () => {
+  const bad = [];
+  for (const file of [...builtPages, '404.html']) {
+    for (const m of read(file).matchAll(/\shref="([^"]*)"/g)) {
+      const href = m[1];
+      // 放行：页内锚点、以及任何带 scheme 的绝对地址（http/https/mailto/…）
+      if (href.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(href)) continue;
+      if (!href.startsWith('/')) {
+        bad.push(`${file}: ${href}（相对路径）`);
+        continue;
+      }
+      if (/\.html?(?=$|[?#])/.test(href)) bad.push(`${file}: ${href}（.html 会 308）`);
+    }
+  }
+  must(bad.length === 0, `站内链接不合格：${bad.join(', ')}`);
+});
+
+console.log(`[website-agent] 核了 ${builtPages.length} 个页面 + robots/sitemap/llms 共 8 类产物`);
 if (failures.length > 0) {
   console.error(`\n[website-agent] ${failures.length} 项不达标：`);
   for (const f of failures) console.error(`  ✖ ${f}`);
