@@ -42,6 +42,8 @@
 | `tests/integrations/otlp.test.ts` | **OTLP/JSON 的 enum 必须整数编码**（`status.code` = 1 / 2、`kind` = 1；规范禁止 enum 名）；且 **HTTP 200 ≠ 全部接收** —— collector 的 `partialSuccess` 必须按失败处理 | ① 断言 payload 里 `status.code` 是整数，并**扫整个 payload 不得出现任何 `*_CODE_*` / `SPAN_KIND_*` 字面量**（假 collector 只做 `JSON.parse`，所以「断言跟着实现一起写错」会假绿 —— 加这条扫是为了堵住形成假绿的机制）；② 假 collector 回 `200 + partialSuccess`：`{}` 与 `rejectedSpans: 0` 算**全部接收**、非空 `errorMessage` 算**拒收**，traces 侧断言走 `onExportError`、metrics 侧断言抛 `MetricsExportError` | 严格的 collector 判非法并**整批拒收** ⇒ 观测数据全丢而框架说一切正常；把 200 的部分接收读成成功 ⇒ 看板少一半数据无人知（真发生过，2026-09-21 外部队列复核；两处都发过字符串 enum、都只查 `res.ok`） |
 | `tests/integrations/metrics.test.ts` | **CUMULATIVE 指标的 `startTime` 必须随 `reset()` 前移**（同一 startTime 下 counter 只能单调不减） | 同一个 sink 导出两次、中途 `reset()`，断言值回到 1 **且**窗口起点**严格**前进（含同毫秒连按两次 reset）；窗口内不 reset 时起点逐字不变 | 后端把「新窗口的小值」当成同一区间的分量 ⇒ 算出负增量或丢样本（真发生过：`reset()` 只清计数、起点取 sink 创建时刻的常量，导出值 2 → 1 而 startTime 没变） |
 | `tests/integrations/mcpConnector.test.ts` | MCP 连接器**三件只有它能做的事**：spawn 的 `'error'` 是异步事件必须接住 / stdout 必须按 `\n` 攒包 / **协议层 `isError: true` 必须转成抛错**；装配期超时；`close()` **返回即子进程已终止**、且 HTTP 侧 DELETE **挂死时也必须到点返回**（server 半开不得挂住停机路径）；StreamableHTTP 会话过期（`404`）**自愈且只重试一次**、并发 404 共享同一次重握手 | 起**真子进程**夹具（`tests/fixtures/mcp/fake-server.mjs`，env 覆盖 8 种模式，含忽略 SIGTERM 的 `stubborn` + pid 文件）+ HTTP 侧注入 `fetchImpl`；用例本身由 **15 条变异电池**证明会咬 | `isError` 不转抛错 ⇒ 失败的调用被**模型与 trace 一起**记成成功（正好打在本框架「trace 决定你敢不敢上线」的承诺上）；不接 `'error'` ⇒ 命令不存在时未捕获异常把宿主进程带崩；`close()` 不等 reap ⇒ 留孤儿进程；会话过期不自愈 ⇒ 长跑宿主只能重建连接器 |
+| `src/core/limits.ts` · `tests/limits.test.ts` | **`0` 的语义只有一份真源**：15 个旋钮各属「不限 / 机制关掉 / 立即执行 / 非法配置」四类之一，全部登记在一张可执行的表里；构造期报错文案里那句「（0 = …）」**直接插表里的 `zeroClause`**（文案与实现不可能各说各话） | 表驱动的**穷尽**用例（`Record<LimitKnob, 探针>`）：逐条**驱动真实站点**（`new AsyncRunner` / `mapWithConcurrency` / `resolveMaxRetries` / `Scheduler.every` / `metricsSink` …）对账，探针必须能把声明的读法与相邻读法区分开；新增旋钮不归类 ⇒ `typecheck:tests` 红。反向验证过：`drain-gate` 的 `<= 0` 改回 `< 0`（**历史事故那个读法**）+ `tracer` 的 `< 0` 改 `<= 0` ⇒ 恰好那两条红、其余 14 条不误伤 | 同一个 `0` 各处理解一遍 ⇒ `drain({timeoutMs: 0})` 跨过 deadline 后**永不返回**（真发生过）；`intervalMs` 在 `Scheduler.every` 里是「必须 > 0」、在 `metricsSink` 里却是「立即导出」—— **同名反义**且此前无人登记 |
+| `src/engine/forwarded.ts` · `tests/types/forwarding.types.ts` · `tests/engine/forwarded.test.ts` | **转发不得漏字段**：`ToolRunContext` → 嵌套能力子循环那七个旋钮取自**唯一取值点**（映射类型 `{[K in Key]-?: …}` 要求七个键全必填），且 `ToolRunContext` 的每个键必须在「转发」或「引擎自装配」里**归类** | 调用点只写 `...forwardToolContext(ctx)`（两处手写清单已删）⇒ 没有可漏的地方；类型层断言「未归类键集 `extends never`」+「少一个键必须报错」。反向验证过：给 `ToolRunContext` 加一个未归类字段 ⇒ `typecheck:types` 真红（TS2322）；取值少一行 ⇒ `typecheck` 真红（TS2741） | `runAgentScoped` 漏 `toolTimeoutMs` 跨 engine → toolkit → ctx 三层无人发现，且后果是**反的**：子循环 `withTimeout(p, 0)` 永不超时 + MCP 桥另起自己的 60s 兜底 = 双计时器双账本（真发生过） |
 
 ### 1.3 宿主与耐久
 
@@ -52,6 +54,8 @@
 | `tests/transport/async.test.ts` | 幂等键去重、`resumePending` 认领、迟到 reject 不改写终态；**幂等键的进程内认领**：同键并发提交只执行一次、**终态才释放**（挂起仍在等人 ⇒ 不释放）、释放判据按 `taskId` 而非 `claimed`（HITL 恢复段是另一次 `#execute`、异步 store 交出的还是新副本） | 状态机级用例 + `AsyncCopyStore`（异步 store 交出的记录是**反序列化新对象** —— 内存 store 的引用语义会把这类缺陷掩盖） | 同键任务重复执行；成功的 run 被落库失败覆写成 failed；**挂起过的键永久钉在认领表里**（同键再也不执行 + 表无界增长 —— 反向验证时真复现过：释放判据只看 `claimed` 或只比对象同一性，HITL 用例立刻红） |
 | `tests/engine/approval.test.ts` · `tests/transport/approval.test.ts` · `tests/transport/httpApproval.test.ts` | HITL 挂起/恢复（2026-09-19 ①）：未决审批 ⇒ **整回合零执行零 tool_result**（协议配平）；`awaiting_approval` 不占槽、不触发 `onFinished`、`resumePending` 不捡、淘汰跳过；`approve` 逐 id 幂等（第一次赢）+ 先落库再派发；惰性超时自动全拒；挂起段照常 flushSinks、恢复段 link 上一段 | 引擎层 mockClient + 宿主层**真引擎**（executeRun）+ 真 HTTP；含「不做什么」断言（onFinished 不开火、普通工具不提前执行） | 审批闸被绕过（副作用直接发生）；挂起被当终态通知 webhook；恢复丢决定/重复执行 |
 | `scripts/e2e-grpc.ts` | **换宿主时最容易静默丢掉的四处语义**：deadline / 取消 → `signal`（要求服务端的 run **真被 abort**，trace 里 `error.type=aborted`，而不是照跑完）、metadata `traceparent` → run 根 link、同 `session_id` 两轮共享历史、同 `idempotency-key` 不重复执行 | 真构建 + 真起宿主（`PORT=0` 由服务自报端口，没有「探空闲端口再交出去」的抢占窗口）+ 用**示例自带的客户端**跑四个 RPC；模型侧假 Anthropic 端点、trace 落 tempdir（不留产物）；**变异电池 8/8 全部由对应断言抓住**（含一条「被抓住但不是被预期断言抓住」的更正记录，见 spec §10 2026-09-18 ⑪） | 客户端已经走了服务端还把 run 跑完（token 白烧）；跨进程链路在服务边界断掉；错误全塌成一个 UNKNOWN（调用方重试策略失效）；RPC 回了结果但「为什么慢 / 贵 / 失败」没有证据 |
+
+| `tests/transport/queueConsumer.test.ts` | **队列消费者配方的三条承诺**（usage-guide §6.4 那条二十行样板）：同键重投**不重复执行**、`traceparent` 随 `spec.options` 落库使**他进程续跑**仍带得上同一条 link、失败不 ack 要 nack 重投 | 内存版 broker（at-least-once：交付即「在飞」/ `ack` 才算完 / 未 ack 与 nack 一律重投 / `crash()` 模拟崩溃）+ 真 `AsyncRunner` + 真引擎（`executeRun` + `mockClient`）把三条承诺各跑一遍；断言的是**副作用计数**与 `broker.deliveries`（不只 taskId —— 那才证明重投真的发生过）。反向验证过：把幂等复用判据改成 `status !== 'succeeded'` ⇒ 四条全红（④ 红是同一行的另一面：**失败**的键必须允许新任务，否则重投永远拿不到第二次执行）；把 `spec.options` 置 `undefined` 亦在红之列（两颗子弹同时上膛，未逐条隔离） | 配方是宿主侧样板、框架侧无可测实现 ⇒ 「文档承诺可跑」此前没人跑过；生产上表现为重投导致**下单两次**（副作用翻倍），或链路在消费者那一跳断掉（`resumePending` 续跑的那次 run 丢了上游 link） |
 
 ### 1.4 文档与发布面
 
@@ -78,11 +82,7 @@
 
 | 待守形状 | 历史事故 | 为什么还没有守卫 | 可能的守卫形状 |
 |---|---|---|---|
-| **`0` 的双重语义（不限 vs 已到点）** | `handler.drain({timeoutMs:1})` 跨过 deadline 后永不返回 | 已有单点用例（`host-hardening.test.ts`），但**没有**统一的「limits 语义对照表」——`mapWithConcurrency` / `drain` / `runTimeoutMs` / `maxIterations` 仍各自解释 `0`（`maxRetries` 已于 2026-09-21 归队：`adapter-options.ts` 一处判定 + 坏值矩阵用例，但那是**单点**，不是真源） | 建一份「limits 语义」单一真源 + 集中用例（`limits.test.ts`） |
-| **零/负/非有限值的语义统一** | 同上一行（`mapWithConcurrency` 已修，其余散在） | 分散在多个模块，无单一真源 | 同上，与上一行合并做 |
-| **手写转发列表不得漏字段** | `runAgentScoped` 漏 `toolTimeoutMs`（跨 3 层：engine → toolkit → ctx） | `exactOptionalPropertyTypes` 已开（见 §1），堵住了「显式传 undefined」这一半；但**「spread 转发时漏掉一个键」TS 结构类型仍不报**（`{...opts}` 少了字段照样过） | 穷尽转发类型（把可转发字段抽成 `Pick<…, ForwardableKey>` 并要求逐项出现）；或改成显式 `omitUndefined({...})` + 一处集中清单 |
 | **首屏 `0 反射` 这类策略声明** | —（尚未漂过） | 页面上写了「0 反射」（= 显式 DI，不用装饰器元数据反射），但源码里本来就有 `Reflect.ownKeys` 这类**正当**用法 ⇒ **无法从源码计数推导**。`api-page.test.ts` 只钉「别被悄悄删掉」 | 若要真守，得先能给出「反射式 DI」的可判定定义（例如「除 `Reflect.ownKeys` 外不得使用 `Reflect.*`，且不得读 `Symbol.metadata`」）—— 那是一条**可写的守卫**，但需要先确认这条口径值不值得当门禁 |
-| **队列消费者（Kafka / RabbitMQ / SQS）配方没有门禁** | —（尚未漂过） | 它是**宿主侧的二十行样板**，框架侧没有可测的代码。配方真正依赖的两条地基已各有守卫（`runner.submit` + 幂等键 → `tests/transport/async.test.ts`；`traceContext` 随 `spec.options` 落库 → `tests/transport/http.test.ts`），但**配方本身**（消费者循环 + 提交位移的时机）没有任何 gate 真跑过 | 要守得起一个真 broker 或内存版 mock，成本不低；先如实标出。gRPC 那条同理，只是它已有 `scripts/e2e-grpc.ts` |
 
 > 已在本轮补上守卫、从本表移入 §1 的：**成对实现对称**（`tests/integrations/adapter-parity.test.ts`）、
 > **浅合并被 `null` 覆盖**（`anthropic.test.ts` 的 usage 用例）、**同步 vs 真实异步 store**
@@ -93,6 +93,10 @@
 > （`tests/integrations/otlp.test.ts`）、**CUMULATIVE 窗口起点随 reset 前移**
 > （`tests/integrations/metrics.test.ts`）、**模板重建清 dist**（`scripts/e2e-cli.ts` 4d-bis）、
 > **幂等键的进程内认领**（`tests/transport/async.test.ts` 那一行）。
+> 2026-09-21 ⑧ 这一轮又移入三条（本表因此只剩一行）：**`0` 的语义真源**
+> （`src/core/limits.ts` + `tests/limits.test.ts`，含伴随行「零/负/非有限值的语义统一」）、
+> **穷尽转发**（`src/engine/forwarded.ts` + `tests/types/forwarding.types.ts`）、
+> **队列消费者配方**（`tests/transport/queueConsumer.test.ts`）。
 
 > §2 的存在方式很重要：**它是活的**。每轮 review 挖到的形状，若暂时建不了守卫，就登记到这里；
 > 建成了就移到 §1 并注明守卫位置。「未登记的形状」= 下次必然重犯。

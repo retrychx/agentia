@@ -5,6 +5,7 @@
  * 规则写两份就会漂（历史上「同一个 429，两侧尝试次数不同」正是这么来的，见
  * `tests/integrations/adapter-parity.test.ts`）。所以判定只写一次，两条适配器都调它。
  */
+import { zeroClauseOf } from '../core/limits.js';
 
 /** 适配器缺省内层重试次数（与 Anthropic SDK 的缺省对齐：2） */
 export const DEFAULT_MAX_RETRIES = 2;
@@ -25,7 +26,7 @@ export function resolveMaxRetries(raw: unknown, owner: string): number {
   if (raw === undefined) return DEFAULT_MAX_RETRIES;
   if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 0) {
     throw new TypeError(
-      `${owner}：maxRetries 必须是非负安全整数（0 = 不重试），收到 ${String(raw)} —— ` +
+      `${owner}：maxRetries 必须是非负安全整数（${zeroClauseOf('maxRetries')}），收到 ${String(raw)} —— ` +
         'NaN / Infinity / 负数 / 小数都会让「重试几次」变成猜的（`attempt >= maxRetries` ' +
         '对 NaN 恒假、对 Infinity 永不成立 ⇒ 无限重试）',
     );
