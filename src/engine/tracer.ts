@@ -12,6 +12,7 @@ import type {
   TraceRecordEventPayload,
   Usage,
 } from '../core/trace.js';
+import { zeroClauseOf } from '../core/limits.js';
 
 /**
  * 记账的**数量上限**（spec §9.4 的答案里「让少记了数据可数」那一半）。
@@ -49,7 +50,7 @@ export function resolveTraceLimits(raw: unknown, owner: string): TraceLimits | u
   if (maxEvents === undefined) return {};
   if (typeof maxEvents !== 'number' || !Number.isSafeInteger(maxEvents) || maxEvents < 0) {
     throw new TypeError(
-      `${owner}：traceLimits.maxEvents 必须是非负安全整数（0 = 一条都不记），收到 ${String(maxEvents)} —— ` +
+      `${owner}：traceLimits.maxEvents 必须是非负安全整数（${zeroClauseOf('traceLimits.maxEvents')}），收到 ${String(maxEvents)} —— ` +
         'NaN / Infinity / 负数 / 小数都会让「记多少条」变成猜的',
     );
   }

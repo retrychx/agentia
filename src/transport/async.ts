@@ -10,6 +10,7 @@ import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { TimeoutError } from '../core/timeout.js';
+import { zeroClauseOf } from '../core/limits.js';
 import { composeTraceEvents } from '../core/trace.js';
 import type { TraceRecordEvent } from '../core/trace.js';
 import { SlotPool } from './slot-pool.js';
@@ -248,13 +249,16 @@ export class AsyncRunner {
     if (!Number.isFinite(this.runTimeoutMs) || this.runTimeoutMs < 0) {
       // NaN/Infinity 都不能放给 setTimeout：两者都会被钳到 1ms，每个任务立即「超时」失败
       // （且 NaN 会绕过 `< 0` 检查静默通过）。要「不限」请传 0（缺省）。
-      throw new Error(`runTimeoutMs 必须为 ≥ 0 的有限数（0 = 不限），收到 ${opts.runTimeoutMs}`);
+      // 文案里的「0 = 不限」取自 core/limits.ts 的表 —— 口径与实现同一处，不可能各说各话。
+      throw new Error(
+        `runTimeoutMs 必须为 ≥ 0 的有限数（${zeroClauseOf('AsyncRunner.runTimeoutMs')}），收到 ${opts.runTimeoutMs}`,
+      );
     }
     this.approvalTimeoutMs = opts.approvalTimeoutMs ?? 0;
     if (!Number.isFinite(this.approvalTimeoutMs) || this.approvalTimeoutMs < 0) {
       // 同 runTimeoutMs：非有限数会让「已挂起多久」的比较静默失效或立即超时
       throw new Error(
-        `approvalTimeoutMs 必须为 ≥ 0 的有限数（0 = 不限），收到 ${opts.approvalTimeoutMs}`,
+        `approvalTimeoutMs 必须为 ≥ 0 的有限数（${zeroClauseOf('AsyncRunner.approvalTimeoutMs')}），收到 ${opts.approvalTimeoutMs}`,
       );
     }
     this.ownerId = `p${process.pid}-${randomUUID().slice(0, 8)}`;
