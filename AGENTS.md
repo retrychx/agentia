@@ -217,6 +217,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   → **签名不动**，在调用点条件展开 `...(x !== undefined ? { x } : {})`，或一次转交多字段时用
   `omitUndefined({...})`（`src/core/object.ts`）。理由与实测见 spec §10 2026-09-18 ⑦、`docs/guards.md` 附录。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
+- **多 agent 同仓作业**：本机可能有多个 agent 同时在这个仓里改代码。三条纪律：
+  ① **结论一律钉到 commit**（commit 不可变才可复现），未提交的在制品不评审（评草稿 = 白评）；
+  ② **门禁/测试跑在隔离导出树**（`git archive <sha> | tar -x -C <tmp>` + 软链 `node_modules`），
+  不在共享工作区跑 —— 那里读到的是别人改到一半的中间态，结论随对方下一次保存失效；
+  ③ **遇到不属于自己的未提交改动：不提交、不修改、不还原**；commit 只 add 自己动过的文件。
 - **承诺过的 script 必须真跑，且测产物要用产物自己的输入**：脚手架/模板在 package.json 里
   承诺的每个 script（dev / build / start …），e2e 至少**真执行一次**（「产物存在」≠「产物能跑」——
   只断言 dist/main.js 存在的那版门禁全绿时，`node dist/main.js` 一跑就崩）；凡「测产物 X」必须用
