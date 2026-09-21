@@ -141,7 +141,7 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 | Production observability recipes | [`docs/observability.md`](./docs/observability.md) |
 | Examples (complete app / minimal deploy / observability) | [`examples/`](./examples/) |
 | Design spec & roadmap | [`docs/spec.md`](./docs/spec.md) · [`docs/roadmap.md`](./docs/roadmap.md) |
-| Website · Playground | [agentia-web.pages.dev](https://agentia-web.pages.dev) · [playground](https://agentia-web.pages.dev/playground.html) |
+| Website · Playground | [agentia-web.pages.dev](https://agentia-web.pages.dev) · [playground](https://agentia-web.pages.dev/playground) |
 
 ## Contributing
 

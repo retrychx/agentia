@@ -1,12 +1,18 @@
 ---
 // 顶部导航。page='home' 时用页内锚点（index 的 hero 分区），其余页走站内链接。
 // 非首页默认带 scrolled（深色实底）；首页由 site.js 按滚动位置切换。
+//
+// ⚠️ 站内链接一律**绝对路径 + 干净形态**（`/docs` 而非 `./docs.html`），两个理由都有实测：
+//   ① `.html` 会 308 重定向：Cloudflare Pages 对产物里存在的 `x.html` 一律跳到 `/x`
+//      （实测 /docs.html → /docs、/index.html → /）。用它等于每次点击多一跳。
+//   ② 相对路径在本站的 404 页上是**错的**：404 页会以**任意**请求路径被送出
+//      （/foo/bar/baz 也回它），浏览器按 /foo/bar/ 解析 `./docs` ⇒ 又落回 404。
 const { page = 'home' } = Astro.props;
 const isHome = page === 'home';
 ---
 <nav class:list={['nav', !isHome && 'scrolled']}>
   <div class="nav-inner">
-    <a class="brand" href={isHome ? '#top' : './index.html'}>
+    <a class="brand" href={isHome ? '#top' : '/'}>
       <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
         <rect x="1.5" y="1.5" width="29" height="29" rx="7" stroke="currentColor" stroke-width="1.6"></rect>
         <circle cx="16" cy="16" r="3.4" fill="currentColor"></circle>
@@ -25,16 +31,16 @@ const isHome = page === 'home';
           <a href="#capabilities">能力</a>
           <a href="#features">特性</a>
           <a href="#quickstart">快速开始</a>
-          <a href="./playground.html">Playground</a>
-          <a href="./docs.html">文档</a>
-          <a href="./api.html">API</a>
+          <a href="/playground">Playground</a>
+          <a href="/docs">文档</a>
+          <a href="/api">API</a>
         </>
       ) : (
         <>
-          <a href="./index.html">首页</a>
-          <a href="./playground.html">Playground</a>
-          <a href="./docs.html">文档</a>
-          <a href="./api.html">API</a>
+          <a href="/">首页</a>
+          <a href="/playground">Playground</a>
+          <a href="/docs">文档</a>
+          <a href="/api">API</a>
         </>
       )}
       <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>

@@ -12,8 +12,12 @@ import guide from '../../../../docs/usage-guide.md?raw';
  *
  * ⚠️ 站内链接**必须是绝对地址**：AFDocs 的 `llms-txt-links-resolve` 只统计
  * `http://` / `https://` 开头的链接（源码 `checks/content-discoverability/llms-txt-links-resolve.js`），
- * 根相对链接（`/docs.html`）会被**整条丢弃** ⇒ 同源链接 0 条、该项只能拿到 WARN，
- * 且 agent 少一个可直接跟随的入口。页面 URL 形态跟 `sitemap.xml.ts` 对齐（`.html`）。
+ * 根相对链接（`/docs`）会被**整条丢弃** ⇒ 同源链接 0 条、该项只能拿到 WARN，
+ * 且 agent 少一个可直接跟随的入口。
+ *
+ * ⚠️ 路径一律**干净形态**（`/docs`，不是 `/docs.html`）：Cloudflare Pages 对产物里存在的
+ * `x.html` 一律 308 到 `/x`（实测 /docs.html → /docs）。给 agent 的清单里应当是可直达的
+ * 最终地址，而不是要先跳一次的地址。与 `sitemap.xml.ts` 的清单保持一致。
  */
 export const GET: APIRoute = ({ site }) => {
   const origin = (site ?? new URL('https://agentia-web.pages.dev')).origin;
@@ -75,9 +79,9 @@ export const GET: APIRoute = ({ site }) => {
 
 - [完整使用说明（供 AI 整篇注入）](${abs('/llms-full.txt')}): API 速查、类型链路、常见错误 —— 由仓库单源 \`docs/usage-guide.md\` 生成
 - [官网首页](${abs('/')}): 框架定位与四类能力
-- [文档页](${abs('/docs.html')}): 指南与代码示例
-- [API 参考](${abs('/api.html')}): 导出面清单
-- [Playground](${abs('/playground.html')}): 浏览器内跑一次真实 run（自带 Key，直连 Anthropic / DeepSeek）
+- [文档页](${abs('/docs')}): 指南与代码示例
+- [API 参考](${abs('/api')}): 导出面清单
+- [Playground](${abs('/playground')}): 浏览器内跑一次真实 run（自带 Key，直连 Anthropic / DeepSeek）
 
 ## 安装与脚手架
 

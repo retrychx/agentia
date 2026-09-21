@@ -341,9 +341,18 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     不套 `<a>`，转换器会丢链接标签）。
     这一整套由 `scripts/check-website-agent-readiness.mjs` 按**产物形状**核，折在 verify-all 第 8 步里。
     线上分数可用 `npx --yes afdocs@0.20.0 check https://agentia-web.pages.dev --format scorecard` 复现。
+  - **URL 一律干净形态 + 绝对路径**：站内链接写 `/docs`，**不要**写 `./docs.html` 或 `/docs.html`。
+    两个理由都有实测后果：① Cloudflare Pages 对产物里存在的 `x.html` 一律 **308** 跳到 `/x`
+    （实测 `/index.html` → `/`、`/docs.html` → `/docs`、`/404.html` → `/404`）—— 所以
+    `og:url` / sitemap / llms.txt 里写 `.html` 等于声明**跳转前的地址**，站内写它则每次点击多一跳；
+    ② **相对路径在 404 页上是错的** —— 404 页会以**任意**请求路径被送出（`/foo/bar/baz` 也回它），
+    浏览器按 `/foo/bar/` 解析 `./docs` ⇒ 又落回 404。favicon 同理（走绝对路径）。
+    ⚠️ **别把「产物文件名」当「站点 URL 的真值」**：文件名是构建产物，URL 形态由平台重写规则决定
+    —— 这里判反过一次（第一版守卫拿 `readdirSync` 的文件名比对声明，把 `.html` 口径锁成了绿灯）。
   - **新增页面时**：`sitemap.xml.ts` 的清单要加、`llms.txt` 的「文档」节要加。守卫会交叉核对 ——
-    sitemap 的 `<loc>` 集合必须**等于** dist 里实际的 `*.html` 集合（排除 404），且每条都出现在
-    llms.txt 里，两处任缺其一即红。脚本里**刻意不另抄一份页面清单**：那样加页面时守卫会跟着一起漏。
+    sitemap 的 `<loc>` 集合必须**等于** dist 里实际的 `*.html` 集合（排除 404）**映射到干净路径后**，
+    且每条都出现在 llms.txt 里，两处任缺其一即红。脚本里**刻意不另抄一份页面清单**：
+    那样加页面时守卫会跟着一起漏。
   - **`src/fragments/api.html` 是手写的导出速查**（不像 `llms.txt` 从 usage-guide 派生）：新增 / 改名
     导出必须同步补进它 —— `tests/docs/api-page.test.ts` 做反向全覆盖校验，漏写即失败。`docs.html` /
     `index.html` 的正文与统计数字同样要跟着改，它们没有自动校验。
