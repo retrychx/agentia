@@ -53,6 +53,23 @@ const tmp = mkdtempSync(join(tmpdir(), 'agentia-cli-'));
 const npmCache = mkdtempSync(join(tmpdir(), 'agentia-npm-cache-'));
 const cli = (args: string[], cwd: string): string =>
   execFileSync(process.execPath, [cliPath, ...args], { cwd, encoding: 'utf8' });
+/**
+ * 在生成项目里跑**产物自己的 npm 脚本**（`npm run build` / `typecheck`）。
+ *
+ * 为什么必须走这一层而不是照抄脚本里的两步命令：本仓的硬教训是「**测产物必须用产物自己的
+ * 输入**」（见 AGENTS.md 与 guards.md 附 B.1 —— discover 必崩那五层失效，第一层就是测试
+ * 自己算路径而不是用模板那句）。脚本内容会变（清 dist、换编译器、加一步拷贝），照抄一份的
+ * 测试会在脚本变的那一刻**静默测旧形态**。这里只给依赖解析（`node_modules` 里的软链），
+ * 命令本身字面来自生成物 `package.json`。
+ */
+const npmRun = (script: string, cwd: string): void => {
+  execFileSync('npm', ['run', script], {
+    cwd,
+    stdio: 'inherit',
+    // 不碰宿主 npm 缓存（与步骤 8 的 pack/install 同一套临时 cache）
+    env: { ...process.env, npm_config_cache: npmCache, npm_config_update_notifier: 'false' },
+  });
+};
 
 try {
   // —— 1) create：项目骨架 ——
@@ -65,6 +82,7 @@ try {
     'src/registry.ts',
     'src/tools/hello/index.ts',
     'scripts/copy-assets.mjs',
+    'scripts/clean.mjs',
     'AGENTS.md',
   ]) {
     assert(existsSync(join(proj, f)), `create 缺文件: ${f}`);
@@ -157,8 +175,25 @@ try {
   assert(dupFailed, '重复 g 同名应失败');
 
   // —— 4) 让生成项目的 `import '@migor/agentia'` 可解析（symlink 回仓库根，框架已 build 到 dist）——
+  // 另外两条软链只为**依赖解析**：临时项目没有 `npm install`（也不该有 —— e2e 不联网、不装包），
+  // 而产物自己的 `tsc` / `tsconfig.json`（`types: ["node"]`）需要 `node_modules/.bin/tsc` 与
+  // `@types/node` 可解析。给了它们，后面 4c/4d 才能**字面跑 `npm run typecheck` / `npm run build`**，
+  // 而不是测试自己复刻一遍脚本里的命令。
   mkdirSync(join(proj, 'node_modules', '@migor'), { recursive: true });
   symlinkSync(repoRoot, join(proj, 'node_modules', '@migor', 'agentia'), 'dir');
+  symlinkSync(
+    join(repoRoot, 'node_modules', '@types'),
+    join(proj, 'node_modules', '@types'),
+    'dir',
+  );
+  mkdirSync(join(proj, 'node_modules', '.bin'), { recursive: true });
+  writeFileSync(
+    join(proj, 'node_modules', '.bin', 'tsc'),
+    // npm 装的 bin shim 形态：可执行 + 转调 node（这里手写一份，免得去 chmod 仓库的 node_modules）
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ` +
+      `${JSON.stringify(join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'))} "$@"\n`,
+    { mode: 0o755 },
+  );
 
   // —— 4b) .env 真的会被读到（跑一遍脚手架入口的同一句，而不是只看文件在不在）——
   // 这里最危险的是**静默失败**：文件生成得漂漂亮亮、key 却没进 process.env，用户只会看到
@@ -188,55 +223,18 @@ try {
   );
   rmSync(join(proj, 'env-probe.mjs'), { force: true });
 
-  // —— 4c) 脚手架模板过 tsc：生成的 tsconfig 原样做底（strict / NodeNext / include 全生效），
-  // overlay 只补「临时项目在 tmp，解析不到仓库的 @types/node」这一条路径 ——
-  // '@migor/agentia' 已由上面 4) 的 node_modules 软链解决（解析到 dist 的 .d.ts，即发布形态）。
-  // 此前模板从未经 tsc 检查：模板里一个类型错误要等用户 npm install 后才暴露。
-  writeFileSync(
-    join(proj, 'tsconfig.check.json'),
-    `${JSON.stringify(
-      {
-        extends: './tsconfig.json',
-        compilerOptions: {
-          noEmit: true,
-          typeRoots: [join(repoRoot, 'node_modules', '@types')],
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  execFileSync(
-    process.execPath,
-    [join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.check.json'],
-    { cwd: proj, stdio: 'inherit' },
-  );
+  // —— 4c) 脚手架模板过 tsc：跑**产物自己的 `npm run typecheck`**（`tsc --noEmit -p tsconfig.json`）——
+  // 模板此前从未经 tsc 检查：模板里一个类型错误要等用户 npm install 后才暴露。
+  // 不自己拼 tsc 命令、也不写 overlay tsconfig：`@types/node` 与 `.bin/tsc` 已由 4) 的软链解决
+  // ⇒ 检查用的是生成物**自己那份 tsconfig.json**（strict / NodeNext / include / types 全生效）。
+  npmRun('typecheck', proj);
 
-  // —— 4d) 生产构建链真跑一遍：脚手架承诺的 `npm run build` = tsc 出 dist + 资产跟随拷贝。
+  // —— 4d) 生产构建链真跑一遍：**字面跑产物自己的 `npm run build`** ——
   // 此前脚手架只有 dev/typecheck，没有 build/start —— 「拿去部署」第一步就断（外部 review
-  // 抓出；且 asset() 按文件位置解析，.md 不拷进 dist 时生产形态必坏）。这里用同一 overlay
-  // 思路真 emit（typeRoots 指向仓库 @types；outDir/rootDir 来自生成物 tsconfig 本身），
-  // 再跑生成物自己的 copy-assets，断言 dist 产物与 .md 资产都就位。
-  writeFileSync(
-    join(proj, 'tsconfig.build.json'),
-    `${JSON.stringify(
-      {
-        extends: './tsconfig.json',
-        compilerOptions: { typeRoots: [join(repoRoot, 'node_modules', '@types')] },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  execFileSync(
-    process.execPath,
-    [join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.build.json'],
-    { cwd: proj, stdio: 'inherit' },
-  );
-  execFileSync(process.execPath, [join(proj, 'scripts', 'copy-assets.mjs')], {
-    cwd: proj,
-    stdio: 'inherit',
-  });
+  // 抓出；且 asset() 按文件位置解析，.md 不拷进 dist 时生产形态必坏）。
+  // 命令来自生成物 package.json（清 dist → tsc -p tsconfig.json → copy-assets），
+  // 测试**不再复刻**这三步：脚本内容变了（换编译器 / 加一步 / 改 tsconfig），这里跟着变。
+  npmRun('build', proj);
   for (const f of [
     'dist/main.js',
     'dist/prompts/style-guide/asset.md',
@@ -251,6 +249,48 @@ try {
   for (const s of ['dev', 'build', 'start', 'typecheck']) {
     assert(typeof scaffoldPkg.scripts[s] === 'string', `脚手架 package.json 缺 scripts.${s}`);
   }
+  // 构建**必须先清 dist**：tsc 不删不再产出的文件，而生产入口是按本文件位置 discover
+  // `dist/<分类>/` 的 —— 于是「删掉一个能力」之后旧产物仍在，模型还能调它（源码里找不到、
+  // 进程里却有）。所以这条不是清理癖，是行为正确性；**断言方式是真删真建（下面 4d-bis）**，
+  // 不去读 `scripts.build` 的字符串 —— 清 dist 那一步换个文件名/换个写法（都是合法重构）就会
+  // 让字面量断言误报，而行为断言不问实现细节。
+
+  // —— 4d-bis) 重复构建不得留下**已删除能力**的陈旧产物（真删真建，不是读脚本字面量）——
+  //    重建走**同一条产物命令**（`npm run build`）—— 拆开复刻会让「清 dist」这一步被绕过去，
+  //    那样本用例反而变成假绿（也就失去了检验「build 真的会清」的资格）。
+  //    用一个临时探针能力做实验（不碰 4e 要断言的那 5 个菜单项）。
+  const buildOnce = (): void => npmRun('build', proj);
+  cli(['g', 'tool', 'stale-probe'], proj);
+  buildOnce();
+  const staleProbe = join(proj, 'dist', 'tools', 'stale-probe', 'index.js');
+  assert(existsSync(staleProbe), '探针能力应被构建出来 —— 否则下面的「消失」断言是假绿');
+  // 删能力：源码目录 + 注册表那一行（少删注册表会让 tsc 因 import 目标不存在而失败，那是另一回事）
+  rmSync(join(proj, 'src', 'tools', 'stale-probe'), { recursive: true, force: true });
+  const registryPath = join(proj, 'src', 'registry.ts');
+  const registryText = readFileSync(registryPath, 'utf8');
+  assert(
+    registryText.includes('stale-probe'),
+    '注册表里应有 stale-probe 的条目 —— 没有的话本用例没真删干净',
+  );
+  // `agentia g` 会写**两行**（import + entries 各一行），所以不按行数算 —— 断言的是
+  // 「一行都不剩，且没把别的能力一起滤掉」这个语义。
+  const kept = registryText.split('\n').filter((l) => !l.includes('stale-probe'));
+  assert(
+    !kept.some((l) => l.includes('stale-probe')),
+    '注册表里仍有 stale-probe 的行（本用例没真删干净）',
+  );
+  assert(
+    kept.some((l) => l.includes('hello')),
+    '删 stale-probe 时把别的条目也滤掉了（滤过头，本用例的对照失效）',
+  );
+  writeFileSync(registryPath, kept.join('\n'));
+  buildOnce();
+  assert(
+    !existsSync(staleProbe),
+    '重复构建后仍留着已删除能力的产物 dist/tools/stale-probe/index.js —— ' +
+      '生产形态会把删掉的能力继续加载进菜单（build 少了清 dist 那一步？）',
+  );
+  assert(existsSync(join(proj, 'dist', 'main.js')), '清 dist 不该把本次该产出的东西也弄丢');
 
   // —— 4e) 生产产物【真跑】一遍，两种 cwd 各跑一次 ——
   //    只断言「dist 产物存在」不够：那条断言在上述状态下全绿，却没发现 dist/main.js 一跑就崩

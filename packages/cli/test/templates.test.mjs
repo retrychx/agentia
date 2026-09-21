@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { distReadyOrLoud } from './dist-guard.mjs';
 
@@ -111,5 +112,89 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
       /import \{[^}]*\bloadEnvFile\b[^}]*\} from/.test(main),
       'main.ts 模板应从框架导入 loadEnvFile（否则生成的项目编译不过）',
     );
+  });
+});
+
+/**
+ * 模板目录 ↔ CLI 源码的**双向**一致性。
+ *
+ * 事故（2026-09-21）：模板目录加了 `scripts/clean.mjs`、`package.json` 的 build 脚本也引用了它，
+ * 但 `create.ts` 忘了把它写出去 —— 生成的项目 `npm run build` 第一步就 MODULE_NOT_FOUND。
+ * 所有单元测试全绿：它们问的都是「某个模板函数返回了什么」，**没人从模板目录出发反问「谁用了它」**。
+ * 是 e2e 里那句**字面跑 `npm run build`** 照出来的（测试自己复刻命令时也照不出来 —— 复刻的那份
+ * 绕过了产物自己那条链）。
+ *
+ * 这个描述块不依赖 dist（只读仓库里的模板与源码），所以未构建时也照跑。
+ */
+describe('模板目录 ↔ CLI 源码：双向引用必须成立', () => {
+  const cliRoot = fileURLToPath(new URL('..', import.meta.url));
+  const templatesDir = join(cliRoot, 'templates');
+  const srcDir = join(cliRoot, 'src');
+
+  /** 列 templates/ 下所有文件的相对路径（POSIX 分隔符，与 renderTemplate 的写法一致） */
+  const templateFiles = (dir = templatesDir, base = '') =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? templateFiles(join(dir, e.name), `${base}${e.name}/`)
+        : [`${base}${e.name}`],
+    );
+
+  /** CLI 源码全文（src/ 下的 .ts）—— 引用检查用「名字确实出现过」就够 */
+  const srcFiles = readdirSync(srcDir).filter((f) => f.endsWith('.ts'));
+  const read = (f) => readFileSync(join(srcDir, f), 'utf8');
+  const srcText = srcFiles.map(read).join('\n');
+  /** 除模板访问层之外的全部源码：**只有它们才算「有人真写了这个文件」** */
+  const callersText = srcFiles
+    .filter((f) => f !== 'templates.ts')
+    .map(read)
+    .join('\n')
+    // 掐掉 import 语句：`import { cleanMjs } from './templates.js'` 也算「名字出现过」，
+    // 靠它过闸就等于放行「导入了但从不调用」—— 那正是事故形态（写进 import、没写进 create）。
+    .replace(/^import[\s\S]*?from\s+'[^']+';/gm, '');
+  const templatesText = read('templates.ts');
+
+  it('模板目录里每个文件都被源码字面引用（防拼错/防改名漏改）', () => {
+    const orphans = templateFiles().filter((rel) => !srcText.includes(`'${rel}'`));
+    assert.deepEqual(
+      orphans,
+      [],
+      `这些模板文件没有任何源码引用它们：\n${orphans.join('\n')}\n` +
+        '—— 生成的项目会缺这个文件，而单测大概率还是绿的（见本描述块头注释）',
+    );
+  });
+
+  it('模板访问层的每个 accessor 都必须有调用方（漏写 = 生成物缺文件）', () => {
+    // 这一步才是 2026-09-21 那个事故的真正守卫：`cleanMjs()` 存在、路径也存在，只是**没人调它**
+    // —— 生成的项目缺 `scripts/clean.mjs`，而 build 脚本第一步就要跑它（MODULE_NOT_FOUND）。
+    // 判据是「**除访问层之外**有人引用这个 accessor」，不是「这个名字在仓库里出现过」。
+    // 只查 accessor（体内调了 renderTemplate 的函数）—— 纯 helper（如 kebabToSnake）只在层内用，合法。
+    const code = templatesText.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const accessors = code
+      .split(/\nexport\s+/)
+      .slice(1)
+      .map((block) => ({
+        name: /^(?:function|const)\s+([A-Za-z_$][\w$]*)/.exec(block)?.[1],
+        block,
+      }))
+      .filter((a) => a.name && /renderTemplate\(/.test(a.block))
+      .map((a) => a.name);
+    assert.ok(
+      accessors.length >= 10,
+      `只解析到 ${accessors.length} 个 accessor —— 抽词器可能退化了`,
+    );
+    const unused = accessors.filter((n) => !new RegExp(`\\b${n}\\b`).test(callersText));
+    assert.deepEqual(
+      unused,
+      [],
+      `templates.ts 的 accessor 没有任何调用方（模板写了却没被写出去）：\n${unused.join('\n')}\n` +
+        '—— 生成的项目会缺对应文件（真发生过：clean.mjs）',
+    );
+  });
+
+  it('源码里每个 renderTemplate 路径都真实存在（防拼错）', () => {
+    const refs = [...srcText.matchAll(/renderTemplate\('([^']+)'/g)].map((m) => m[1]);
+    assert.ok(refs.length >= 10, `只解析到 ${refs.length} 个模板引用 —— 抽词器可能退化了`);
+    const missing = refs.filter((rel) => !existsSync(join(templatesDir, rel)));
+    assert.deepEqual(missing, [], `源码引用了不存在的模板：\n${missing.join('\n')}`);
   });
 });

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CAPABILITY_DIR_LIST,
+  cleanMjs,
   copyAssetsMjs,
   emptyRegistryTemplate,
   mainTs,
@@ -76,6 +77,9 @@ export function createProject(name: string, parent: string | undefined): number 
   write(dir, 'src/main.ts', mainTs(name));
   write(dir, 'src/tools/hello/index.ts', toolIndexTs('hello'));
   write(dir, 'scripts/copy-assets.mjs', copyAssetsMjs());
+  // 清 dist 那一步（build 的第一步）：**必须真写出去**，否则生成的项目 `npm run build`
+  // 直接 MODULE_NOT_FOUND（模板目录里有它、build 脚本引用它，只有 create 忘了写）。
+  write(dir, 'scripts/clean.mjs', cleanMjs());
   write(dir, REGISTRY_PATH, emptyRegistryTemplate());
   write(dir, 'README.md', projectReadme(name));
   write(dir, '.gitignore', projectGitignore());
@@ -102,7 +106,7 @@ export function createProject(name: string, parent: string | undefined): number 
   把 API key 填进 .env（已生成，且已被 .gitignore 忽略）
   npm run dev                  # = agentia dev：tsx watch + 本地 inspector 面板
 
-生产构建：npm run build && npm start（tsc → dist/，.md 资产由 scripts/copy-assets.mjs 跟随拷贝）
+生产构建：npm run build && npm start（先清 dist/，再 tsc → dist/，.md 资产由 scripts/copy-assets.mjs 跟随拷贝）
           dev 跑 src/、start 跑 dist/ —— 能力目录按文件位置解析，两边都成立。
 
 目录约定：src/tools/ · src/skills/ · src/prompts/ · src/subagents/（一能力一文件夹）
