@@ -46,6 +46,14 @@ interface TraceSink {
 
 现成实现在 `examples/observability/`（本地小包）。下面给**接线**与**为什么**，实现细节读那个包。
 
+> ⚠️ **先看这条：怎么拿到它。** 这个包**没有发布到 registry** ——
+> `npm i @migor/agentia-observability` 会 **404**。它是**本地小包**：把
+> `examples/observability/` 这个目录拷进你的工程，并在 `package.json` 里声明
+> `"@migor/agentia-observability": "file:./observability"`（`examples/complete/package.json`
+> 就是这么接的，可以直接照抄）。下面每个 `import … from '@migor/agentia-observability'`
+> 指的都是它；不想要这个包也可以照源码把那四个 sink 抄进自己的文件。
+> `tests/docs/observability.test.ts` 真跑的是仓库内这套接线 —— 仓库外**只有补上这一步才跑得起来**。
+
 ### 2.1 按 runId 落库检索（span 与 run 记录同库）
 
 `spec §9.3` 承诺的「span 与 run 记录同库存储」，落地就是一个 sink：
