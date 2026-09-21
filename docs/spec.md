@@ -2515,6 +2515,56 @@ HITL 用例立刻真红（3 条红）。
 **非目标**：事件落 store 的真跨进程实时流（写放大：实测事件数 = 2 × 工具调用、正文 KB 级，
 宿主自己的总线是它的家）；`GET /tasks/:id/stream` 的鉴权新策略（沿用既有路由组口径）。
 
+### 2026-09-21 ⑧：**guards §2 的三条待守形状一次清空** —— `0` 的语义真源 / 转发漏字段 / 队列配方门禁
+
+**背景**：`docs/guards.md` §2 是「已知缺口 —— 下一次 review 从这里开始」。本轮把其中三条
+（含一条伴随行）建成了机器守卫，只剩「首屏 0 反射」那一行（它要先把「反射式 DI」写成可判定
+的定义，值不值得当门禁还得先定）。
+
+**① `0` 的双重语义 → 单一真源 + 集中用例。** 新增 `src/core/limits.ts`：15 个旋钮的 0 语义
+登记成**可执行的数据**（`unlimited` / `disabled` / `immediate` / `invalid` 四类），
+`tests/limits.test.ts` 拿这张表**逐条驱动真实站点**对账（探针是 `Record<LimitKnob, …>` ⇒
+新旋钮不归类就 `typecheck:tests` 红）。
+
+*动手时才看清的两件事*（都是本轮新发现的，此前没人登记）：
+
+- **`intervalMs` 是同名反义**：`Scheduler.every` 要求「必须 > 0」（0 是配置错误，`setInterval(0)`
+  会退化成每毫秒空转），而 `metricsSink` 的 `intervalMs: 0` 是「关掉定时器、每次累加后立即导出」。
+  两个同名旋钮两种读法，此前只活在各自的注释里。
+- **「数量」类旋钮里 `mapWithConcurrency` 是唯一的例外**：它取 `0` 读作「不限」，而
+  `maxRetries` / `maxEvents` / `maxIterations` 取 `0` 都读作「就是不做」。四类的划分不是为了
+  整齐，是为了让「哪个词在哪读成什么」一眼可查 —— 上一个事故就是这么来的（
+  `handler.drain({ timeoutMs: 1 })` 跨过 deadline 后永不返回）。
+
+**② 转发漏字段 → 穷尽转发类型。** 新增 `src/engine/forwarded.ts`：那七个「嵌套能力必须原样
+往下交」的旋钮收进**唯一取值点** `forwardToolContext(ctx)`，映射类型要求七个键全必填 ⇒
+`toolkit/subagent.ts` / `skill.ts` 里两处手写清单（各处七八行 `ctx.X,`）删掉，改为
+`...forwardToolContext(ctx)`，**没有可漏的地方**。另加类型层守卫：`ToolRunContext` 的每个键
+必须在「转发」或「引擎自装配」里归类，否则 `tests/types/forwarding.types.ts` 编译失败。
+
+*为什么值得单独立件*：那个历史事故（漏 `toolTimeoutMs`）的后果是**反的** —— 子循环
+`withTimeout(p, 0)` 等于永不超时，同时 MCP 桥又起自己的 60s 兜底，回到双计时器双账本。
+而 TS 对「少写一个可选键」不报错，`exactOptionalPropertyTypes` 只堵住「显式传 undefined」
+那一半 —— 这条缝只能靠映射类型 + 归类穷尽来堵。
+
+**③ 队列消费者配方 → 真跑的门禁。** `docs/usage-guide.md` §6.4 那条二十行样板（Kafka /
+RabbitMQ / SQS 的形态）此前**没有任何 gate 真跑过**。新增 `tests/transport/queueConsumer.test.ts`：
+内存版 broker（at-least-once：ack 前不删 / 未 ack 与 nack 一律重投 / `crash()` 模拟崩溃）+
+真 `AsyncRunner` + 真引擎，把配方的三条承诺逐条跑出来 —— ① 同键重投不重复执行（断言的是
+**副作用计数**，不只是 taskId）；② 崩在 ack 之前重投仍不重复执行；③ `traceparent` 随
+`spec.options` 落库，**他进程 `resumePending` 续跑那次 run 仍带得上同一条 link**；
+④ 失败不 ack ⇒ nack 重投 ⇒ 二次成功（且失败的键**允许**新任务，否则重投永远拿不到第二次执行）。
+
+*为什么放在 `npm test` 而不是新起示例工程 + e2e 脚本*：① `scripts/verify-all.sh` 的**步骤数写在
+CI 必需检查名里**（「verify-all 8 步」），加检查一律折进已有步骤，本文件落在第 6 步、零接线；
+② 真 broker 要起 Kafka/RabbitMQ，而这条配方真正的风险不在协议实现，而在**提交位移与幂等的
+时机** —— 那正是内存 broker 能确定性钉住的部分。gRPC 那条仍是示例 + `scripts/e2e-grpc.ts`
+（它是第 4 个宿主，要验的是协议面）。
+
+**门禁**：`tests/limits.test.ts`（16 条）· `tests/engine/forwarded.test.ts`（4 条）·
+`tests/types/forwarding.types.ts`（类型层）· `tests/transport/queueConsumer.test.ts`（4 条）。
+**不加 verify-all 步数**。三条形状从 guards §2 移入 §1.2 / §1.3。
+
 ### 2026-09-21 ⑦：**记录成本与采样**收口 —— §9.4 从「开放问题」变成决定；`traceparent` flags 的理由换掉
 
 **背景**：§9.4 的唯一开放项是「全量记录成本 vs 截断/采样默认阈值」，长期只有一句

@@ -702,6 +702,12 @@ runner.submit(msg.value, {
 });
 ```
 
+这条配方**有门禁真跑**：`tests/transport/queueConsumer.test.ts`（内存版 broker + 真
+`AsyncRunner` + 真引擎）把三件事逐条跑出来 —— 同键重投**不重复执行**（断言的是副作用计数，
+不只是 taskId）、`traceparent` 随 `spec.options` 落库后**他进程 `resumePending` 续跑**那次 run
+仍带得上同一条 link、失败不 ack 必须 nack 重投（且**失败**的键允许新任务，否则重投永远拿不到
+第二次执行）。真接 broker 时仍然要自己接：门禁守的是**提交位移与幂等的时机**，不是协议实现。
+
 异步任务可以在 `POST /tasks` 的 body 里显式给 `options.traceContext`，它优先于 `traceparent` 头。
 换宿主这条缝不变：gRPC 宿主把 metadata 的 `traceparent` 翻进 `options.traceContext`，
 见 §6.2「gRPC 宿主」。
