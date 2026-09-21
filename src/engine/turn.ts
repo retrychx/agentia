@@ -7,8 +7,9 @@
  * （recordTurnUsage）、stop_reason 分流（已外移到 stop-reason.ts）、工具执行
  * （executeTurnTools / executeOneTool）。
  * 依赖方向单向：loop.ts → turn.ts（分层守卫禁环）；两侧共用的类型与 helper
- * （AgentLoopArgs / textOf / replaceMessages）在本文件做 module 级 export，供 loop.ts
- * 与测试 import —— 按仓库约定不进 src/index.ts（纯内部实现细节）。
+ * （AgentLoopArgs / replaceMessages）在本文件做 module 级 export，供 loop.ts
+ * 与测试 import —— 按仓库约定不进 src/index.ts（纯内部实现细节）。textOf 的
+ * 规范位置是 text.ts（loop.ts 与 stop-reason.ts 都从那儿取；回本文件取会成环）。
  */
 
 import type {
@@ -19,7 +20,6 @@ import type {
   ToolResultBlockParam,
   ToolUseBlock,
 } from '../core/message.js';
-import { textOf } from './text.js';
 import type {
   AgentTool,
   ApprovalDecision,
@@ -600,10 +600,6 @@ function toApiTool(t: AgentTool): ToolParam {
     ...(t.strict ? { strict: true } : {}),
   };
 }
-
-// textOf 的引擎口径已外移到 text.ts（stop-reason.ts 也要用；两边都从本文件取会成环），
-// 这里 re-export，让 loop.ts 与测试的既有调用点零改动。
-export { textOf };
 
 /**
  * 用 `next` 原地替换 `target` 的全部内容（保持数组引用不变 —— 循环各处持同一数组）。

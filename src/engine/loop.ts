@@ -28,8 +28,8 @@ import {
   executeTurnTools,
   recordTurnUsage,
   streamTurn,
-  textOf,
 } from './turn.js';
+import { textOf } from './text.js';
 import { resolveStopReason } from './stop-reason.js';
 import type { AgentLoopArgs } from './turn.js';
 import type {
