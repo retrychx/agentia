@@ -24,6 +24,7 @@
 | `tests/architecture/tsconfig-strictness.test.ts` | **承重的 tsconfig 开关不得被关掉**：`exactOptionalPropertyTypes`（显式 undefined ≠ 不传）、`strict`、`types:["node"]` | 读 `tsconfig.json` 断言三个开关。反向验证过：关掉 `exactOptionalPropertyTypes` ⇒ 本测试红，且 `{maxAttempts: undefined}` 赋给 `RetryOptions` 从「编译错」变回「放行」 | 39 处防线无声消失（`retry.ts` 的「显式 undefined 覆盖缺省」重新变成合法代码）；@types/node 缺链导致全仓 Node 类型报错 |
 | `tests/types/message-compat.types.ts` | 自有消息类型族 ↔ `@anthropic-ai/sdk` 的结构兼容（双向 assignability） | 针对构建产物 dist 编译的类型断言（`typecheck:types`，node:test 不收） | 使用者手里的 SDK 类型喂不进来；SDK 升级改字段无人发现 |
 | `tests/types/dx.types.ts` | 类型链路（`fromZod<T>` 校验方法签名、`result.typed` 推导） | 同上 | DX 承诺（「编辑器给不给提示」）退化成 `unknown` |
+| `tests/core/trace.test.ts` · `tests/integrations/otlp.test.ts` | **id 的线缆形态只有一份投影**：OTLP 导出的 spanId 与出站 `traceparent` 的 span 位必须**逐字相等**（两处都等于 `core/trace.ts` 的 `wireSpanId(…)`） | 两条断言各自引用单源（不就地写 `replaceAll().slice(0,16)`）⇒ 任何一边换切法立刻红。反向验证过：otlp 侧改成 `slice(8,24)` ⇒ 结构用例真红 | 同一次调用在 collector 里是一个 span id、下游收到的是另一个 —— 跨系统关联断在最不该断的地方 |
 
 ### 1.2 静默失效（最贵的一类）
 
@@ -37,6 +38,7 @@
 | `tests/toolkit/discover.test.ts` | `asset()` 的 `rel` 必须**真相对 base 解析**：带 scheme（`file:` / `https:`）与**绝对路径**（`/etc/passwd`）都会让 `new URL` 丢掉 base ⇒ 两者都显式拒绝；`../` 仍**放行**（它确实是相对 base 的） | 逐形态断言（scheme / `//` / `\` / `../` 反向对照） | 「以为读了能力目录里的文件，实际读了别处」—— 绝对路径那半此前没人守（`/etc/passwd` 在 macOS 上**真能读到**） |
 | `tests/core/sse-text-stats.test.ts` | **「预算非正数 = 机制关掉」在共享原语上一致**：`withTimeout(p, 0)` 不设超时、`interruptibleSleep(0, signal)` 不睡（**即使 signal 已中止也 resolve** —— 非正数判先于 aborted 检查）；到点 resolve 时必须摘掉 abort 监听 | 直接单测原语 + `getEventListeners` 计数（带一个常驻监听做对照，防「计数函数恒 0」的假绿） | 有人把「已中止 + `ms<=0`」当 bug「修」成 reject ⇒ 破坏与 `withTimeout` 的对称性（2026-09-19 外部复核真误判过一次，被这条用例拦下） |
 | `tests/engine/tracer.test.ts` | `usage()` 与 `snapshot().totalUsage` **逐字同口径**（预算护栏走前者、trace 交付走后者 —— 漂移就是护栏拿错数） | 同一个 recorder 上 `deepEqual` 两条路 | 预算护栏按错的数字判超限 / 该拦不拦 |
+| `tests/engine/spanScope.test.ts` | 出站 `currentTraceparent()` 的**调用期**作用域：粒度到本回合 / capability（不是 run 根）；并行链互不干扰、内层不外泄；run 结束不残留 | 真跑一轮 + 直测原语（内层链与旁支链各读一次，旁支必须在**内层已进入之后**读）。反向验证过：把作用域退化成 run 级单值存储 ⇒ 5 条里 3 条真红（含并行不串那条） | 退回 run 级单值存储 ⇒ 并行工具互相覆盖：下游拿到的 span id 指向**别的**那次调用（spec §9.2 锁定「span 句柄不放 RunContext」正是为此），且没有任何报错 |
 | `tests/integrations/mcpConnector.test.ts` | MCP 连接器**三件只有它能做的事**：spawn 的 `'error'` 是异步事件必须接住 / stdout 必须按 `\n` 攒包 / **协议层 `isError: true` 必须转成抛错**；装配期超时；`close()` **返回即子进程已终止**、且 HTTP 侧 DELETE **挂死时也必须到点返回**（server 半开不得挂住停机路径）；StreamableHTTP 会话过期（`404`）**自愈且只重试一次**、并发 404 共享同一次重握手 | 起**真子进程**夹具（`tests/fixtures/mcp/fake-server.mjs`，env 覆盖 8 种模式，含忽略 SIGTERM 的 `stubborn` + pid 文件）+ HTTP 侧注入 `fetchImpl`；用例本身由 **15 条变异电池**证明会咬 | `isError` 不转抛错 ⇒ 失败的调用被**模型与 trace 一起**记成成功（正好打在本框架「trace 决定你敢不敢上线」的承诺上）；不接 `'error'` ⇒ 命令不存在时未捕获异常把宿主进程带崩；`close()` 不等 reap ⇒ 留孤儿进程；会话过期不自愈 ⇒ 长跑宿主只能重建连接器 |
 
 ### 1.3 宿主与耐久

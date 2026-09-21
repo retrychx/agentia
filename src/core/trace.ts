@@ -92,6 +92,40 @@ export function parseTraceparent(value: string | null | undefined): TraceContext
   return { traceId, spanId };
 }
 
+/**
+ * 内部 id → **线缆形态**（W3C `traceparent` 与 OTLP 通用）。
+ *
+ * 内部 id 一律 UUID（去横线 32-hex），而线上两份契约都要求 trace 16 字节（32-hex）、
+ * span **8 字节（16-hex）** —— 宽度不同，不能共用。原样发出去会被判 `invalid span_id`
+ * （拒收）或按前 16 位截断。故 trace 侧去横线即可、span 侧必须截到 16 位。
+ *
+ * ⚠️ **单一真源**：OTLP 导出（`integrations/otlp.ts`）与出站 `formatTraceparent` 必须
+ * 走**同一份**投影。各写一份的后果不是「风格不统一」，而是**同一次调用在两个系统里
+ * 是两个 span id** —— 跨系统关联最不能出的错。要改这里，先看 `tests/integrations/otlp.test.ts`
+ * 的「导出与出站同数」用例。
+ *
+ * 幂等：已经是 32-hex（trace）/ 16-hex（span）的输入原样通过（上游 span id 被再次转发不变形）。
+ */
+export function wireTraceId(id: string): string {
+  return id.replaceAll('-', '');
+}
+
+export function wireSpanId(id: string): string {
+  return id.replaceAll('-', '').slice(0, 16);
+}
+
+/**
+ * 生成 W3C `traceparent`（`parseTraceparent` 的镜像：一个解析、一个生成）。
+ *
+ * flags 位恒为 `00`：本框架**不采样**（每次 run 全量记账），故没有「已采样」可声明 ——
+ * 编一个 `01` 是替下游做决定。入站侧 `parseTraceparent` 也从不读 flags。
+ *
+ * 调用方保证给的是内部 id 或线缆 id（本函数只做投影，不做合法性判定）。
+ */
+export function formatTraceparent(traceId: string, spanId: string): string {
+  return `00-${wireTraceId(traceId)}-${wireSpanId(spanId)}-00`;
+}
+
 export interface Span {
   spanId: SpanId;
   traceId: TraceId;

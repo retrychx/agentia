@@ -5,7 +5,9 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { createOtlpExporter } from '../../src/integrations/otlp.js';
-import type { Trace } from '../../src/core/trace.js';
+// 投影**单一真源**在 core/trace.ts：断言用它而不是就地写 `replaceAll().slice(0,16)` ——
+// 这样「导出的 span id 就是出站 traceparent 里那个 span id」是被钉住的，改成别的切法立刻红。
+import { type Trace, wireSpanId, wireTraceId } from '../../src/core/trace.js';
 
 function sampleTrace(): Trace {
   const traceId = randomUUID();
@@ -108,8 +110,8 @@ describe('createOtlpExporter', () => {
       // 根 span：hex id（trace 32 位 / span 16 位 —— OTLP 契约的两种宽度）、无 parent、
       // 纳秒时间、OK 状态。内部 id 是 UUID（32 hex），span 侧必须截断。
       const root = spans[0];
-      assert.equal(root.traceId, trace.traceId.replaceAll('-', ''));
-      assert.equal(root.spanId, trace.spans[0].spanId.replaceAll('-', '').slice(0, 16));
+      assert.equal(root.traceId, wireTraceId(trace.traceId));
+      assert.equal(root.spanId, wireSpanId(trace.spans[0].spanId));
       assert.equal(root.parentSpanId, undefined);
       assert.equal(root.kind, 1);
       assert.equal(root.startTimeUnixNano, String(1000 * 1e6));
@@ -123,7 +125,7 @@ describe('createOtlpExporter', () => {
 
       // 子 span：parent hex、ERROR 状态带 message、usage 展平、events 映射
       const child = spans[1];
-      assert.equal(child.parentSpanId, trace.spans[0].spanId.replaceAll('-', '').slice(0, 16));
+      assert.equal(child.parentSpanId, wireSpanId(trace.spans[0].spanId));
       assert.equal(child.name, 'tool:search');
       assert.deepEqual(child.status, { code: 'STATUS_CODE_ERROR', message: 'boom' });
       const attrByKey = Object.fromEntries(
@@ -365,11 +367,10 @@ describe('createOtlpExporter', () => {
       const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
       assert.deepEqual(spans[0].links, [
         {
-          traceId: upTrace.replaceAll('-', ''),
-          // OTLP 的 span_id 是 8 字节：内部 UUID 必须截到 16 位，否则 collector 整条拒收
-          spanId: upSpan.replaceAll('-', '').slice(0, 16),
+          traceId: wireTraceId(upTrace),
+          spanId: wireSpanId(upSpan),
         },
-        { traceId: upTrace.replaceAll('-', '') },
+        { traceId: wireTraceId(upTrace) },
       ]);
       // 空数组会让部分后端把 span 标成「有链路」—— 没 link 的 span 不发这个键
       assert.equal('links' in spans[1], false);

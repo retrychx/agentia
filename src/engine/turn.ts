@@ -39,6 +39,7 @@ import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
 import { backoffDelay, resolveRetry, retryAllowed, sleep } from './retry.js';
 import { buildTurnRequest } from './turn-request.js';
 import { buildToolRunContext } from './tool-context.js';
+import { withCurrentSpan } from './span-scope.js';
 import { toolInputPayload, toolOutputPayload, toolResultBlock } from './tool-events.js';
 import type { ToolErrorKind } from './tool-events.js';
 import type { ResolvedRetry, RetryOptions } from './retry.js';
@@ -430,7 +431,13 @@ export async function executeTurnTools<S extends JsonSchema>(
   const results = await mapWithConcurrency(
     runnable,
     args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
-    (use) => executeOneTool(ctx, turnId, use),
+    // 调用期 span 作用域（spec §9.2 出站传播）：普通工具与 @Prompt **不建 span**，其
+    // 「当前 span」就是本回合的 llm.turn —— 与 ToolRunContext.parentSpanId 同一个值。
+    // 每次调用一份作用域，并行工具因此互不干扰（run 级只存一个值会被互相覆盖）。
+    (use) =>
+      withCurrentSpan({ traceId: args.recorder.traceId, spanId: turnId }, () =>
+        executeOneTool(ctx, turnId, use),
+      ),
   );
   return { kind: 'executed', results };
 }

@@ -678,8 +678,34 @@ runner.submit(msg.value, {
 换宿主这条缝不变：gRPC 宿主把 metadata 的 `traceparent` 翻进 `options.traceContext`，
 见 §6.2「gRPC 宿主」。
 
-> **只做入站**：框架**不生成**出站 `traceparent`（运行中没有「当前 span」这个概念，硬造一个会是假的
-> spanId，比不做更糟）。要从 run 往外传，用结果里的 `runId`（== `traceId`）拼你自己的头，见 §7 已知边界。
+**出站（反过来：你调别人）**：在 run 内用 `currentTraceparent()` 取当前 span 的 W3C 头，
+自己带在出站请求上 —— 下游若也是 agentia（或任何认 `traceparent` 的服务），接到的就是一条指向
+**具体 span**（回合 / 能力调用）的 link，而不是只到 run 粒度：
+
+```ts
+import { currentTraceparent } from '@migor/agentia';
+
+@Tool({ description: '把工单交给订单服务' })
+async placeOrder(input: { sku: string }) {
+  const tp = currentTraceparent();          // 不在 run 内 → undefined（那时不该编一个）
+  const res = await fetch(orderSvc, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(tp ? { traceparent: tp } : {}) },
+    body: JSON.stringify(input),
+  });
+  return res.json();
+}
+```
+
+- **粒度**：普通工具与 `@Prompt` **不建 span**，它们的「当前 span」就是发起它们的那次 `llm.turn`；
+  `@Skill` / `@SubAgent` 的方法体内则是它自己的 `capability` span。内层覆盖外层。
+- **不自动注入**：框架不创建出站请求，注入那一行是你自己的（同上 `fetch`；gRPC 宿主塞进 metadata）。
+- 与入站同一个格式、同一份 id 投影：`currentTraceparent()` 的输出喂回 `parseTraceparent()` 逐字还原，
+  下游 OTLP 里看到的 span id 与本地 collector 里的是**同一个数**（见 §7 已知边界）。
+
+> **出站的边界（如实）**：`run` 根 span 由 `runAgent` 打开，所以比它更早的环节 ——
+> `contextInit`、记忆水合（`MemoryStore.load`）—— `currentTraceparent()` 返回 `undefined`：
+> 那时确实还没有 span 可指。flags 位恒 `00`（本框架**不采样**，不替下游声明「已采样」）。
 
 #### 指标（从 trace 派生）
 
@@ -1250,7 +1276,7 @@ const callable = {
 | `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
 | 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace 不记 assistant 文本与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
-| 链路关联只做**入站** | `traceContext` / `traceparent` 头只把**上游**接进来（run 根的 `links`）；框架**不生成**出站 `traceparent` —— 运行中没有「当前 span」可导出，硬造会给出假 spanId。要从 run 往外传，用 `result.trace.traceId`（== `runId`）自行拼头。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
+| 链路关联：入站自动、**出站只给读取器** | `traceContext` / `traceparent` 头把**上游**接进来（run 根的 `links`）；出站方向给 `currentTraceparent()`（当前 span 的 W3C 串，回合 / 能力调用粒度），但框架**不替你做注入** —— 它不创建出站请求，那一行由宿主的 `fetch` / metadata 自己写。两个边界：① `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined`（那时确实没有 span）；② flags 恒 `00`（本框架不采样）。id 宽度经**同一份投影**压到 16 位（与 OTLP 导出共用，单一真源）—— 故下游收到的 span id 与 collector 里的是同一个数。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工审批两种形态 | 进程内闸门用 `middleware`（`await` 决策再放行）；跨进程耐久审批用 `@Tool({ approval: 'required' })` + `POST /tasks/:id/approve`（挂起/恢复，见 §6.6「人工审批」） |
 | 审批超时是**惰性**判定 | `approvalTimeoutMs` 不起定时器：`approve` / `poll` / `resumePending` 读到过期挂起任务时才自动全拒并重派 —— 没人读的任务不会自己超时（要定期扫就调 `resumePending()`） |
