@@ -5,6 +5,58 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.8.1] - 2026-09-21
+
+### 变更
+
+> 本版主题（窗口 `0.8.0 → 0.8.1`，含 #107–#110）：**出站链路传播** —— spec §9.2 那条
+> 「出站传播仍开放」的项收口。**无破坏性变更**：只新增一个公开函数；既有 API、trace 形状、
+> OTLP 导出值与 id 生成本身全部逐字不变（id 投影只是从 `integrations/otlp.ts` 的私有函数
+> **上移到** `core/trace.ts` 成为单一真源，取值一字未改）。
+
+### 新增
+
+- **`currentTraceparent(): string | undefined`**（出站链路传播）：给出**当前调用期** span 的
+  W3C `traceparent`（`00-<32位trace>-<16位span>-00`），自己带在出站请求上（`fetch` 头 / gRPC
+  metadata）。下游若也是 agentia（或任何认 `traceparent` 的服务），就能把「谁触发了这次调用」
+  关联到**具体 span**，而不是只到 run 粒度：
+
+  ```ts
+  import { currentTraceparent } from '@migor/agentia';
+
+  const tp = currentTraceparent();
+  await fetch(url, { headers: { ...(tp ? { traceparent: tp } : {}) } });
+  ```
+
+  粒度：普通工具与 `@Prompt` **不建 span**，取到的是发起它们的那次 `llm.turn`；`@Skill` /
+  `@SubAgent` 方法体内取到的是自己的 `capability` span（内层覆盖外层）。入站那一半
+  （`traceparent` 头 → run 根 `links`）已随 0.6.2 落地，本版把出站补上，跨服务关联从此双向。
+
+### 已知边界（同时写进 `usage-guide` §7）
+
+- **只给读取器，不替你做注入** —— 框架不创建出站请求，注入那一行是宿主的（与「webhook 用
+  sink + 你自己的 `fetch`」同一条既有决策）。
+- `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined` —— 那时
+  确实还没有 span 可指，不编造。
+- flags 位恒 `00`：本框架不采样（每次 run 全量记账），不替下游声明「已采样」。
+- id 宽度：内部 id 是 UUID，出站与 OTLP 共用**同一份**投影（trace 去横线 32-hex、span 截
+  16-hex）⇒ 下游收到的 span id 与 collector 里那个**是同一个数**（各写一份会让同一次调用在
+  两个系统里出现两个 span id）。
+
+### 仓库自身（不面向使用者）
+
+- 第七 / 第八轮复审散件沉淀进 `docs/guards.md` 附录 B，并立「多 agent 同仓作业」三条纪律
+  （结论钉 commit / 门禁跑隔离导出树 / 不碰别人的未提交改动）。
+- 出处链更正：spec §10 的「132 条直接用例」→ **127**（逐文件计数，独立复核不可复现 132），
+  全仓口径改引「+140 条（`tests/` 增量）」；覆盖率棘轮分支 85→88 / 函数 92→95。
+- 新增两条守卫并入册：id 投影**单源**（OTLP 与出站必须同一个数）、出站**调用期作用域**
+  （并行不串 / 内层不外泄），两条都做过承重性反向验证。
+- 发布面清单的 lock 项改为**按包名锚定**：裸 `"version"` 计数会被**恰好同版本号的第三方
+  依赖**撞网（本次真发生：`@grpc/proto-loader` 恰好 @0.8.1 ⇒ 闸门报「4 处应为 0.8.1，实际
+  命中 5 处」，读起来像漏项）。夹具同步加了同版本诱饵，断言它既不被替换、也不进网。
+
+**迁移**：无。既有代码不需要任何改动；要开始用出站传播，就在出站请求上加一行 `traceparent`。
+
 ## [0.8.0] - 2026-09-21
 
 ### 变更
@@ -727,7 +779,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/retrychx/agentia/releases/tag/v0.8.1
 [0.8.0]: https://github.com/retrychx/agentia/releases/tag/v0.8.0
 [0.7.2]: https://github.com/retrychx/agentia/releases/tag/v0.7.2
 [0.7.1]: https://github.com/retrychx/agentia/releases/tag/v0.7.1

@@ -76,14 +76,34 @@ const FIXTURE: Record<string, string> = {
   // 「同文件里还有几百个别处的版本号」正是这一面最容易改错的地方
   'package-lock.json':
     '{\n' +
+    '  "name": "@migor/agentia",\n' +
     `  "version": "${V0}",\n` +
     '  "packages": {\n' +
-    `    "": { "version": "${V0}" },\n` +
-    `    "packages/cli": { "version": "${V0}" },\n` +
-    `    "packages/trace-view": { "version": "${V0}" },\n` +
-    '    "packages/website": { "version": "0.0.0", "dependencies": { "@migor/trace-view": "' +
-    `${V0}" } },\n` +
-    '    "node_modules/left-pad": { "version": "1.3.0" }\n' +
+    '    "": {\n' +
+    '      "name": "@migor/agentia",\n' +
+    `      "version": "${V0}"\n` +
+    '    },\n' +
+    '    "packages/cli": {\n' +
+    '      "name": "@migor/cli",\n' +
+    `      "version": "${V0}"\n` +
+    '    },\n' +
+    '    "packages/trace-view": {\n' +
+    '      "name": "@migor/trace-view",\n' +
+    `      "version": "${V0}"\n` +
+    '    },\n' +
+    '    "packages/website": {\n' +
+    '      "name": "@migor/website",\n' +
+    '      "version": "0.0.0",\n' +
+    `      "dependencies": { "@migor/trace-view": "${V0}" }\n` +
+    '    },\n' +
+    // ⚠️ 同版本号的**第三方**依赖：裸 `"version"` 计数会把它算进网里（真发生过：
+    // @grpc/proto-loader 恰好 @0.8.1）。清单按包名锚定 ⇒ 它既不该被替换、也不该被计数。
+    '    "node_modules/@grpc/proto-loader": {\n' +
+    `      "version": "${V0}"\n` +
+    '    },\n' +
+    '    "node_modules/left-pad": {\n' +
+    '      "version": "1.3.0"\n' +
+    '    }\n' +
     '  }\n' +
     '}\n',
 };
@@ -174,6 +194,14 @@ describe('release.mjs bump', () => {
       read(dir, 'package-lock.json'),
       /"version": "1\.3\.0"/,
       'lock 的第三方版本号被改坏了',
+    );
+    // ⚠️ 与本次发布**同版本号**的第三方依赖：既不该被替换、也不该被算进发布面。
+    // 这条守的是「裸 `"version"` 计数」那个坑（真发生过：@grpc/proto-loader@0.8.1 让
+    // 闸门报「4 处应为 0.8.1，实际命中 5 处」）。
+    assert.match(
+      read(dir, 'package-lock.json'),
+      new RegExp(`"node_modules/@grpc/proto-loader": \\{\\n\\s+"version": "${V0}"`),
+      '同版本号的第三方依赖被 bump 改掉了（或清单退回成裸 version 计数被它撞网）',
     );
 
     // 三个散文位：脚本只插骨架，正文留给人
