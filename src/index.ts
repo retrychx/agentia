@@ -13,6 +13,7 @@ export type {
   TraceId,
   TraceContext,
   TraceSink,
+  TraceRecordEvent,
   CapabilityType,
   Usage,
   Score,

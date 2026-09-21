@@ -1,7 +1,7 @@
 import type { MessageParam } from '../core/message.js';
 import type { AgentRunResult, RunAgentOptions } from '../engine/types.js';
 import type { JsonSchema, SchemaType } from '../core/tool.js';
-import type { Trace, TraceSink } from '../core/trace.js';
+import type { Trace, TraceSink, TraceRecordEvent } from '../core/trace.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgent } from '../engine/loop.js';
 import { TraceRecorder } from '../engine/tracer.js';
@@ -154,6 +154,14 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
    * 路径挂分（eval 在该路径连 trace 都不保留）。
    */
   beforeFlush?: (trace: Trace, result: AgentRunResult<SchemaType<S>>) => void | Promise<void>;
+  /**
+   * 增量记账出口（见 `RunInvocationOptions.onTraceEvent`）：run **进行中**的逐笔回调。
+   *
+   * 位置说明：它在 `executeRun` 里**紧跟 recorder 构造之后**订阅 —— 所以它覆盖的范围比
+   * `sinks` 更宽（含 `contextInit` / 记忆水合那段：run 根 span 是 engine 开的，
+   * 那时还没开，但订阅本身已就位）。
+   */
+  onTraceEvent?: (e: TraceRecordEvent) => void;
 }
 
 /**
@@ -168,6 +176,9 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
   const run = new Run(
     options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {},
   );
+  // 增量记账出口：**紧跟 recorder 构造**订阅 —— 越早挂上，「等不了收尾」的消费者拿到的前缀越完整
+  //（订阅前发生的记账动作不重放：那些号被占掉了，见 TraceRecorder.seq 的注释）。
+  if (options.onTraceEvent) run.recorder.subscribe(options.onTraceEvent);
   run.start();
   const ctx = new RunContext(run);
   const memory = options.memory;

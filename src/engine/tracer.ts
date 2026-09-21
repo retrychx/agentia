@@ -8,6 +8,8 @@ import type {
   SpanStatus,
   Trace,
   TraceId,
+  TraceRecordEvent,
+  TraceRecordEventPayload,
   Usage,
 } from '../core/trace.js';
 
@@ -23,6 +25,50 @@ export class TraceRecorder {
   /** parentSpanId → 直接子 span（增量维护，供 capability 结束时就地聚合子孙 usage，O(子孙) 而非每次重建） */
   private readonly children = new Map<SpanId | null, Span[]>();
   private rootSpanId: SpanId | null = null;
+  /** 记账事件订阅者（增量出口，见 `core/trace.ts` 的 `TraceRecordEvent`） */
+  private readonly listeners: Array<(e: TraceRecordEvent) => void> = [];
+  /**
+   * 记账事件序号。**每次记账动作都自增，与当时有没有订阅者无关** —— 这样「订阅早」与
+   * 「订阅晚」看到的同一个事件拿到同一个 `seq`（SSE 的 `Last-Event-ID` 重放靠它）。
+   * 只增一个数字，不算成本。
+   */
+  private seq = 0;
+
+  /**
+   * 订阅记账事件（增量出口）；返回退订函数。
+   *
+   * 与 `TraceSink` 是**两条缝**：sink 收尾拿整棵，这里 run 进行中就逐笔拿。
+   * 纪律：**同步派发**（不 await —— 订阅者是观察者，不该把 run 变成它的调度）、
+   * 订阅者抛错**被吞**（观测失败不击穿业务，与 `flushSinks` 同款）、
+   * 无订阅者时**不做任何载荷构造**（「不订阅不付钱」）。
+   */
+  subscribe(listener: (e: TraceRecordEvent) => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      const i = this.listeners.indexOf(listener);
+      if (i >= 0) this.listeners.splice(i, 1);
+    };
+  }
+
+  /**
+   * 派发一条记账事件。
+   *
+   * ⚠️ 顺序要紧：**先自增 `seq` 再判有没有订阅者** —— 若在无订阅者时不计数，
+   * 「订阅晚的人」看到的序号就会与「一直订阅的人」不一致（重放与去重都会错位）。
+   */
+  private emit(payload: TraceRecordEventPayload): void {
+    const seq = ++this.seq;
+    if (this.listeners.length === 0) return;
+    const event = { ...payload, seq } as TraceRecordEvent;
+    // 先拷一份订阅者列表：允许订阅者在回调里退订/新增（否则会漏发或边遍历边改）
+    for (const l of [...this.listeners]) {
+      try {
+        l(event);
+      } catch {
+        /* 观测不击穿业务（与 flushSinks 同款） */
+      }
+    }
+  }
 
   begin(kind: SpanKind, name: string, parentSpanId: SpanId | null): SpanId {
     if (kind === 'run') {
@@ -46,6 +92,9 @@ export class TraceRecorder {
     const siblings = this.children.get(parentSpanId);
     if (siblings) siblings.push(span);
     else this.children.set(parentSpanId, [span]);
+    // 此刻的拷贝（空 attributes/events）—— 之后的属性/事件各走自己的事件类型，
+    // 订阅者拿到的对象此后不再变异（与 snapshot 同纪律）
+    this.emit({ type: 'span.begin', span: { ...span, attributes: {}, events: [] } });
     return id;
   }
 
@@ -75,6 +124,16 @@ export class TraceRecorder {
       const aggregated = this.aggregateDescendantUsage(id);
       if (aggregated) span.usage = aggregated;
     }
+    // 增量出口：收尾字段以**增量**形态派出（不带 attributes/events —— 那些各走自己的事件），
+    // 且取的是**聚合之后**的最终值（capability 的 usage 在此刻才算得出来）
+    this.emit({
+      type: 'span.end',
+      spanId: id,
+      endedAt: span.endedAt,
+      status: span.status,
+      ...(span.error ? { error: span.error } : {}),
+      ...(span.usage ? { usage: span.usage } : {}),
+    });
   }
 
   /** 子孙里所有 `llm.turn` 的 usage 之和（不含自身）；无任何计量时返回 undefined */
@@ -112,12 +171,18 @@ export class TraceRecorder {
   }
 
   event(id: SpanId, name: string, body: unknown): void {
-    this.index.get(id)?.events.push({ time: Date.now(), name, body });
+    const span = this.index.get(id);
+    if (!span) return; // 未知 span 静默忽略（见类注释的容错策略）—— 增量出口同样不派发
+    const event = { time: Date.now(), name, body };
+    span.events.push(event);
+    this.emit({ type: 'span.event', spanId: id, event: { ...event } });
   }
 
   setAttribute(id: SpanId, key: string, value: string | number | boolean): void {
     const span = this.index.get(id);
-    if (span) span.attributes[key] = value;
+    if (!span) return;
+    span.attributes[key] = value;
+    this.emit({ type: 'span.attribute', spanId: id, key, value });
   }
 
   /**
@@ -129,6 +194,7 @@ export class TraceRecorder {
     if (!span) return;
     if (!span.links) span.links = [];
     span.links.push(link);
+    this.emit({ type: 'span.link', spanId: id, link: { ...link } });
   }
 
   /**

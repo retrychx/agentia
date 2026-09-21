@@ -213,3 +213,40 @@ export function capabilityKindOf(span: Span): string {
 export interface TraceSink {
   export(trace: Trace): void | Promise<void>;
 }
+
+/**
+ * **记账事件**（增量出口，`docs/plans/2026-09-21-incremental-trace-export-and-sampling.md`）——
+ * run **进行中**就能拿到的明细。它与 `TraceSink` 是**两条缝**，不是替代关系：
+ *
+ * - `TraceSink`：run 收尾拿到**完整** trace（成功的 sink 该走这条）；
+ * - 记账事件：**等不了收尾**的消费者 —— 终端面板、SSE 前端、异步任务进度流。
+ *
+ * 载荷一律是**增量 + 此刻的拷贝**（交付后框架不再变异它）：`span.begin` 只给初始形状
+ * （`attributes` / `events` 为空），之后的属性 / 事件 / 链路各走自己的事件类型。
+ *
+ * **折叠规则**（`tests/engine/trace-events.test.ts` 钉着）：按 `seq` 升序把同一次 run 的
+ * 全部事件应用到 `span.begin` 建出的 span 上，结果必须**逐字等于** `snapshot(status)`。
+ * ⇒ 这条不变量一次钉住四件事：不丢、不重、顺序正确、增量与终态同源。要改记账点而不派发事件，
+ * 那个用例会红。
+ *
+ * `seq`：recorder 内**每次记账动作都自增**（与当时有没有订阅者无关）—— 于是「订阅早」与
+ * 「订阅晚」看到的同一个事件序号一致。SSE 的 `Last-Event-ID` 重放、去重、跨段对齐都靠它。
+ *
+ * 投放纪律与 sink 同款：**同步派发、不 await**、订阅者抛错被吞（观测失败不击穿业务）。
+ * ⚠️ 但它**不保证送达**（宿主自己的流断了就断了，没有 sink 那层兜底/重试语义）。
+ */
+export type TraceRecordEventPayload =
+  | { type: 'span.begin'; span: Span }
+  | {
+      type: 'span.end';
+      spanId: SpanId;
+      endedAt: number;
+      status: SpanStatus;
+      error?: SpanError;
+      usage?: Usage;
+    }
+  | { type: 'span.event'; spanId: SpanId; event: SpanEvent }
+  | { type: 'span.attribute'; spanId: SpanId; key: string; value: string | number | boolean }
+  | { type: 'span.link'; spanId: SpanId; link: SpanLink };
+
+export type TraceRecordEvent = TraceRecordEventPayload & { seq: number };

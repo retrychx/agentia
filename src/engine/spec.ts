@@ -1,7 +1,7 @@
 import type { MessageParam } from '../core/message.js';
 import type { AgentTool, ApprovalDecision, ModelClient, ModelPricing } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
-import type { TraceContext } from '../core/trace.js';
+import type { TraceContext, TraceRecordEvent } from '../core/trace.js';
 import type { ContextPolicy } from './types.js';
 import type { RetryOptions } from './retry.js';
 
@@ -32,6 +32,19 @@ export interface RunInvocationOptions {
   retry?: RetryOptions | false;
   /** 幂等键：异步宿主的 at-least-once 去重依据 */
   idempotencyKey?: string;
+  /**
+   * **增量记账出口**（`docs/plans/2026-09-21-incremental-trace-export-and-sampling.md`）：
+   * run **进行中**逐笔回调（span 开/合、事件、属性、链路），给「等不了收尾」的消费者 ——
+   * 终端面板、SSE 前端、异步任务进度流。
+   *
+   * 与 `TraceSink` 是**两条缝**（不是替代）：sink 在 run 收尾拿**完整** trace，本回调在运行期逐笔给。
+   * 纪律与 sink 同款：**同步调用、不 await**、抛错被吞（观测失败不击穿业务）。
+   * ⚠️ 但它**不保证送达**（宿主自己的流断了就断了），也**不是** sink 的替代。
+   *
+   * 应用级缺省见 `AppOptions.onTraceEvent`；两者**叠加**（应用级在前），不是覆盖 ——
+   * 观察者注册不该互相顶掉（per-run 传了面板回调就让应用级那条失聪，是静默回退）。
+   */
+  onTraceEvent?: (e: TraceRecordEvent) => void;
   /**
    * 入站链路上下文（spec §9.2 跨进程关联）：触发本次 run 的上游 span 记成 run 根的一条
    * `links`。宿主侧两种给法 —— HTTP 头 `traceparent`（W3C，`createHttpHandler` 自动解析）
