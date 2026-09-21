@@ -16,14 +16,15 @@ import { fileURLToPath } from 'node:url';
 // 后者在 `--import tsx`（loader hook）下整个失灵 —— 覆盖率报告不产出、阈值永不触发
 // （实测：--test-coverage-lines=100 仍然 exit 0，门禁是死的）。c8 经
 // NODE_V8_COVERAGE 收各子进程的原始 V8 覆盖率再按 source map 重映射，tsx 下可用。
-// 阈值 = 棘轮防退化（2026-09-21 c8 实测：行 98.88 / 分支 91.71 / 函数 98.5，阈值留了余量），
+// 阈值 = 棘轮防退化（实测水位 行 ~98.8 / 分支 ~91.7 / 函数 ~98.3；阈值留 ~3pt 防抖余量 ——
+// 2026-09-21 整体复核把分支/函数从 85/92 抬到 88/95：余量 6pt+ 时删掉一整个模块的测试都不触发），
 // 不是目标 —— 别追 100%，剩下的多是防御性兜底，凑数测试 = 真空变绿。
 // 只挂框架套件：CLI / trace-view 的产物不在 src/ 口径内。
 const C8 = fileURLToPath(new URL('../node_modules/c8/bin/c8.js', import.meta.url));
 const COVERAGE = {
   lines: 95,
-  branches: 85,
-  functions: 92,
+  branches: 88,
+  functions: 95,
 };
 
 const suites = [
