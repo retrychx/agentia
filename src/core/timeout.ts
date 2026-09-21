@@ -32,6 +32,18 @@ export class TimeoutError extends Error {
 }
 
 /**
+ * 造一个「已取消」错误：`name === 'AbortError'`（**不是** `TimeoutError` —— 取消不是超时，
+ * `engine/errors.ts` 按 `name` 把它归进 aborted，loop 据此以 `aborted` 收尾）。
+ *
+ * 为什么要导出：这个形状此前**只**活在 `interruptibleSleep` 内部，于是别处需要「以取消收场」
+ * 时只能各写各的（写成 `TimeoutError` 或干脆不 settle）。MCP stdio 桥的「已中止就不该发请求」
+ * 正是这种场景（2026-09-21 外部复核），两处共用一份形状，免得口径漂开。
+ */
+export function abortError(message = '已被取消'): Error {
+  return Object.assign(new Error(message), { name: 'AbortError' });
+}
+
+/**
  * 是否超时错误。三条判据（任一条成立即算，**全部是鸭子类型** —— 使用者不必 import 本模块）：
  *
  * 1. 本模块的 `TimeoutError` 实例（框架自己判的超时，如 MCP 桥的兜底）；
@@ -158,15 +170,14 @@ export function interruptibleSleep(
 ): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
-    const abortError = (): Error => Object.assign(new Error(abortMessage), { name: 'AbortError' });
     // 已中止：立即 reject（此处 timer 尚未创建，绝不能去 clear）
     if (signal?.aborted) {
-      reject(abortError());
+      reject(abortError(abortMessage));
       return;
     }
     function onAbort(): void {
       clearTimeout(timer);
-      reject(abortError());
+      reject(abortError(abortMessage));
     }
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);

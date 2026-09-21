@@ -77,6 +77,39 @@ describe('createStdioMcpConnector —— stdio 连接器', () => {
     );
   });
 
+  /*
+   * 已经中止的信号：**不发请求**、**立即以 AbortError 收场**。
+   *
+   * 外部复核（2026-09-21）实测到的旧行为是「把 pending 条目删掉、然后照样 write」：
+   * 副作用请求仍然送达 server，而返回的 Promise 因为条目已删**永远不 settle** ⇒ 调用方
+   * 永久挂起（引擎虽已放弃等待，但这不是「没人等」就能算了的 —— 请求本身不该发）。
+   * 两条断言缺一不可：日志里没有 tools/call（没发）+ reject 是 AbortError（会 settle）。
+   * 再做一次正常调用，证明连接器没被这次拒绝搞坏（悬空条目会拖住后续调用）。
+   */
+  it('信号已中止：不发送、立即 AbortError 收场，且连接器仍可用', async () => {
+    const log = logPath();
+    const c = stdio('normal', { logFile: log });
+    await c.listTools(); // 先握手，后续日志里只有 tools/call 与否的差别
+
+    const ac = new AbortController();
+    ac.abort();
+    await assert.rejects(
+      () => c.callTool('get-time', {}, { abandoned: ac.signal }),
+      (e: unknown) => {
+        assert.equal((e as Error).name, 'AbortError', `应为 AbortError，收到 ${String(e)}`);
+        return true;
+      },
+    );
+    assert.deepEqual(
+      callsIn(log).filter((m) => m === 'tools/call'),
+      [],
+      '已中止的调用不得发出去（旧实现在删掉 pending 之后照样 write）',
+    );
+
+    const out = (await c.callTool('get-time', {})) as { content?: unknown };
+    assert.ok(out.content, '连接器在拒绝一次已中止的调用后仍应可用');
+  });
+
   it('并发调用共享同一次握手（不重复 initialize）', async () => {
     const log = logPath();
     const c = stdio('normal', { logFile: log });
