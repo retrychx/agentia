@@ -5,6 +5,57 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.8.0] - 2026-09-21
+
+### 变更
+
+> 本版主题（窗口 `0.7.2 → 0.8.0`，含 #83–#105）：**CLI 机器可读面 + 脚手架生产路径修复**。
+> 框架运行时 API 零变化；窗口内 23 个提交里 13 个是纯结构拆分（AsyncRunner / turn / loop /
+> http 外移判定面，零行为变化），其余大多是仓库自身的门禁与测试加固。
+> **一条必须看的修复**：用 ≤0.7.2 的 `agentia create` 生成过工程的，
+> `npm run build && npm start` 一跑就崩（discover 目录是 cwd 相对写法，生产形态下会去加载
+> `src/` 的 `.ts` 源码）。缺陷在**生成出来的工程里**，升级 CLI 不会自动修好已有工程 ——
+> 迁移办法见下方「迁移」。
+
+### 新增（CLI）
+
+- **`agentia --version` / `-v`**：打印 CLI 版本（读包自身 `package.json`）。
+- **`report` / `diff` / `doctor` 支持 `--json`**：stdout 只输出一个 JSON 文档，可直接进
+  管道与 CI；出错仍走 stderr + 退出码 1，且 stdout 保持空。`harvest` 刻意不加
+  （它的 stdout 本身就是产物）；`dev` 额外参数原样透传给用户脚本。
+- **脚手架把 `@migor/cli` 写进生成工程的 devDependencies**（与框架同 `^` 版本），`dev`
+  script 改为 `agentia dev`：`npx agentia …` 走本地 bin —— 离线可用，且版本被 pin 住与
+  框架同批（不 pin 的话老工程会被 npx 拉到最新 CLI）。
+
+### 修复
+
+- **脚手架生成工程的 discover 目录按本文件位置解析，不再是 cwd 相对字符串**（本版最高
+  优先级）：旧模板生成的工程 `npm run build && npm start` 必崩
+  "Invalid or unexpected token"（生产形态下去加载 `src/` 的 `.ts` 源码，而装饰器不是
+  可擦除语法），换个 cwd 启动连目录都找不到。**0.7.2 及之前所有版本生成的工程都带此
+  缺陷。** 新写法按 `import.meta.url` 相对本文件解析（开发态 `src/`、构建后 `dist/` 都
+  成立），并过滤不存在的分类目录（空分类 tsc 不产出 `dist/<分类>/`，「这类暂时没有能力」
+  不该让启动失败）。
+
+### 迁移
+
+- **用 ≤0.7.2 的 `agentia create` 生成过工程的**：把工程 `src/main.ts` 的 discover 段
+  换成新模板的写法（重新 `agentia create` 一个同名工程对照抄过来即可 —— 核心是目录按
+  `new URL(d + '/', import.meta.url)` 解析 + `existsSync` 过滤这两处）。
+  框架 API 本身无破坏性变更，`@migor/agentia` 与 `@migor/cli` 升到 `^0.8.0` 即可。
+
+### 内部（不影响使用者）
+
+- 纯结构拆分 13 件：AsyncRunner 五步（SlotPool / approval-policy / DrainGate /
+  resume-policy / TaskWaiters）、`turn.ts` 四步、`loop.ts` 三步、`http.ts` 两步 ——
+  判定面有名字、编排留在原处，零行为变化（#85–#100）。
+- Biome 零告警闸门：93 warnings + 12 infos → 0，verify-all 第 1 步与 CI lint job 翻
+  `--error-on-warnings`（#84）。
+- 计时断言不再卡预算边界、改用单调时钟量（#102 / #103）。
+- 覆盖率棘轮门禁（c8：行 95 / 分支 85 / 函数 92）+ e2e-cli 折入「npm pack → 离线安装 →
+  装出来的包真跑最小 run」（#104）。
+- CLI 模板从字符串升级为真文件（`packages/cli/templates/`，生成产物逐字节不变）（#105）。
+
 ## [0.7.2] - 2026-09-20
 
 ### 变更
@@ -676,7 +727,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/retrychx/agentia/releases/tag/v0.8.0
 [0.7.2]: https://github.com/retrychx/agentia/releases/tag/v0.7.2
 [0.7.1]: https://github.com/retrychx/agentia/releases/tag/v0.7.1
 [0.7.0]: https://github.com/retrychx/agentia/releases/tag/v0.7.0
