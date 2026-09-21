@@ -250,3 +250,34 @@ export type TraceRecordEventPayload =
   | { type: 'span.link'; spanId: SpanId; link: SpanLink };
 
 export type TraceRecordEvent = TraceRecordEventPayload & { seq: number };
+
+/**
+ * 把两个增量记账回调**合成一个**订阅者（前者在前）。
+ *
+ * 为什么要合成而不是 `??` 覆盖：`onTraceEvent` 是**观察者注册**（同 `TraceSink`：
+ * 应用级与全局默认一起收），不是值覆盖 —— 覆盖会让「某次 run / 某个宿主顺手传了自己的
+ * 回调」把另一条静默顶掉。两个消费者都要它的场景是真实存在的：宿主自己配了一条应用级
+ * 面板回调，`AsyncRunner` 还要为 `GET /tasks/:id/stream` 再挂一条按任务分的缓冲。
+ *
+ * 为什么内部各自 try/catch：合成后它们在 recorder 眼里是**一个**订阅者，而 recorder 只在
+ * 这一层兜错 —— 不隔离的话前一个抛错会吞掉后一个（与「一条订阅者炸了不影响另一条」互为镜像）。
+ */
+export function composeTraceEvents(
+  first: ((e: TraceRecordEvent) => void) | undefined,
+  second: ((e: TraceRecordEvent) => void) | undefined,
+): ((e: TraceRecordEvent) => void) | undefined {
+  if (!first) return second;
+  if (!second) return first;
+  return (e) => {
+    try {
+      first(e);
+    } catch {
+      /* 观测不击穿业务（与 flushSinks 同款） */
+    }
+    try {
+      second(e);
+    } catch {
+      /* 同上 */
+    }
+  };
+}

@@ -7,6 +7,7 @@ import type { RunInvocationOptions } from '../engine/spec.js';
 import type { SessionStore } from '../runtime/session.js';
 import type { MemoryStore } from '../runtime/memory.js';
 import type { AgentRunResult } from '../engine/types.js';
+import { composeTraceEvents } from '../core/trace.js';
 import type { Trace, TraceRecordEvent, TraceSink } from '../core/trace.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
@@ -127,36 +128,6 @@ export interface AppOptions {
 }
 
 /** 单次调用参数 = 通用调用参数 + 单次可覆盖 system（spec.ts 的 RunInvocationOptions 为单源） */
-/**
- * 把「应用级缺省」与「per-run 指定」的两个增量记账回调合成**一个**订阅者（应用级在前）。
- *
- * 为什么要合成而不是走 `??` 覆盖：这是**观察者注册**（同 `sinks`：应用级与全局默认一起收），
- * 不是值覆盖 —— 覆盖会让「某次 run 顺手传了个面板回调」把应用级那条静默顶掉。
- *
- * 为什么内部各自 try/catch：合成之后它们在 recorder 眼里是**一个**订阅者，
- * 而 recorder 只在这一层兜错；不隔离的话前一个抛错会吞掉后面那个（与「一条订阅者炸了不影响
- * 另一条」的用例互为镜像）。
- */
-function composeTraceEvents(
-  appLevel: ((e: TraceRecordEvent) => void) | undefined,
-  runLevel: ((e: TraceRecordEvent) => void) | undefined,
-): ((e: TraceRecordEvent) => void) | undefined {
-  if (!appLevel) return runLevel;
-  if (!runLevel) return appLevel;
-  return (e) => {
-    try {
-      appLevel(e);
-    } catch {
-      /* 观测不击穿业务（与 flushSinks 同款） */
-    }
-    try {
-      runLevel(e);
-    } catch {
-      /* 同上 */
-    }
-  };
-}
-
 export interface RunAppOptions<S extends JsonSchema = JsonSchema> extends RunInvocationOptions {
   /** 单次覆盖 system（volatile 段建议每 run 重建以拾取最新值） */
   system?: SystemPrompt | SystemParam;

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseTraceparent } from '../core/trace.js';
-import { AsyncRunner, TaskApproveError } from './async.js';
-import type { AppCallable } from './async.js';
+import { AsyncRunner, TaskApproveError, TaskStreamError } from './async.js';
+import type { AppCallable, TaskStreamFrame } from './async.js';
 import { parseApproveBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
 import { isPreAuthRoute, routeRequest } from './http-route.js';
 import { sseWriter } from './sse.js';
@@ -460,6 +460,12 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
                   rethrow: false,
                   signal: runAc.signal,
                   onText: (delta) => sse.event('text.delta', { text: delta }),
+                  // 增量记账出口（F3 当初判「架构代价大、后置」的那半）：既有三帧
+                  //（text.delta / run.end / error）逐字不变，这里只**追加**一族帧 ——
+                  // 不认识 `trace.event` 的老客户端行为零变化。
+                  // 帧名取一族（body 里的 type 区分）而不是每类型一帧：将来加新事件类型时，
+                  // 老客户端只是漏掉一种 type，而不是漏掉一种**帧名**（后者更隐蔽）。
+                  onTraceEvent: (e) => sse.event('trace.event', e),
                   ...(traceContext !== undefined ? { traceContext } : {}),
                 });
                 sse.event('run.end', toHttpBody(out));
@@ -581,6 +587,86 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
             return;
           }
           sendJson(res, 200, rec);
+          return;
+        }
+
+        case 'taskStream': {
+          const taskId = route.taskId;
+          // 先查一次记录：任务不存在要回 **404**，而 SSE 一旦写出响应头状态码就定死 200 了
+          //（见 sse.ts 的语义约束），所以「存不存在」必须在建流之前问。
+          const known = await runner.poll(taskId);
+          if (!known) {
+            sendJson(res, 404, { error: `task 不存在: ${taskId}` });
+            return;
+          }
+          // 续订锚点：SSE 标准头 `Last-Event-ID` 优先，其次 `?from=`（非 EventSource 的客户端用）
+          const fromRaw =
+            headerValue(req, 'last-event-id') ??
+            new URL(req.url ?? '/', 'http://localhost').searchParams.get('from');
+          const from = fromRaw === null || fromRaw === undefined ? undefined : Number(fromRaw);
+          let unsubscribe: () => void = () => {};
+          let finished = false;
+          let heartbeat: NodeJS.Timeout | undefined;
+          const closeStream = (): void => {
+            if (finished) return;
+            finished = true;
+            if (heartbeat) clearInterval(heartbeat);
+            unsubscribe();
+            openSse.delete(closeStream);
+            sse.close();
+          };
+          const sse = sseWriter(res, {
+            maxBufferedBytes: sseMaxBufferedBytes,
+            // ⚠️ 背压**不 abort 任务**：这条流的读者是**旁观者**，任务不该因为看的人慢而变慢。
+            //（对比 /run 的 SSE：那里的下游就是 run 的所有者，背压等于「别继续烧 token 了」。）
+            onBackpressure: () => closeStream(),
+          });
+          heartbeat = setInterval(() => sse.comment('ping'), 15_000);
+          heartbeat.unref?.();
+          // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）
+          openSse.add(closeStream);
+          // 客户端断开 ⇒ 退订（不退订订阅者会一直挂在 runner 的表里）
+          res.once('close', () => {
+            if (!res.writableEnded) closeStream();
+          });
+          const write = (frame: TaskStreamFrame): void => {
+            if (finished) return;
+            switch (frame.type) {
+              case 'trace':
+                // 帧名一族 + SSE `id:` 给流序号 ⇒ 断线重连带 Last-Event-ID 就能续上
+                sse.event('trace.event', frame.event, String(frame.index));
+                return;
+              case 'truncated':
+                sse.event('stream.truncated', { droppedBefore: frame.droppedBefore });
+                return;
+              case 'unavailable':
+                sse.event('stream.unavailable', { reason: frame.reason });
+                return;
+              case 'end':
+                sse.event('task.end', frame.record);
+                closeStream();
+                return;
+            }
+          };
+          try {
+            const off = await runner.streamTask(taskId, write, from !== undefined ? { from } : {});
+            // 重放阶段就可能已收口（终态任务）：那时 finished 为真，别再登记退订
+            if (finished) off();
+            else unsubscribe = off;
+          } catch (e) {
+            if (e instanceof TaskStreamError) {
+              // 理论上不可达（上面已查过存在性），但保留这条：状态码还没写出去就还能回 404
+              if (!res.headersSent) {
+                sendJson(res, e.status, { error: errMessage(e) });
+              } else {
+                sse.event('error', { message: errMessage(e) });
+                closeStream();
+              }
+              return;
+            }
+            sse.event('error', { message: errMessage(e) });
+            closeStream();
+          }
           return;
         }
 
