@@ -103,6 +103,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   （429/截断/400/流内错误）+ N 并发长跑 ⇒ 断言失败率≈注入率、
 │                            #   错误分类无 unknown、metrics 与实测对账、内存有界、干净退出。
 │                            #   零网络零 token；SOAK_DURATION_MS / SOAK_CONCURRENCY / SOAK_SEED 可调）
+├── scripts/bench-trace-cost.ts  # trace 记录成本基准（npm run bench:trace：量「一条 run 的 trace 多大」——
+│                            #   缺省 / 不截断 / 截断 200 三种口径 × 工具调用数；实测大出参下「不截断」是
+│                            #   缺省的 13.7× ⇒ spec §9.4「全量记录成本 vs 采样阈值」的答案来源。
+│                            #   零网络零 token；PAYLOAD_ROWS / CALLS 可调；不进 verify-all（与 e2e:live 同档））
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── scripts/release-surface.mjs  # **发布面清单（单源）**：一次发版要动哪些文件的哪个值 ——
