@@ -7,6 +7,7 @@ import type { SpanError } from '../core/trace.js';
 import type { AgentStopReason } from '../engine/types.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgentScoped } from '../engine/loop.js';
+import { withCurrentSpan } from '../engine/span-scope.js';
 import { classifyError } from '../engine/errors.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 
@@ -218,7 +219,11 @@ export function skillToTool(
       };
 
       try {
-        const out = await capability.invoke(input ?? {}, skillCtx);
+        // 调用期 span 作用域（spec §9.2 出站传播）：方法体里 `currentTraceparent()` 指向
+        // **本次 skill 的 capability span**（不是发起它的那个 llm.turn）—— 粒度落到能力调用。
+        const out = await withCurrentSpan({ traceId: recorder.traceId, spanId: capabilityId }, () =>
+          capability.invoke(input ?? {}, skillCtx),
+        );
         close({ status: 'ok' });
         return out;
       } catch (e) {

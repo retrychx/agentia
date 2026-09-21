@@ -1,4 +1,6 @@
-import type { Span, SpanEvent, Trace } from '../core/trace.js';
+// 内部 id → 线缆形态的投射**单一真源**在 core/trace.ts（与 parseTraceparent 同处）——
+// 出站 traceparent 用的是同一份，改这里就等于同时改出站（见 core/trace.ts 的注释）。
+import { type Span, type SpanEvent, type Trace, wireSpanId, wireTraceId } from '../core/trace.js';
 
 /**
  * Agentia —— OTLP trace 导出（spec §9.3 生产方向，roadmap R3）。
@@ -81,17 +83,12 @@ function toValue(v: string | number | boolean): OtlpValue {
 }
 
 /**
- * 内部 UUID → OTLP hex。**两种 id 宽度不同，不能共用**：
- * OTLP 契约里 trace id 是 16 字节（32 位 hex）、span id 是 8 字节（16 位 hex，
- * 父 span 同）。内部一律用 UUID（32 位 hex），直接原样发出去会让 collector 判
- * `invalid span_id`（拒收）或按前 16 位截断 —— 故 span 侧必须截到 16 位。
+ * 内部 UUID → OTLP hex 的投射**已上移到 `core/trace.ts`**（`wireTraceId` / `wireSpanId`）。
+ *
+ * 为什么上移：出站 W3C `traceparent` 需要**同一份**投射 —— 两种 id 宽度不同（trace 16 字节
+ * / span 8 字节），各写一份的后果是同一次调用在 collector 里与下游收到的是**两个 span id**。
+ * 这里只留取向，实现只有一处。
  */
-function traceHex(id: string): string {
-  return id.replaceAll('-', '');
-}
-function spanHex(id: string): string {
-  return id.replaceAll('-', '').slice(0, 16);
-}
 
 /** ms → string 纳秒（epoch 毫秒 ×1e6 > 2^53，必须 BigInt，double 直接乘会丢精度） */
 function nanos(ms: number): string {
@@ -220,9 +217,9 @@ function mapEvent(e: SpanEvent) {
 
 function mapSpan(span: Span) {
   return {
-    traceId: traceHex(span.traceId),
-    spanId: spanHex(span.spanId),
-    ...(span.parentSpanId ? { parentSpanId: spanHex(span.parentSpanId) } : {}),
+    traceId: wireTraceId(span.traceId),
+    spanId: wireSpanId(span.spanId),
+    ...(span.parentSpanId ? { parentSpanId: wireSpanId(span.parentSpanId) } : {}),
     // 跨 trace 链路（spec §9.2）：触发本次 run 的上游 span 映射成 OTLP span links。
     // 宽度规则与 parentSpanId 同一条：OTLP 的 span_id 是 8 字节（16 位 hex），
     // 内部 UUID 必须截断，否则 collector 判 invalid span_id 整条拒收。
@@ -230,8 +227,8 @@ function mapSpan(span: Span) {
     ...(span.links && span.links.length > 0
       ? {
           links: span.links.map((l) => ({
-            traceId: traceHex(l.traceId),
-            ...(l.spanId ? { spanId: spanHex(l.spanId) } : {}),
+            traceId: wireTraceId(l.traceId),
+            ...(l.spanId ? { spanId: wireSpanId(l.spanId) } : {}),
           })),
         }
       : {}),

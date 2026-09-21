@@ -9,6 +9,7 @@ import type {
   SchemaType,
 } from '../core/tool.js';
 import type { SpanError, SpanId } from '../core/trace.js';
+import { withCurrentSpan } from './span-scope.js';
 import type { AgentLoopResult } from './loop-result.js';
 import { abortedResult, failedResult, finishedResult, suspendedResult } from './loop-result.js';
 import { tailToolUses, textOfParam } from './resume-input.js';
@@ -244,32 +245,36 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   const progress = { iterations: 0 };
   let result: AgentLoopResult<SchemaType<S>>;
   try {
-    result = await agentLoop<S>({
-      client: options.client ?? createAnthropicClient(),
-      model: resolveDefaultModel(options.model),
-      maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
-      maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
-      system: options.system,
-      messages: options.messages,
-      tools: options.tools ?? [],
-      recorder,
-      parentSpanId: rootId,
-      onText: options.onText,
-      signal: options.signal,
-      retry: options.retry,
-      // 按 run 分叉策略实例：per-run 状态（滞回/计数缓存）不跨 run 泄漏
-      contextPolicy: forkPolicyPerRun(options.contextPolicy),
-      resultSchema: options.resultSchema,
-      progress,
-      maxTotalTokens: options.maxTotalTokens,
-      maxCostUsd: options.maxCostUsd,
-      toolTimeoutMs: options.toolTimeoutMs,
-      maxToolConcurrency: options.maxToolConcurrency,
-      maxEventChars: options.maxEventChars,
-      priceOverrides: options.priceOverrides,
-      onUnpricedModel: options.onUnpricedModel,
-      approvals: options.approvals,
-    });
+    // run 根作用域（spec §9.2 出站传播）：循环内任何地方（工具 / 子能力 / 中间件）都读得到
+    // 「我正处在哪个 span」—— 更内层的作用域由 turn / skill / subagent 逐层收窄。
+    result = await withCurrentSpan({ traceId: recorder.traceId, spanId: rootId }, () =>
+      agentLoop<S>({
+        client: options.client ?? createAnthropicClient(),
+        model: resolveDefaultModel(options.model),
+        maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+        maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+        system: options.system,
+        messages: options.messages,
+        tools: options.tools ?? [],
+        recorder,
+        parentSpanId: rootId,
+        onText: options.onText,
+        signal: options.signal,
+        retry: options.retry,
+        // 按 run 分叉策略实例：per-run 状态（滞回/计数缓存）不跨 run 泄漏
+        contextPolicy: forkPolicyPerRun(options.contextPolicy),
+        resultSchema: options.resultSchema,
+        progress,
+        maxTotalTokens: options.maxTotalTokens,
+        maxCostUsd: options.maxCostUsd,
+        toolTimeoutMs: options.toolTimeoutMs,
+        maxToolConcurrency: options.maxToolConcurrency,
+        maxEventChars: options.maxEventChars,
+        priceOverrides: options.priceOverrides,
+        onUnpricedModel: options.onUnpricedModel,
+        approvals: options.approvals,
+      }),
+    );
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
     result = failedResult(e, progress.iterations);
