@@ -2334,7 +2334,11 @@ package.json 全部写成字符串模板。字符串不过编译器 —— 模�
   Anthropic 流内 4xx 落 500 / `runTimeoutMs` 落 `unknown` / `FileTaskStore.save` 先写内存 /
   SSE 稀疏数组）+ `metrics.ts` 与 `mcp.ts` 纯结构拆分 + stdio `pending` 回归补课；
   **无破坏性变更**）；
-  `AGENTIA_VERSION = '0.7.2'`。决策均见 §10。
+  → v0.8.0（**CLI 机器可读面**（`--version` / `report·diff·doctor --json`）+ **脚手架
+  discover 生产路径修复**（≤0.7.2 生成的工程 `npm start` 必崩，缺陷在产出物里，老工程需
+  按新模板改 `src/main.ts`）+ 脚手架 pin 住 CLI 进 devDependencies；纯结构拆分 13 件 +
+  零告警闸门 + 覆盖率棘轮门禁；**框架 API 无破坏性变更**）；
+  `AGENTIA_VERSION = '0.8.0'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
