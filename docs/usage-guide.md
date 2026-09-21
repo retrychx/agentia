@@ -1328,7 +1328,7 @@ const callable = {
 | 同步 `/run` 撞上审批没人可批 | 同步 RPC 会带着 `stopReason: 'awaiting_approval'` 收尾返回 —— 但响应体（`toHttpBody`）**不含** `suspendedMessages`，也没有任务记录可审批（待决清单只能去 trace 的 `approval.requested` 事件里看）。**要审批请走 `POST /tasks` 异步宿主** |
 | Scheduler 调度表不落库 | `every` / `at` 的调度本身只在内存：已 submit 的任务记录能经 `resumePending` 续跑，但「未来某刻再触发」的调度在重启后不存在（远期单发由宿主自己的 cron 驱动）。另：`drain()` 不停 Scheduler —— 停机窗口内到点的 tick 会打一条触发失败日志（无害但吵），介意就 `scheduler.stop()` 先行 |
 | file store 的撕裂写只在启动时自愈 | 写入中途失败（磁盘满等）留下的残行由 `healTail` 在**构造期**修复；同进程内继续 append 会把新记录粘在残行尾部、下次启动时一起丢弃 —— 磁盘满告警后先恢复写入能力再继续依赖它 |
-| 终态落库失败无告警 | AsyncRunner 终态 save 失败被吞（「不击穿主流程」的代价）：store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**（副作用已发生）的任务 —— 耐久 store 的故障告警是宿主的事 |
+| 终态落库失败 ⇒ 重启会重跑 | AsyncRunner 终态 `save` 失败**不遮罩主流程**（「不击穿业务」的代价）：store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**（副作用已发生）的任务 —— 所以副作用工具必须自身幂等。**但失败本身不再静默**：`new AsyncRunner(app, { onPersistError })` 会收到 `{ record, error, phase }`（`phase: 'initial' \| 'outcome'`，后者就是这条）。⚠️ 框架**修不了**它（写不进去就是写不进去）—— 出口的职责是让你能对账、让「记录无声丢失」不再是默认行为（与 `createOtlpExporter({ onExportError })` 同因同形） |
 | `contextPolicy` 不进子循环 | 应用级 `contextPolicy` / `onText` 只对主循环生效：@SubAgent / @Skill 的子运行不做上下文裁剪（长跑子 agent 撞上下文上限会以 api 错误收尾）。预算护栏（`maxTotalTokens` / `maxCostUsd`）正常透传 |
 | 记忆没有删除语义 | `MemoryStore` 只有 load/save：run 内 `ctx.delete` 掉的键回写时不会从 store 移除（下一轮水合会复活）。要真删请直接操作 store 实现 |
 | 内容护栏不给实现 | 同「配额」：只给缝（入参包 `app.run` / 工具前 `middleware` / 出参包返回值或 `sinks`），策略（正则 / 分类器 / 外部 API）是你的 |

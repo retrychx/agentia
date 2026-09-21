@@ -51,6 +51,21 @@ export interface TaskSink {
   onFinished(rec: TaskRecord): void | Promise<void>;
 }
 
+/**
+ * 落库失败的形状（`AsyncRunnerOptions.onPersistError` 的入参）。
+ *
+ * `phase` 区分两次**都曾静默**的写出：
+ * - `'initial'` —— 提交时那次 `save` 的**迟到 reject**。注意：同步 store 当场抛走的不是这条路
+ *   （那条按 `TaskInputError` 处理，本来就响亮），这里专指异步 store 交了 Promise 之后才拒的情形。
+ * - `'outcome'` —— 终态（或挂起态）那次写出失败。**这条最贵**：库里停在 `running`，
+ *   而它其实已经跑完了（副作用已发生）—— 重启后 `resumePending` 会把它当孤儿**再跑一遍**。
+ */
+export interface PersistFailureInfo {
+  record: TaskRecord;
+  error: unknown;
+  phase: 'initial' | 'outcome';
+}
+
 /** `approve` 的入参：一批 tool_use_id → 批准/拒绝（理由可选） */
 export type ApprovalDecisions = Record<string, { approved: boolean; reason?: string }>;
 
@@ -132,6 +147,23 @@ export interface AsyncRunnerOptions {
   concurrency?: number;
   /** 任务完成回调（进程内）；见 TaskSink */
   taskSinks?: TaskSink[];
+  /**
+   * **落库失败回调**（观测 / 对账用）。缺省不给 = 静默，与加本选项之前**逐字一致**。
+   *
+   * 为什么需要它：`docs/usage-guide.md` §7 那条边界（「终态落库失败无告警」）写着
+   * 「store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**
+   * （副作用已发生）的任务 —— **耐久 store 的故障告警是宿主的事**」。但在本选项出现之前，
+   * 框架把这个失败**吞掉且不留任何出口**（`#safeSave`）—— 宿主**做不到**它被要求做的事：
+   * 它拿不到失败、也不该靠轮询 store 去猜。
+   *
+   * 本仓同因、同形、只差一个名字的先例：`createOtlpExporter({ onExportError })`
+   * （「`TraceSink` 的失败缺省是静默的，这类消息得有人能收到」）。
+   *
+   * ⚠️ 它**不能补救**落库失败（写不进去就是写不进去）。它的职责是两件：
+   * ① 让你能对账（哪条记录、哪一次写出、什么错）；② 让「记录无声丢失」不再是默认行为。
+   * 回调抛错被吞（观测是辅助动作，不影响 run；与 `onUnpricedModel` / `onExportError` 同口径）。
+   */
+  onPersistError?: (info: PersistFailureInfo) => void;
   /**
    * 单任务执行超时（毫秒）；缺省 0 = 不限。必须为非负**有限**数（NaN/Infinity 会被
    * setTimeout 钳到 1ms，等同每个任务立即超时 —— 构造期直接报配置错误）。
@@ -216,6 +248,7 @@ export class AsyncRunner {
    */
   readonly #claims = new Map<string, TaskRecord>();
   private readonly taskSinks: TaskSink[];
+  private readonly onPersistError: AsyncRunnerOptions['onPersistError'];
   /**
    * HITL 挂起时快照的「本轮用户输入」（taskId → messages）—— 恢复段成功后做会话回写用
    * （恢复段不把 session 交给 run 层，见 #executeInner 的 callOpts 注释）。
@@ -236,6 +269,7 @@ export class AsyncRunner {
     this.client = opts.client;
     this.sessionStore = opts.sessionStore;
     this.taskSinks = opts.taskSinks ?? [];
+    this.onPersistError = opts.onPersistError;
     this.#streams = new TaskEventStreams(
       opts.streamBufferEvents === undefined ? {} : { maxEvents: opts.streamBufferEvents },
     );
@@ -322,7 +356,7 @@ export class AsyncRunner {
         rec.status = 'failed';
         rec.error = classifyError(e);
         rec.finishedAt = Date.now();
-        void this.#safeSave(rec);
+        void this.#safeSave(rec, 'initial');
       });
     }
     void this.#execute(rec);
@@ -784,7 +818,7 @@ export class AsyncRunner {
           rec.error = existing.error;
           rec.finishedAt = Date.now();
           // 采纳既有结果：落库失败也不该把一次已知成功的任务翻成 failed
-          await this.#safeSave(rec);
+          await this.#safeSave(rec, 'outcome');
           return;
         }
       }
@@ -908,7 +942,7 @@ export class AsyncRunner {
         if (rec.status !== 'awaiting_approval') rec.finishedAt = Date.now();
         // 落库失败不遮罩、槽位必须释放：释放放在内层 finally，即便落库实现抛错也必达
         try {
-          await this.#safeSave(rec);
+          await this.#safeSave(rec, 'outcome');
         } finally {
           this.#slots.release();
         }
@@ -917,7 +951,7 @@ export class AsyncRunner {
       rec.status = 'failed';
       rec.error = classifyError(e);
       rec.finishedAt = Date.now();
-      await this.#safeSave(rec);
+      await this.#safeSave(rec, 'outcome');
       console.error(`[agentia] task ${rec.taskId} 执行异常:`, e);
     }
   }
@@ -931,11 +965,19 @@ export class AsyncRunner {
    * 并发槽位永久泄漏），再被外层 catch 里同一写法抛第二次，最终逃出 #execute 变成
    * unhandled rejection（Node ≥15 默认终止宿主进程）。
    */
-  async #safeSave(rec: TaskRecord): Promise<void> {
+  async #safeSave(rec: TaskRecord, phase: PersistFailureInfo['phase']): Promise<void> {
     try {
       await Promise.resolve().then(() => this.store.save(rec));
-    } catch {
-      // 落库失败不遮罩主流程：任务结果仍在内存记录里可见
+    } catch (error) {
+      // 落库失败不遮罩主流程：任务结果仍在内存记录里可见。
+      // 但它**必须有人能收到** —— 宿主无法自己发现这件事（见 onPersistError 的注释）。
+      if (this.onPersistError) {
+        try {
+          this.onPersistError({ record: rec, error, phase });
+        } catch {
+          /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
+        }
+      }
     }
   }
 
