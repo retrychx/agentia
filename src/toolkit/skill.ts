@@ -7,6 +7,7 @@ import type { SpanError } from '../core/trace.js';
 import type { AgentStopReason } from '../engine/types.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgentScoped } from '../engine/loop.js';
+import { forwardToolContext } from '../engine/forwarded.js';
 import { withCurrentSpan } from '../engine/span-scope.js';
 import { classifyError } from '../engine/errors.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
@@ -174,6 +175,8 @@ export function skillToTool(
           const system =
             opts.system instanceof SystemPrompt ? opts.system.build({ cache: true }) : opts.system;
           const loop = await runAgentScoped({
+            // 七个「必须往下交」的旋钮一次取自单源（见 engine/forwarded.ts）—— 与 subagent.ts 同源
+            ...forwardToolContext(ctx),
             client: ctx.client,
             model: opts.model ?? spec.model,
             maxTokens: opts.maxTokens ?? spec.maxTokens,
@@ -183,20 +186,8 @@ export function skillToTool(
             tools: spec.tools?.length ? resolveTools() : [],
             recorder,
             parentSpanId: capabilityId,
+            // 唯一需要**覆盖**的一项：同 subagent.ts（子循环还要能被「放弃等待」打断）
             signal: combined,
-            // 价格覆盖透传（F1）：子循环用同一模型也要能算成本
-            priceOverrides: ctx.priceOverrides,
-            // 宿主的未定价告警回调透传到嵌套循环（F2）：子循环用了未定价模型时，
-            // 宿主的告警照样要响（与 priceOverrides 同写法透传）
-            onUnpricedModel: ctx.onUnpricedModel,
-            // 事件截断口径透传：同一棵树上主/子 agent 的正文可见性必须一致
-            maxEventChars: ctx.maxEventChars,
-            // 成本护栏透传（C1）：预算是整条 run（含子循环）的口径，子循环每回合也检查
-            maxTotalTokens: ctx.maxTotalTokens,
-            maxCostUsd: ctx.maxCostUsd,
-            // 超时裁判权透传（spec §10 2026-09-17 ①）：同 subagent.ts —— 漏了它，
-            // 子循环退化成「永不超时」，且 MCP 桥会另起 60s 兜底，回到双计时器/双账本。
-            toolTimeoutMs: ctx.toolTimeoutMs,
           });
           if (!isSuccessStopReason(loop.stopReason)) {
             const report = `skill "${name}".llm ${loop.stopReason}: ${(
