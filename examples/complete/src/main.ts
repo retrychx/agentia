@@ -126,8 +126,13 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
+  // PORT=0 时端口由操作系统分配，以 server.address() 拿到的实际端口为准
+  const addr = server.address();
+  const actualPort = typeof addr === 'object' && addr !== null ? addr.port : PORT;
+  // ⚠️ 首行是**就绪信号**（scripts/e2e-examples.ts 从它解析实际端口判定服务可用）——
+  //    改文案要同步改那边的正则。
   console.log(
-    `[boot] listening on :${PORT}（db=${DB_PATH}，鉴权=${API_KEY ? '开' : '关'}，` +
+    `[boot] listening on :${actualPort}（db=${DB_PATH}，鉴权=${API_KEY ? '开' : '关'}，` +
       `provider=${OPENAI_BASE_URL ? `openai 兼容 ${OPENAI_BASE_URL}` : 'anthropic'}）`,
   );
   console.log('  POST /run        同步 run（Accept: text/event-stream → SSE）');

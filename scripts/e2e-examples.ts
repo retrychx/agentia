@@ -9,7 +9,7 @@
 // code-review 的 demo 模式根本不需要模型端点（scriptedClient）。只走 127.0.0.1。
 //
 // 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
-import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -144,16 +144,6 @@ async function startFakeProvider(): Promise<{
   };
 }
 
-/** 取一个空闲端口（listen 0 拿到再放掉；留给被 spawn 的示例进程用） */
-async function freePort(): Promise<number> {
-  const probe = createServer();
-  const port = await new Promise<number>((ready) => {
-    probe.listen(0, '127.0.0.1', () => ready((probe.address() as { port: number }).port));
-  });
-  await new Promise<void>((done) => probe.close(() => done()));
-  return port;
-}
-
 /**
  * 让示例的 `import '@migor/agentia'` 可解析 —— 与 `scripts/e2e-cli.ts` 同一手法（symlink 回仓库根）。
  *
@@ -215,16 +205,20 @@ function buildExample(): void {
   });
 }
 
-/** 起示例进程（`node dist/main.js`，即示例 README 的 `npm run serve`），等它的就绪日志（不 sleep 猜时间） */
+/**
+ * 起示例进程（`node dist/main.js`，即示例 README 的 `npm run serve`），等它的就绪日志（不 sleep 猜时间）。
+ *
+ * PORT=0 + 解析日志里的**实际**端口（与 scripts/e2e-grpc.ts 同一做法）：先探空闲端口再交给
+ * 子进程 bind，两步之间会被抢（EADDRINUSE flake 就是这么来的）—— 由服务自己分配，没有那个窗口。
+ */
 async function startExample(
-  port: number,
   fakeBaseURL: string,
-): Promise<{ child: ChildProcess; stdout: () => string; stop: () => Promise<number | null> }> {
+): Promise<{ port: number; stdout: () => string; stop: () => Promise<number | null> }> {
   const child = spawn(process.execPath, ['dist/main.js'], {
     cwd: exampleDir,
     env: {
       ...process.env,
-      PORT: String(port),
+      PORT: '0',
       AGENTIA_DB: ':memory:',
       // 走 OpenAI 兼容端点 ⇒ 用上示例里那段「注入 model client」的缝（而不是框架默认 Anthropic client）
       OPENAI_BASE_URL: fakeBaseURL,
@@ -247,20 +241,24 @@ async function startExample(
 
   const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)));
   const deadline = Date.now() + 30_000; // 就绪预算给足：这里验的是「能不能起来」，不是「多快起来」
-  while (!out.includes('[boot] listening')) {
-    if (child.exitCode !== null) {
+  let port: number | undefined;
+  while (port === undefined) {
+    const m = /\[boot\] listening on :(\d+)/.exec(out);
+    if (m) {
+      port = Number(m[1]);
+    } else if (child.exitCode !== null) {
       throw new Error(
         `示例进程启动即退出（code=${child.exitCode}）\n--- stdout ---\n${out}\n--- stderr ---\n${err}`,
       );
-    }
-    if (Date.now() > deadline) {
+    } else if (Date.now() > deadline) {
       throw new Error(`等示例就绪超时（30s）\n--- stdout ---\n${out}\n--- stderr ---\n${err}`);
+    } else {
+      await new Promise((r) => setTimeout(r, 25));
     }
-    await new Promise((r) => setTimeout(r, 25));
   }
 
   return {
-    child,
+    port,
     stdout: () => out,
     stop: async () => {
       child.kill('SIGTERM'); // README 承诺的优雅停机路径
@@ -403,20 +401,8 @@ try {
   ensureObsPkgBuilt();
   buildExample();
 
-  // freePort() 先 listen(0) 拿到再放掉，并行时有窗口被抢（EADDRINUSE）—— 换个端口重试
-  let port = 0;
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3 && !example; attempt++) {
-    port = await freePort();
-    try {
-      example = await startExample(port, fake.baseURL);
-    } catch (e) {
-      lastErr = e;
-      if (!String(e).includes('EADDRINUSE')) throw e; // 非端口冲突的失败不重试
-    }
-  }
-  if (!example) throw lastErr;
-  const base = `http://127.0.0.1:${port}`;
+  example = await startExample(fake.baseURL);
+  const base = `http://127.0.0.1:${example.port}`;
   const auth = { 'x-api-key': 'e2e-secret', 'content-type': 'application/json' };
 
   // —— 1) /healthz（不鉴权）——

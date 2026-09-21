@@ -872,7 +872,7 @@ const app = await createApp({ /* … */ sinks: [jsonl] });
 
 每个 run 的**根 span** 都带一组 `config.*` attributes（`config.maxTokens` / `config.maxCostUsd` /
 `config.retry.maxAttempts` / `config.contextPolicy.budgetTokens` / `config.priceOverrides` /
-`config.maxEventChars` …）。
+`config.maxEventChars` / `config.traceLimits.maxEvents` …）。
 带缺省值的那几项（`maxTokens` / `maxIterations` / `contextPolicy` / `retry`）**缺省值也记**——
 「没配」与「配了缺省值」因此可区分；可选项（`toolTimeoutMs` / `maxToolConcurrency` /
 `maxEventChars`）只在设了才记。换参数前后对比、复现线上行为都有据可查。
@@ -1268,7 +1268,7 @@ const callable = {
 | 历史畸形就放弃裁剪 | `trimToolPairs` 遇到非严格交替历史会整体放弃（宁可少裁，也不切出孤立 tool_use 让请求 400） |
 | 同键去重的能力边界 | `idempotencyKey` 的去重分三档：**同步 store** 下 `submit` 当场返回既有记录；**异步 store**（Redis / SQLite 等）下 `submit` 是同步门面、无法 await，去重靠**进程内认领表**，只覆盖「**同进程内并发提交**」（2026-09-21 修复前这里会两次都执行）；**跨进程并发**与**终态之后重提同键**仍是 at-least-once —— store 的 idem 索引是 last-wins（重提即新任务，`redisStore` / `fsStore` / `sqliteStore` 头注释同口径）。要严格一次，请让副作用自身幂等（或在 store 层做唯一约束） |
 | 增量出口与 sink 是**两条缝** | `onTraceEvent` 是「运行期逐笔」，`sinks` 是「收尾拿整棵」——消费者与保证都不同：sink 的抛错被吞但仍会**投递**（有兜底语义），`onTraceEvent` **不保证送达**（宿主自己的流断了就断了，没有重试/重放）。要「一条都不能少」用 `sinks`；要「现在就看到」用 `onTraceEvent` |
-| 任务进度流的边界（内存 / 跨进程） | `GET /tasks/:id/stream` 的事件缓冲在**跑任务的进程内存**里：每任务最近 500 条（可用 `AsyncRunner` 的 `streamBufferEvents` 调），超限丢**最旧**并先发一帧 `stream.truncated`；终态流只留最近 16 条。**跨进程**（队列消费者在别的进程）时没有实时流，只能拿到一帧 `stream.unavailable` + 终态 —— 要跨进程实时请用 `onTraceEvent` 把事件转发到宿主自己的总线（Redis Streams / Kafka） |
+| 任务进度流的边界（内存 / 跨进程） | `GET /tasks/:id/stream` 的事件缓冲在**跑任务的进程内存**里：每任务最近 500 条（可用 `AsyncRunner` 的 `streamBufferEvents` 调，须为正整数，坏值构造期抛错），超限丢**最旧**并先发一帧 `stream.truncated`；终态流只留最近 16 条。**跨进程**（队列消费者在别的进程）时没有实时流：发一帧 `stream.unavailable` 后**立即收口** —— 任务已终态则补 `task.end`（随后关连接）；**非终态**则补一帧 `stream.closed`（流级收尾，不是伪造终态）并关连接，客户端此后应转去轮询 `GET /tasks/:id`。要跨进程实时请用 `onTraceEvent` 把事件转发到宿主自己的总线（Redis Streams / Kafka） |
 | `traceLimits` 与 `maxEventChars` 各管一头 | `maxEventChars` 管**单个事件正文多长**（既有），`traceLimits.maxEvents` 管**整条 trace 多少个事件**（本版）。两者正交、都「不设 = 不限」；上限触发时**丢弃量写在 run 根的 `trace.truncated`** 上（不静默）。⚠️ 实测 `maxEventChars: false` + 大出参会让 trace 放大 **13.7×**（`npm run bench:trace` 可复现）—— 先收长度再谈采样，收益顺序比反过来大 |
 | **采样是导出决策，不是记账决策** | 采样在 `sink` 外做（配方见 `docs/observability.md` 2.3）：被采样掉的 trace 在框架内**仍然完整记账**，只是没发给下游。所以别拿「有采样」当「可以少记账」；也正因如此，出站 `traceparent` 的 flags 恒 `00`（记录/导出决策发生在收尾之后，运行期不可知——不替下游声明） |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
@@ -1298,7 +1298,7 @@ const callable = {
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；出厂连接器同样只做 `tools/list` + `tools/call` |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果（出厂连接器已代你处理） |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判；**显式 `toolTimeoutMs: 0` 也算设了** —— 那是引擎表态「不限」，桥不会再自作主张判 60s），两条路径**同判定、同账**（`errorKind='timeout'`） |
-| 已中止的 MCP 调用**不发请求** | 信号在**发送前**就已中止 ⇒ 立刻以 `AbortError` 收场，请求不出门（2026-09-21 前是「照样 write、Promise 永不 settle」：副作用真送达、调用方永久挂起）。发送**之后**才中止的，请求已在路上、取消不了 —— 那是「不等了」，与 `toolTimeoutMs` 同口径 |
+| 已中止的 MCP 调用**不发请求** | 信号在**发送前**就已中止 ⇒ 立刻以 `AbortError` 收场，请求不出门（2026-09-21 前是「照样 write、Promise 永不 settle」：副作用真送达、调用方永久挂起）。发送**之后**才中止的，请求已在路上、取消不了 server 侧的执行，但返回的 Promise 同样立刻以 `AbortError` 收场、簿记同步清掉 —— 直接 await 连接器 API 的宿主不会永久挂起（2026-09-22 前是「只删簿记不 reject」：Promise 永不 settle，与 HTTP 连接器的在途中止行为不一致）；取消不了的只是 server 侧执行，这点与 `toolTimeoutMs` 同口径 |
 | MCP 连接器的超时只管装配期 | 连接器自带的 `timeoutMs` 只作用于**握手 + `tools/list`**（那两步**没有任何别的裁判** —— server 卡住会让 `createApp` 永久挂起）；`callTool` 仍是引擎 / 桥那一个裁判 |
 | MCP 连接的 `close()` 保证子进程已终止 | stdio 先 `SIGTERM`、`MCP_CLOSE_GRACE_MS`（2000 ms）后 `SIGKILL`，然后**等真正的 `'exit'`** —— **返回即代表进程已被回收**（此前到点即返回，会留孤儿进程而调用方无从知晓）；HTTP 尽力 `DELETE` 会话（server 不认也无所谓） |
 | StreamableHTTP 会话过期**自愈** | 带会话 id 收到 `404` = 会话已终止、**该请求未被 server 执行** ⇒ 丢会话 → 重新握手 → 把**这一次**重试一次（**只一次**，不再循环）。自愈本身是静默的 ⇒ 用 `onSessionExpired` 去计数 / 告警，否则它和「静默失效」在监控上看不出区别。`404` **之外**的失败仍按 `classifyError` 分流抛出，不重试 |

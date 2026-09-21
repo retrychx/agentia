@@ -1,6 +1,7 @@
 import type { JsonSchema } from '../core/tool.js';
 import { resolveRetry } from './retry.js';
 import type { ContextPolicy, RunAgentOptions } from './types.js';
+import type { TraceLimits } from './tracer.js';
 
 /**
  * Agentia —— run 生效旋钮：**缺省解析 + 快照编码**（spec §5 / §9 G3）。
@@ -34,7 +35,11 @@ export const DEFAULT_MAX_ITERATIONS = 40;
  * "该项不存在"。函数型选项只记"配没配"，不记函数体。
  */
 export function runConfigSnapshot(
-  options: RunAgentOptions<JsonSchema>,
+  // traceLimits 不在 RunAgentOptions 上：它是 run 层（ExecuteRunOptions /
+  // RunInvocationOptions）的旋钮 —— executeRun 在 run 入口用 resolveTraceLimits
+  // 校验后交给 recorder（见 runtime/run.ts），再把**同一份** options 透传到本函数，
+  // 所以这里读到的就是生效值（「认下缺省值的人就是写进 trace 的人」）。
+  options: RunAgentOptions<JsonSchema> & { traceLimits?: TraceLimits },
 ): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {
     'config.model': resolveDefaultModel(options.model),
@@ -56,6 +61,13 @@ export function runConfigSnapshot(
   // 容易被读成「上限为 0」，'off' 一句话说清是**没有上限**
   if (options.maxEventChars != null)
     out['config.maxEventChars'] = options.maxEventChars === false ? 'off' : options.maxEventChars;
+  // 记账数量闸：与 maxEventChars（管「多长」）正交，这个管「多少」。键名镜像选项路径
+  //（同 config.retry.maxAttempts / config.contextPolicy.budgetTokens 的口径）。
+  // 0 = 「一条都不记」是有意义的值，原样记 0 —— 不记成 'off'（本文件里 'off' = 不设上限，
+  // 与上限为 0 是两回事）。坏值（NaN / 负数 / 小数）在 run 入口已被 resolveTraceLimits
+  // 拦下（抛 TypeError），走不到这里，所以不需要 maxToolConcurrency 那样的净化分支。
+  const maxEvents = options.traceLimits?.maxEvents;
+  if (maxEvents != null) out['config.traceLimits.maxEvents'] = maxEvents;
   // 重试：记生效的 maxAttempts（0 = 关闭）—— 比记 "custom/default" 更有信息量
   const retryCfg = resolveRetry(options.retry);
   out['config.retry.maxAttempts'] = retryCfg ? retryCfg.maxAttempts : 0;

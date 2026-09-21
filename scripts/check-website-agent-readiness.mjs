@@ -10,10 +10,11 @@
  * 所以这里按**产物自己的形状**核（不做源码字面匹配，也不复刻 AFDocs 的算法）——
  * 与 scripts/e2e-*.ts 同一条纪律：测产物，就用产物自己的输入。
  *
- * 检查项（8 类）：① 硬 404 的前提（产物里有 404.html）② robots.txt 的绝对 Sitemap 行
+ * 检查项（9 类）：① 硬 404 的前提（产物里有 404.html）② robots.txt 的绝对 Sitemap 行
  * ③ sitemap 与产物页面集合互为真值 ④ llms.txt 链接全绝对且覆盖全部页面
  * ⑤ llms-full.txt 与单源 docs/usage-guide.md 逐字节相等 ⑥ 每页 llms 指引的形态
- * ⑦ 声明的 URL 不得是 `.html` ⑧ 站内链接必须绝对路径、且不是 `.html` 形态。
+ * ⑦ 声明的 URL 不得是 `.html` ⑧ 站内链接必须绝对路径、且不是 `.html` 形态
+ * ⑨ 每页 og:url 是干净路径、且与该页在 sitemap 里的 loc 一致。
  *
  * ⚠️ 教训（2026-09-21，写在这里免得再犯）：第一版守卫把「站点 URL 的形态」等同于
  * **产物文件名**（`docs.html`），于是把「声明 `.html`」锁成了绿灯 —— 而线上 `.html` 是
@@ -115,7 +116,11 @@ check('llms.txt 的链接全部是绝对地址', () => {
 
 check('llms.txt 覆盖了全部产物页面', () => {
   const body = read('llms.txt');
-  const missing = expectedLocs.filter((loc) => !body.includes(loc));
+  // 按「链接目标集合」精确比对，不能用整文/整行 includes ——
+  // 首页 loc（https://agentia-web.pages.dev/）是其它任何 loc 的**前缀**，
+  // 删掉首页链接后，/docs 那行仍「包含」这个前缀，前缀匹配会把「丢页」洗成绿灯。
+  const linkTargets = new Set([...body.matchAll(/\]\((http[^)]*)\)/g)].map((m) => m[1]));
+  const missing = expectedLocs.filter((loc) => !linkTargets.has(loc));
   must(missing.length === 0, `llms.txt 未提及这些页面（与 sitemap 漂移）：${missing.join(', ')}`);
 });
 
@@ -194,7 +199,38 @@ check('站内链接必须是绝对路径，且不是 .html 形态', () => {
   must(bad.length === 0, `站内链接不合格：${bad.join(', ')}`);
 });
 
-console.log(`[website-agent] 核了 ${builtPages.length} 个页面 + robots/sitemap/llms 共 8 类产物`);
+/* ── 9. 每页 og:url：必须是干净路径，且与该页在 sitemap 里的 loc 一致 ──────
+   第 7 条只扫 sitemap / llms.txt 里的 URL，第 8 条只扫 HTML 的 href ——
+   HTML 头部的 og:url 此前两头不靠：它若回退成 `.html` 形态（会 308 的「跳转前地址」，
+   见第 7 条），其余检查照样全绿。这里把自声明地址也纳入守卫。
+   404.html 不进 sitemap（见第 3 条），对它只核「干净路径」不核 loc 一致。 */
+for (const file of [...builtPages, '404.html']) {
+  check(`${file} 的 og:url 是干净路径且与 sitemap 一致`, () => {
+    const html = read(file);
+    const og = /<meta\s+property="og:url"\s+content="([^"]*)"/.exec(html);
+    must(og !== null, '找不到 <meta property="og:url" content="…">（Base.astro 里被删了？）');
+    const url = og[1];
+    must(url.startsWith(`${ORIGIN}/`), `og:url 不是本站绝对地址：${url}`);
+    must(!/\.html?(?=$|[?#])/.test(url), `og:url 是 .html 形态（线上会 308）：${url}`);
+    if (file !== '404.html') {
+      const expected = new URL(toCleanPath(file), ORIGIN).href;
+      must(url === expected, `og:url 与 sitemap 的 loc 不一致：${url} ≠ ${expected}`);
+    }
+    // canonical 目前没生成；一旦出现就同口径核（干净路径 + 与该页 loc 一致）
+    const canonical = /<link\s+rel="canonical"\s+href="([^"]*)"/.exec(html);
+    if (canonical !== null) {
+      const href = canonical[1];
+      must(href.startsWith(`${ORIGIN}/`), `canonical 不是本站绝对地址：${href}`);
+      must(!/\.html?(?=$|[?#])/.test(href), `canonical 是 .html 形态（线上会 308）：${href}`);
+      if (file !== '404.html') {
+        const expected = new URL(toCleanPath(file), ORIGIN).href;
+        must(href === expected, `canonical 与 sitemap 的 loc 不一致：${href} ≠ ${expected}`);
+      }
+    }
+  });
+}
+
+console.log(`[website-agent] 核了 ${builtPages.length} 个页面 + robots/sitemap/llms 共 9 类产物`);
 if (failures.length > 0) {
   console.error(`\n[website-agent] ${failures.length} 项不达标：`);
   for (const f of failures) console.error(`  ✖ ${f}`);

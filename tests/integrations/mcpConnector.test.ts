@@ -232,6 +232,69 @@ describe('createStdioMcpConnector —— stdio 连接器', () => {
     }
   });
 
+  it('请求**发出之后**才中止 ⇒ Promise 以 AbortError settle（条目清掉的同时必须 reject）', async () => {
+    // 反向验证：把 abort 监听回调退化成只做 `pending.delete(id)` ⇒ server 是
+    // silentcall（活着但永不回包），条目一删就再也没人能 settle 这个 Promise ——
+    // 本用例红在 race 的兜底分支（500ms 后仍是 'pending'）。
+    // 「settle 了」是 bug 本体（HTTP 连接器把 signal 交给 fetch、中止即 AbortError
+    // 收场，两条连接器在「在途中止」上必须同行为），所以必须 race 一个超时来证，
+    // 不能只断言 reject 类型。
+    const c = stdio('silentcall');
+    await c.listTools(); // 先握手，把 initialize 的条目清出观察窗
+
+    // 与上一条同款：patch Map.prototype 按 number 键观测 pending 簿记，
+    // 确认请求真发出去了再中止（否则走的是「发送前已中止」那条路径，验不到在途中止）。
+    const sets: number[] = [];
+    const deletes: number[] = [];
+    const origSet = Map.prototype.set;
+    const origDelete = Map.prototype.delete;
+    Map.prototype.set = function <K, V>(this: Map<K, V>, k: K, v: V): Map<K, V> {
+      if (typeof k === 'number') sets.push(k);
+      return origSet.call(this, k, v);
+    } as typeof Map.prototype.set;
+    Map.prototype.delete = function <K, V>(this: Map<K, V>, k: K): boolean {
+      if (typeof k === 'number') deletes.push(k);
+      return origDelete.call(this, k);
+    } as typeof Map.prototype.delete;
+    try {
+      const ac = new AbortController();
+      // 不吞 rejection —— 本用例断言的正是它以 AbortError 收场
+      const outcome: Promise<Error | 'resolved'> = c
+        .callTool('get-time', {}, { abandoned: ac.signal })
+        .then(
+          () => 'resolved' as const,
+          (e: unknown) => e as Error,
+        );
+      // callTool 内部先 await ensureReady，set 发生在那之后 —— 等请求真发出去
+      for (let i = 0; i < 200 && sets.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.equal(sets.length, 1, 'tools/call 的请求条目应当入簿（number 键）');
+      ac.abort();
+
+      const raced = await Promise.race([
+        outcome,
+        new Promise<'pending'>((r) => setTimeout(() => r('pending'), 500)),
+      ]);
+      assert.notEqual(
+        raced,
+        'pending',
+        '在途中止后 Promise 必须 settle —— 只删条目不 reject 就是永久挂起（bug 本体）',
+      );
+      assert.ok(raced instanceof Error, `应当以错误收场，收到 ${String(raced)}`);
+      assert.equal(raced.name, 'AbortError', `应为 AbortError，收到 ${String(raced)}`);
+      // 与「发送前已中止」同一错误形状 ⇒ errors.ts 按 name 归 aborted 一类账
+      assert.equal(classifyError(raced).type, 'aborted');
+      assert.ok(
+        deletes.includes(sets[0] as number),
+        `中止后 id=${sets[0]} 的簿记条目必须清掉（deletes=${JSON.stringify(deletes)}）`,
+      );
+    } finally {
+      Map.prototype.set = origSet;
+      Map.prototype.delete = origDelete;
+    }
+  });
+
   it('tools 不是数组 → 响亮抛错（不静默变成空菜单）', async () => {
     const c = stdio('badtools');
     await assert.rejects(() => c.listTools(), /不是数组/);

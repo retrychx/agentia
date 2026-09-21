@@ -345,6 +345,68 @@ describe('配方 ① sampleSink：采样', () => {
     assert.throws(() => sampleSink({ rate: -0.1, sinks: [] }), /rate 必须在 \[0,1\]/);
     assert.throws(() => sampleSink({ rate: Number.NaN, sinks: [] }), /rate 必须在 \[0,1\]/);
   });
+
+  // 「丢了要数」（docs/observability.md §2.3）：dropped() 给累计条数、onDrop 给回调。
+  // 不数的话「被采样掉」与「本来就没跑」在监控上无法区分 —— 这是同一个盲区。
+  it('采样丢弃：dropped() 计数 +1，onDrop 被调一次且拿到被丢的 trace', async () => {
+    const keep = recorder();
+    const droppedTraces: Trace[] = [];
+    const sink = sampleSink({
+      rate: 0,
+      sinks: [keep],
+      onDrop: (t) => droppedTraces.push(t),
+    });
+    const trace = makeTrace({ traceId: 'ok-1', status: 'ok' });
+
+    assert.equal(sink.dropped(), 0, '还没丢过，初始为 0');
+    await sink.export(trace);
+
+    assert.equal(keep.seen.length, 0, 'rate=0 的成功 run 被采样掉');
+    assert.equal(sink.dropped(), 1, '丢弃必须可数');
+    assert.deepEqual(droppedTraces, [trace], 'onDrop 应收到被丢的那条 trace');
+  });
+
+  it('多次丢弃累计计数；onDrop 每丢一条调一次', async () => {
+    let drops = 0;
+    const sink = sampleSink({ rate: 0, sinks: [], onDrop: () => drops++ });
+    for (const id of ['ok-1', 'ok-2', 'ok-3']) {
+      await sink.export(makeTrace({ traceId: id, status: 'ok' }));
+    }
+    assert.equal(sink.dropped(), 3);
+    assert.equal(drops, 3, 'onDrop 次数与 dropped() 口径一致');
+  });
+
+  it('被保留的 run 不计入 dropped、不调 onDrop', async () => {
+    let drops = 0;
+    const keep = recorder();
+    const sink = sampleSink({ rate: 1, sinks: [keep], onDrop: () => drops++ });
+    await sink.export(makeTrace({ traceId: 'ok-2', status: 'ok' }));
+    assert.equal(keep.seen.length, 1);
+    assert.equal(sink.dropped(), 0);
+    assert.equal(drops, 0);
+  });
+
+  it('错误 run 必留且不计入 dropped（那些永不丢）', async () => {
+    let drops = 0;
+    const keep = recorder();
+    const sink = sampleSink({ rate: 0, sinks: [keep], onDrop: () => drops++ });
+    await sink.export(makeTrace({ traceId: 'err-1', status: 'error' }));
+    assert.equal(keep.seen.length, 1, '错误 run 永不采样掉');
+    assert.equal(sink.dropped(), 0, 'dropped() 不含错误 run');
+    assert.equal(drops, 0, '错误 run 不触发 onDrop');
+  });
+
+  it('onDrop 抛错被吞：export 照常完成，dropped() 仍计数（观测不击穿业务）', async () => {
+    const sink = sampleSink({
+      rate: 0,
+      sinks: [],
+      onDrop: () => {
+        throw new Error('告警通道挂了');
+      },
+    });
+    await sink.export(makeTrace({ traceId: 'ok-1', status: 'ok' })); // 不应抛出
+    assert.equal(sink.dropped(), 1);
+  });
 });
 
 describe('配方 ② redactSink：脱敏', () => {
