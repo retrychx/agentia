@@ -124,6 +124,10 @@ export interface AppOptions {
    *
    * 与 `sinks` 的分工：`sinks` 是「收尾拿整棵」（落库 / 导出 / 指标），本项是
    * 「运行期逐笔」（进度流 / 面板）。两者可以同时配，互不影响。
+   *
+   * ⚠️ 载荷只读：增量事件的载荷与最终交付的 trace **共享引用**（浅拷 —— 事件的
+   * `body`、`span.end` 的 `error` / `usage` 等与 trace 里是同一个对象）。订阅者
+   * **不得变异载荷**：改了它就等于改了落库 / 导出的那份 trace。
    */
   onTraceEvent?: (e: TraceRecordEvent) => void;
   /**
@@ -220,7 +224,10 @@ export class AgentApp {
    */
   private readonly promptVersions: Record<string, string> | undefined;
   private readonly sinks: TraceSink[];
-  /** 增量记账出口的应用级缺省（per-run 覆盖它）；见 AppOptions.onTraceEvent */
+  /**
+   * 增量记账出口的应用级缺省：与 per-run 的那个是**叠加**关系（应用级在前，
+   * run() 里 composeTraceEvents 合成），**不是覆盖** —— 见 AppOptions.onTraceEvent
+   */
   private readonly onTraceEvent: ((e: TraceRecordEvent) => void) | undefined;
   /** 装配期那条中间件链的包裹函数：主菜单构造期已包好；per-run tools 覆盖在 run() 里现包 */
   private readonly wrapTools: (tools: AgentTool[]) => AgentTool[];
@@ -243,7 +250,8 @@ export class AgentApp {
     this.system = opts.system;
     // trace 出口：应用级 sinks 在前，全局默认 sink 在后（构造期快照，注册表后续变化不影响本应用）
     this.sinks = [...(opts.sinks ?? []), ...defaultSinks];
-    // 增量记账出口的应用级缺省（构造期快照，同 sinks 语义）；per-run 给了就覆盖它
+    // 增量记账出口的应用级缺省（构造期快照，同 sinks 语义）；与 per-run 叠加
+    //（应用级在前，run() 里 composeTraceEvents 合成）—— 不是覆盖
     this.onTraceEvent = opts.onTraceEvent;
     this.base = {
       model: opts.model,

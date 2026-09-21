@@ -100,7 +100,13 @@ export class TraceRecorder {
    * 与 `TraceSink` 是**两条缝**：sink 收尾拿整棵，这里 run 进行中就逐笔拿。
    * 纪律：**同步派发**（不 await —— 订阅者是观察者，不该把 run 变成它的调度）、
    * 订阅者抛错**被吞**（观测失败不击穿业务，与 `flushSinks` 同款）、
-   * 无订阅者时**不做任何载荷构造**（「不订阅不付钱」）。
+   * 无订阅者时**不派发**（「不订阅不付钱」）。
+   *
+   * 注意「不付钱」保的是**不派发**，不是零分配：`begin` / `end` / `event` /
+   * `setAttribute` / `addLink` 在调 `emit` **之前**就各自构造了载荷字面量
+   * （`begin` 那份还含一次 span 浅拷）；零分配只在 `emit` 内部的
+   * `listeners.length === 0` 短路之后成立。不把构造挪进 emit（载荷改 thunk）
+   * 的原因：thunk 闭包本身也是每次记账一次分配，省不掉，只是换了形态。
    */
   subscribe(listener: (e: TraceRecordEvent) => void): () => void {
     this.listeners.push(listener);

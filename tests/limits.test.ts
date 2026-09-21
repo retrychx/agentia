@@ -11,7 +11,7 @@
  * 1. **穷尽**：`PROBES` 的类型是 `Record<LimitKnob, …>` ⇒ 表里加了旋钮而没加探针，
  *    `typecheck:tests` 直接红（不是「忘了补文档」，是构建失败）。
  * 2. **真跑**：每个探针调的是**那个 API 本身**（`new AsyncRunner(...)`、`mapWithConcurrency(...)`、
- *    `resolveTraceRetries(...)`），不是在本文件里复刻一遍判定 —— 复刻出来的绿只能证明
+ *    `resolveTraceLimits(...)`），不是在本文件里复刻一遍判定 —— 复刻出来的绿只能证明
  *    「我抄对了」，证明不了产物。这也是本仓对测试的既有口径（见 `e2e-cli` 那条：
  *    字面跑产物自己的命令）。
  *
@@ -35,6 +35,7 @@ import { createAnthropicClient } from '../src/integrations/anthropic.js';
 import { metricsSink } from '../src/integrations/metrics.js';
 import { DrainGate } from '../src/transport/drain-gate.js';
 import { Scheduler } from '../src/transport/scheduler.js';
+import { TaskEventStreams } from '../src/transport/task-events.js';
 import { endTurnMsg, mockClient, toolUseMsg } from './helpers.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -298,6 +299,57 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     assert.throws(() => metricsSink({ maxCapabilities: 0 }), /必须为正数/);
     return 'invalid';
   },
+
+  async 'AsyncRunner.streamBufferEvents'() {
+    // 坏值一律构造期抛 TypeError（走 AsyncRunner 公共旋钮 —— 它内部构造 TaskEventStreams）。
+    // ⚠️ NaN 必须单拎出来：旧实现 `Math.max(1, NaN)` = NaN，随后 `length > NaN` 恒假
+    // ⇒ 内存闸静默失效；这条探针若只测 0/负数，NaN 那路就没人守。
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => new AsyncRunner(slowApp(1), { streamBufferEvents: bad }),
+        TypeError,
+        `streamBufferEvents: ${String(bad)} 必须抛 TypeError（0 读作 invalid，不是静默抬成 1）`,
+      );
+    }
+    // 与相邻读法区分开：disabled（0 放行 = 机制关掉）不成立 —— 上面 0 已抛；
+    // 正整数放行且**真的生效**：上限 2 的缓冲推 3 条，最旧那条必须被丢（不静默）。
+    const streams = new TaskEventStreams({ maxEvents: 2 });
+    streams.open('t1');
+    const ev = { type: 'span.begin' } as never;
+    streams.push('t1', ev);
+    streams.push('t1', ev);
+    streams.push('t1', ev);
+    const replayed = streams.replay('t1');
+    assert.equal(replayed.events.length, 2, '上限 2 必须真的拦住第三条');
+    assert.equal(replayed.droppedBefore, 2, '丢了最旧一条必须明示（droppedBefore = 2）');
+    return 'invalid';
+  },
+
+  async 'TaskEventStreams.retainTerminal'() {
+    // 坏值一律构造期抛 TypeError。⚠️ NaN 的失效方向与 maxEvents **相反**：判定是
+    // `excess <= 0 提前返回` ⇒ NaN 恒假 ⇒ 全部无订阅者的终态流被清空（保留机制静默失效）。
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => new TaskEventStreams({ retainTerminal: bad }),
+        TypeError,
+        `retainTerminal: ${String(bad)} 必须抛 TypeError`,
+      );
+    }
+    // 0 读作 disabled：不留终态流（终态即忘）。
+    const zero = new TaskEventStreams({ retainTerminal: 0 });
+    zero.open('t1');
+    zero.markDone('t1');
+    assert.equal(zero.has('t1'), false, 'retainTerminal: 0 ⇒ 终态流立即被淘汰');
+    // 正整数真的生效：留 1 条时，第二个终态把第一个（最旧、无订阅者）淘汰。
+    const one = new TaskEventStreams({ retainTerminal: 1 });
+    one.open('t1');
+    one.markDone('t1');
+    one.open('t2');
+    one.markDone('t2');
+    assert.equal(one.has('t1'), false, '超出保留条数 ⇒ 最旧的终态流被淘汰');
+    assert.equal(one.has('t2'), true, '保留条数内的终态流必须还在');
+    return 'disabled';
+  },
 };
 
 describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards §2 待守形状①）', () => {
@@ -332,11 +384,27 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
         () => resolveTraceLimits({ maxEvents: 1.5 }, 'x'),
         /0 = 一条都不记/,
       ],
+      [
+        'AsyncRunner.streamBufferEvents',
+        () => new AsyncRunner(slowApp(1), { streamBufferEvents: 0 }),
+        /0 没有「缓冲几条」的读法/,
+      ],
     ];
     for (const [knob, run, expected] of cases) {
       const clause = LIMIT_SEMANTICS.find((s) => s.knob === knob)?.zeroClause ?? '';
       assert.match(clause, expected, `表里 ${knob} 的 zeroClause 应含 ${String(expected)}`);
       assert.throws(run, new RegExp(clause.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
+  });
+
+  it('探针与表一一对应（运行期互查 —— tsx 不做类型检查，Record 的编译期守卫生效不到这里）', () => {
+    // Record<LimitKnob, …> 在 typecheck:tests 守「表加了没探针 / 探针加了表里摘了」，
+    // 但单跑 `node --import tsx --test` 时类型检查根本不发生 —— 这条用例是运行期兜底：
+    // 从表里摘掉一行登记，这里当场红（而不是等下一次 typecheck 才发现）。
+    assert.deepEqual(
+      Object.keys(PROBES).sort(),
+      LIMIT_SEMANTICS.map((s) => s.knob).sort(),
+      '探针表与 LIMIT_SEMANTICS 漂移了 —— 两边必须一一对应',
+    );
   });
 });

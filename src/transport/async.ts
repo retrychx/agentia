@@ -54,9 +54,12 @@ export interface TaskSink {
 /**
  * 落库失败的形状（`AsyncRunnerOptions.onPersistError` 的入参）。
  *
+ * ⚠️ 回调只在「**这次写出本身**失败」时 firing —— `error` 永远是**这次**写出的错。
  * `phase` 区分两次**都曾静默**的写出：
- * - `'initial'` —— 提交时那次 `save` 的**迟到 reject**。注意：同步 store 当场抛走的不是这条路
- *   （那条按 `TaskInputError` 处理，本来就响亮），这里专指异步 store 交了 Promise 之后才拒的情形。
+ * - `'initial'` —— 提交时那次 `save` 迟到 reject 之后的**补偿性重存**（把任务改判为
+ *   `failed` 再写）也失败了。注意：原始那次 reject 本身**不触发**本回调（它只触发
+ *   补偿路径），这里拿到的 `error` 是**重存**的错，不是原始 save 的。
+ *   同步 store 当场抛走的也不是这条路（那条按 `TaskInputError` 处理，本来就响亮）。
  * - `'outcome'` —— 终态（或挂起态）那次写出失败。**这条最贵**：库里停在 `running`，
  *   而它其实已经跑完了（副作用已发生）—— 重启后 `resumePending` 会把它当孤儿**再跑一遍**。
  */
@@ -85,9 +88,17 @@ export type TaskStreamFrame =
   | { type: 'end'; record: TaskRecord }
   /**
    * 本进程没有这条任务的实时流（帧名 `stream.unavailable`）——跨进程宿主（队列消费者在
-   * 别的进程里跑）或任务早于本进程启动。**不假装实时**：发完它（终态再补一帧 `end`）就收口。
+   * 别的进程里跑）或任务早于本进程启动。**不假装实时**：发完它就收口
+   * （终态补一帧 `end`，非终态补一帧 `closed` —— 见下）。
    */
-  | { type: 'unavailable'; reason: 'not-in-this-process' };
+  | { type: 'unavailable'; reason: 'not-in-this-process' }
+  /**
+   * **流级**收尾（帧名 `stream.closed`，随后服务端关闭连接）：流到此处为止，但任务
+   * **不是**终态（还在别的进程里跑）。与 `end` 严格区分 —— `end` 的语义是「任务终态」，
+   * 非终态发 `end` 是伪造终态；没有这一帧，跨进程 + 非终态的 SSE 只剩心跳永远挂着，
+   * 按「读到流结束」写法的客户端永远等不到。客户端收到它应转去轮询 `GET /tasks/:id`。
+   */
+  | { type: 'closed'; reason: 'not-in-this-process' };
 
 /**
  * `streamTask` 的失败：带 HTTP 语义的状态码（404 = 任务不存在），HTTP 宿主据此回对应响应。
@@ -186,6 +197,10 @@ export interface AsyncRunnerOptions {
   approvalTimeoutMs?: number;
   /**
    * 每任务**记账事件缓冲**的条数上限（`GET /tasks/:id/stream` 用）；缺省 500。
+   *
+   * 必须是**正**安全整数：NaN / Infinity / 负数 / 小数 / 0 一律在构造期抛 TypeError ——
+   * NaN 会让「超出条数上限」的判定恒假（内存闸静默失效）；0 没有「缓冲几条」的读法
+   * （既不是「关掉流」也不是「不限」），0 语义归类见 `core/limits.ts`。
    *
    * 内存量级：单条事件正文受 `maxEventChars` 约束（入参/成功出参缺省 2000 字符），
    * 故 500 条 ≈ 1 MB/任务；终态流的保留条数是代码里的常量（最近 16 条）。
@@ -381,7 +396,9 @@ export class AsyncRunner {
    * 2. **终态收口**：任务已终态 ⇒ 补发完缓冲 + 一帧 `end`，**不留**一条永远不会再产出事件的流。
    *    挂起（`awaiting_approval`）**不是**终态：批了会接着跑，流必须开着（见 isTerminalTask）。
    * 3. **跨进程不假装**：本进程没有这条流时（别的进程在跑 / 任务早于本进程），发一帧
-   *    `unavailable`（终态再补 `end`）就收口。事件**不落 store** 是有意的：实测事件数
+   *    `unavailable` 后**立即收口**：终态补 `end`，非终态补 `closed`（流级收尾，不是
+   *    伪造终态）—— 非终态只发 `unavailable` 就返回的话，这条 SSE 只剩心跳永远挂着。
+   *    事件**不落 store** 是有意的：实测事件数
    *    = 2 × 工具调用、正文 KB 级 ⇒ 每条工具调用要把 KB 级正文写库两次（写放大），
    *    而宿主本来就有自己的总线（`onTraceEvent` 就是给它的缝）。
    *
@@ -424,7 +441,14 @@ export class AsyncRunner {
     const rec = await this.poll(taskId);
     if (!rec) throw new TaskStreamError(`task 不存在: ${taskId}`);
     listener({ type: 'unavailable', reason: 'not-in-this-process' });
-    if (isTerminalTask(rec)) listener({ type: 'end', record: rec });
+    // unavailable 之后**必须立即收口**：返回的 noop 意味着没有退订通道，不收口这条
+    // 流就只剩心跳永远挂着（客户端按「读到流结束」写法永远等不到）。
+    // 终态补 `end`；非终态不能伪造终态帧 —— 发流级收尾帧 `closed`（客户端转轮询）。
+    if (isTerminalTask(rec)) {
+      listener({ type: 'end', record: rec });
+    } else {
+      listener({ type: 'closed', reason: 'not-in-this-process' });
+    }
     return noop;
   }
 
@@ -973,7 +997,9 @@ export class AsyncRunner {
       // 但它**必须有人能收到** —— 宿主无法自己发现这件事（见 onPersistError 的注释）。
       if (this.onPersistError) {
         try {
-          this.onPersistError({ record: rec, error, phase });
+          // 传快照（与 #notifySinks 同纪律）：回调拿到的是「此刻的记录」，之后记录
+          // 再被推进不会串进回调持有的引用（引用语义 store 下，活引用 = 回调能改写库里的记录）
+          this.onPersistError({ record: { ...rec }, error, phase });
         } catch {
           /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
         }

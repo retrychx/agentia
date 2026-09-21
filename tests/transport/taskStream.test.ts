@@ -260,6 +260,57 @@ describe('GET /tasks/:id/stream（异步任务的增量事件流）', () => {
     }
   });
 
+  it('跨进程 + 非终态：unavailable 后立即收口（stream.closed + 关连接），不留心跳鬼流', async () => {
+    // 反向验证：摘掉 async.ts 跨进程分支的 `closed` 补帧 ⇒ 这条 SSE 只剩心跳永远挂着，
+    // 下面「pump 读到流尾」的断言超时变红。
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    // 任务卡在闸门上 ⇒ 稳定在 running（非终态），不靠 sleep 猜
+    const { base, server, store } = await setup(gate);
+    try {
+      const taskId = await submit(base);
+
+      // 模拟「另一个进程」：同一个 store、另一台 runner（它的内存里没有这条任务的流）
+      const app2 = await createApp({
+        name: 'task-stream-live-2',
+        system: new SystemPrompt().add('role', '助手。', true),
+      });
+      const runner2 = new AsyncRunner(app2, { store });
+      const server2 = createServer(createHttpHandler(app2, { runner: runner2 }));
+      await new Promise<void>((r) => server2.listen(0, '127.0.0.1', r));
+      const { port } = server2.address() as AddressInfo;
+      try {
+        const s = await openSse(`http://127.0.0.1:${port}`, `/tasks/${taskId}/stream`);
+        await until(() => s.frames.some((f) => f.event === 'stream.closed'), 3000, 'stream.closed');
+        const names = s.frames.map((f) => f.event);
+        assert.ok(
+          names.includes('stream.unavailable'),
+          '别的进程没有这条流时必须明说 —— 静默给一条空流会被读成「任务什么都没干」',
+        );
+        assert.ok(
+          names.indexOf('stream.unavailable') < names.indexOf('stream.closed'),
+          '必须先交代 unavailable（为什么没有实时流）再收口',
+        );
+        assert.ok(
+          !names.includes('task.end'),
+          '任务还在跑（非终态）—— 发 task.end 是伪造终态，客户端会以为它跑完了',
+        );
+        // 收口的核心证据：服务端关连接，客户端读到流尾（只剩心跳的旧行为会在这里超时）
+        await Promise.race([
+          s.pump,
+          new Promise((_, rej) => setTimeout(() => rej(new Error('流没关')), 3000)),
+        ]);
+      } finally {
+        await closeServer(server2);
+      }
+    } finally {
+      release(); // 放掉卡住的任务，让 runner 干净收尾
+      await closeServer(server);
+    }
+  });
+
   it('客户端中途断开：任务照常跑完（旁观者不该把任务拖下水）', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => {

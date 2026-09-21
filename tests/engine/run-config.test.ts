@@ -18,13 +18,15 @@ import {
   runConfigSnapshot,
 } from '../../src/engine/run-config.js';
 import { DEFAULT_RETRY } from '../../src/engine/retry.js';
+import type { TraceLimits } from '../../src/engine/tracer.js';
 import type { MessageParam } from '../../src/core/message.js';
 import type { ContextPolicy, RunAgentOptions } from '../../src/engine/types.js';
 
 /** 最小合法 options：只有 messages 必填；其余按需覆盖 */
 const BASE: RunAgentOptions = { messages: [{ role: 'user', content: 'go' }] };
-const snap = (o: Partial<RunAgentOptions> = {}): Record<string, string | number | boolean> =>
-  runConfigSnapshot({ ...BASE, ...o });
+const snap = (
+  o: Partial<RunAgentOptions> & { traceLimits?: TraceLimits } = {},
+): Record<string, string | number | boolean> => runConfigSnapshot({ ...BASE, ...o });
 
 /** 改 AGENTIA_MODEL 跑一段、跑完恢复 —— 缺省模型解析读 process.env，别把环境漏给别的用例 */
 function withEnv(value: string | undefined, fn: () => void): void {
@@ -122,6 +124,18 @@ describe('maxEventChars —— false 与 0 是两回事', () => {
     assert.equal(snap({ maxEventChars: 0 })['config.maxEventChars'], 0);
     assert.equal(snap({ maxEventChars: 1500 })['config.maxEventChars'], 1500);
     assert.equal('config.maxEventChars' in snap(), false);
+  });
+});
+
+describe('traceLimits.maxEvents —— 0 是「一条都不记」，不是「不限」', () => {
+  it('传入原样记（含 0 —— 不记成 off：off 的口径是「不设上限」）', () => {
+    assert.equal(snap({ traceLimits: { maxEvents: 500 } })['config.traceLimits.maxEvents'], 500);
+    assert.equal(snap({ traceLimits: { maxEvents: 0 } })['config.traceLimits.maxEvents'], 0);
+  });
+
+  it('未传 / 空 traceLimits（= 不限）则不在场', () => {
+    assert.equal('config.traceLimits.maxEvents' in snap(), false);
+    assert.equal('config.traceLimits.maxEvents' in snap({ traceLimits: {} }), false);
   });
 });
 

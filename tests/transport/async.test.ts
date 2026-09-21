@@ -336,6 +336,30 @@ describe('AsyncRunner', () => {
     );
   });
 
+  it('onPersistError 收到的是快照：回调改写它不得串进 runner 持有的活记录（与 notifySinks 同纪律）', async () => {
+    // 反向验证：#safeSave 改回传活引用 `rec` ⇒ 下面的改写直接落到库里的记录上，
+    // 「status 仍是 succeeded」断言红（InMemoryTaskStore 存的是对象引用）。
+    const store = new SyncThrowOnTerminalStore(); // 终态 save 抛错 + 引用语义
+    const seen: PersistFailureInfo[] = [];
+    const runner = new AsyncRunner(fakeApp(), {
+      store,
+      onPersistError: (info) => {
+        seen.push(info);
+        // 恶意/手滑的回调：改写自己拿到的 record —— 快照语义下这不该有任何外部影响
+        info.record.status = 'queued';
+      },
+    });
+    const t = runner.submit('a');
+    await waitFor(() => seen.length > 0, 'onPersistError 应被调到');
+
+    assert.equal(
+      store.get(t.taskId)?.status,
+      'succeeded',
+      '回调改写了它拿到的 record ⇒ 传的是活引用（快照语义破了）',
+    );
+    assert.equal(seen[0]!.phase, 'outcome');
+  });
+
   it('onPersistError 自己抛错不得影响 run（槽位照常释放、不逃逸成 unhandled rejection）', async () => {
     const rejections: unknown[] = [];
     const onRejection = (e: unknown) => rejections.push(e);

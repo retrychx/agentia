@@ -190,8 +190,20 @@ export function createStdioMcpConnector(
       // 不再 await，pending 里的 {resolve,reject} 会留到「server 终于回包 / 进程死 /
       // close」—— 对「活着但不回包」的 server 就是无界泄漏。裁判表过态就删条目：
       // 之后回包到了也没人等（:441 的 pending.get 落空即忽略，语义安全）。
+      // ⚠️ 删条目的同时必须 **reject**：只删不拒的话这个 Promise 永远没人 settle
+      // （响应帧按 id 配对，条目已删 ⇒ 回包被忽略），直接 await 连接器 API 的宿主会
+      // 永久挂起 —— HTTP 连接器把 signal 交给 fetch、中止即以 AbortError 收场，
+      // 同一份契约的两条实现在「在途中止」上必须同行为。响应已到时这里的 reject
+      // 是 no-op（Promise 已定型），不破坏正常路径。
       if (abandoned !== undefined) {
-        abandoned.addEventListener('abort', () => pending.delete(id), { once: true });
+        abandoned.addEventListener(
+          'abort',
+          () => {
+            pending.delete(id);
+            reject(abortError('调用已被取消（请求在途中止）'));
+          },
+          { once: true },
+        );
       }
       write({ jsonrpc: '2.0', id, method, params });
     });

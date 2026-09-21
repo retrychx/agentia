@@ -642,6 +642,12 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
               case 'unavailable':
                 sse.event('stream.unavailable', { reason: frame.reason });
                 return;
+              case 'closed':
+                // 流级收尾（任务未终态，见 TaskStreamFrame）：帧先发出去再关连接 ——
+                // 客户端据此知道「没有更多帧了，去轮询」，而不是对着断线猜
+                sse.event('stream.closed', { reason: frame.reason });
+                closeStream();
+                return;
               case 'end':
                 sse.event('task.end', frame.record);
                 closeStream();

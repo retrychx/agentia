@@ -1,7 +1,8 @@
 /*
  * 穷尽转发的**类型级**守卫（`docs/guards.md` §2 的「手写转发列表不得漏字段」）。
  * 只做类型检查、不运行（文件名不是 *.test.ts，node:test 不收它）—— 由
- * `npm run typecheck:tests` 校验（verify-all 第 4 步）。
+ * `npm run typecheck:types` 校验（verify-all 第 3 步；`tsconfig.tests.json` 显式
+ * 排除 `tests/types`，所以 typecheck:tests 管不到本文件）。
  *
  * 守的是什么：`ToolRunContext` 上「嵌套能力必须原样往下交」的字段清单
  * （`src/engine/forwarded.ts`）。新增一个可选字段而**没有归类**（既不在转发组、

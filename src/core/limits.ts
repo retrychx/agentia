@@ -14,13 +14,21 @@
  * 不限。所以：
  *
  * - 表与实现漂了 ⇒ 集中用例红（不是文档过期，是构建失败）；
- * - 新增一个旋钮却忘了归类 ⇒ 用例里 `Record<LimitKnob, …>` 少一项，`typecheck:tests` 红。
+ * - 表加了旋钮而探针没加 ⇒ 用例里 `Record<LimitKnob, …>` 少一项，`typecheck:tests` 红。
+ *
+ * ⚠️ 守卫方向的如实口径：`LimitKnob` 类型**来自这张表本身**，所以
+ * `Record<LimitKnob, …>` 只守得住「表 ↔ 探针」这一个方向的对账（表加了没探针、
+ * 探针加了表里摘了，都会被拦住）；它**抓不到**「代码里新增了旋钮却根本没进表」——
+ * 那一步只能靠改代码的人主动登记（这张表就是登记处），别把它当成全自动的网。
+ * 表与探针的互查另有一条运行期用例兜底（`tests/limits.test.ts` 末尾）——
+ * tsx 不跑类型检查，光有 `Record` 的编译期守卫在单跑测试时看不见。
  *
  * ⚠️ 本模块**不是公共 API**（不进 `src/index.ts`）：它是内部口径的真源，不是给使用者的旋钮。
  * 面向使用者的口径在 `docs/usage-guide.md` 的「边界」一节。
  *
- * ⚠️ 表里的 `zeroClause` 是**报错文案的一部分**：四处构造期校验（`runTimeoutMs` /
- * `approvalTimeoutMs` / `traceLimits.maxEvents` / `maxRetries`）把它插进错误消息里
+ * ⚠️ 表里的 `zeroClause` 是**报错文案的一部分**：五处构造期校验（`runTimeoutMs` /
+ * `approvalTimeoutMs` / `traceLimits.maxEvents` / `maxRetries` / `streamBufferEvents`）
+ * 把它插进错误消息里
  * （`…（0 = 不重试），收到 -1 —— …`）。所以「文案里怎么解释 0」与「代码里怎么实现 0」
  * 是同一个值，改一处等于同时改另一处 —— 这正是先前缺的那条单源。
  */
@@ -157,6 +165,16 @@ export const LIMIT_SEMANTICS = [
     note: '`toolTimeoutMs` 的底座。⚠️ 漏透传这个值不是「少一层保险」而是**反的**：`withTimeout(p, 0)` 直接返回原 promise = 永不超时，同时 MCP 桥找不到引擎预算又起自己的 60s 兜底 ⇒ 双计时器、双账本（`toolkit/subagent.ts` / `skill.ts` 的透传注释指的就是这条）。',
   },
 
+  {
+    knob: 'TaskEventStreams.retainTerminal',
+    where: 'transport/task-events.ts',
+    unit: 'count',
+    zero: 'disabled',
+    zeroClause: '0 = 不留终态流（终态即忘）',
+    badValue: 'throws',
+    note: '判定是 `excess <= 0 提前返回` ⇒ NaN 恒假、**全部**无订阅者的终态流被清空（保留机制静默失效，方向与 maxEvents 的「闸失效」相反、同族）。⚠️ 只跳过「还有订阅者」的终态流 —— 那是还没被读完的流，丢了下游会莫名断在半路。',
+  },
+
   // ── 0 = 立即执行（等待预算为 0 ⇒ 这次等待不存在）─────────────────────────
   {
     knob: 'interruptibleSleep.ms',
@@ -186,6 +204,15 @@ export const LIMIT_SEMANTICS = [
     zeroClause: '必须为正数（0 = 没有 worker）',
     badValue: 'throws',
     note: '0 个 worker 的池子会让每个任务永远排在队列里（既不跑也不失败）。',
+  },
+  {
+    knob: 'AsyncRunner.streamBufferEvents',
+    where: 'transport/task-events.ts',
+    unit: 'count',
+    zero: 'invalid',
+    zeroClause: '必须为正安全整数（0 没有「缓冲几条」的读法）',
+    badValue: 'throws',
+    note: '0 既不是「关掉流」（live 推送仍在工作）也不是「不限」，三种合法读法都不沾 ⇒ 配置错误；旧实现 `Math.max(1, …)` 把 0 静默抬成 1（替使用者改配置），且 NaN 穿过后 `length > NaN` 恒假 ⇒ 每任务内存闸静默失效（使用者以为设了上限）。',
   },
   {
     knob: 'Scheduler.every.intervalMs',

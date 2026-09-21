@@ -1,4 +1,5 @@
 import type { TraceRecordEvent } from '../core/trace.js';
+import { zeroClauseOf } from '../core/limits.js';
 
 /**
  * 任务记账事件流 —— **每任务的事件缓冲 + 订阅表**（`AsyncRunner` 拆分的又一块纯件）。
@@ -23,7 +24,14 @@ import type { TraceRecordEvent } from '../core/trace.js';
  * 缺省 2000 字符），所以 500 条 × 2 KB ≈ 1 MB/任务，16 条终态 ≈ 16 MB 上限 —— 量级可控。
  */
 export interface TaskEventStreamsOptions {
-  /** 每条流最多保留多少条事件（超出丢最旧）；缺省 500 */
+  /**
+   * 每条流最多保留多少条事件（超出丢最旧）；缺省 500。
+   * 必须是**正**安全整数：坏值（NaN/Infinity/负数/小数/0）构造期抛 TypeError ——
+   * `NaN` 会让 `length > maxEvents` 恒假（内存闸静默失效，使用者以为设了上限），
+   * `0` 没有「缓冲几条」的读法（既不是「关掉流」—— live 推送仍在，也不是「不限」），
+   * 静默抬成 1 是替使用者改配置。0 语义归类见 `core/limits.ts` 的
+   * `AsyncRunner.streamBufferEvents` 行。
+   */
   maxEvents?: number;
   /** 终态流的保留条数（LRU，超出即丢最旧的终态流）；缺省 16 */
   retainTerminal?: number;
@@ -67,8 +75,31 @@ export class TaskEventStreams {
   private readonly retainTerminal: number;
 
   constructor(opts: TaskEventStreamsOptions = {}) {
-    this.maxEvents = Math.max(1, opts.maxEvents ?? TASK_STREAM_DEFAULT_MAX_EVENTS);
-    this.retainTerminal = Math.max(0, opts.retainTerminal ?? TASK_STREAM_DEFAULT_RETAIN_TERMINAL);
+    // 坏值响亮失败（口径与 resolveTraceLimits / resolveMaxRetries 同款）：
+    // 判定是 `length > maxEvents` ⇒ NaN 恒假（上限根本不生效）、Infinity 永不触发、
+    // 负数/小数与「缓冲几条」对不上；0 的读法见 limits 表（invalid —— 构造期抛）。
+    const maxEvents = opts.maxEvents ?? TASK_STREAM_DEFAULT_MAX_EVENTS;
+    if (typeof maxEvents !== 'number' || !Number.isSafeInteger(maxEvents) || maxEvents <= 0) {
+      throw new TypeError(
+        `streamBufferEvents 必须是正安全整数（${zeroClauseOf('AsyncRunner.streamBufferEvents')}），收到 ${String(opts.maxEvents)} —— ` +
+          'NaN 会让「超出条数上限」的判定恒假（每任务内存闸静默失效），0 / 负数 / 小数没有「缓冲几条」的读法',
+      );
+    }
+    this.maxEvents = maxEvents;
+    // retainTerminal 同款校验：判定是 `excess <= 0 提前返回` ⇒ NaN 恒假、终态流被**全部清空**
+    // （保留机制静默失效，方向与 maxEvents 相反、同族）。0 有读法：不留终态流（disabled）。
+    const retainTerminal = opts.retainTerminal ?? TASK_STREAM_DEFAULT_RETAIN_TERMINAL;
+    if (
+      typeof retainTerminal !== 'number' ||
+      !Number.isSafeInteger(retainTerminal) ||
+      retainTerminal < 0
+    ) {
+      throw new TypeError(
+        `retainTerminal 必须是非负安全整数（${zeroClauseOf('TaskEventStreams.retainTerminal')}），收到 ${String(opts.retainTerminal)} —— ` +
+          'NaN 会让「超出保留条数」的判定恒假（终态流被静默清空），负数 / 小数没有「留几条」的读法',
+      );
+    }
+    this.retainTerminal = retainTerminal;
   }
 
   /** 这条流在场吗（在场 = 本进程见过它的记账） */

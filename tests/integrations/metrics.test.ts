@@ -6,6 +6,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { attachScore, createApp, metricsSink, SystemPrompt } from '../../src/index.js';
 import type { Span, Trace } from '../../src/index.js';
+import { MetricsState } from '../../src/integrations/metrics-state.js';
 import { mockClient, endTurnMsg } from '../helpers.js';
 
 /** 造一条只有根 span 的 trace：durationMs=undefined 表示根未收尾 */
@@ -525,6 +526,38 @@ describe('E5 OTLP/JSON 指标导出', () => {
       );
     } finally {
       await close(server);
+    }
+  });
+
+  /*
+   * 上一条用例走真实时钟：两次 reset 之间隔了网络往返，起点必然前进 —— 它守不住
+   * 「**同一毫秒**内连按两次 reset」这个角落。那时裸 `Date.now()` 会让两个新窗口共用
+   * 同一个 startTime，后端看到的仍是同一区间内 counter 倒退（metrics-state.ts 的
+   * `Math.max(now, 前值 + 1)` 就是为这个角落存在的）。这里冻结时钟把它钉死。
+   */
+  it('同一毫秒内连按两次 reset：窗口起点仍严格前进（靠前值+1，不靠时钟）', () => {
+    const realNow = Date.now;
+    // 冻结时钟：构造与两次 reset 全部落在同一毫秒
+    Date.now = () => 1_000_000;
+    try {
+      const state = new MetricsState({
+        windowSize: 8,
+        maxCapabilities: 8,
+        maxModels: 8,
+        maxScores: 8,
+        labelMode: 'capability',
+        buckets: [10],
+      });
+      state.reset();
+      const first = state.windowStartedAt;
+      state.reset();
+      assert.ok(
+        state.windowStartedAt > first,
+        '同毫秒连按两次 reset，第二个窗口的起点必须严格大于第一个：' +
+          `first=${first} second=${state.windowStartedAt}`,
+      );
+    } finally {
+      Date.now = realNow;
     }
   });
 

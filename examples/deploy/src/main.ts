@@ -68,7 +68,12 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[boot] listening on :${PORT}（db=${DB_PATH}）`);
+  // PORT=0 时端口由操作系统分配，以 server.address() 拿到的实际端口为准
+  const addr = server.address();
+  const actualPort = typeof addr === 'object' && addr !== null ? addr.port : PORT;
+  // ⚠️ 首行是**就绪信号**（scripts/e2e-deploy.ts 从它解析实际端口判定服务可用）——
+  //    改文案要同步改那边的正则。
+  console.log(`[boot] listening on :${actualPort}（db=${DB_PATH}）`);
   console.log('  POST /run        同步 run（带 Accept: text/event-stream → SSE 逐帧）');
   console.log('  POST /tasks      异步任务（轮询 GET /tasks/:id）');
   console.log('  GET  /healthz    健康检查（探针用，不鉴权）');
