@@ -10,11 +10,15 @@ import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { TimeoutError } from '../core/timeout.js';
+import { composeTraceEvents } from '../core/trace.js';
+import type { TraceRecordEvent } from '../core/trace.js';
 import { SlotPool } from './slot-pool.js';
 import { approvalExpired, approvalsComplete, fillTimeoutDenials } from './approval-policy.js';
 import { DrainGate } from './drain-gate.js';
 import { resumeSkipReason } from './resume-policy.js';
 import { TaskWaiters } from './task-waiters.js';
+import { TaskEventStreams } from './task-events.js';
+import type { TaskStreamEvent } from './task-events.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -48,6 +52,50 @@ export interface TaskSink {
 
 /** `approve` 的入参：一批 tool_use_id → 批准/拒绝（理由可选） */
 export type ApprovalDecisions = Record<string, { approved: boolean; reason?: string }>;
+
+/**
+ * 任务事件流的一帧（`GET /tasks/:id/stream` 的帧形状，与 SSE 帧名一一对应）。
+ *
+ * 为什么帧里带 `index`：SSE 的 `Last-Event-ID` / `?from=` 指的是**流自己的序号**
+ * （不是 recorder 的 `seq` —— 一个任务可能跨多个 run 段，每段 `seq` 从 1 重来，
+ * 见 `task-events.ts` 的设计约束 1）。
+ */
+export type TaskStreamFrame =
+  /** 一条记账事件（帧名 `trace.event`，SSE `id:` = index） */
+  | { type: 'trace'; index: number; event: TraceRecordEvent }
+  /** 缓冲超限、最前面的一段没了（帧名 `stream.truncated`，只发一次、在重放之前） */
+  | { type: 'truncated'; droppedBefore: number }
+  /** 任务到终态，流到此为止（帧名 `task.end`，随后服务端关闭连接） */
+  | { type: 'end'; record: TaskRecord }
+  /**
+   * 本进程没有这条任务的实时流（帧名 `stream.unavailable`）——跨进程宿主（队列消费者在
+   * 别的进程里跑）或任务早于本进程启动。**不假装实时**：发完它（终态再补一帧 `end`）就收口。
+   */
+  | { type: 'unavailable'; reason: 'not-in-this-process' };
+
+/**
+ * `streamTask` 的失败：带 HTTP 语义的状态码（404 = 任务不存在），HTTP 宿主据此回对应响应。
+ * 形状与 `TaskApproveError` 同款（module 级 export，不进公共导出面）。
+ */
+export class TaskStreamError extends Error {
+  readonly status: 404;
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskStreamError';
+    this.status = 404;
+  }
+}
+
+/**
+ * 任务是否**已到终态**（流可以收口了）。
+ *
+ * ⚠️ 与 `resume-policy.ts` 那个「可续跑」的判定**刻意不同**：那里 `awaiting_approval`
+ * 算「不可续跑」（重启扫描不该去动它），这里是**非终态** —— 挂起在等人，人批了它会接着跑，
+ * 流必须**继续开着**（关掉的话「等审批结果的前端」正好在最需要的时候断线）。
+ */
+function isTerminalTask(rec: TaskRecord): boolean {
+  return rec.status !== 'queued' && rec.status !== 'running' && rec.status !== 'awaiting_approval';
+}
 
 /**
  * `approve` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
@@ -103,6 +151,14 @@ export interface AsyncRunnerOptions {
    * 崩溃/重启也不依赖任何在飞回调）。
    */
   approvalTimeoutMs?: number;
+  /**
+   * 每任务**记账事件缓冲**的条数上限（`GET /tasks/:id/stream` 用）；缺省 500。
+   *
+   * 内存量级：单条事件正文受 `maxEventChars` 约束（入参/成功出参缺省 2000 字符），
+   * 故 500 条 ≈ 1 MB/任务；终态流的保留条数是代码里的常量（最近 16 条）。
+   * 超出条数上限时丢**最旧**的，并向订阅方发一帧 `stream.truncated`（**不静默**）。
+   */
+  streamBufferEvents?: number;
 }
 
 /** resumePending 的启动扫描选项 */
@@ -142,6 +198,11 @@ export class AsyncRunner {
   /** 任务终态等待表（见 task-waiters.ts）：仅覆盖本进程写终态，他进程写靠兜底轮询 */
   readonly #taskWaiters = new TaskWaiters();
   /**
+   * 每任务的记账事件流（见 task-events.ts）：`GET /tasks/:id/stream` 的重放 + 实时推送。
+   * 纯记账件，独立于 store / 槽位 —— 所以在 855 行的类里单独抽一个文件。
+   */
+  readonly #streams: TaskEventStreams;
+  /**
    * **同进程内的幂等键认领表**（idempotencyKey → 在飞记录）。
    *
    * 为什么必须有它（2026-09-21 外部复核实测）：`submit` 是同步门面，**无法 await** 异步 store 的
@@ -174,6 +235,9 @@ export class AsyncRunner {
     this.client = opts.client;
     this.sessionStore = opts.sessionStore;
     this.taskSinks = opts.taskSinks ?? [];
+    this.#streams = new TaskEventStreams(
+      opts.streamBufferEvents === undefined ? {} : { maxEvents: opts.streamBufferEvents },
+    );
     this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY;
     if (!(this.concurrency > 0)) {
       throw new Error(`concurrency 必须为正数，收到 ${opts.concurrency}`);
@@ -268,6 +332,62 @@ export class AsyncRunner {
     // 惰性审批超时（HITL）：读到 awaiting 记录时顺手判定 —— 到点就自动全拒并重派
     if (isThenable(rec)) return rec.then((r) => this.#lazyExpireApproval(r));
     return this.#lazyExpireApproval(rec);
+  }
+
+  /**
+   * 订阅某任务的**记账事件流**（`GET /tasks/:id/stream` 的引擎侧）。
+   *
+   * 三条语义（与 docs/plans/2026-09-21-incremental-trace-export-and-sampling.md §3 Phase A3 对齐）：
+   * 1. **先重放、后实时**：`opts.from`（= SSE 的 `Last-Event-ID` / `?from=`）之后的事件先补发，
+   *    再挂实时订阅 —— 「连上时已经跑了一半」的客户端因此也能拿到完整前缀。
+   * 2. **终态收口**：任务已终态 ⇒ 补发完缓冲 + 一帧 `end`，**不留**一条永远不会再产出事件的流。
+   *    挂起（`awaiting_approval`）**不是**终态：批了会接着跑，流必须开着（见 isTerminalTask）。
+   * 3. **跨进程不假装**：本进程没有这条流时（别的进程在跑 / 任务早于本进程），发一帧
+   *    `unavailable`（终态再补 `end`）就收口。事件**不落 store** 是有意的：实测事件数
+   *    = 2 × 工具调用、正文 KB 级 ⇒ 每条工具调用要把 KB 级正文写库两次（写放大），
+   *    而宿主本来就有自己的总线（`onTraceEvent` 就是给它的缝）。
+   *
+   * 返回退订函数（连接关掉时必须调，否则订阅者挂在表里）。任务不存在 ⇒ `TaskStreamError`（404）。
+   */
+  async streamTask(
+    taskId: string,
+    listener: (frame: TaskStreamFrame) => void,
+    opts: { from?: number } = {},
+  ): Promise<() => void> {
+    const noop = (): void => {};
+    if (this.#streams.has(taskId)) {
+      const replayed = this.#streams.replay(taskId, opts.from);
+      // 截断明示放在重放之前：下游先知道「前面缺了一段」，再读数据
+      if (replayed.droppedBefore !== undefined) {
+        listener({ type: 'truncated', droppedBefore: replayed.droppedBefore });
+      }
+      for (const item of replayed.events) {
+        listener({ type: 'trace', index: item.index, event: item.event });
+      }
+      if (replayed.done) {
+        const rec = await this.poll(taskId);
+        if (rec) listener({ type: 'end', record: rec });
+        return noop;
+      }
+      // 实时订阅：`onDone` 里补发 `end` 帧 —— 终态是流的一部分
+      //（没有它，这条 SSE 会在任务跑完之后一直挂着，客户端以为它还在跑）
+      return this.#streams.subscribe(
+        taskId,
+        (item: TaskStreamEvent) =>
+          listener({ type: 'trace', index: item.index, event: item.event }),
+        () => {
+          // poll 可能是异步 store ⇒ 用 then 补发（此刻任务已终态、记录已落库）
+          void Promise.resolve(this.poll(taskId)).then((rec) => {
+            if (rec) listener({ type: 'end', record: rec });
+          });
+        },
+      );
+    }
+    const rec = await this.poll(taskId);
+    if (!rec) throw new TaskStreamError(`task 不存在: ${taskId}`);
+    listener({ type: 'unavailable', reason: 'not-in-this-process' });
+    if (isTerminalTask(rec)) listener({ type: 'end', record: rec });
+    return noop;
   }
 
   byIdempotency(key: string): MaybePromise<TaskRecord | undefined> {
@@ -589,6 +709,9 @@ export class AsyncRunner {
     // 挂起（awaiting_approval）**不释放** —— 那是「等人工」，不是终态；放了会让同键再起一个新任务。
     const key = rec.idempotencyKey;
     if (key !== undefined && !this.#claims.has(key)) this.#claims.set(key, rec);
+    // 同步开流（在任何 await 之前）：`GET /tasks/:id/stream` 从这一刻起可以订阅。
+    // 复用语义见 task-events.ts —— HITL 恢复 / 崩溃重投是**同一个任务**，序号接着走。
+    this.#streams.open(rec.taskId);
     this.active++;
     try {
       await this.#executeInner(rec);
@@ -605,6 +728,8 @@ export class AsyncRunner {
         // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
         // 挂起也唤醒：等待者看一眼状态继续等（awaiting_approval 不是终态），无副作用。
         this.#taskWaiters.notify(rec.taskId);
+        // 任务流收口（挂起不算终态 —— 见 isTerminalTask 的注释：批了会接着跑，流得开着）。
+        if (isTerminalTask(rec)) this.#streams.markDone(rec.taskId);
         // 释放同键认领：**只有终态才释放**（挂起仍在等人，同键提交不该另起一个任务）。
         // 判据用 taskId 比对而非 `claimed`：HITL 的恢复段是**另一次** #execute 调用
         // （approve / 超时兜底 / 崩溃恢复都会重派，且异步 store 交出的常是新副本对象），
@@ -682,6 +807,13 @@ export class AsyncRunner {
           // 可能传入的 signal 合成，任一触发都中止本次 run。
           const timeoutAc = new AbortController();
           const combined = combineSignals(rec.spec.options?.signal, timeoutAc.signal);
+          // 记账事件 → 本任务的流（`GET /tasks/:id/stream` 的数据源）。
+          // 与任务 spec 里可能自带的那个**叠加**而不是覆盖（composeTraceEvents 的同一份理由）：
+          // 两边都要收到 —— 覆盖会让其中一条静默失聪。
+          const bridgeTraceEvents = composeTraceEvents(
+            (e) => this.#streams.push(rec.taskId, e),
+            rec.spec.options?.onTraceEvent,
+          );
           const callOpts: RunInvocationOptions & {
             session?: { store: NonNullable<AsyncRunnerOptions['sessionStore']>; id: string };
           } = {
@@ -715,6 +847,8 @@ export class AsyncRunner {
               : {}),
             rethrow: false, // 硬失败也以 failed 记录落库
             signal: combined,
+            // 记账事件 → 本任务的流（见上面 bridgeTraceEvents 的注释）
+            ...(bridgeTraceEvents !== undefined ? { onTraceEvent: bridgeTraceEvents } : {}),
           };
           try {
             const out = await this.#raceTimeout(

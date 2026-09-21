@@ -1,10 +1,11 @@
 import type { MessageParam } from '../core/message.js';
 import type { AgentRunResult, RunAgentOptions } from '../engine/types.js';
 import type { JsonSchema, SchemaType } from '../core/tool.js';
-import type { Trace, TraceSink } from '../core/trace.js';
+import type { TraceLimits } from '../engine/tracer.js';
+import type { Trace, TraceSink, TraceRecordEvent } from '../core/trace.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgent } from '../engine/loop.js';
-import { TraceRecorder } from '../engine/tracer.js';
+import { TraceRecorder, resolveTraceLimits } from '../engine/tracer.js';
 import { classifyError } from '../engine/errors.js';
 import type { RunMeta, RunStatus } from '../core/run.js';
 import { RunContext, withRunContext } from './context.js';
@@ -26,8 +27,12 @@ export class Run {
   finishedAt?: number;
   private _result?: AgentRunResult;
 
-  constructor(opts: { idempotencyKey?: string } = {}) {
-    this.recorder = new TraceRecorder();
+  constructor(opts: { idempotencyKey?: string; traceLimits?: TraceLimits } = {}) {
+    // 记账闸在**构造期**交给 recorder（不是事后 setter）：recorder 一开始就受约束，
+    // 没有「前几条没算进闸」的窗口
+    this.recorder = new TraceRecorder(
+      opts.traceLimits?.maxEvents === undefined ? {} : { maxEvents: opts.traceLimits.maxEvents },
+    );
     this.runId = this.recorder.traceId;
     this.idempotencyKey = opts.idempotencyKey;
   }
@@ -154,6 +159,16 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
    * 路径挂分（eval 在该路径连 trace 都不保留）。
    */
   beforeFlush?: (trace: Trace, result: AgentRunResult<SchemaType<S>>) => void | Promise<void>;
+  /**
+   * 增量记账出口（见 `RunInvocationOptions.onTraceEvent`）：run **进行中**的逐笔回调。
+   *
+   * 位置说明：它在 `executeRun` 里**紧跟 recorder 构造之后**订阅 —— 所以它覆盖的范围比
+   * `sinks` 更宽（含 `contextInit` / 记忆水合那段：run 根 span 是 engine 开的，
+   * 那时还没开，但订阅本身已就位）。
+   */
+  onTraceEvent?: (e: TraceRecordEvent) => void;
+  /** 记账的数量上限（见 `RunInvocationOptions.traceLimits`）：整条 trace 的事件总数闸 */
+  traceLimits?: TraceLimits;
 }
 
 /**
@@ -165,9 +180,15 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
 export async function executeRun<S extends JsonSchema = JsonSchema>(
   options: ExecuteRunOptions<S>,
 ): Promise<{ run: Run; result: AgentRunResult<SchemaType<S>> }> {
-  const run = new Run(
-    options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {},
-  );
+  // 记账闸：**run 入口**解析 + 校验（坏值当场抛 TypeError，不静默失效）
+  const traceLimits = resolveTraceLimits(options.traceLimits, 'agentia');
+  const run = new Run({
+    ...(options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {}),
+    ...(traceLimits !== undefined ? { traceLimits } : {}),
+  });
+  // 增量记账出口：**紧跟 recorder 构造**订阅 —— 越早挂上，「等不了收尾」的消费者拿到的前缀越完整
+  //（订阅前发生的记账动作不重放：那些号被占掉了，见 TraceRecorder.seq 的注释）。
+  if (options.onTraceEvent) run.recorder.subscribe(options.onTraceEvent);
   run.start();
   const ctx = new RunContext(run);
   const memory = options.memory;

@@ -8,8 +8,59 @@ import type {
   SpanStatus,
   Trace,
   TraceId,
+  TraceRecordEvent,
+  TraceRecordEventPayload,
   Usage,
 } from '../core/trace.js';
+
+/**
+ * 记账的**数量上限**（spec §9.4 的答案里「让少记了数据可数」那一半）。
+ *
+ * 只有 `maxEvents` 一个旋钮，而且它管的是**整条 trace 的事件总数**
+ * （`tool.input` / `tool.output` / `score` / … 都算）—— 因为成本就是整条 trace 的量。
+ * 与 `maxEventChars`（**单个事件正文长度**）是两个正交的旋钮，各有各的家：
+ * 一个管「多长」，一个管「多少」；两个都「不设 = 不限」。
+ *
+ * 超限后的行为是**停止记账 + 记一笔 `trace.truncated`**（交付时写在 run 根上：
+ * `{ droppedEvents, limit }`）—— 缺口位置可预测（尾巴），且有计数 ⇒ 可解释。
+ * 刻意**不做**环形缓冲（丢最旧、留最近）：那会让 trace 中间出现空洞，
+ * 而空洞比「尾巴截断」难解释得多（「这一回合怎么没有工具事件」）。
+ */
+export interface TraceLimits {
+  /** 整条 trace 的事件总数上限；`0` = 一条都不记（有意义的值，仍有计数）；不设 = 不限 */
+  maxEvents?: number;
+}
+
+/**
+ * 解析并校验 `traceLimits.maxEvents` —— **构造期**（run 入口）响亮失败。
+ *
+ * 坏值不静默的理由与 `integrations/adapter-options.ts` 的 `resolveMaxRetries` 同款：
+ * `NaN` / 负数 / 小数会让「记多少条」变成猜的（`>=` 对 NaN 恒假 ⇒ 上限**根本不生效**，
+ * 而使用者以为自己设了闸），这类「设了但没生效」正是本仓在收的债。
+ */
+export function resolveTraceLimits(raw: unknown, owner: string): TraceLimits | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'object' || raw === null) {
+    throw new TypeError(
+      `${owner}：traceLimits 必须是对象（如 { maxEvents: 500 }），收到 ${String(raw)}`,
+    );
+  }
+  const maxEvents = (raw as { maxEvents?: unknown }).maxEvents;
+  if (maxEvents === undefined) return {};
+  if (typeof maxEvents !== 'number' || !Number.isSafeInteger(maxEvents) || maxEvents < 0) {
+    throw new TypeError(
+      `${owner}：traceLimits.maxEvents 必须是非负安全整数（0 = 一条都不记），收到 ${String(maxEvents)} —— ` +
+        'NaN / Infinity / 负数 / 小数都会让「记多少条」变成猜的',
+    );
+  }
+  return { maxEvents };
+}
+
+/** TraceRecorder 的构造选项（`maxEvents` 来自 `TraceLimits`） */
+export interface TraceRecorderOptions {
+  /** 事件总数上限；不设 = 不限。见 `TraceLimits` */
+  maxEvents?: number;
+}
 
 /**
  * 内存 TraceRecorder —— v1 实现（spec §9.3）。
@@ -23,6 +74,60 @@ export class TraceRecorder {
   /** parentSpanId → 直接子 span（增量维护，供 capability 结束时就地聚合子孙 usage，O(子孙) 而非每次重建） */
   private readonly children = new Map<SpanId | null, Span[]>();
   private rootSpanId: SpanId | null = null;
+  /** 事件总量闸（`traceLimits.maxEvents`）；undefined = 不限 */
+  private readonly maxEvents: number | undefined;
+  /** 已入 trace 的事件数（受 `maxEvents` 约束的那个计数） */
+  private recordedEvents = 0;
+  /** 因超限被丢弃的事件数（交付时写进 run 根的 `trace.truncated`） */
+  private droppedEvents = 0;
+  /** 记账事件订阅者（增量出口，见 `core/trace.ts` 的 `TraceRecordEvent`） */
+  private readonly listeners: Array<(e: TraceRecordEvent) => void> = [];
+  /**
+   * 记账事件序号。**每次记账动作都自增，与当时有没有订阅者无关** —— 这样「订阅早」与
+   * 「订阅晚」看到的同一个事件拿到同一个 `seq`（SSE 的 `Last-Event-ID` 重放靠它）。
+   * 只增一个数字，不算成本。
+   */
+  private seq = 0;
+
+  constructor(opts: TraceRecorderOptions = {}) {
+    this.maxEvents = opts.maxEvents;
+  }
+
+  /**
+   * 订阅记账事件（增量出口）；返回退订函数。
+   *
+   * 与 `TraceSink` 是**两条缝**：sink 收尾拿整棵，这里 run 进行中就逐笔拿。
+   * 纪律：**同步派发**（不 await —— 订阅者是观察者，不该把 run 变成它的调度）、
+   * 订阅者抛错**被吞**（观测失败不击穿业务，与 `flushSinks` 同款）、
+   * 无订阅者时**不做任何载荷构造**（「不订阅不付钱」）。
+   */
+  subscribe(listener: (e: TraceRecordEvent) => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      const i = this.listeners.indexOf(listener);
+      if (i >= 0) this.listeners.splice(i, 1);
+    };
+  }
+
+  /**
+   * 派发一条记账事件。
+   *
+   * ⚠️ 顺序要紧：**先自增 `seq` 再判有没有订阅者** —— 若在无订阅者时不计数，
+   * 「订阅晚的人」看到的序号就会与「一直订阅的人」不一致（重放与去重都会错位）。
+   */
+  private emit(payload: TraceRecordEventPayload): void {
+    const seq = ++this.seq;
+    if (this.listeners.length === 0) return;
+    const event = { ...payload, seq } as TraceRecordEvent;
+    // 先拷一份订阅者列表：允许订阅者在回调里退订/新增（否则会漏发或边遍历边改）
+    for (const l of [...this.listeners]) {
+      try {
+        l(event);
+      } catch {
+        /* 观测不击穿业务（与 flushSinks 同款） */
+      }
+    }
+  }
 
   begin(kind: SpanKind, name: string, parentSpanId: SpanId | null): SpanId {
     if (kind === 'run') {
@@ -46,6 +151,9 @@ export class TraceRecorder {
     const siblings = this.children.get(parentSpanId);
     if (siblings) siblings.push(span);
     else this.children.set(parentSpanId, [span]);
+    // 此刻的拷贝（空 attributes/events）—— 之后的属性/事件各走自己的事件类型，
+    // 订阅者拿到的对象此后不再变异（与 snapshot 同纪律）
+    this.emit({ type: 'span.begin', span: { ...span, attributes: {}, events: [] } });
     return id;
   }
 
@@ -75,6 +183,16 @@ export class TraceRecorder {
       const aggregated = this.aggregateDescendantUsage(id);
       if (aggregated) span.usage = aggregated;
     }
+    // 增量出口：收尾字段以**增量**形态派出（不带 attributes/events —— 那些各走自己的事件），
+    // 且取的是**聚合之后**的最终值（capability 的 usage 在此刻才算得出来）
+    this.emit({
+      type: 'span.end',
+      spanId: id,
+      endedAt: span.endedAt,
+      status: span.status,
+      ...(span.error ? { error: span.error } : {}),
+      ...(span.usage ? { usage: span.usage } : {}),
+    });
   }
 
   /** 子孙里所有 `llm.turn` 的 usage 之和（不含自身）；无任何计量时返回 undefined */
@@ -112,12 +230,25 @@ export class TraceRecorder {
   }
 
   event(id: SpanId, name: string, body: unknown): void {
-    this.index.get(id)?.events.push({ time: Date.now(), name, body });
+    const span = this.index.get(id);
+    if (!span) return; // 未知 span 静默忽略（见类注释的容错策略）—— 增量出口同样不派发
+    // 数量闸（traceLimits.maxEvents）：超限即**停止记账**，并只记一个计数 ——
+    // 计数在 snapshot() 交付时写成 run 根的 `trace.truncated`（见 TraceLimits 的注释）。
+    if (this.maxEvents !== undefined && this.recordedEvents >= this.maxEvents) {
+      this.droppedEvents += 1;
+      return;
+    }
+    this.recordedEvents += 1;
+    const event = { time: Date.now(), name, body };
+    span.events.push(event);
+    this.emit({ type: 'span.event', spanId: id, event: { ...event } });
   }
 
   setAttribute(id: SpanId, key: string, value: string | number | boolean): void {
     const span = this.index.get(id);
-    if (span) span.attributes[key] = value;
+    if (!span) return;
+    span.attributes[key] = value;
+    this.emit({ type: 'span.attribute', spanId: id, key, value });
   }
 
   /**
@@ -129,6 +260,7 @@ export class TraceRecorder {
     if (!span) return;
     if (!span.links) span.links = [];
     span.links.push(link);
+    this.emit({ type: 'span.link', spanId: id, link: { ...link } });
   }
 
   /**
@@ -171,20 +303,31 @@ export class TraceRecorder {
 
   snapshot(status: SpanStatus): Trace {
     if (!this.rootSpanId) throw new Error('run root not started');
+    const spans = this.spans.map((s) => ({
+      ...s,
+      attributes: { ...s.attributes },
+      events: [...s.events],
+      ...(s.links ? { links: [...s.links] } : {}),
+    }));
+    // 截断摘要：**交付时**写在 run 根上（与 totalUsage 同族 —— 都是「跑完才算得出的结论」，
+    // 不是记账动作）。所以它**不在**增量事件流里：折叠不变量管的是「记账动作不丢不重」，
+    // 而这是一个派生结论，增量消费者靠 `droppedEvents > 0` 自己判（见 TraceLimits）。
+    if (this.droppedEvents > 0) {
+      const root = spans.find((s) => s.spanId === this.rootSpanId);
+      root?.events.push({
+        time: Date.now(),
+        name: 'trace.truncated',
+        body: { droppedEvents: this.droppedEvents, limit: this.maxEvents },
+      });
+    }
     return {
       traceId: this.traceId,
       rootSpanId: this.rootSpanId,
-      // span 浅拷 + attributes/events/links 拷一层：快照交付后仍在记账的残尾（如超时工具的
-      // 后台事件）会继续 push 进 recorder 持有的数组 —— 不拷贝就会事后变异已交付的 trace。
-      // （不递归深拷：事件 body 与 link 记账后不再被框架改写）
-      // links 用「有才拷」：没有 link 的 span 交付后不该多出 `links: undefined` 这个键
-      // （见 core/trace.ts 的注释 —— 缺席与空数组是同一件事，别制造第三种形态）。
-      spans: this.spans.map((s) => ({
-        ...s,
-        attributes: { ...s.attributes },
-        events: [...s.events],
-        ...(s.links ? { links: [...s.links] } : {}),
-      })),
+      // （spans 的浅拷 + attributes/events/links 拷一层见函数开头：快照交付后仍在记账的
+      // 残尾会继续 push 进 recorder 持有的数组，不拷贝就会事后变异已交付的 trace。
+      // 不递归深拷：事件 body 与 link 记账后不再被框架改写。links 用「有才拷」——
+      // 见 core/trace.ts 的注释：缺席与空数组是同一件事，别制造第三种形态。）
+      spans,
       status,
       totalUsage: this.usage(),
     };

@@ -18,8 +18,12 @@ import type { ServerResponse } from 'node:http';
  * 丢帧会让客户端拿到看起来正常、实则残缺的输出。
  */
 export interface SseWriter {
-  /** 写一个事件帧（data 走 JSON.stringify）；已关闭或积压超限时为 no-op */
-  event(name: string, data: unknown): void;
+  /**
+   * 写一个事件帧（data 走 JSON.stringify）；已关闭或积压超限时为 no-op。
+   * 给了 `id` 就写 `id:` 行 —— SSE 的**续订锚点**：断开重连时浏览器会带
+   * `Last-Event-ID: <最后一个 id>`，服务端据此从那儿续（`GET /tasks/:id/stream` 用它）。
+   */
+  event(name: string, data: unknown, id?: string): void;
   /** 写一个注释帧（心跳） */
   comment(text: string): void;
   /** 结束响应；之后再 event/comment 都是 no-op */
@@ -76,8 +80,11 @@ export function sseWriter(res: ServerResponse, opts: SseWriterOptions = {}): Sse
     get closed(): boolean {
       return closed;
     },
-    event(name: string, data: unknown): void {
-      emit(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+    event(name: string, data: unknown, id?: string): void {
+      // id 行必须在 event 行之前（SSE 规范：一个事件的字段按 id / event / data 顺序）
+      emit(
+        `${id === undefined ? '' : `id: ${id}\n`}event: ${name}\ndata: ${JSON.stringify(data)}\n\n`,
+      );
     },
     comment(text: string): void {
       emit(`: ${text}\n\n`);

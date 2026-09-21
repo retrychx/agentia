@@ -117,8 +117,12 @@ export function wireSpanId(id: string): string {
 /**
  * 生成 W3C `traceparent`（`parseTraceparent` 的镜像：一个解析、一个生成）。
  *
- * flags 位恒为 `00`：本框架**不采样**（每次 run 全量记账），故没有「已采样」可声明 ——
- * 编一个 `01` 是替下游做决定。入站侧 `parseTraceparent` 也从不读 flags。
+ * flags 位恒为 `00`。**理由不是「本框架不采样」**（采样早就是明确推荐的宿主配法 ——
+ * `docs/observability.md` 2.3），而是**运行期不可知**：记录/导出决策发生在 run **收尾之后**
+ * （采样闸门要看完好整棵 trace 才判得出来），而出站调用发生在**运行期** ——
+ * 那时「这条 trace 会不会被采样掉」还没有答案。所以恒 `00` 是唯一不撒谎的选择
+ * （`00` = 不声明「已采样」）；编一个 `01` 是替下游做决定。⚠️ 别下一轮「顺手」改成跟随采样
+ * （见 `docs/spec.md` §10 2026-09-21 ⑦）。入站侧 `parseTraceparent` 也从不读 flags。
  *
  * 调用方保证给的是内部 id 或线缆 id（本函数只做投影，不做合法性判定）。
  */
@@ -212,4 +216,72 @@ export function capabilityKindOf(span: Span): string {
  */
 export interface TraceSink {
   export(trace: Trace): void | Promise<void>;
+}
+
+/**
+ * **记账事件**（增量出口，`docs/plans/2026-09-21-incremental-trace-export-and-sampling.md`）——
+ * run **进行中**就能拿到的明细。它与 `TraceSink` 是**两条缝**，不是替代关系：
+ *
+ * - `TraceSink`：run 收尾拿到**完整** trace（成功的 sink 该走这条）；
+ * - 记账事件：**等不了收尾**的消费者 —— 终端面板、SSE 前端、异步任务进度流。
+ *
+ * 载荷一律是**增量 + 此刻的拷贝**（交付后框架不再变异它）：`span.begin` 只给初始形状
+ * （`attributes` / `events` 为空），之后的属性 / 事件 / 链路各走自己的事件类型。
+ *
+ * **折叠规则**（`tests/engine/trace-events.test.ts` 钉着）：按 `seq` 升序把同一次 run 的
+ * 全部事件应用到 `span.begin` 建出的 span 上，结果必须**逐字等于** `snapshot(status)`。
+ * ⇒ 这条不变量一次钉住四件事：不丢、不重、顺序正确、增量与终态同源。要改记账点而不派发事件，
+ * 那个用例会红。
+ *
+ * `seq`：recorder 内**每次记账动作都自增**（与当时有没有订阅者无关）—— 于是「订阅早」与
+ * 「订阅晚」看到的同一个事件序号一致。SSE 的 `Last-Event-ID` 重放、去重、跨段对齐都靠它。
+ *
+ * 投放纪律与 sink 同款：**同步派发、不 await**、订阅者抛错被吞（观测失败不击穿业务）。
+ * ⚠️ 但它**不保证送达**（宿主自己的流断了就断了，没有 sink 那层兜底/重试语义）。
+ */
+export type TraceRecordEventPayload =
+  | { type: 'span.begin'; span: Span }
+  | {
+      type: 'span.end';
+      spanId: SpanId;
+      endedAt: number;
+      status: SpanStatus;
+      error?: SpanError;
+      usage?: Usage;
+    }
+  | { type: 'span.event'; spanId: SpanId; event: SpanEvent }
+  | { type: 'span.attribute'; spanId: SpanId; key: string; value: string | number | boolean }
+  | { type: 'span.link'; spanId: SpanId; link: SpanLink };
+
+export type TraceRecordEvent = TraceRecordEventPayload & { seq: number };
+
+/**
+ * 把两个增量记账回调**合成一个**订阅者（前者在前）。
+ *
+ * 为什么要合成而不是 `??` 覆盖：`onTraceEvent` 是**观察者注册**（同 `TraceSink`：
+ * 应用级与全局默认一起收），不是值覆盖 —— 覆盖会让「某次 run / 某个宿主顺手传了自己的
+ * 回调」把另一条静默顶掉。两个消费者都要它的场景是真实存在的：宿主自己配了一条应用级
+ * 面板回调，`AsyncRunner` 还要为 `GET /tasks/:id/stream` 再挂一条按任务分的缓冲。
+ *
+ * 为什么内部各自 try/catch：合成后它们在 recorder 眼里是**一个**订阅者，而 recorder 只在
+ * 这一层兜错 —— 不隔离的话前一个抛错会吞掉后一个（与「一条订阅者炸了不影响另一条」互为镜像）。
+ */
+export function composeTraceEvents(
+  first: ((e: TraceRecordEvent) => void) | undefined,
+  second: ((e: TraceRecordEvent) => void) | undefined,
+): ((e: TraceRecordEvent) => void) | undefined {
+  if (!first) return second;
+  if (!second) return first;
+  return (e) => {
+    try {
+      first(e);
+    } catch {
+      /* 观测不击穿业务（与 flushSinks 同款） */
+    }
+    try {
+      second(e);
+    } catch {
+      /* 同上 */
+    }
+  };
 }
