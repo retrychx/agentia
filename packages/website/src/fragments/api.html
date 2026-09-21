@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>215</b> 个导出</span>
+          <span class="api-chip"><b>216</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -187,8 +187,9 @@
             <tr><td>RunInvocationOptions</td><td><code>{ model?; maxTokens?; maxIterations?; client?; onText?; signal?; retry?; blackboard?; contextPolicy?; idempotencyKey?; rethrow?; tools?; maxTotalTokens?; maxCostUsd?; toolTimeoutMs?; maxToolConcurrency? }</code></td><td>单次 run 的调用参数，三类触发共用（不含不可序列化的 store / session —— 那几个只在程序内直调时可用）。</td></tr>
             <tr><td>runSync / createSyncHandler</td><td><code>(app, input, opts?)</code> / <code>(app) → (input, opts?) =&gt; …</code></td><td>同步 RPC：规范化入参后直接 <code>app.run</code>。</td></tr>
             <tr><td>AsyncRunner</td><td><code>new AsyncRunner(app, { client?, store?, concurrency?, runTimeoutMs?, approvalTimeoutMs?, taskSinks? })：submit / approve(taskId, decisions, opts?) / resumePending(opts?) / awaitTask(taskId, opts?) / drain(opts?) / inFlight / isDraining</code></td><td>提交即返回任务记录、后台执行；同幂等键未失败任务 last-wins 去重。<code>approve</code>（HITL）审批挂起任务：逐 tool_use_id 幂等（第一次决定赢），决定齐了先落库再恢复执行。<code>approvalTimeoutMs</code>（缺省 0 = 不限）是<strong>惰性</strong>审批超时：approve / poll / resumePending 读到过期挂起任务时自动全拒（「审批超时」）并重派，不起定时器。<code>drain()</code> = 拒新单 → 等在飞收尾（超时返回 false，未完成任务留在 store 里）。<code>awaitTask()</code> 等指定任务到终态：本进程写终态时<strong>事件唤醒</strong>，<code>intervalMs</code>（缺省 250ms）只作兜底轮询（终态由他进程写入的异步 store 才用得上）。</td></tr>
-            <tr><td>AsyncRunnerOptions / ResumePendingOptions</td><td><code>{ …; runTimeoutMs?; approvalTimeoutMs?; taskSinks? }</code> / <code>{ staleAfterMs? }</code></td><td>runTimeoutMs 到点<strong>真中止</strong>在飞 run；approvalTimeoutMs 是挂起审批的惰性超时（不起定时器）；resumePending 靠 <code>staleAfterMs</code> + ownerId 跳过本进程记录（<code>awaiting_approval</code> 一律不捡 —— 它在等人，不是孤儿）。</td></tr>
+            <tr><td>AsyncRunnerOptions / ResumePendingOptions</td><td><code>{ …; runTimeoutMs?; approvalTimeoutMs?; taskSinks?; onPersistError? }</code> / <code>{ staleAfterMs? }</code></td><td>runTimeoutMs 到点<strong>真中止</strong>在飞 run；approvalTimeoutMs 是挂起审批的惰性超时（不起定时器）；resumePending 靠 <code>staleAfterMs</code> + ownerId 跳过本进程记录（<code>awaiting_approval</code> 一律不捡 —— 它在等人，不是孤儿）。</td></tr>
             <tr><td>TaskSink</td><td><code>{ onFinished(rec: TaskRecord) }</code></td><td>任务完成回调：达终态后逐个 await 投递（抛错被吞），先通知再递减在飞计数。</td></tr>
+            <tr><td>PersistFailureInfo</td><td><code>{ record: TaskRecord; error: unknown; phase: 'initial' | 'outcome' }</code></td><td><strong>落库失败</strong>的形状（<code>AsyncRunnerOptions.onPersistError</code> 的回调参数）。此前这个失败被 <code>#safeSave</code> 吞掉且不留出口 ⇒ 宿主做不到它被告知要做的事。最贵的是 <code>phase:'outcome'</code>：终态那次写出失败时库里停在 <code>running</code>，而 run 其实已跑完（副作用已发生）—— 重启后 <code>resumePending</code> 会把它当孤儿重跑，所以副作用工具必须自身幂等。与 <code>createOtlpExporter({ onExportError })</code> 同因同形。</td></tr>
             <tr><td>AppCallable</td><td><code>{ name; run(messages, opts?) }</code></td><td>应用最小调用面。</td></tr>
             <tr><td>Scheduler / ScheduleHandle / ScheduleEveryOptions</td><td><code>new Scheduler(runner)：every(intervalMs, input, opts?) / at(when, input, opts?)</code></td><td>周期 / 定点触发，到点转为异步任务提交；返回 <code>ScheduleHandle { id, cancel() }</code>；非法间隔 / 非法日期直接抛错。</td></tr>
             <tr><td>TaskStore</td><td><code>interface：save / get / byIdempotency / list / clear</code></td><td>任务记录存储面（同步或异步实现皆可，返回 <code>MaybePromise</code>）；byIdempotency 为 last-wins 去重依据。</td></tr>

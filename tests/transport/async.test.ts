@@ -8,6 +8,7 @@ import { FileTaskStore, InMemorySessionStore, executeRun } from '../../src/index
 import type { AppCallable, RunInvocationOptions } from '../../src/index.js';
 import type { AgentRunResult, AgentTool, MessageParam } from '../../src/index.js';
 import type { TaskRecord, TaskStore } from '../../src/index.js';
+import type { PersistFailureInfo } from '../../src/index.js';
 import { TaskInputError } from '../../src/engine/spec.js';
 import { mockClient, toolUseMsg, endTurnMsg, waitFor } from '../helpers.js';
 
@@ -255,6 +256,116 @@ describe('AsyncRunner', () => {
 
   it('非法 concurrency 抛错', () => {
     assert.throws(() => new AsyncRunner(fakeApp(), { concurrency: 0 }), /concurrency/);
+  });
+
+  /**
+   * 耐久 store 的**副本语义**（每次交出的都是反序列化新对象）。
+   *
+   * 为什么必须要它：`InMemoryTaskStore` 存的是**对象引用**，runner 就地改写 `rec` ⇒ 即便
+   * `save` 抛错，库里那条也已经是终态了 —— 「终态落库失败」这件事在旧用例里**根本看不见**。
+   */
+  class CopyStoreOnSave implements TaskStore {
+    readonly #byTask = new Map<string, TaskRecord>();
+    readonly #byKey = new Map<string, string>();
+    #failLeft: number;
+    constructor(
+      private readonly failWhen: (r: TaskRecord) => boolean,
+      failTimes = Number.POSITIVE_INFINITY,
+    ) {
+      this.#failLeft = failTimes;
+    }
+    async save(rec: TaskRecord): Promise<void> {
+      if (this.#failLeft > 0 && this.failWhen(rec)) {
+        this.#failLeft -= 1;
+        throw new Error('store jitter');
+      }
+      this.#byTask.set(rec.taskId, { ...rec });
+      if (rec.idempotencyKey) this.#byKey.set(rec.idempotencyKey, rec.taskId);
+    }
+    async get(taskId: string): Promise<TaskRecord | undefined> {
+      const r = this.#byTask.get(taskId);
+      return r ? { ...r } : undefined;
+    }
+    async byIdempotency(key: string): Promise<TaskRecord | undefined> {
+      const id = this.#byKey.get(key);
+      return id ? this.get(id) : undefined;
+    }
+    async list(): Promise<TaskRecord[]> {
+      return [...this.#byTask.values()].map((r) => ({ ...r }));
+    }
+    async clear(): Promise<void> {
+      this.#byTask.clear();
+      this.#byKey.clear();
+    }
+  }
+
+  it('终态落库失败：onPersistError 必须收到（不再静默），且库里确实停在 running', async () => {
+    const seen: PersistFailureInfo[] = [];
+    let resolveFirst: ((i: PersistFailureInfo) => void) | undefined;
+    const first = new Promise<PersistFailureInfo>((res) => {
+      resolveFirst = res;
+    });
+    const store = new CopyStoreOnSave((r) => r.status === 'succeeded');
+    const runner = new AsyncRunner(fakeApp(), {
+      store,
+      onPersistError: (info) => {
+        seen.push(info);
+        resolveFirst?.(info);
+      },
+    });
+
+    const t = runner.submit('a');
+    // 不靠 awaitTask：store 永远到不了终态，那条路只会等到超时 —— 等回调本身
+    const info = await Promise.race([
+      first,
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error('等 onPersistError 超时')), 3_000),
+      ),
+    ]);
+
+    assert.equal(info.phase, 'outcome', `应是终态那次写出失败，实际 ${info.phase}`);
+    assert.equal(info.record.taskId, t.taskId);
+    assert.match(String((info.error as Error).message), /store jitter/);
+    assert.equal(seen.length, 1, '应恰好报一次（终态那次）');
+    // ⚠️ 全部危险都在这条：耐久 store 里它是 running ⇒ 重启后 resumePending 会当孤儿**重跑**，
+    // 而这次 run 其实已经跑完（副作用已发生）。旧用例看不见这一层（InMemory 存引用）。
+    assert.equal(
+      (await store.get(t.taskId))?.status,
+      'running',
+      '终态写出失败 ⇒ 库里停在 running（这就是「重启会重跑」的前提）',
+    );
+  });
+
+  it('onPersistError 自己抛错不得影响 run（槽位照常释放、不逃逸成 unhandled rejection）', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown) => rejections.push(e);
+    process.on('unhandledRejection', onRejection);
+    try {
+      const store = new CopyStoreOnSave((r) => r.status === 'succeeded');
+      let calls = 0;
+      const runner = new AsyncRunner(fakeApp(), {
+        store,
+        concurrency: 1,
+        onPersistError: () => {
+          calls += 1;
+          throw new Error('宿主自己的回调炸了');
+        },
+      });
+      const t1 = runner.submit('a');
+      const t2 = runner.submit('b'); // 槽位泄漏时这个永远排不上
+      await new Promise((r) => setTimeout(r, 300));
+      assert.ok(calls >= 1, '回调应被调用到（否则这条用例什么都没测）');
+      assert.equal(
+        (await store.get(t2.taskId))?.status,
+        'running',
+        '第二个任务仍应拿到槽位并跑到 running',
+      );
+      assert.notEqual(t1.taskId, t2.taskId);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.deepEqual(rejections, [], '回调抛错不得变成 unhandled rejection');
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
   });
 
   it('awaitTask 超时抛错', async () => {

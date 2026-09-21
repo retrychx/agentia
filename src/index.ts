@@ -151,6 +151,7 @@ export { AsyncRunner } from './transport/async.js';
 export type {
   AppCallable,
   AsyncRunnerOptions,
+  PersistFailureInfo,
   ResumePendingOptions,
   TaskSink,
 } from './transport/async.js';
