@@ -79,8 +79,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   覆盖文档 / 官网 / npm 包 README 与 description / CLI 的 --help 与报错文本；
 │                            #   仅 `<!-- no-legacy-terms: allow -->` 标记块内可豁免，且有行数上限）
 ├── scripts/e2e-cli.ts       # CLI 端到端（npm run e2e 第一步：脚手架→生成→装配→mock run
-│                            #   + 生成项目过 tsc（生成物 tsconfig 为底 + 仓库 @types 路径 overlay，
-│                            #   '@migor/agentia' 经 node_modules 软链解析到 dist —— 即发布形态））
+│                            #   + **字面跑产物自己的 `npm run typecheck` / `npm run build`**
+│                            #   （'@migor/agentia'、@types、.bin/tsc 经 node_modules 软链解析 ——
+│                            #   即发布形态；测试不复刻脚本里的命令）+ 第 4d-bis 步真删一个能力
+│                            #   再重建，断言旧产物消失；第 8 步 pack → 离线安装 → 真跑最小 run）
 ├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第二步：examples/complete 真构建、真起服务，
 │                            #   按它 README 跑完 /healthz · 鉴权 401 · 同步 /run · SSE · 异步 /tasks ·
 │                            #   /metrics · 优雅停机；模型侧是内置假 OpenAI 兼容端点，不联网）
