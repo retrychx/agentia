@@ -2640,7 +2640,16 @@ CI 必需检查名里**（「verify-all 8 步」），加检查一律折进已�
   Infinity 此前等于**无限重试**）/ 已中止的 MCP 调用不再发请求、不再永不 settle /
   异步 store 下同键并发提交不再重复执行（跨进程仍 at-least-once）/ 脚手架模板漏写 `clean.mjs`
   在发布前拦下；**框架 API 无破坏性变更**，唯一动作是 `maxRetries` 传过坏值的要改成非负整数）；
-  `AGENTIA_VERSION = '0.8.2'`。决策均见 §10。
+  → v0.8.3（**增量 trace 出口落地** —— 记账与交付之间补上那条缺失的缝：`onTraceEvent`
+  （运行期逐笔拿记账事件，应用级与单次**叠加**）+ `GET /tasks/:id/stream`（异步任务进度流：
+  重放 → 实时 → 终态 `task.end` 收口；旁观者语义，背压不 abort 任务）+ `/run` SSE 新增一族
+  `trace.event` 帧（既有三帧逐字不变）+ `traceLimits.maxEvents`（数量闸 + `trace.truncated`
+  丢弃计数）；spec §7 F3 的两条后置项与 §9.4 的记录成本同日收口，**采样仍不内建**（既有决策，
+  改为「可算（采样率换算表）+ 可数（丢弃计数）」）；`formatTraceparent` 的 flags 继续恒 `00`，
+  但理由更正为「运行期不可知」；guards §2 四条待守形状清到只剩一条（`0` 的语义真源 / 穷尽转发 /
+  队列配方门禁三件建成机器守卫）；
+  **框架 API 无破坏性变更**，宿主自解析 `/run` SSE 的老客户端不认识新帧即忽略、行为逐字一致）；
+  `AGENTIA_VERSION = '0.8.3'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

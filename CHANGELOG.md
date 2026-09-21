@@ -939,7 +939,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/retrychx/agentia/releases/tag/v0.8.3
 [0.8.2]: https://github.com/retrychx/agentia/releases/tag/v0.8.2
 [0.8.1]: https://github.com/retrychx/agentia/releases/tag/v0.8.1
 [0.8.0]: https://github.com/retrychx/agentia/releases/tag/v0.8.0
