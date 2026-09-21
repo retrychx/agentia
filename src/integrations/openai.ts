@@ -12,6 +12,7 @@ import type {
   ToolUseBlock,
   ToolUseBlockParam,
 } from '../core/message.js';
+import { resolveMaxRetries } from './adapter-options.js';
 import { textOf } from '../core/text.js';
 import { sseLines } from '../core/sse.js';
 import { backoffMs, interruptibleSleep } from '../core/timeout.js';
@@ -79,8 +80,9 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
   const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
   const useStream = opts.stream ?? true;
   // 与 anthropic 对齐的缺省（见 OpenAIClientOptions.maxRetries 的注释：两条适配器
-  // 对同一故障必须给出同样的尝试次数，否则同一个 429 在两边的网络请求数不同）
-  const maxRetries = typeof opts.maxRetries === 'number' ? opts.maxRetries : 2;
+  // 对同一故障必须给出同样的尝试次数，否则同一个 429 在两边的网络请求数不同）+
+  // 同一份构造期校验（NaN / Infinity / 负数 / 小数一律响亮失败）。
+  const maxRetries = resolveMaxRetries(opts.maxRetries, 'createOpenAIClient');
 
   return {
     messages: {

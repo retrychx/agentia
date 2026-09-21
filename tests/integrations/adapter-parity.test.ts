@@ -233,3 +233,43 @@ describe('适配器对拍 · 跨侧对称（同一故障 → 同一结论）', (
     );
   });
 });
+
+/*
+ * 构造期选项校验也要**成对**。
+ *
+ * 为什么单列一组（2026-09-21 外部复核实测）：两条适配器此前的取值都是
+ * `typeof x === 'number' ? x : 2` —— 于是 `NaN` / `Infinity` / `-1` / `1.5` 全部「接受」，
+ * 而网络失败路径的判定是 `attempt >= maxRetries`：NaN 恒假、Infinity 永不成立 ⇒ **无限重试**；
+ * `-1` 静默变成「不重试」；`1.5` 实际只允许 1 次。四种都不报错，使用者以为自己设了上限。
+ * 同一文件里 `timeout` 早就做了构造期校验（非有限/≤0 直接抛）—— 这组用例把 `maxRetries`
+ * 拉到同一条纪律上，且**两边同一份实现**（`adapter-options.ts`），不会各修各的。
+ */
+describe('适配器构造期选项校验（maxRetries）', () => {
+  const BAD: unknown[] = [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -1,
+    1.5,
+    '3',
+  ];
+
+  for (const a of ADAPTERS) {
+    it(`${a.name}：非负安全整数之外一律构造期抛错，0 与缺省放行`, () => {
+      for (const v of BAD) {
+        assert.throws(
+          () => a.make(v as number),
+          (e: unknown) => {
+            assert.ok(e instanceof TypeError, `应为 TypeError，收到 ${String(e)}`);
+            assert.match((e as Error).message, /maxRetries 必须是非负安全整数/);
+            return true;
+          },
+          `maxRetries=${String(v)} 必须被拒绝（否则是无限重试或静默改语义）`,
+        );
+      }
+      // 0 = 不重试，是**有意义的值**（本仓「非正数 = 机制关掉」的口径），必须放行
+      assert.doesNotThrow(() => a.make(0), 'maxRetries=0 必须放行');
+      assert.doesNotThrow(() => a.make(undefined as unknown as number), '缺省必须放行');
+    });
+  }
+});
