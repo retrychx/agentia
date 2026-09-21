@@ -119,6 +119,26 @@ const sink = sampleSink({ rate: 0.1, sinks: [/* 下游 */] });  // 只留 10%
 - 判定用 **runId 的哈希**（FNV-1a）而非 `Math.random` —— 同一 run 的判定**确定**，回放/复现时一致。
 - **失败 run 永不采样掉**：采样为了省钱，不能省掉最该看的那些。
 - `rate: 0` = 只留错误 run；`rate: 1` = 全留。
+- **丢了要数**：`sampleSink(...).dropped()` 给累计条数，`onDrop` 给回调（接告警/计数器）。
+  不数的话，「被采样掉的那部分」与「本来就没跑」在监控上**无法区分** —— 同一个盲区。
+
+**`rate` 怎么定？按容量倒推，不要拍一个数。** 一条 trace 多大是可实测的
+（`npm run bench:trace`，零 token 零网络），于是：
+
+| 每 run 的量级 | 实测来源 | 换来什么 |
+|---|---|---|
+| 每次工具调用 +1.3~1.8 KB（缺省截断） | `npm run bench:trace` | 20 次工具调用 ≈ **50 KB** |
+| 每次工具调用 +1.3~1.8 KB（缺省截断） | 同上 | 100 次工具调用 ≈ **250 KB** |
+| `maxEventChars: false` + 大出参 | `PAYLOAD_ROWS=1000 npm run bench:trace` | 同样 5 次调用从 17 KB → **234 KB（13.7×）** |
+| 记账的数量上限 | `traceLimits.maxEvents` | 超限即停 + 根上 `trace.truncated{droppedEvents}` |
+
+算式：`每天 trace 量 ≈ 每天 run 数 × 每 run 字节 × rate`（再乘后端保留天数）。
+先用 `rate: 1` 跑一段，量出实际每日量，再拿目标容量反推 `rate`；
+**开了 `maxEventChars: false` 的宿主先把这一项算进去再谈采样率** —— 它一个开关就能放大一个数量级，
+先截断（长度）再采样（条数）的收益顺序，比反过来大得多。
+
+⚠️ 采样是**导出**决策，不是记账决策：被采样掉的 trace 在框架内**仍然完整记账**
+（`TraceSink` 之前的一切都不受影响），只是没发给下游。所以别拿「有采样」当「可以少记账」。
 
 ### 2.4 脱敏
 

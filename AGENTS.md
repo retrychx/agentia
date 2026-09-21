@@ -32,6 +32,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   resume-input.ts（续跑入口的读取件：末尾未决 tool_use 的识别只看**末尾一条** ——
 │   │                        #   漏判就是把续跑当新对话，同一批工具再跑一遍、花费翻倍）
 │   │                        #   (RunSpec/RunInput/RunInvocationOptions/normalizeMessages)
+│   │                        #   tracer.ts = span 记账器；**唯一出口曾是收尾的 snapshot()**，2026-09-21 起多了
+│   │                        #   `subscribe()`（增量记账事件 —— onTraceEvent 的底座；与 sink 是**两条缝**：运行期逐笔、
+│   │                        #   不保证送达）与 `traceLimits.maxEvents`（度量闸：超限停记，交付时于 run 根写
+│   │                        #   trace.truncated{droppedEvents}）。⚠️ seq **每次记账动作都占号**（与有没有订阅者无关）
+│   │                        #   —— 否则「订阅晚的人」的序号会错位（重放全乱）
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
@@ -46,12 +51,16 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   own-process / too-fresh）—— 「同一任务重复执行」那个 bug 就出在这几条规则上
 │   │                        #   task-waiters.ts = 任务终态等待表（事件唤醒 + 兜底定时器）；**只覆盖本进程写终态**，
 │   │                        #   他进程写终态唤不醒 —— 那是 awaitTask 里 intervalMs 兜底轮询存在的原因（不是缺陷）
+│   │                        #   task-events.ts = 每任务的**记账事件缓冲 + 订阅表**（GET /tasks/:id/stream 的底座：
+│   │                        #   重放 / 实时 / 终态收口三件事，纯记账、不碰 store 所以单独成件）。三条约束：
+│   │                        #   序号是**流自己的**（一个任务可跨多个 run 段，每段 recorder 的 seq 从 1 重来）、
+│   │                        #   有界 + 丢最旧 + 明示（stream.truncated，不静默）、终态流只留最近 16 条
 │   │                        #   http-shapes.ts = HTTP 宿主的**出入站形状口径**（响应体 / 任务提交体 / 审批体）：
 │   │                        #   纯形状判定（不合法一律回 undefined，由路由选状态码）；审批体**全有或全无**，
 │   │                        #   空 decisions 集合法 —— 「决定齐没齐」是 AsyncRunner 的判断，不是形状问题
 │   │                        #   http-route.ts = 路由判定（pathname × method × 有无 metrics → 分支）：
 │   │                        #   纯函数；三条顺序是全部内容 —— 免鉴权组的 405 先于鉴权、其余先鉴权再判
-│   │                        #   方法/路径（未鉴权不泄露路径是否存在）、approve 先于通用 id 且「方法不对」
+│   │                        #   方法/路径（未鉴权不泄露路径是否存在）、approve 与 stream 都先于通用 id 且「方法不对」
 │   │                        #   压过「id 坏了」（DELETE /tasks/%zz/approve = 405，不是 400）
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、

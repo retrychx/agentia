@@ -50,6 +50,20 @@ export interface SampleSinkOptions {
   rate: number;
   /** 被保留的 trace 交给它们 */
   sinks: readonly TraceSink[];
+  /**
+   * 每丢一条采样掉的 trace 调一次（可选）。
+   *
+   * 为什么要有它：采样**省掉的量必须能报出来** —— 否则「被采样掉的那部分」与「本来就没跑」
+   * 在监控上无法区分（同一个盲区：丢数据但没人知道）。接告警或计数器都在这里。
+   * ⚠️ 抛错被吞（与 sink 同款纪律：观测不能击穿业务）。
+   */
+  onDrop?: ((trace: Trace) => void) | undefined;
+}
+
+/** `sampleSink` 的返回值：仍是 `TraceSink`（可组合），另外给出**计数** */
+export interface SampleSink extends TraceSink {
+  /** 累计被采样掉的条数（不含错误 run —— 那些永不丢） */
+  dropped(): number;
 }
 
 /** FNV-1a → [0,1)。用 runId 做种子，同一 run 的判定**确定**（便于回放 / 复现，不是随机数） */
@@ -66,15 +80,25 @@ function hashFraction(s: string): number {
  * 采样闸门。量大时全量导出会压垮 OTLP 后端 / 撑爆落库表，这里是第一道闸。
  * **失败 run 永不采样掉** —— 采样为了省成本，不能省掉最该看的那些。
  */
-export function sampleSink(opts: SampleSinkOptions): TraceSink {
+export function sampleSink(opts: SampleSinkOptions): SampleSink {
   const { rate, sinks } = opts;
   if (!(rate >= 0 && rate <= 1)) {
     throw new Error(`sampleSink: rate 必须在 [0,1]，收到 ${opts.rate}`);
   }
+  let dropped = 0;
   return {
+    dropped: () => dropped,
     async export(trace: Trace): Promise<void> {
       if (trace.status === 'error' || hashFraction(trace.traceId) < rate) {
         await fanOut(sinks, trace);
+        return;
+      }
+      // 采样掉的那部分必须**可数、可告警**（见 SampleSinkOptions.onDrop 的注释）
+      dropped += 1;
+      try {
+        opts.onDrop?.(trace);
+      } catch {
+        /* 观测不击穿业务 */
       }
     },
   };
