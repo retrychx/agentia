@@ -5,6 +5,81 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.8.3] - 2026-09-21
+
+### 变更
+
+> 本版主题（窗口 `0.8.2 → 0.8.3`，含 #115 与 #116）：**增量 trace 出口落地**。记账与交付之间
+> 此前**没有缝** —— `TraceRecorder` 的唯一出口是收尾的 `snapshot()`，所以「等不了 run 收尾」
+> 的消费者（终端面板 / SSE 前端 / 异步任务进度流）拿不到任何东西。本版补上那条缝，顺手把
+> spec §7 F3 的两条后置项与 §9.4 的记录成本问题同日收口。
+> **框架 API 无破坏性变更**：只新增（`onTraceEvent` / `traceLimits.maxEvents` /
+> `AsyncRunner.streamBufferEvents` / `GET /tasks/:id/stream` / `/run` SSE 的 `trace.event` 帧），
+> **既有签名、既有三帧 SSE、既有默认行为逐字不变** —— 不认识新帧的老客户端行为零变化。
+> #116 全部落在**仓库自身**（守卫 + 一次行为等价的重构），不含任何运行时行为变更。
+
+### 新增
+
+- **`onTraceEvent`：run 进行中逐笔拿记账事件**。`RunInvocationOptions.onTraceEvent`（单次）与
+  `AppOptions.onTraceEvent`（应用级缺省）**叠加**（应用级在前）而不是覆盖 —— 观察者是注册不是
+  值覆盖，覆盖会让「某次 run 顺手传了个面板回调」把应用级那条静默顶掉。载荷是
+  `TraceRecordEvent`（`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`，
+  **增量 + 此刻的拷贝**）。
+  四条纪律：同步派发不 await（订阅者是观察者，不该把 run 变成它的调度）、抛错被吞（与
+  `flushSinks` 同款）、无订阅者零派发、**seq 每次记账动作都占号**（与有没有订阅者无关 ——
+  否则「订阅晚的人」看到的序号会与一直订阅的人不一致，重放与去重都会错位）。
+  它与 `TraceSink` **不互相替代**：sink 是收尾拿整棵、不保证运行期可见；这条是运行期逐笔、
+  不保证送达。要「收尾的整棵」继续用 sink。
+- **`POST /run` 的 SSE 新增一族 `trace.event` 帧**。帧名取**一族** + body 里带 `type`，而不是
+  每类型一帧：将来加新事件类型时，老客户端只是漏掉一种 `type`，而不是漏掉一种**帧名**（后者
+  更隐蔽）。既有三帧（`text.delta` / `run.end` / `error`）逐字未变。
+- **`GET /tasks/:id/stream`：异步任务的进度流**。从头重放 → 转实时 → 终态以 `task.end` 收口关流；
+  `Last-Event-ID` / `?from=` 指**流自己的序号**（一个任务可能跨多个 run 段 —— HITL 挂起→恢复、
+  崩溃重投，每段是独立的一次 run、`seq` 从 1 重来，而流的读者要的是一条**连续的**流）。
+  四条边界：`awaiting_approval` **不是终态**（流继续开着 —— 关掉的话「等审批结果的前端」正好在
+  最需要的时候断线）；这条流的读者是**旁观者**，背压 / 断开**不 abort 任务**（与 `/run` 的 SSE
+  刻意相反：那里的下游是 run 的所有者，背压等于「别继续烧 token 了」）；跨进程（别的 runner 跑的
+  任务、同一个 store）→ 一帧 `stream.unavailable` + 终态 `task.end`，**不假装实时**；缓冲超限 →
+  丢最旧并先发一帧 `stream.truncated`（**不静默**）。缓冲用 `AsyncRunner` 的
+  `streamBufferEvents` 调（缺省每任务 500 条；终态流只留最近 16 条）。事件**不落 store** 是有意
+  的：实测事件数 = 2 × 工具调用、正文 KB 级 ⇒ 每条工具调用要把 KB 级正文写库两次（写放大），而
+  宿主本来就有自己的总线（`onTraceEvent` 就是给它的缝）。
+- **`traceLimits.maxEvents`：整条 trace 的事件总数上限**。超限即**停止记账**，交付时在 run 根写
+  一笔 `trace.truncated{droppedEvents, limit}` —— 缺口位置可预测（尾巴）且**有计数**。
+  刻意**不做**环形缓冲（丢最旧、留最近）：那会让 trace 中间出现空洞，而空洞比「尾巴截断」难解释
+  得多（「这一回合怎么没有工具事件」）。`0` = 一条都不记（**有意义的值**，仍有计数）；不设 = 不限。
+  坏值（NaN / ±Infinity / 负数 / 小数）在 run 入口抛 `TypeError` —— 静默接受会让闸门**形同不存在**
+  （`NaN` 让 `>=` 恒假），而使用者以为自己设了上限。
+  与既有的 `maxEventChars` **正交**：一个管「单个事件正文多长」、一个管「多少」。
+
+### 文档
+
+- `docs/usage-guide.md`：`onTraceEvent` / `traceLimits` / `streamBufferEvents` 与
+  `GET /tasks/:id/stream` 的用法；§7 边界表补任务进度流的边界（内存 / 跨进程）。
+- `docs/observability.md`：采样在「不内建」之外补上**可算 + 可数** —— §2.3 新增采样率换算表，
+  示例 `sampleSink` 增加丢弃计数（`dropped()` / `onDrop`）。**框架仍然不内建采样器**（既有决策
+  不变：采样是配方 2.3，`examples/observability` 已有成品；再造一个就是同一件事的两份实现）。
+- `docs/spec.md` §9.4 从「唯一剩下的开放问题」变为**决定**：默认全量、截断默认开、采样不内建，
+  框架侧只新增「数量上限 + 丢弃计数」这一件 —— 让「少记了数据」可数。
+- **一处面向使用者的说明被更正**：`formatTraceparent` 的 flags 继续恒 `00`，但理由从「本框架
+  不采样」改为**「运行期不可知」** —— 记录 / 导出决策发生在**收尾之后**，出站调用发生在
+  **运行期**，那时没有答案。所以它**不会**跟随采样率变成 `01`：原理由在采样成为推荐配法后已不
+  严谨，若照它改成「跟随采样」反而是错的。
+
+### 仓库自身（不面向使用者）
+
+- **`docs/guards.md` §2 从 4 行清到 1 行** —— 三条待守形状建成了机器守卫（`0` 的语义真源 /
+  穷尽转发 / 队列消费者配方门禁），细节见该文件 §1.2 / §1.3。顺带登记了两个此前无人写明的事实：
+  `intervalMs` 在 `Scheduler.every`（必须 > 0）与 `metricsSink`（`0` = 立即导出）里**同名反义**；
+  数量类旋钮里只有 `mapWithConcurrency` 把 `0` 读作「不限」（`maxRetries` / `maxEvents` /
+  `maxIterations` 都是「就是不做」）。
+- `scripts/verify-all.sh` 与 CI 的**步数不变**：新增检查一律折进已有步骤（步骤数写在 CI 的必需
+  状态检查名里，加一步就要同时改 workflow 与分支保护）。
+
+**迁移**：无（框架 API 无破坏性变更，既有代码不需要任何改动）。若你的宿主自己解析 `/run` 的 SSE，
+它**不需要**认识新的 `trace.event` 帧 —— 不认识就忽略，行为与升级前逐字一致。要消费增量事件，
+新接 `onTraceEvent`（程序内）或 `GET /tasks/:id/stream`（远程看进度）即可。
+
 ## [0.8.2] - 2026-09-21
 
 ### 变更
@@ -864,7 +939,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/retrychx/agentia/releases/tag/v0.8.3
 [0.8.2]: https://github.com/retrychx/agentia/releases/tag/v0.8.2
 [0.8.1]: https://github.com/retrychx/agentia/releases/tag/v0.8.1
 [0.8.0]: https://github.com/retrychx/agentia/releases/tag/v0.8.0
