@@ -169,3 +169,30 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npm run deploy:website
+
+      # GEO / agent 可读性回归观察（**只报告，不阻断**）。
+      #
+      # 为什么挂在部署**之后**：AFDocs（agentdocsspec.com 的配套打分器，23 项检查）打的是**线上**
+      # 站点，不是产物 —— 它的价值正在于「别人怎么看这个站」，本地那套产物守卫
+      # （scripts/check-website-agent-readiness.mjs，折在 verify-all 第 8 步）替代不了它。
+      #
+      # 为什么 continue-on-error：它会去抓**站外**链接（2026-09-21 实测 github.com 那条 fetch failed），
+      # 网络噪声或对方限流不该把「官网已部署」判红。先观察几轮，确认哪些项稳定可控，再决定要不要
+      # 对我们能控的项（http-status-codes / llms-txt-* / markdown-*）立分数下限。
+      - name: Agent 可读性打分（只报告，不阻断）
+        continue-on-error: true
+        run: |
+          # 先等新部署真上线：Cloudflare Pages 的 production 别名有秒级传播延迟，
+          # 不等就直接打分，打的是**上一版**，报告会指向已经修好的问题。
+          # 信号取 robots.txt 出现 `Sitemap: ` 行 —— 它是本轮新增的产物，只有新版才可能有。
+          for i in $(seq 1 30); do
+            if curl -sS --max-time 10 https://agentia-web.pages.dev/robots.txt | grep -q '^Sitemap: '; then
+              echo "新版已在线上（第 ${i} 次探测）"
+              break
+            fi
+            echo "等待部署生效…（第 ${i} 次）"
+            sleep 4
+          done
+          # 版本钉死我们在 2026-09-21 实测过的那版：报告步骤不需要「永远最新」，
+          # 但很怕它某天换了一版检查口径、在只报告的步骤里刷出一堆看不懂的噪声。
+          npx --yes afdocs@0.20.0 check https://agentia-web.pages.dev --format scorecard

@@ -25,7 +25,12 @@ steps=(
   "npm run build:cli"
   "npm test"
   "npm run e2e"
-  "npm run build:website"
+  # 第 8 步 = 构建官网 + **按产物形状**核 agent 可读性（404.html 硬 404 / robots+sitemap /
+  # llms.txt 绝对链接与页面覆盖 / llms-full.txt 单源一致 / 每页 llms 指引形态）。
+  # 折进本步而不是新开第 9 步 —— 理由见顶部注释（步骤数写在 CI 必需检查名里）。
+  # 2026-09-21：这六类问题当时**全是线上实际存在的**，且没有一条是本仓测试能发现的
+  #（源码绿、线上照样在骗 agent：soft 404 + 根相对 llms.txt 链接）。
+  "npm run build:website && node scripts/check-website-agent-readiness.mjs"
 )
 
 fail=0

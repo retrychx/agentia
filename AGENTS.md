@@ -248,7 +248,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   **X 自己的输入/代码路径**（如模板生成的入口文件、模板里那句路径表达式），禁止测试脚本另算一份
   等价输入绕过产物 —— discover「生产必崩」（#83）就是这么漏的：测试脚本自己 `join(proj, 'src/tools')`，
   模板里有病的 cwd 相对路径从未被执行。
-- **验证顺序**：`npm run typecheck && npx biome ci . && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website` 全绿才算完
+- **验证顺序**：`npm run typecheck && npx biome ci . && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website && node scripts/check-website-agent-readiness.mjs` 全绿才算完
   （在仓库里就是 `bash scripts/verify-all.sh`，8 步 —— 第 1 步同时管类型检查与 lint）。
   - **要加检查，折进已有步骤，不要加第 9 步**：`verify` job 的 name 是分支保护的必需状态检查，
     而它写死了步数（「全链验证（verify-all 8 步）」）。加一步这名就成了假话；改名则 PR 会卡死
@@ -329,6 +329,21 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   - 客户端脚本必须写在 `<script>` 标签里：**frontmatter 里的 import 只在构建期（Node）执行，不会下发到浏览器**。
   - 页面正文经 `?raw` 片段 + `set:html` 注入——模板里 `{` 会被当表达式解析，而正文含大量 TS 代码块。
   - `build.format: 'file'` 保持 `*.html` 既有 URL；`build/`、`dist/`、`.astro/` 不进版本库。
+  - **agent 可读性（AFDocs 口径）**：官网的读者**包括 agent**（Claude Code / Cursor / Codex 会直接读
+    `/docs.html`、`/api.html` 再写 agentia 代码），所以「产物形状」也是被守卫的面：
+    `/404.html`（缺它 Cloudflare Pages 会把**任意**未匹配路径回 **200 + 首页 HTML** —— soft 404，
+    agent 因此拿不到「这里没有」这个信号，只会把首页当正文解析）、`/robots.txt` + `/sitemap.xml`、
+    `llms.txt` 里的**绝对**链接（AFDocs 的 `llms-txt-links-resolve` 只统计 `http(s)://` 开头的链接，
+    根相对链接会被整条丢弃 —— ⚠️ 别和「页面发现」混为一谈：发现阶段相对链接**是**能解析的）、
+    `llms-full.txt` 与单源 `docs/usage-guide.md` 逐字节相等，以及每页 `<body>` 最前的
+    `<div class="llms-hint">`（视觉隐藏只能用 `clip` / `clip-path`，**不能**用 `display:none`
+    —— 后者会被解析器剥离，而这条指引正是要能被「HTML→Markdown 的 agent」读到；URL 写**纯文本**
+    不套 `<a>`，转换器会丢链接标签）。
+    这一整套由 `scripts/check-website-agent-readiness.mjs` 按**产物形状**核，折在 verify-all 第 8 步里。
+    线上分数可用 `npx --yes afdocs@0.20.0 check https://agentia-web.pages.dev --format scorecard` 复现。
+  - **新增页面时**：`sitemap.xml.ts` 的清单要加、`llms.txt` 的「文档」节要加。守卫会交叉核对 ——
+    sitemap 的 `<loc>` 集合必须**等于** dist 里实际的 `*.html` 集合（排除 404），且每条都出现在
+    llms.txt 里，两处任缺其一即红。脚本里**刻意不另抄一份页面清单**：那样加页面时守卫会跟着一起漏。
   - **`src/fragments/api.html` 是手写的导出速查**（不像 `llms.txt` 从 usage-guide 派生）：新增 / 改名
     导出必须同步补进它 —— `tests/docs/api-page.test.ts` 做反向全覆盖校验，漏写即失败。`docs.html` /
     `index.html` 的正文与统计数字同样要跟着改，它们没有自动校验。
