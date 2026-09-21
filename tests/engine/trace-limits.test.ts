@@ -48,7 +48,10 @@ describe('traceLimits.maxEvents（事件总量闸）', () => {
     const trace = r.snapshot('ok');
     const events = trace.spans[0]!.events;
     assert.equal(events.filter((e) => e.name === 'x').length, 0);
-    assert.deepEqual(events.find((e) => e.name === 'trace.truncated')?.body, { droppedEvents: 4, limit: 0 });
+    assert.deepEqual(events.find((e) => e.name === 'trace.truncated')?.body, {
+      droppedEvents: 4,
+      limit: 0,
+    });
   });
 
   it('闸门只影响事件，不影响 span 与 usage 记账（token 计量走 span 字段）', () => {

@@ -92,13 +92,6 @@ class Tools {
   }
 }
 
-const toolUse = (i: number, name: string) => ({
-  id: `s${i}`,
-  model: 'claude-opus-5',
-  stop_reason: 'tool_use' as const,
-  usage: U,
-  content: [{ type: 'tool_use', id: `tu${i}`, name, input: {} }],
-});
 const endTurn = (i: number) => ({
   id: `e${i}`,
   model: 'claude-opus-5',
@@ -130,7 +123,6 @@ async function runWithEvents(opts: { parallel?: boolean; traceContext?: boolean 
         ],
       },
       endTurn(0),
-      ...(opts.parallel ? [] : []),
     ] as never),
     ...(opts.parallel ? { maxToolConcurrency: 2 } : {}),
     ...(opts.traceContext

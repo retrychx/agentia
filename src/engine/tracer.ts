@@ -41,7 +41,9 @@ export interface TraceLimits {
 export function resolveTraceLimits(raw: unknown, owner: string): TraceLimits | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'object' || raw === null) {
-    throw new TypeError(`${owner}：traceLimits 必须是对象（如 { maxEvents: 500 }），收到 ${String(raw)}`);
+    throw new TypeError(
+      `${owner}：traceLimits 必须是对象（如 { maxEvents: 500 }），收到 ${String(raw)}`,
+    );
   }
   const maxEvents = (raw as { maxEvents?: unknown }).maxEvents;
   if (maxEvents === undefined) return {};
