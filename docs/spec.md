@@ -2476,7 +2476,14 @@ HITL 用例立刻真红（3 条红）。
   零告警闸门 + 覆盖率棘轮门禁；**框架 API 无破坏性变更**）；
   → v0.8.1（**出站链路传播**：新增 `currentTraceparent()`，跨服务关联补上出站方向；
   id 投影上移 `core/trace.ts` 成单一真源（取值不变）；**无破坏性变更**）；
-  `AGENTIA_VERSION = '0.8.1'`。决策均见 §10。
+  → v0.8.2（**外部双模型复核逐条复现收口**：OTLP enum 整数化（`v0.2.2` 起 `status.code` 一
+  直发的是 enum 名字符串，严格 collector 整批拒收 —— 观测全丢却报正常）/ HTTP 200 +
+  `partialSuccess` 按导出失败处理 / 新增 `createOtlpExporter({ onExportError })` /
+  `metricsSink.reset()` 前移 CUMULATIVE 窗口起点 / `maxRetries` 坏值构造期抛错（NaN 与
+  Infinity 此前等于**无限重试**）/ 已中止的 MCP 调用不再发请求、不再永不 settle /
+  异步 store 下同键并发提交不再重复执行（跨进程仍 at-least-once）/ 脚手架模板漏写 `clean.mjs`
+  在发布前拦下；**框架 API 无破坏性变更**，唯一动作是 `maxRetries` 传过坏值的要改成非负整数）；
+  `AGENTIA_VERSION = '0.8.2'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

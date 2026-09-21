@@ -5,6 +5,91 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.8.2] - 2026-09-21
+
+### 变更
+
+> 本版主题（窗口 `0.8.1 → 0.8.2`，含 #112）：**外部双模型复核逐条复现收口** —— 9 条真缺陷
+> （7 条复核成立 + 改的过程中照出的 2 条），全部落在「不报错地不干活」这一类：静默丢观测数据、
+> 静默无限重试、无声永久挂起、生成出来的工程一跑就崩。
+> **框架 API 无破坏性变更**：只新增一个选项（`createOtlpExporter({ onExportError })`），
+> 既有签名与行为在「你没传坏值 / 没按 200 当全部成功」的前提下逐字不变。
+> **一处需要你确认的收紧**：`maxRetries` 的坏值改在**构造期抛错**（见「修复」与「迁移」）。
+
+### 修复（观测出口 —— 三条都属于「看板少数据而框架说一切正常」）
+
+- **OTLP 导出的 `status.code` 从名字符串改成整数**（`'STATUS_CODE_OK'` / `'STATUS_CODE_ERROR'`
+  → `1` / `2`）。OTLP 规范对此是**明文 MUST**，而且专门点出它与 protobuf 的通用 JSON 映射不同：
+
+  > *Values of enum fields MUST be encoded as integer values.*
+  > *Unlike the standard Protobuf JSON Mapping, which allows values of enum fields to be encoded as
+  > either integer values or as enum name strings, only integer enum values are allowed in OTLP JSON
+  > Protobuf Encoding; the enum name strings MUST NOT be used.*
+  > —— [OTLP 规范 · JSON Protobuf Encoding](https://opentelemetry.io/docs/specs/otlp/)
+
+  （同期 `kind` 一直是整数 1，只有 `status` 漏了。）**后果取决于你那侧 collector 的宽容度**：
+  照规范校验的实现会判非法并**整批拒收**（也就说这些 span 在采集端**根本没落库**，而框架侧只看得到
+  「HTTP 200」）；按通用 protobuf JSON 映射的宽容实现（enum 名与整数都收）能落库。
+  受影响范围：**`v0.2.2` → `v0.8.1`**（`createOtlpExporter` 自 `v0.2.2` 起就带这个错）。
+  动作：升级即可，不需要改代码。**但请顺手去采集端确认一眼**这期间（用严格 collector 的话）
+  的 trace 是否为空 —— 你的实现属于哪一档，看那里比看本文档准；丢掉的**历史数据补不回来**。
+- **HTTP 200 不再等于「全部接收」**：collector 可以回 `200 + partialSuccess` 表示「收了一部分」。
+  此前 `res.ok` 为真就算成功 ⇒ 少了一半数据也没人知道。现在「**真拒收**（键在场且值 > 0）
+  **或**非空 `errorMessage`」判为导出失败；`{}` 与 `rejectedSpans: 0` 仍算全部接收
+  （有 collector 恒发这种形状，不能反着误报）。
+- **新增 `createOtlpExporter({ onExportError })`**（与 `metricsSink` 的同名选项对称）：
+  不给，维持既有行为（抛出 → `flushSinks` 吞掉，观测失败不击穿业务）；给了，**所有**导出失败
+  （非 2xx / 超时 / **HTTP 200 但部分接收**）都交给它。存在的理由：`TraceSink` 的失败缺省是
+  **静默**的，「导出其实少了一半数据」这类消息得有人能收到 —— 否则它和「一切正常」在监控上
+  看不出区别。
+- **`metricsSink` 的 `reset()` 语义明确为「开启新窗口」**：计数清零**且**数据点起点前移。
+  此前 `reset()` 只清计数、而数据点的 `startTimeUnixNano` 取自 sink **创建时刻的常量** ⇒
+  同一 `startTime` 下 counter 从 2 退到 1（CUMULATIVE 指标的契约是「同一区间单调不减」，
+  后端会算出负增量或直接丢样本）。同一毫秒内连按两次 `reset()` 时起点也**严格**前进。
+
+### 修复（其余）
+
+- **`maxRetries` 的坏值改在构造期抛 `TypeError`**（`createAnthropicClient` /
+  `createOpenAIClient`，两条适配器共用一份判定）。重试判定是 `attempt >= maxRetries`，于是
+  四类坏值此前被**静默接受**、后果各不相同：`NaN` ⇒ 比较恒假 ⇒ **无限重试**；`Infinity` ⇒
+  永不达到 ⇒ **无限重试**；`-1` ⇒ 静默变成「不重试」；`1.5` ⇒ 实际只允许 1 次（读数上看不出来）。
+  使用者以为自己设了上限，实际没有 —— 429 场景下每多一次重试都是真金白银。
+  **`0` 与不传仍然合法**（`0` = 不重试，是有意义的值；缺省 2）；坏的是「非整数 / 负数 / 非有限」。
+- **已中止的 MCP 调用不再发请求、不再永久挂起**：此前的写法是「把 pending 条目删掉、然后照样
+  `write`」⇒ ① 副作用请求**仍然送达** server（取消在传输层是无效的）；② 返回的 Promise
+  **永远不 settle**（条目已删，没人能 resolve/reject）⇒ 调用方**永久挂起**
+  （引擎侧靠 `toolTimeoutMs` 兜底才没炸）。现在判据在 `write()` **之前**，以 `AbortError` 收场
+  （取消不是超时，记账仍归 `aborted`）。发送**之后**才中止的，请求已在路上、取消不了 ——
+  那是「不等了」，与 `toolTimeoutMs` 同口径。
+- **异步 store 下同键并发提交不再重复执行**：`submit` 是**同步门面**、无法 await 异步 store 的
+  `byIdempotency`，而 `#executeInner` 只采纳已 `succeeded` 的既有记录 ⇒ 「同时提交两个相同
+  `idempotencyKey`」在异步 store（Redis / SQLite）下**两次都执行**（文档承诺的同键去重实际只对
+  同步 store 成立）。现在补一张**进程内认领表**：认领在同步前段完成（两次连续 `submit` 之间
+  没有窗口），且**只在终态释放**（挂起还在等人，放了会让同键另起一个任务）。
+  **边界（同时写进 `usage-guide` §7）**：修的是「同进程内并发提交」这一档；**跨进程并发**与
+  **终态之后重提同键**仍是 at-least-once（store 的 idem 索引 last-wins）。
+- **`@migor/cli`：模板漏写 `scripts/clean.mjs`**。本版首次给脚手架模板加「构建前先清 dist」，
+  并在发布前发现 `create.ts` 忘了把该脚本写出去 —— 生成的新工程 `npm run build` **第一步就
+  `MODULE_NOT_FOUND`**。**已发布版本（≤0.8.1）的模板不含这一步，你此前生成的工程不受影响**，
+  也不需要改；本版发布的是修好的形态。仓库自身与模板的构建现在都先清 dist（`tsc` 不会删除
+  它不再产出的文件 —— 目录重构后旧产物会原样进包），并新增「模板目录 ↔ 源码双向引用」守卫
+  （模板文件必须被引用、每个 accessor 必须有调用方）与 e2e 的**真删能力再重建**对照。
+
+### 仓库自身（不面向使用者）
+
+- e2e-cli 的构建步骤从「测试复刻 `clean → tsc → copy-assets` 三步」改成**字面跑产物自己的
+  `npm run typecheck` / `npm run build`** —— 这条改法当场照出上面那条真缺陷（测试复刻命令的
+  版本照不出来）。同时删掉一条会在合法重构时误报的字面量断言。
+- `docs/guards.md` §1 增补五条守卫（OTLP enum + partialSuccess、CUMULATIVE 窗口起点、模板重建
+  清 dist、幂等键进程内认领、模板 ↔ 源码双向引用）；`docs/spec.md` §10 ⑤ 记逐条定性、
+  反向验证与「报告自称已证伪」的抽查范围。
+- `tests/docs/usage-guide.test.ts` 把 `OtlpExporterOptions` 登记进成员表校验 —— 新增选项自此
+  被文档守卫钉住（注入假成员验证过会红）。
+
+**迁移**：无（框架 API 无破坏性变更，既有代码不需要任何改动）。唯一需要动作的是 `maxRetries`：
+如果你此前给它传过 `NaN` / `±Infinity` / 负数 / 小数，升级后**构造期会抛 `TypeError`** ——
+这是有意的（它此前是静默失效），改成非负整数即可；传 `0` 或不传的代码不受影响。
+
 ## [0.8.1] - 2026-09-21
 
 ### 变更
@@ -779,7 +864,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/retrychx/agentia/releases/tag/v0.8.2
 [0.8.1]: https://github.com/retrychx/agentia/releases/tag/v0.8.1
 [0.8.0]: https://github.com/retrychx/agentia/releases/tag/v0.8.0
 [0.7.2]: https://github.com/retrychx/agentia/releases/tag/v0.7.2
