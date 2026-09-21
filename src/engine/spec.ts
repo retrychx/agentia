@@ -4,6 +4,7 @@ import type { BlackboardSeed } from '../core/blackboard.js';
 import type { TraceContext, TraceRecordEvent } from '../core/trace.js';
 import type { ContextPolicy } from './types.js';
 import type { RetryOptions } from './retry.js';
+import type { TraceLimits } from './tracer.js';
 
 /**
  * Agentia —— run 调用契约（spec §6.3 三类触发共用同一份入参形态）。
@@ -32,6 +33,17 @@ export interface RunInvocationOptions {
   retry?: RetryOptions | false;
   /** 幂等键：异步宿主的 at-least-once 去重依据 */
   idempotencyKey?: string;
+  /**
+   * **记账的数量上限**（spec §9.4 的答案里「让少记了数据可数」那一半）：整条 trace 的
+   * 事件总数上限，超限即停止记账并在交付时于 run 根写一笔 `trace.truncated`
+   * （`{ droppedEvents, limit }`）—— 缺口位置可预测（尾巴）、且有计数 ⇒ 可解释。
+   *
+   * 与 `maxEventChars`（单个事件**正文长度**）正交：一个管「多长」、一个管「多少」，
+   * 各有各的家，两个都「不设 = 不限」。缺省**不设** —— 全量记账是本框架的承诺，
+   * 上限是给「长跑 + 大出参」的宿主一个显式的闸。坏值（NaN / 负数 / 小数）在 run 入口
+   * 抛 `TypeError`，不静默失效。见 `TraceLimits`。
+   */
+  traceLimits?: TraceLimits;
   /**
    * **增量记账出口**（`docs/plans/2026-09-21-incremental-trace-export-and-sampling.md`）：
    * run **进行中**逐笔回调（span 开/合、事件、属性、链路），给「等不了收尾」的消费者 ——

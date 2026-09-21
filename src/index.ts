@@ -55,6 +55,7 @@ export type {
 export { runAgent } from './engine/loop.js';
 export { resolveDefaultModel } from './engine/run-config.js';
 export { TraceRecorder } from './engine/tracer.js';
+export type { TraceLimits, TraceRecorderOptions } from './engine/tracer.js';
 // 出站链路传播（spec §9.2）：当前调用期的 W3C traceparent，宿主带给出站请求用。
 // 框架只给读取器、不做注入（它不创建出站请求）—— 见 docs/usage-guide.md §6。
 export { currentTraceparent } from './engine/span-scope.js';

@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>213</b> 个导出</span>
+          <span class="api-chip"><b>215</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -93,6 +93,8 @@
             <tr><td>RunAgentOptions</td><td><code>{ messages; system?; tools?; model?; … }</code></td><td>主循环入参（逐项见下表）。<code>ExecuteRunOptions</code> / <code>RunAppOptions</code> 在它之上叠加各自的字段。</td></tr>
             <tr><td>resolveDefaultModel</td><td><code>(over?: string) → string</code></td><td>模型缺省解析：显式参数 &gt; <code>AGENTIA_MODEL</code> 环境变量 &gt; <code>claude-opus-5</code>。</td></tr>
             <tr><td>TraceRecorder</td><td><code>class：begin(kind, name, parent) / end(id, patch?) / event / setAttribute / snapshot(status) / usage()</code></td><td>span 记账器，traceId 随实例生成。<code>usage()</code> 与 <code>snapshot().totalUsage</code> 同口径但不拷 spans/events（预算护栏每回合判两次，走这条）。</td></tr>
+            <tr><td>TraceLimits</td><td><code>{ maxEvents? }</code></td><td><strong>记账的数量上限</strong>：整条 trace 的事件总数闸（与管<strong>正文长度</strong>的 <code>maxEventChars</code> 正交）。超限即<strong>停止记账</strong>，并在交付时于 run 根写一笔 <code>trace.truncated{droppedEvents, limit}</code> —— 缺口位置可预测（尾巴）且<strong>有计数</strong>。缺省不设（全量记账是本框架的承诺）；<code>0</code> = 一条都不记（仍有计数）。坏值在 run 入口抛 <code>TypeError</code>。</td></tr>
+            <tr><td>TraceRecorderOptions</td><td><code>{ maxEvents? }</code></td><td><code>new TraceRecorder(opts)</code> 的构造项（与 <code>TraceLimits.maxEvents</code> 同一个闸；闸门在<strong>构造期</strong>生效，没有「前几条没算进闸」的窗口）。</td></tr>
             <tr><td>classifyError</td><td><code>(e: unknown) → SpanError</code></td><td>SDK 异常归类：timeout / rate_limit / connection 三类都标 retryable；<strong>超时单列一类</strong>，便于按类型分流告警与重试策略。</td></tr>
             <tr><td>isAbortError</td><td><code>(e: unknown) → boolean</code></td><td>判定异常是否为中断（<code>name === 'AbortError'</code>）；中断不重试、不冒泡。</td></tr>
             <tr><td>isSuccessStopReason</td><td><code>(reason: AgentStopReason) → boolean</code></td><td>「正常收尾」的唯一尺子（<code>end_turn</code> / <code>stop_sequence</code>）；run 状态机、trace 状态、子 agent 交回判定共用它。</td></tr>

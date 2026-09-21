@@ -9,6 +9,7 @@ import type { MemoryStore } from '../runtime/memory.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { composeTraceEvents } from '../core/trace.js';
 import type { Trace, TraceRecordEvent, TraceSink } from '../core/trace.js';
+import type { TraceLimits } from '../engine/tracer.js';
 import { Container } from '../container/container.js';
 import type { Provider, Token } from '../container/container.js';
 import type { BlackboardKey } from '../core/blackboard.js';
@@ -125,6 +126,11 @@ export interface AppOptions {
    * 「运行期逐笔」（进度流 / 面板）。两者可以同时配，互不影响。
    */
   onTraceEvent?: (e: TraceRecordEvent) => void;
+  /**
+   * 记账的数量上限的缺省值（spec §9.4）：见 `RunInvocationOptions.traceLimits`。
+   * 单次 run 给了自己的就以单次为准（这是个**值**，不是观察者 —— 与 onTraceEvent 的叠加语义相反）。
+   */
+  traceLimits?: TraceLimits;
 }
 
 /** 单次调用参数 = 通用调用参数 + 单次可覆盖 system（spec.ts 的 RunInvocationOptions 为单源） */
@@ -204,6 +210,7 @@ export class AgentApp {
     toolTimeoutMs?: number | undefined;
     maxToolConcurrency?: number | undefined;
     maxEventChars?: number | false | undefined;
+    traceLimits?: TraceLimits | undefined;
   };
   private _tools: AgentTool[] = [];
   /**
@@ -251,6 +258,7 @@ export class AgentApp {
       toolTimeoutMs: opts.toolTimeoutMs,
       maxToolConcurrency: opts.maxToolConcurrency,
       maxEventChars: opts.maxEventChars,
+      traceLimits: opts.traceLimits,
     };
 
     // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent / @Skill / @Prompt；
@@ -469,6 +477,8 @@ export class AgentApp {
         // ⚠️ 必须在这个 omitUndefined 里：`exactOptionalPropertyTypes` 下显式传 undefined
         // 不是合法的 `foo?: T`（与上面那段注释同一个原因）。
         onTraceEvent: composeTraceEvents(this.onTraceEvent, opts.onTraceEvent),
+        // 记账闸：per-run 覆盖应用级缺省（**值**语义 —— 与上面 onTraceEvent 的叠加相反）
+        traceLimits: opts.traceLimits ?? this.base.traceLimits,
         // HITL：审批决定（tool_use_id → 决定）原样进引擎；恢复挂起任务时由
         // AsyncRunner 经它把落库的决定喂回来
         approvals: opts.approvals,
