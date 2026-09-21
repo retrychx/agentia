@@ -171,7 +171,6 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   const intervalMs = opts.intervalMs ?? 60_000;
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const serviceName = opts.serviceName ?? 'agentia';
-  const startedAtMs = Date.now();
 
   const state = new MetricsState({
     windowSize,
@@ -191,7 +190,9 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     await flushOtlpMetrics(state, {
       prefix: p,
       serviceName,
-      startedAtMs,
+      // 数据点的 startTimeUnixNano 取**当前累计窗口**的起点（不是 sink 创建时刻的常量）：
+      // reset() 会前移窗口起点，这里必须跟着走，否则 CUMULATIVE 指标会在同一区间倒退。
+      startedAtMs: state.windowStartedAt,
       // 构造期校验保证 otlp 模式下 endpoint 必填
       endpoint: otlpEndpoint!,
       timeoutMs,

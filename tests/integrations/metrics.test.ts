@@ -434,6 +434,7 @@ describe('E3 模型级指标', () => {
 describe('E5 OTLP/JSON 指标导出', () => {
   async function startCollector(
     statusCode: number,
+    responseBody = statusCode === 200 ? '{}' : 'collector exploded',
   ): Promise<{ server: Server; base: string; bodies: any[] }> {
     const bodies: any[] = [];
     const server = createServer((req, res) => {
@@ -446,7 +447,7 @@ describe('E5 OTLP/JSON 指标导出', () => {
           body: JSON.parse(raw),
         });
         res.writeHead(statusCode, { 'content-type': 'application/json' });
-        res.end(statusCode === 200 ? '{}' : 'collector exploded');
+        res.end(responseBody);
       });
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -481,6 +482,75 @@ describe('E5 OTLP/JSON 指标导出', () => {
       assert.equal((errors[0] as Error).name, 'TimeoutError');
     } finally {
       server.closeAllConnections?.();
+      await close(server);
+    }
+  });
+
+  /*
+   * reset() 必须**前移窗口起点**（2026-09-21 外部复核实测的缺陷）：它此前只清计数器，
+   * 起点仍是 sink 创建时刻 ⇒ 同一 `startTimeUnixNano` 下 counter 从 2 退回 1。
+   * 对 OTLP CUMULATIVE 指标来说这是「同一区间里单调 counter 倒退」，后端会算负增量或丢样本。
+   */
+  it('reset 之后导出：值回到 1，且窗口起点严格前移（CUMULATIVE 不得倒退）', async () => {
+    const { server, base, bodies } = await startCollector(200);
+    try {
+      const m = metricsSink({ export: 'otlp', endpoint: base, intervalMs: 0 });
+      const runsTotal = (i: number): { startTimeUnixNano: string; asInt: string } => {
+        const metrics = bodies[i].body.resourceMetrics[0].scopeMetrics[0].metrics;
+        const mt = metrics.find((x: { name: string }) => x.name === 'agentia_runs_total');
+        return mt.sum.dataPoints[0];
+      };
+
+      await m.export(traceOf({ durationMs: 5 }));
+      const first = runsTotal(0);
+      assert.equal(first.asInt, '1');
+
+      await m.export(traceOf({ durationMs: 5 }));
+      const second = runsTotal(1);
+      assert.equal(second.asInt, '2');
+      assert.equal(
+        second.startTimeUnixNano,
+        first.startTimeUnixNano,
+        '同一窗口内 startTime 必须不变（否则不是累计窗口）',
+      );
+
+      m.reset();
+      await m.export(traceOf({ durationMs: 5 }));
+      const after = runsTotal(2);
+      assert.equal(after.asInt, '1', 'reset 就是开新窗口，值从头计');
+      assert.ok(
+        BigInt(after.startTimeUnixNano) > BigInt(first.startTimeUnixNano),
+        'reset 后起点必须严格前移 —— 否则后端在同一区间看到 2→1 的倒退：' +
+          `before=${first.startTimeUnixNano} after=${after.startTimeUnixNano}`,
+      );
+    } finally {
+      await close(server);
+    }
+  });
+
+  /*
+   * 200 **不等于「全部接收」**（metrics 侧与 traces 侧同一处缺陷、同一个修法）：
+   * collector 可以回 200 + `partialSuccess`（部分数据点被丢）。原先只查 `res.ok` ⇒
+   * 「指标少了一半而框架说一切正常」。metrics 侧的失败通道是 `onExportError`（缺省吞掉）。
+   */
+  it('HTTP 200 + partialSuccess 真拒收 → 走 onExportError，不再当全成功', async () => {
+    const { server, base } = await startCollector(
+      200,
+      JSON.stringify({ partialSuccess: { rejectedDataPoints: 2 } }),
+    );
+    try {
+      const seen: unknown[] = [];
+      const m = metricsSink({
+        export: 'otlp',
+        endpoint: base,
+        intervalMs: 0,
+        onExportError: (e) => seen.push(e),
+      });
+      await m.export(traceOf({ durationMs: 5 }));
+      assert.equal(seen.length, 1, '部分接收必须能被宿主收到');
+      assert.match(String((seen[0] as Error).message), /部分接收/);
+      assert.match(String((seen[0] as Error).message), /rejected_dataPoints=2/);
+    } finally {
       await close(server);
     }
   });

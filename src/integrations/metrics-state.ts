@@ -266,6 +266,15 @@ export class MetricsState {
   costUsd = 0;
   readonly tokens = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
   readonly runStat: DurationStat;
+  /**
+   * **当前累计窗口的起点**（epoch 毫秒）—— OTLP 里所有数据点的 `startTimeUnixNano`。
+   *
+   * 它必须跟着 `reset()` 走：CUMULATIVE 指标的契约是「同一 startTime 下**单调不减**」。
+   * `reset()` 清掉计数器却留着原起点，等于在同一时间区间里让 counter 倒退 —— 后端会算出
+   * 负增量或直接丢样本（2026-09-21 外部复核实测：reset 后 2 → 1，起点没变）。
+   * `reset()` 视为「开启新窗口」，所以起点推到 reset 那一刻。
+   */
+  windowStartedAt = Date.now();
 
   readonly capabilities = new Map<string, CapabilityAcc>();
   readonly models = new Map<string, ModelAcc>();
@@ -457,6 +466,10 @@ export class MetricsState {
   }
 
   reset(): void {
+    // 新窗口：计数清零**且起点前移** —— 只清零会让 CUMULATIVE 指标在同一 startTime 下倒退。
+    // 用 max(now, 上一个起点 + 1) 而不是裸 Date.now()：同一毫秒内连按两次 reset 时，
+    // 起点必须**严格**前进，否则两次新窗口共用一个 startTime，后端看到的仍是倒退。
+    this.windowStartedAt = Math.max(Date.now(), this.windowStartedAt + 1);
     this.runs = 0;
     this.failed = 0;
     this.costUsd = 0;
