@@ -32,6 +32,21 @@ const { title, description, page = 'home', footerLinks = [] } = Astro.props;
 const site = Astro.site ?? new URL('https://agentia-web.pages.dev');
 const canonical = new URL(Astro.url.pathname, site).href;
 const ogImage = new URL('og.png', site).href;
+
+// AI agent 指引（llms.txt directive）。四页共用，所以放在外壳里而不是各页手抄四遍
+// ——「文档站的读者已经包括 agent」，而 agent 从**深层页**进来时并不知道站上还有
+// /llms.txt 与 /llms-full.txt（AFDocs 的 llms-txt-directive-html 检查的就是这件事）。
+//
+// ⚠️ 三个约束，改这段前先读：
+//   ① 用 clip / clip-path 视觉隐藏，**不要**换成 display:none / hidden / aria-hidden ——
+//      前两者会被 HTML 解析器或转换器剥离，这条指引正是要能被「HTML→Markdown 的 agent」读到；
+//      加 aria-hidden 则等于对无障碍树撒谎（它是给机器读的正文，不是装饰）。
+//   ② URL 写**纯文本**，不要套 <a>：HTML→Markdown 转换常丢弃链接标签、只留锚文本，
+//      而纯文本路径在转换后仍完整可读。
+//   ③ 留在 <body> 最前：AFDocs 按「命中位置 / 正文长度」判定是否「near the top」（≤10%），
+//      放到页面尾部会被判成 buried（>50%）而降级。它必须在 <Nav> 之前 —— <nav> 整段会被剥离。
+const llmsIndex = new URL('llms.txt', site).href;
+const llmsFull = new URL('llms-full.txt', site).href;
 ---
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -60,6 +75,10 @@ const ogImage = new URL('og.png', site).href;
     ))}
   </head>
   <body class={`page-${page}`}>
+    <div
+      class="llms-hint"
+      style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0"
+    >For AI agents: the complete documentation index is available at {llmsIndex}, and the full documentation bundle (the single-source usage guide in plain text) is available at {llmsFull}.</div>
     <div class="grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
     <div class="grain" aria-hidden="true"></div>
     <div class="scroll-progress" aria-hidden="true"><span id="scroll-progress"></span></div>

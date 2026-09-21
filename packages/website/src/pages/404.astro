@@ -1,0 +1,41 @@
+---
+// 404 页（Astro 约定的特殊路由）。
+//
+// ⚠️ **这个文件的存在本身就是修复的一部分，不是装饰**：Cloudflare Pages 在产物里
+// 找不到 `404.html` 时，会把**任意**未匹配路径用根 `index.html` 以 **200** 返回
+// （soft 404）。实测代价（2026-09-21，afdocs `http-status-codes` 4/4 fail）：
+//   curl -o /dev/null -w '%{http_code}' https://agentia-web.pages.dev/robots.txt   → 200
+//   而 /robots.txt、/sitemap.xml、/usage-guide.md 拿到的都是同一份 17146 字节的首页 HTML。
+// 这比 404 更坏：agent 猜 `.md` 地址、爬 robots/sitemap 时**拿不到「这里没有」这个信号**，
+// 于是把首页当正文解析。有了 `404.html`，Pages 才会对未匹配路径回真 404。
+//
+// 版式直接复用首页 hero（global.css 里的 `.hero` 是基类、不依赖 `.page-*`），
+// 因此不新增 CSS。
+import Base from '../layouts/Base.astro';
+---
+
+<Base
+  title="404 —— 页面不存在 | Agentia"
+  description="请求的页面不存在。返回首页或查阅使用说明。"
+  page="home"
+>
+  <main class="hero">
+    <div class="hero-content">
+      <p class="hero-kicker">404 · PAGE NOT FOUND</p>
+      <h1>
+        <span class="line">这个页面不存在</span>
+      </h1>
+      <p class="hero-sub">
+        <span class="hs-line">链接可能已失效，或者地址打错了。</span>
+        <span class="hs-line"
+          >找使用说明可以直接读纯文本版 <code>/llms-full.txt</code>。</span
+        >
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="/index.html">返回首页</a>
+        <a class="btn btn-ghost" href="/docs.html">使用说明</a>
+        <a class="btn btn-ghost" href="/api.html">API 参考</a>
+      </div>
+    </div>
+  </main>
+</Base>

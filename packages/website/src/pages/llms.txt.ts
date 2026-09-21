@@ -9,8 +9,15 @@ import guide from '../../../../docs/usage-guide.md?raw';
  *
  * ⚠️ 单源用 `?raw` 构建期注入（理由同 `llms-full.txt.ts` 的注释：Astro 7 下 `import.meta.url`
  * 指向产物目录，`readFileSync` + 相对 URL 会在构建期 ENOENT）。
+ *
+ * ⚠️ 站内链接**必须是绝对地址**：AFDocs 的 `llms-txt-links-resolve` 只统计
+ * `http://` / `https://` 开头的链接（源码 `checks/content-discoverability/llms-txt-links-resolve.js`），
+ * 根相对链接（`/docs.html`）会被**整条丢弃** ⇒ 同源链接 0 条、该项只能拿到 WARN，
+ * 且 agent 少一个可直接跟随的入口。页面 URL 形态跟 `sitemap.xml.ts` 对齐（`.html`）。
  */
-export const GET: APIRoute = () => {
+export const GET: APIRoute = ({ site }) => {
+  const origin = (site ?? new URL('https://agentia-web.pages.dev')).origin;
+  const abs = (path: string) => new URL(path, origin).href;
   // 从单源里抠出 API 名单，保证这里的清单不会与说明漂移
   const roster = new Map<string, string[]>();
   let heading = '';
@@ -66,11 +73,11 @@ export const GET: APIRoute = () => {
 
 ## 文档
 
-- [完整使用说明（供 AI 整篇注入）](/llms-full.txt): API 速查、类型链路、常见错误 —— 由仓库单源 \`docs/usage-guide.md\` 生成
-- [官网首页](/): 框架定位与四类能力
-- [文档页](/docs): 指南与代码示例
-- [API 参考](/api): 导出面清单
-- [Playground](/playground): 浏览器内跑一次真实 run（自带 Key，直连 Anthropic / DeepSeek）
+- [完整使用说明（供 AI 整篇注入）](${abs('/llms-full.txt')}): API 速查、类型链路、常见错误 —— 由仓库单源 \`docs/usage-guide.md\` 生成
+- [官网首页](${abs('/')}): 框架定位与四类能力
+- [文档页](${abs('/docs.html')}): 指南与代码示例
+- [API 参考](${abs('/api.html')}): 导出面清单
+- [Playground](${abs('/playground.html')}): 浏览器内跑一次真实 run（自带 Key，直连 Anthropic / DeepSeek）
 
 ## 安装与脚手架
 
