@@ -2375,6 +2375,70 @@ run 结束不残留）+ `tests/core/trace.test.ts` 的投影组 + otlp 单源断
 「多命中 = 有不认识的东西也叫这个版本号」那条设计意图的照妖镜 —— 原夹具只放了 1.3.0 的
 `left-pad`，撞不上，所以这个坑一直没被夹具照到。
 
+### 2026-09-21 ⑤：外部双模型复核（Claude × GPT）逐条复现 —— 7 条全部成立；改的过程中又照出 2 条真缺陷
+
+**背景**：外部把同一份仓库交给两个模型独立审查，交回一张评分表（内部工程 / 发布稳定性 /
+生产就绪度）与 7 条问题（4 条 P1、3 条 P2），并自称另有 5 条「证伪」。处理口径：**不采信任何
+一侧的结论，逐条自己复现定性**；成立的改成带回归用例的代码，证伪的说清理由。
+
+**逐条定性（7/7 成立，且全部落在「静默」这一类）**
+
+| # | 复现结论 | 修法 |
+|---|---|---|
+| 1 | OTLP/JSON 的 enum 发的是**名字符串**（`status.code: 'STATUS_CODE_OK'`），规范要求整数枚举 | 改整数 1 / 2；并加一条「**扫整个 payload 不得出现任何 `*_CODE_*` 字面量**」的断言 —— 堵的是「断言跟着实现一起写错」这个**假绿机制**，不只是这一次的取值 |
+| 2 | 异步 store 下同键并发提交**两次都执行**（实测 `app.run` 调用数 2） | 见下「认领表」段 |
+| 3 | `maxRetries` 收 NaN / Infinity / 负数 / 小数 | 新建 `src/integrations/adapter-options.ts` 的构造期判定，两条适配器**共用一份**（`0` 放行 —— 「不重试」是有意义的值） |
+| 4 | 重复构建保留**已删除能力**的产物 | 模板 `build` 先清 `dist/`（`packages/cli/templates/scripts/clean.mjs`）；仓库自身 `build` 同享一份 `scripts/clean-dist.mjs`（只清本次要建的那棵树，避免踩同仓作业的别的 agent） |
+| 5 | MCP 已中止的调用**照样发请求**，且返回的 Promise 永不 settle | 判据移到 `write()` **之前**，以 `AbortError` 收场（`core/timeout.ts` 新导出 `abortError`，与 `interruptibleSleep` 共用形状 —— 取消不是超时） |
+| 6 | `metricsSink.reset()` 破坏 CUMULATIVE 语义（同一 startTime 下 counter 2 → 1 倒退） | `MetricsState.windowStartedAt` 成为窗口起点的单一真源，`reset()` 把它前移（`max(now, 前值 + 1)` —— 同毫秒连按两次也**严格**前进） |
+| 7 | **HTTP 200 不等于全部接收**：collector 的 `partialSuccess` 被读成成功 | 新建 `src/integrations/otlp-partial.ts`：判据是「**真拒收**（键在场且值 > 0）**或**非空 errorMessage」——`{}` 与 `rejectedSpans: 0` 是「全部接收」的另一种写法（有 collector 恒发）；traces 侧新增 `onExportError` 选项（`TraceSink` 的失败缺省是**静默**的，「少了一半数据」得有出口） |
+
+**第 2 条为什么不是「加一句 await」**：`submit` 是**同步门面**（`poll` / `byIdempotency` 同），
+异步 store 交回的 `byIdempotency` 是 Promise —— 门面等不了；而 `#executeInner` 只采纳**已
+succeeded** 的既有记录（queued / running 不采纳，重复执行本就是 at-least-once 允许的行为）。
+所以补法是在 `#execute` 的**同步前段**加一张**进程内认领表**（`#claims`）：`submit` 先查在飞
+认领并直接返回它 ⇒ 两次连续 `submit` 之间没有窗口。
+
+**修复本身带出的新缺陷（第 8 条，本轮唯一一条不是外部报告的）**：认领**只在终态释放**
+（挂起还在等人，放了会让同键另起一个任务），而 HITL 的恢复段是**另一次** `#execute`
+（`approve` 从 store 读出的、异步 store 交出的还是**新副本对象**），那次 `claimed` 必为
+`false` ⇒ 释放判据若只看 `claimed` 或只比对象同一性，挂起过的键就**永久钉在认领表里**
+（同键再也不执行 + 表无界增长）。判据改为按 `taskId` 比对（`#claims.get(key)?.taskId === rec.taskId`）。
+**反向验证**：把判据退回 `claimed` 标志或对象同一性 ⇒ `tests/transport/async.test.ts` 的
+HITL 用例立刻真红（3 条红）。
+
+**第 9 条（由「改成字面跑 `npm run build`」这个决定照出来）**：把 e2e 的构建步骤从「测试复刻
+`clean → tsc → copy-assets` 三步」改成**跑产物自己的 `npm run build`** 的当场，第一步就
+`MODULE_NOT_FOUND` —— 模板目录里有 `scripts/clean.mjs`、`packages/cli/templates/package.json`
+的 build 脚本也引用了它，但 `create.ts` **忘了把它写出去**。也就是说：**这一轮此前给模板加的
+「清 dist」在生成的项目里从未存在过**，新工程 `npm run build` 第一步就崩（而当时所有单测都是绿的
+—— 它们问的是「某个模板函数返回了什么」，没人从模板目录出发反问「谁用了它」）。修法与配套：
+① `create.ts` 真写 `scripts/clean.mjs`；② `e2e-cli` 第 4c/4d 步改成**字面跑产物自己的
+`npm run typecheck` / `npm run build`**（依赖解析靠 `node_modules` 里的 `@types` 与 `.bin/tsc`
+软链，不再由测试拼 tsc 命令、也不写 overlay tsconfig —— 这正是 AGENTS.md「测产物要用产物自己
+的输入」那条硬约定）；③ 新增 `packages/cli/test/templates.test.mjs` 的**双向引用守卫**（模板文件
+必须被引用 / accessor 必须有**调用方**（掐掉 import 语句后判）/ renderTemplate 路径必须存在）；
+④ 去掉「build 脚本字符串里含 `clean.mjs`」那条**字面量断言** —— 它会在合法重构（换文件名/换写法）
+时误报，而真删真建的行为断言不问实现细节（反向验证：摘掉模板 build 里的清 dist ⇒
+`SMOKE FAIL: 重复构建后仍留着已删除能力的产物`）。
+
+**边界（如实写进 usage-guide §7）**：本轮修的是「**同进程内**并发提交」这一档。跨进程并发、
+以及终态之后重提同键，仍是 at-least-once —— store 的 idem 索引是 **last-wins**
+（redisStore / fsStore / sqliteStore 头注释同口径），而异步 store 下 `submit` 的同步快路
+走不了 thenable。要严格一次得靠副作用自身幂等，或在 store 上做唯一约束（那是 store 的契约面，
+不在本轮）。
+
+**门禁**：登记进 `docs/guards.md` §1 四条（OTLP enum + partialSuccess、CUMULATIVE 窗口起点、
+模板重建清 dist、幂等键的进程内认领），并把 `maxRetries` 的坏值矩阵并进既有的适配器对拍行。
+反向验证逐条做过：OTLP enum 退回字符串（2 条红）、去掉 MCP 早退（1 条红）、窗口起点退回常量
+（1 条红）、`maxRetries` 退回 `typeof x === 'number'`（2 条红）、认领表三种退法（1–3 条红）。
+
+**报告自称「已证伪」的 5 条**：本轮**抽查 3 条**并给出证据 —— ① `FileTaskStore.list()` 是 Map
+插入序（首次见到该 task 的顺序），**确定且稳定**（无任何语义依赖它排序）；② OpenAI 适配器读
+`choices[0]` 而请求恒 **n=1**（从不请求多补全），读首项即全部；③ MCP `close()` 的「返回即子进程
+已终止」已有 `mcpConnector.test.ts` 的 15 条变异电池覆盖（含忽略 SIGTERM 的顽固子进程）。
+另 2 条（UUID 碰撞、HITL compaction）**未独立复核** —— 不替它们背书，也不当结论引用。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

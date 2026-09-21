@@ -461,7 +461,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | 端点 | 请求 | 响应 |
 |---|---|---|
 | `POST /run` | body 是 `RunInput`（string / messages / `{prompt\|text\|messages}`）；带 `Accept: text/event-stream` 则走 SSE | 200 `{ runId, status, stopReason, finalText, typed?, trace, error? }` —— **`status=failed` 也照返 200**（`rethrow:false` 语义：硬失败以 `error` 字段表达，不用 HTTP 错误码） |
-| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重，直接返回既有记录 |
+| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重、直接返回既有记录（**同步 store** 当场判定；**异步 store** 下只保证**同进程内并发提交**不重复执行，跨进程与终态后重提仍是 at-least-once —— 见 §7「同键去重的能力边界」） |
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
 | `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；不在 `awaiting_approval` 状态 → 409；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
 | `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
@@ -538,7 +538,7 @@ process.on('SIGTERM', async () => {
 | `mapWithConcurrency` | 有界并发 map（结果保序）；`maxToolConcurrency` 的底座，也可自用 |
 
 - **取消**：`app.run(messages, { signal })` 传 `AbortSignal` —— 框架会 abort 在飞请求（内置 Anthropic / OpenAI 适配器都转发 `signal`），run 以 `stopReason='aborted'` 收尾（算失败）。`createHttpHandler` 已内置「客户端断开即中止」；`AsyncRunner.runTimeoutMs` 到点同样是**真中止**（构造期校验：必须 ≥ 0 的**有限**数 —— NaN/Infinity 会被 `setTimeout` 钳到 1ms，等于每个任务立即超时，故直接抛错；要「不限」传 0 或不设）。
-- **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与底层 client 的**内置重试**叠加 —— **两条内置适配器口径一致**（`createAnthropicClient` / `createOpenAIClient` 都有 `maxRetries`，缺省 2，重试同一状态码集合 408/409/429/5xx）—— 建议二选一调（这里 `maxAttempts: 1`，或 `<适配器>({ maxRetries: 0 })`）。
+- **重试**：缺省自动重试可重试失败（429 / 5xx / 连接失败），指数退避 + 抖动。`retry: false` 关闭，或 `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter, onRetry }` 调参。**只在本次尝试尚未产出任何文本时重试**（已吐出的字无法撤回）。⚠️ 与底层 client 的**内置重试**叠加 —— **两条内置适配器口径一致**（`createAnthropicClient` / `createOpenAIClient` 都有 `maxRetries`，缺省 2，重试同一状态码集合 408/409/429/5xx）—— 建议二选一调（这里 `maxAttempts: 1`，或 `<适配器>({ maxRetries: 0 })`）。`maxRetries` 在**构造期**校验：只收非负安全整数（`0` = 不重试），NaN / ±Infinity / 负数 / 小数一律抛 `TypeError` —— 判定是 `attempt >= maxRetries`，NaN 恒假、Infinity 永不达到，两者都等于**无限重试**（且静默）。
 - **流式**：`POST /run` 带 `Accept: text/event-stream` → SSE 逐帧下发（`text.delta` / `run.end` / `error`）；不带该头仍回一元 JSON。
 - **工具超时 / 并发闸门**：`toolTimeoutMs` 超时**不杀 run**（该条 tool_result 记 `is_error`，模型可换路）；`maxToolConcurrency` 给同回合的并行工具设上限（默认全并行）。⚠️ 超时 = **放弃等待**：`AgentTool.run` 没有 signal 参数，**副作用可能已发生**；但引擎放弃等待时会 abort `ToolRunContext.abandoned` —— 想真停的工具监听它自行收尾（框架自带的 @SubAgent / @Skill 已这么做：超时即中止子循环，capability span 以 error 收尾）。**超时判定只有一个裁判**：`toolTimeoutMs` 是唯一判据 —— 工具自带的超时（如 MCP 桥的 `timeoutMs`）在设了本项时**不参与**判定；反过来说，工具自判的超时（抛 `code='timeout'` 的错误）与引擎判的记**同一类账**（`errorKind='timeout'`），并同样回 `is_error`。
 
@@ -628,11 +628,30 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
-| `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项 `OtlpExporterOptions`：`endpoint` / `headers` / `serviceName` / `timeoutMs`（单次导出超时，缺省 10000，非正数 = 不限 —— 裸 fetch 无超时，collector 半开连接会让 run 收尾永久挂起；超时按导出失败处理，不击穿 run） |
+| `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项见下面「`OtlpExporterOptions`」表 |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
 | `Score` | 质量评分：`{ name; value; source?; comment? }` —— LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 `value` 为 0–1（布尔结论用 0/1），`source` 记评分来源（eval 名 / `'human'` / judge 模型 id） |
 | `attachScore` | `attachScore(trace, score)`：把评分挂到 run 根 span（一条 `score` 事件，body 即 `Score`）。评分通常来自 run **之外**（跑完才评），所以走事件而非 span 字段；trace 找不到根 span 时静默忽略（观测不击穿业务） |
+
+#### `OtlpExporterOptions`（`createOtlpExporter` 的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `endpoint` | collector 基地址（如 `http://localhost:4318`）；导出即 POST `${endpoint}/v1/traces` |
+| `headers` | 追加的请求头（鉴权 / 租户标） |
+| `serviceName` | OTLP resource 的 `service.name`，缺省 `agentia` |
+| `timeoutMs` | 单次导出请求超时（毫秒，缺省 10000，非正数 = 不限）——裸 `fetch` 没有超时，collector 半开连接会让 run 收尾**永久挂起**；超时按导出失败处理 |
+| `onExportError` | 导出失败回调：给了它，**所有**失败（非 2xx / 超时 / **HTTP 200 但 collector 报部分接收**）都交给它、不再向 `TraceSink` 调用方抛；不给则维持既有行为（抛出，由 `flushSinks` 吞掉 —— 观测失败不击穿业务）。存在理由：`TraceSink` 的失败缺省是**静默**的，「导出其实少了一半数据」这类消息得有人能收到 |
+
+导出器的两条线缆口径（都有守卫钉着，别按直觉改）：
+
+- **enum 一律整数编码**：`status.code` = `1`（ok）/ `2`（error）、`kind` = `1`（INTERNAL）。
+  OTLP/JSON 规范**禁止** enum 名（曾经发的是 `'STATUS_CODE_OK'` 这种字符串，本地假 collector
+  只做 `JSON.parse`，所以一直没被发现；严格的 collector 会判非法并**整批拒收**）。
+- **HTTP 200 不等于全部接收**：collector 可以回 `200 + partialSuccess`（部分接收 / 拒收若干）。
+  导出器把「**真拒收**（键在场且值 > 0）**或**非空 `errorMessage`」判为失败；`{}` 与
+  `rejectedSpans: 0` 属于「全部接收」的另一种写法（有 collector 恒发），不算失败。
 
 **评分链路**：`attachScore` 写 run 根 `score` 事件 → OTLP 导出时译为 `gen_ai.evaluation.result`
 （`gen_ai.evaluation.name` / `.score.value`，`source` / `comment` 走自有 `agentia.score.*` 键）→
@@ -1232,6 +1251,7 @@ const callable = {
 | `strict` 只是透传 | 框架**不校验** schema 的合规性（是否 `additionalProperties:false` 等） |
 | schema 校验是**子集** | 只覆盖 `type/properties/required/additionalProperties/enum/items`；`format`/`minimum`/`oneOf` 一律放行 |
 | 历史畸形就放弃裁剪 | `trimToolPairs` 遇到非严格交替历史会整体放弃（宁可少裁，也不切出孤立 tool_use 让请求 400） |
+| 同键去重的能力边界 | `idempotencyKey` 的去重分三档：**同步 store** 下 `submit` 当场返回既有记录；**异步 store**（Redis / SQLite 等）下 `submit` 是同步门面、无法 await，去重靠**进程内认领表**，只覆盖「**同进程内并发提交**」（2026-09-21 修复前这里会两次都执行）；**跨进程并发**与**终态之后重提同键**仍是 at-least-once —— store 的 idem 索引是 last-wins（重提即新任务，`redisStore` / `fsStore` / `sqliteStore` 头注释同口径）。要严格一次，请让副作用自身幂等（或在 store 层做唯一约束） |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
 | 能力引用两种粒度 | `tools` 写 **provider token** = 整片能力菜单；写 `'<token>/<能力名>'` = 只引单个能力（@Tool/@Skill/@SubAgent/@Prompt 都可点名，装配期校验，名字不存在即抛错并列出可用名单） |
 | 能力名有格式校验 | 装饰器能力名（`name` 或缺省的方法名）必须匹配 `^[A-Za-z0-9_-]{1,64}$`（与 MCP 桥同口径），非法名在 `createApp` **装配期即抛错** —— 含空格/点/中文的名字会让模型 API 400，宁可在启动期拦住 |
@@ -1259,6 +1279,7 @@ const callable = {
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；出厂连接器同样只做 `tools/list` + `tools/call` |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果（出厂连接器已代你处理） |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判；**显式 `toolTimeoutMs: 0` 也算设了** —— 那是引擎表态「不限」，桥不会再自作主张判 60s），两条路径**同判定、同账**（`errorKind='timeout'`） |
+| 已中止的 MCP 调用**不发请求** | 信号在**发送前**就已中止 ⇒ 立刻以 `AbortError` 收场，请求不出门（2026-09-21 前是「照样 write、Promise 永不 settle」：副作用真送达、调用方永久挂起）。发送**之后**才中止的，请求已在路上、取消不了 —— 那是「不等了」，与 `toolTimeoutMs` 同口径 |
 | MCP 连接器的超时只管装配期 | 连接器自带的 `timeoutMs` 只作用于**握手 + `tools/list`**（那两步**没有任何别的裁判** —— server 卡住会让 `createApp` 永久挂起）；`callTool` 仍是引擎 / 桥那一个裁判 |
 | MCP 连接的 `close()` 保证子进程已终止 | stdio 先 `SIGTERM`、`MCP_CLOSE_GRACE_MS`（2000 ms）后 `SIGKILL`，然后**等真正的 `'exit'`** —— **返回即代表进程已被回收**（此前到点即返回，会留孤儿进程而调用方无从知晓）；HTTP 尽力 `DELETE` 会话（server 不认也无所谓） |
 | StreamableHTTP 会话过期**自愈** | 带会话 id 收到 `404` = 会话已终止、**该请求未被 server 执行** ⇒ 丢会话 → 重新握手 → 把**这一次**重试一次（**只一次**，不再循环）。自愈本身是静默的 ⇒ 用 `onSessionExpired` 去计数 / 告警，否则它和「静默失效」在监控上看不出区别。`404` **之外**的失败仍按 `classifyError` 分流抛出，不重试 |
@@ -1266,7 +1287,7 @@ const callable = {
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用（两种引用粒度都要先有 token） |
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
 | 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |
-| OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run） |
+| OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run）。`reset()` 语义是**开启新窗口**：计数清零**且**数据点起点前移（同一 `startTime` 下 counter 只能单调不减，只清零会让后端算出负增量或丢样本） |
 | `GET /metrics` 不鉴权 | 与 `/healthz` 同档（拉取端在集群内网）。要保护请放反代之后，或不传 `metrics` 选项自行在外层挂路由 |
 | 工具没有 token/成本指标 | 工具是**你的代码**、本身不消耗 token，所以只产出调用数/失败数/耗时；token 与成本只对 `skill`/`subagent`（有 `capability` span）与模型维度产出 |
 | `@Prompt` 没有能力指标 | 资产类能力不建 span、无独立耗时，故不出现在能力排行里（这是刻意的：硬凑一个假耗时会误导调优） |

@@ -40,6 +40,7 @@ const MEMBERSHIP_TYPES = [
   'StreamableHttpMcpConnectorOptions',
   'MetricsSinkOptions',
   'MetricsSink',
+  'OtlpExporterOptions',
   'ApprovalDecision',
 ];
 
