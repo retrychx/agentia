@@ -647,8 +647,11 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 导出器的两条线缆口径（都有守卫钉着，别按直觉改）：
 
 - **enum 一律整数编码**：`status.code` = `1`（ok）/ `2`（error）、`kind` = `1`（INTERNAL）。
-  OTLP/JSON 规范**禁止** enum 名（曾经发的是 `'STATUS_CODE_OK'` 这种字符串，本地假 collector
-  只做 `JSON.parse`，所以一直没被发现；严格的 collector 会判非法并**整批拒收**）。
+  OTLP 规范是**明文 MUST**，且专门区别于 protobuf 的通用 JSON 映射：*「Values of enum fields
+  MUST be encoded as integer values… only integer enum values are allowed in OTLP JSON Protobuf
+  Encoding; the enum name strings MUST NOT be used.」*（曾经发的是 `'STATUS_CODE_OK'` 这种字符串，
+  本地假 collector 只做 `JSON.parse`，所以一直没被发现）。**代价取决于 collector 的宽容度**：
+  照规范校验的会整批拒收（数据没落库、框架只见 HTTP 200），按通用 protobuf JSON 映射的能收下。
 - **HTTP 200 不等于全部接收**：collector 可以回 `200 + partialSuccess`（部分接收 / 拒收若干）。
   导出器把「**真拒收**（键在场且值 > 0）**或**非空 `errorMessage`」判为失败；`{}` 与
   `rejectedSpans: 0` 属于「全部接收」的另一种写法（有 collector 恒发），不算失败。
