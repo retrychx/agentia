@@ -136,9 +136,14 @@ export const SURFACES = [
   },
   {
     file: 'package-lock.json',
-    pattern: /"version": "(\d+\.\d+\.\d+)"/g,
+    // ⚠️ **按包名锚定**，不要退回裸 `"version"` 计数：那种写法会被**恰好同版本号的第三方依赖**
+    // 撞上 —— 真发生过：`@grpc/proto-loader` 恰好 @0.8.1，发布 0.8.1 时闸门报「4 处应为 0.8.1，
+    // 实际命中 5 处」，读起来像清单漏项。锚定后 4 处各带自己的包名，第三方版本再撞也不进网
+    // （`@migor/website` 是 `private: true`、版本恒 0.0.0，本就不在网里 —— 它不出现在下面的
+    // 备选里是有意的）。
+    pattern: /"name": "@migor\/(?:agentia|cli|trace-view)",\n\s+"version": "(\d+\.\d+\.\d+)"/g,
     count: 4,
-    why: 'lock 的 4 个 version 字段（顶层 + 根 + packages/cli + packages/trace-view）—— 手改 manifest 却漏 lock 真的发生过',
+    why: 'lock 的 4 个 version 字段（顶层 + 根 + packages/cli + packages/trace-view）—— 手改 manifest 却漏 lock 真的发生过；按包名锚定防同版本第三方依赖撞网',
   },
   {
     file: 'package-lock.json',

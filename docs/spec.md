@@ -2357,6 +2357,24 @@ package.json 全部写成字符串模板。字符串不过编译器 —— 模�
 run 结束不残留）+ `tests/core/trace.test.ts` 的投影组 + otlp 单源断言；反向验证见设计文档
 `docs/plans/2026-09-21-outbound-trace-propagation.md` §5。**不加 verify-all 步数**。
 
+### 2026-09-21 ④：发布面清单的 lock 项改为**按包名锚定** —— 裸 version 计数会被同版本依赖撞网
+
+**背景**：发 0.8.1 时 `check-release.mjs` 报「package-lock.json：4 处应为 0.8.1，实际命中
+5 处」。逐条查：第 5 处是 `@grpc/proto-loader`，一个**恰好也是 0.8.1** 的第三方依赖 ——
+清单那条用的是裸 `/"version": "(\d+\.\d+\.\d+)"/g`，按**值**计数，所以任何依赖与本次发布
+版本号相同就会撞网，且报错文案读起来像「清单漏了一项」。
+
+**决定**：改成**按包名锚定** ——
+`/"name": "@migor\/(?:agentia|cli|trace-view)",\n\s+"version": "(\d+\.\d+\.\d+)"/g`，仍是 4 处
+（顶层 + 根 + `packages/cli` + `packages/trace-view`），但每处都带自己的包名。两条副产物：
+① `@migor/website`（`private: true`、版本恒 `0.0.0`）本来就不该在网里，锚定后按构造被排除，
+不必再靠「恰好不同版本」侥幸；② 第三方的同版本号**永远**不会进网，撞车不再假红。
+
+**门禁**：夹具里加了同版本**诱饵**（`node_modules/@grpc/proto-loader` 写成本次发布版本），
+断言 bump 既不改它、也不把它算进发布面（`tests/scripts/release-scripts.test.ts`）。这正是
+「多命中 = 有不认识的东西也叫这个版本号」那条设计意图的照妖镜 —— 原夹具只放了 1.3.0 的
+`left-pad`，撞不上，所以这个坑一直没被夹具照到。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
@@ -2392,7 +2410,9 @@ run 结束不残留）+ `tests/core/trace.test.ts` 的投影组 + otlp 单源断
   discover 生产路径修复**（≤0.7.2 生成的工程 `npm start` 必崩，缺陷在产出物里，老工程需
   按新模板改 `src/main.ts`）+ 脚手架 pin 住 CLI 进 devDependencies；纯结构拆分 13 件 +
   零告警闸门 + 覆盖率棘轮门禁；**框架 API 无破坏性变更**）；
-  `AGENTIA_VERSION = '0.8.0'`。决策均见 §10。
+  → v0.8.1（**出站链路传播**：新增 `currentTraceparent()`，跨服务关联补上出站方向；
+  id 投影上移 `core/trace.ts` 成单一真源（取值不变）；**无破坏性变更**）；
+  `AGENTIA_VERSION = '0.8.1'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
