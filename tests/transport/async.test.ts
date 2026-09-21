@@ -69,6 +69,30 @@ function fakeApp(fn?: () => Promise<void>): AppCallable & { calls: number } {
   return app;
 }
 
+/**
+ * 异步 store 下 `poll` 返回 Promise，而 `waitFor` 只吃同步谓词 —— 这里是它的 await 版。
+ * 超时自陈实测状态（照 waitFor 的三条约定）。
+ */
+async function waitStatus(
+  runner: AsyncRunner,
+  taskId: string,
+  want: TaskRecord['status'],
+  budgetMs = 10_000,
+): Promise<TaskRecord> {
+  const t0 = Date.now();
+  for (;;) {
+    const rec = await runner.poll(taskId);
+    if (rec?.status === want) return rec;
+    const elapsed = Date.now() - t0;
+    if (elapsed >= budgetMs) {
+      throw new Error(
+        `waitStatus 超时：等了 ${elapsed}ms，${taskId} 仍是 ${rec?.status}（想要 ${want}）`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 describe('AsyncRunner', () => {
   it('幂等键去重：未失败的同键返回既有记录，失败的同键可重提', async () => {
     const app = fakeApp();
@@ -93,6 +117,100 @@ describe('AsyncRunner', () => {
     assert.equal((await r2.poll(f1.taskId))?.status, 'failed');
     const f2 = r2.submit('a', { idempotencyKey: 'k' });
     assert.notEqual(f2.taskId, f1.taskId);
+  });
+
+  it('幂等键去重（异步 store）：同键在飞时并发提交只执行一次', async () => {
+    // 重现 2026-09-21 外部复核 P1：`submit` 是**同步门面**，无法 await 异步 store 的
+    // `byIdempotency`；而 `#executeInner` 只采纳已 succeeded 的既有记录 ⇒ 「同时提交两个
+    // 同键任务」两次都执行（实测 app.run 调了 2 次）。修复=在 `#execute` 的同步前段认领。
+    const store = new AsyncCopyStore();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const app = fakeApp(() => gate);
+    const runner = new AsyncRunner(app, { store });
+
+    const t1 = runner.submit('a', { idempotencyKey: 'k' });
+    const t2 = runner.submit('a', { idempotencyKey: 'k' }); // 前一个还在飞
+    assert.equal(t2.taskId, t1.taskId, '同键在飞时必须返回同一条记录，不得另起任务');
+
+    release();
+    await runner.awaitTask(t1.taskId);
+    await runner.awaitTask(t2.taskId); // 认领返回的既然是同一任务，也必须能等到它的终态
+    assert.equal(app.calls, 1, '同键并发提交只准执行一次');
+    assert.equal((await store.list()).length, 1, 'store 里只应有一条同键记录');
+  });
+
+  it('幂等键去重（异步 store）：恢复派发的同键任务达终态后释放认领', async () => {
+    // 走「他进程留下的 running 记录 → 本进程 resumePending 认领执行」这条续跑路径：
+    // 认领在**第一次** #execute 里建立，终态必须把它释放，否则该键被永久钉死。
+    const store = new AsyncCopyStore();
+    const app = fakeApp();
+    const runner = new AsyncRunner(app, { store });
+    store.seed({
+      taskId: 'task_stale',
+      status: 'running', // 他进程死在半路
+      idempotencyKey: 'k',
+      spec: { messages: [{ role: 'user', content: 'x' }] },
+      createdAt: Date.now(),
+      ownerId: 'p999-otherproc',
+    });
+    assert.equal(await runner.resumePending(), 1);
+    await runner.awaitTask('task_stale');
+    assert.equal(app.calls, 1, '续跑执行一次');
+
+    const t2 = runner.submit('a', { idempotencyKey: 'k' });
+    assert.notEqual(t2.taskId, 'task_stale', '终态后认领必须已释放，不得命中老记录');
+    await runner.awaitTask(t2.taskId);
+    assert.equal((await runner.poll(t2.taskId))?.status, 'succeeded');
+    // 异步 store 的 idem 索引是 **last-wins**（redisStore / fsStore / sqliteStore 头注释同口径），
+    // 而 submit 的同步快路走不了 thenable ⇒ 终态后重提同键按设计就是**新任务、真执行**。
+    // 这里把它钉住：这是「同进程并发」之外的 at-least-once 边界（usage-guide §7 已写明）。
+    assert.equal(app.calls, 2, '终态后重提同键在异步 store 下会真执行（at-least-once 边界）');
+  });
+
+  it('幂等键去重（异步 store）：HITL 挂起恢复后再提同键不得命中老记录', async () => {
+    // **认领释放的承重用例**：挂起时认领**不释放**（等人工≠终态），而恢复段是
+    // approve 重新从 store 读出**另一个对象**后再进 #execute —— 那次 `claimed` 必为 false。
+    // 释放判据若只看 `claimed`（或比对象同一性），这个键就永久留在认领表里：
+    // 挂起过的同键从此只能拿回那条老记录、再也不执行（认领表泄漏 + 同键静默失效）。
+    const { client } = mockClient([
+      toolUseMsg('danger', {}, 'tu1'),
+      endTurnMsg('第一次'),
+      endTurnMsg('第二次'),
+    ]);
+    const OBJ = { type: 'object', properties: {} } as const;
+    const tools: AgentTool[] = [
+      {
+        name: 'danger',
+        description: '危险操作',
+        inputSchema: OBJ,
+        approval: 'required',
+        run: () => 'done',
+      },
+    ];
+    let calls = 0;
+    const app: AppCallable = {
+      name: 'hitl-idem',
+      run: (messages, opts) => {
+        calls++;
+        return executeRun({ messages, client, tools, ...opts });
+      },
+    };
+    const store = new AsyncCopyStore();
+    const runner = new AsyncRunner(app, { store });
+
+    const t = runner.submit('x', { idempotencyKey: 'k' });
+    await waitStatus(runner, t.taskId, 'awaiting_approval');
+    await runner.approve(t.taskId, { tu1: { approved: true } });
+    assert.equal((await runner.awaitTask(t.taskId)).status, 'succeeded');
+
+    const before = calls; // 挂起段 + 恢复段各一次 app.run（HITL 恢复是重跑）
+    const t2 = runner.submit('x', { idempotencyKey: 'k' });
+    assert.notEqual(t2.taskId, t.taskId, '挂起过的同键在终态后必须已释放认领');
+    await runner.awaitTask(t2.taskId);
+    assert.equal(calls - before, 1, '第二个任务必须真跑一次（老记录被永久命中的话这里是 0）');
   });
 
   it('concurrency=1：第二个任务在槽位释放前保持 queued；submit 返回快照不被原地改', async () => {
