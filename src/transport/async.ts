@@ -141,6 +141,18 @@ export class AsyncRunner {
   readonly #drain = new DrainGate();
   /** 任务终态等待表（见 task-waiters.ts）：仅覆盖本进程写终态，他进程写靠兜底轮询 */
   readonly #taskWaiters = new TaskWaiters();
+  /**
+   * **同进程内的幂等键认领表**（idempotencyKey → 在飞记录）。
+   *
+   * 为什么必须有它（2026-09-21 外部复核实测）：`submit` 是同步门面，**无法 await** 异步 store 的
+   * `byIdempotency`；而 `#executeInner` 只采纳已 `succeeded` 的既有记录。于是「同时提交两个
+   * 相同 idempotencyKey」在异步 store 下**两次都执行**（实测 appRunCalls=2）——
+   * 文档承诺的「同键未失败直接返回既有记录」实际只对同步 store 成立。
+   *
+   * 这里把那条承诺补回到「**同进程内**并发提交」这一档：认领在 `#execute` 的同步前段完成，
+   * 所以两次连续的 `submit` 之间没有窗口。跨进程仍是 at-least-once（诚实边界，见 usage-guide §7）。
+   */
+  readonly #claims = new Map<string, TaskRecord>();
   private readonly taskSinks: TaskSink[];
   /**
    * HITL 挂起时快照的「本轮用户输入」（taskId → messages）—— 恢复段成功后做会话回写用
@@ -208,6 +220,11 @@ export class AsyncRunner {
       );
     }
     if (opts.idempotencyKey) {
+      // 同步快路径：**同进程内已有同键在飞** → 直接返回它。异步 store 下 byIdempotency 是
+      // Promise，同步门面等不了；而 #executeInner 只采纳已 succeeded 的记录 ⇒ 不认领这条，
+      // 「同时提交两个同键任务」会两次都执行（见 #claims 的注释）。
+      const inFlight = this.#claims.get(opts.idempotencyKey);
+      if (inFlight) return { ...inFlight };
       const existing = this.store.byIdempotency(opts.idempotencyKey);
       if (isThenable(existing)) {
         // 异步 store 返回 Promise —— 同步门面无法 await，去重交给 #execute。
@@ -568,6 +585,10 @@ export class AsyncRunner {
    * 该任务就已经计入了，drain 不会漏掉「刚 submit、还没开始跑」的任务。
    */
   async #execute(rec: TaskRecord): Promise<void> {
+    // 同步认领（在任何 await 之前）：同键并发提交的第二个 submit 立刻能看见它。
+    // 挂起（awaiting_approval）**不释放** —— 那是「等人工」，不是终态；放了会让同键再起一个新任务。
+    const key = rec.idempotencyKey;
+    if (key !== undefined && !this.#claims.has(key)) this.#claims.set(key, rec);
     this.active++;
     try {
       await this.#executeInner(rec);
@@ -584,6 +605,18 @@ export class AsyncRunner {
         // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
         // 挂起也唤醒：等待者看一眼状态继续等（awaiting_approval 不是终态），无副作用。
         this.#taskWaiters.notify(rec.taskId);
+        // 释放同键认领：**只有终态才释放**（挂起仍在等人，同键提交不该另起一个任务）。
+        // 判据用 taskId 比对而非 `claimed`：HITL 的恢复段是**另一次** #execute 调用
+        // （approve / 超时兜底 / 崩溃恢复都会重派，且异步 store 交出的常是新副本对象），
+        // 那次 `claimed` 必为 false —— 只看 `claimed` 会让挂起过的键**永不释放**（认领表泄漏，
+        // 同键从此永远命中那条老记录）。
+        if (
+          key !== undefined &&
+          rec.status !== 'awaiting_approval' &&
+          this.#claims.get(key)?.taskId === rec.taskId
+        ) {
+          this.#claims.delete(key);
+        }
         this.#notifyDrained();
       }
     }

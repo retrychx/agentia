@@ -6,6 +6,7 @@ import type {
   ToolUseBlock,
 } from '../core/message.js';
 import { textOf } from '../core/text.js';
+import { resolveMaxRetries } from './adapter-options.js';
 import { sseLines } from '../core/sse.js';
 import { backoffMs, interruptibleSleep } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
@@ -84,7 +85,9 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
     process.env.ANTHROPIC_BASE_URL ??
     'https://api.anthropic.com'
   ).replace(/\/+$/, '');
-  const maxRetries = typeof options.maxRetries === 'number' ? options.maxRetries : 2;
+  // 构造期校验（与下面 timeout 同款纪律）：NaN / Infinity / 负数 / 小数一律响亮失败 ——
+  // `attempt >= maxRetries` 对 NaN 恒假、对 Infinity 永不成立 ⇒ 那是无限重试。
+  const maxRetries = resolveMaxRetries(options.maxRetries, 'createAnthropicClient');
   const timeoutMs = typeof options.timeout === 'number' ? options.timeout : undefined;
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
     // NaN / Infinity 会被 setTimeout 钳到 1ms（每个请求立即「超时」），0 / 负数同理无意义 ——

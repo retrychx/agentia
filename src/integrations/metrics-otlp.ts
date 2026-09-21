@@ -1,5 +1,6 @@
 import type { DurationStat, MetricsState } from './metrics-state.js';
 import { scoreLabels } from './metrics-state.js';
+import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
 
 /**
  * metricsSink 的 **OTLP/JSON 导出**（E5）：从 `MetricsState` 组装 payload + POST 到
@@ -220,6 +221,12 @@ export async function flushOtlpMetrics(state: MetricsState, opts: OtlpFlushOptio
     if (!res.ok) {
       const text = (await res.text()).slice(0, 200);
       throw new MetricsExportError(res.status, `OTLP metrics 导出失败: HTTP ${res.status} ${text}`);
+    }
+    // 200 **不等于全部接收**：collector 可以回 200 + `partialSuccess`（判据见 otlp-partial.ts）。
+    // 读成成功就是「指标少了一半而框架说一切正常」—— 与 traces 侧同一处缺陷、同一个修法。
+    const partial = otlpPartialSuccess(await readOtlpResponseBody(res), 'dataPoints');
+    if (partial !== undefined) {
+      throw new MetricsExportError(200, `OTLP metrics 导出被部分接收（HTTP 200）: ${partial}`);
     }
   } catch (e) {
     opts.onExportError?.(e); // 观测失败不得击穿业务

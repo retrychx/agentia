@@ -19,7 +19,7 @@
 | 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |
 |---|---|---|---|
 | `tests/architecture/layering.test.ts` | 分层单向（`core ← engine ← …`）、依赖图无环、`src` 不 import 到 `src` 之外 | 解析 import 图（`from` / 副作用 / 动态字面量三种），断言允许边集合 + 解析计数下限防真空变绿 | `store → runtime` 这类未声明兄弟依赖悄悄存在（真发生过） |
-| `tests/integrations/adapter-parity.test.ts` | **同一契约的两条适配器必须对称**：同一 HTTP 状态在 anthropic / openai 上的 `{classifyError.type, retryable, 尝试次数}` 完全一致 | 一份场景表（408/409/429/500/503/400 + `retry-after` + `maxRetries:0`）`for (const a of ADAPTERS)` 跑两遍；替换 `globalThis.fetch` 作为两侧统一的注入面；`retry-after: 0` 让退避不真 sleep | 「同一个 429」在 anthropic 打 3 次网络请求、在 openai 打 1 次 —— 成本/延迟随厂商而异却没人发现（真发生过：openai 曾完全没有内层重试） |
+| `tests/integrations/adapter-parity.test.ts` | **同一契约的两条适配器必须对称**：同一 HTTP 状态在 anthropic / openai 上的 `{classifyError.type, retryable, 尝试次数}` 完全一致；`maxRetries` 的**构造期校验也对称**（坏值矩阵 × 两条适配器成对断言） | 一份场景表（408/409/429/500/503/400 + `retry-after` + `maxRetries:0`）`for (const a of ADAPTERS)` 跑两遍；替换 `globalThis.fetch` 作为两侧统一的注入面；`retry-after: 0` 让退避不真 sleep。坏值矩阵：NaN / ±Infinity / -1 / 1.5 一律构造期抛 `TypeError`，`0` 与缺省放行（`0` = 不重试是**有意义的值**，见 §2「`0` 的双重语义」） | 「同一个 429」在 anthropic 打 3 次网络请求、在 openai 打 1 次 —— 成本/延迟随厂商而异却没人发现（真发生过：openai 曾完全没有内层重试）；`maxRetries: NaN` ⇒ `attempt >= NaN` 恒假 = **无限重试**、`Infinity` 永不达到（真发生过，2026-09-21 外部队列复核） |
 | `tests/architecture/transport-errors.test.ts` | 传输层适配器抛的错误必须带**数值 `status`**（否则被归类为 unknown → 重试层静默失效） | 扫 `src/integrations` 的裸 `throw new Error(...)`：文案带 HTTP 状态痕迹即违规；构造期配置校验按文案豁免 | OpenAI 适配器吃一个 429 就整轮失败、引擎层 3 次重试一次不发生（真发生过）；本守卫上线当天就抓到 `otlp.ts` 的同类漏网 |
 | `tests/architecture/tsconfig-strictness.test.ts` | **承重的 tsconfig 开关不得被关掉**：`exactOptionalPropertyTypes`（显式 undefined ≠ 不传）、`strict`、`types:["node"]` | 读 `tsconfig.json` 断言三个开关。反向验证过：关掉 `exactOptionalPropertyTypes` ⇒ 本测试红，且 `{maxAttempts: undefined}` 赋给 `RetryOptions` 从「编译错」变回「放行」 | 39 处防线无声消失（`retry.ts` 的「显式 undefined 覆盖缺省」重新变成合法代码）；@types/node 缺链导致全仓 Node 类型报错 |
 | `tests/types/message-compat.types.ts` | 自有消息类型族 ↔ `@anthropic-ai/sdk` 的结构兼容（双向 assignability） | 针对构建产物 dist 编译的类型断言（`typecheck:types`，node:test 不收） | 使用者手里的 SDK 类型喂不进来；SDK 升级改字段无人发现 |
@@ -39,6 +39,8 @@
 | `tests/core/sse-text-stats.test.ts` | **「预算非正数 = 机制关掉」在共享原语上一致**：`withTimeout(p, 0)` 不设超时、`interruptibleSleep(0, signal)` 不睡（**即使 signal 已中止也 resolve** —— 非正数判先于 aborted 检查）；到点 resolve 时必须摘掉 abort 监听 | 直接单测原语 + `getEventListeners` 计数（带一个常驻监听做对照，防「计数函数恒 0」的假绿） | 有人把「已中止 + `ms<=0`」当 bug「修」成 reject ⇒ 破坏与 `withTimeout` 的对称性（2026-09-19 外部复核真误判过一次，被这条用例拦下） |
 | `tests/engine/tracer.test.ts` | `usage()` 与 `snapshot().totalUsage` **逐字同口径**（预算护栏走前者、trace 交付走后者 —— 漂移就是护栏拿错数） | 同一个 recorder 上 `deepEqual` 两条路 | 预算护栏按错的数字判超限 / 该拦不拦 |
 | `tests/engine/spanScope.test.ts` | 出站 `currentTraceparent()` 的**调用期**作用域：粒度到本回合 / capability（不是 run 根）；并行链互不干扰、内层不外泄；run 结束不残留 | 真跑一轮 + 直测原语（内层链与旁支链各读一次，旁支必须在**内层已进入之后**读）。反向验证过：把作用域退化成 run 级单值存储 ⇒ 5 条里 3 条真红（含并行不串那条） | 退回 run 级单值存储 ⇒ 并行工具互相覆盖：下游拿到的 span id 指向**别的**那次调用（spec §9.2 锁定「span 句柄不放 RunContext」正是为此），且没有任何报错 |
+| `tests/integrations/otlp.test.ts` | **OTLP/JSON 的 enum 必须整数编码**（`status.code` = 1 / 2、`kind` = 1；规范禁止 enum 名）；且 **HTTP 200 ≠ 全部接收** —— collector 的 `partialSuccess` 必须按失败处理 | ① 断言 payload 里 `status.code` 是整数，并**扫整个 payload 不得出现任何 `*_CODE_*` / `SPAN_KIND_*` 字面量**（假 collector 只做 `JSON.parse`，所以「断言跟着实现一起写错」会假绿 —— 加这条扫是为了堵住形成假绿的机制）；② 假 collector 回 `200 + partialSuccess`：`{}` 与 `rejectedSpans: 0` 算**全部接收**、非空 `errorMessage` 算**拒收**，traces 侧断言走 `onExportError`、metrics 侧断言抛 `MetricsExportError` | 严格的 collector 判非法并**整批拒收** ⇒ 观测数据全丢而框架说一切正常；把 200 的部分接收读成成功 ⇒ 看板少一半数据无人知（真发生过，2026-09-21 外部队列复核；两处都发过字符串 enum、都只查 `res.ok`） |
+| `tests/integrations/metrics.test.ts` | **CUMULATIVE 指标的 `startTime` 必须随 `reset()` 前移**（同一 startTime 下 counter 只能单调不减） | 同一个 sink 导出两次、中途 `reset()`，断言值回到 1 **且**窗口起点**严格**前进（含同毫秒连按两次 reset）；窗口内不 reset 时起点逐字不变 | 后端把「新窗口的小值」当成同一区间的分量 ⇒ 算出负增量或丢样本（真发生过：`reset()` 只清计数、起点取 sink 创建时刻的常量，导出值 2 → 1 而 startTime 没变） |
 | `tests/integrations/mcpConnector.test.ts` | MCP 连接器**三件只有它能做的事**：spawn 的 `'error'` 是异步事件必须接住 / stdout 必须按 `\n` 攒包 / **协议层 `isError: true` 必须转成抛错**；装配期超时；`close()` **返回即子进程已终止**、且 HTTP 侧 DELETE **挂死时也必须到点返回**（server 半开不得挂住停机路径）；StreamableHTTP 会话过期（`404`）**自愈且只重试一次**、并发 404 共享同一次重握手 | 起**真子进程**夹具（`tests/fixtures/mcp/fake-server.mjs`，env 覆盖 8 种模式，含忽略 SIGTERM 的 `stubborn` + pid 文件）+ HTTP 侧注入 `fetchImpl`；用例本身由 **15 条变异电池**证明会咬 | `isError` 不转抛错 ⇒ 失败的调用被**模型与 trace 一起**记成成功（正好打在本框架「trace 决定你敢不敢上线」的承诺上）；不接 `'error'` ⇒ 命令不存在时未捕获异常把宿主进程带崩；`close()` 不等 reap ⇒ 留孤儿进程；会话过期不自愈 ⇒ 长跑宿主只能重建连接器 |
 
 ### 1.3 宿主与耐久
@@ -47,7 +49,7 @@
 |---|---|---|---|
 | `scripts/e2e-deploy.ts` | 崩溃续跑：`SIGKILL` 后同库重启 `resumePending` 必须续跑 | 真起服务、真杀进程、同库重启、断言终态 | 「耐久」是句空话（在飞任务死半路无人接管） |
 | `tests/transport/host-hardening.test.ts` | 鉴权拦在**读 body 之前**、body 上限、并发闸门、`exposeErrors` | 真 HTTP 请求 + 断言状态码与连接行为 | 未鉴权请求也会被读进 body；内部拓扑回吐给未鉴权调用方 |
-| `tests/transport/async.test.ts` | 幂等键去重、`resumePending` 认领、迟到 reject 不改写终态 | 状态机级用例 | 同键任务重复执行；成功的 run 被落库失败覆写成 failed |
+| `tests/transport/async.test.ts` | 幂等键去重、`resumePending` 认领、迟到 reject 不改写终态；**幂等键的进程内认领**：同键并发提交只执行一次、**终态才释放**（挂起仍在等人 ⇒ 不释放）、释放判据按 `taskId` 而非 `claimed`（HITL 恢复段是另一次 `#execute`、异步 store 交出的还是新副本） | 状态机级用例 + `AsyncCopyStore`（异步 store 交出的记录是**反序列化新对象** —— 内存 store 的引用语义会把这类缺陷掩盖） | 同键任务重复执行；成功的 run 被落库失败覆写成 failed；**挂起过的键永久钉在认领表里**（同键再也不执行 + 表无界增长 —— 反向验证时真复现过：释放判据只看 `claimed` 或只比对象同一性，HITL 用例立刻红） |
 | `tests/engine/approval.test.ts` · `tests/transport/approval.test.ts` · `tests/transport/httpApproval.test.ts` | HITL 挂起/恢复（2026-09-19 ①）：未决审批 ⇒ **整回合零执行零 tool_result**（协议配平）；`awaiting_approval` 不占槽、不触发 `onFinished`、`resumePending` 不捡、淘汰跳过；`approve` 逐 id 幂等（第一次赢）+ 先落库再派发；惰性超时自动全拒；挂起段照常 flushSinks、恢复段 link 上一段 | 引擎层 mockClient + 宿主层**真引擎**（executeRun）+ 真 HTTP；含「不做什么」断言（onFinished 不开火、普通工具不提前执行） | 审批闸被绕过（副作用直接发生）；挂起被当终态通知 webhook；恢复丢决定/重复执行 |
 | `scripts/e2e-grpc.ts` | **换宿主时最容易静默丢掉的四处语义**：deadline / 取消 → `signal`（要求服务端的 run **真被 abort**，trace 里 `error.type=aborted`，而不是照跑完）、metadata `traceparent` → run 根 link、同 `session_id` 两轮共享历史、同 `idempotency-key` 不重复执行 | 真构建 + 真起宿主（`PORT=0` 由服务自报端口，没有「探空闲端口再交出去」的抢占窗口）+ 用**示例自带的客户端**跑四个 RPC；模型侧假 Anthropic 端点、trace 落 tempdir（不留产物）；**变异电池 8/8 全部由对应断言抓住**（含一条「被抓住但不是被预期断言抓住」的更正记录，见 spec §10 2026-09-18 ⑪） | 客户端已经走了服务端还把 run 跑完（token 白烧）；跨进程链路在服务边界断掉；错误全塌成一个 UNKNOWN（调用方重试策略失效）；RPC 回了结果但「为什么慢 / 贵 / 失败」没有证据 |
 
@@ -61,6 +63,8 @@
 | `tests/docs/run-output-shape.test.ts` | `run` 返回结构的文档形状与实际一致 | 扫描 + 断言 | 结构化结果的对外契约漂移 |
 | `tests/scripts/release-scripts.test.ts` | `release.mjs bump` 的**每项替换计数断言**本身可靠 | 直接测护栏（护栏失灵会写坏整棵树，且发生在发版当天） | 一次 bump 把仓库写坏却没人拦 |
 | `scripts/e2e-cli.ts` 第 8 步 | 两包 tarball 必须含 `CHANGELOG.md` | `npm pack --dry-run` 断言（临时 npm cache，不依赖宿主缓存健康） | 迁移指南写了但用户看不到（真发生过） |
+| `scripts/e2e-cli.ts` 第 4d / 4d-bis 步 | **重复构建不得留下已删除能力的产物**：产物自己的 `npm run build` 必须先清 `dist/`，删掉一个能力再建 ⇒ 旧产物必须消失、本次该有的产物仍在。**命令字面来自生成物 `package.json`**（测试不复刻那三步） | 真删（能力目录 + 注册表那两行都删）→ **真跑 `npm run build`** → 断言旧产物消失 + `dist/main.js` 仍在。反向验证过：把模板 build 里的清 dist 那一步摘掉 ⇒ `SMOKE FAIL: 重复构建后仍留着已删除能力的产物`（真跑过） | 生产入口按自身位置 discover `dist/<分类>/` ⇒ **删掉的能力继续被加载进菜单**（源码里找不到、进程里却能调；tarball 里的幽灵产物同理）—— 这一条不是清理癖，是行为正确性 |
+| `packages/cli/test/templates.test.mjs` | **模板目录 ↔ CLI 源码双向引用**：模板目录里每个文件都被源码引用；`templates.ts` 的每个 accessor 都有**调用方**（除访问层本体）；每个 `renderTemplate` 路径真实存在 | 扫模板目录 + 读 `src/*.ts`（掐掉 import 语句后再判「有没有人调」—— `import { cleanMjs }` 也算名字出现过，放行它就等于放行「导入了但从不写」）。反向验证过：删掉 create 里那行 write ⇒ 红；删掉模板文件 ⇒ 红两条 | 模板写了却没被 `create` / `g` 写出去 ⇒ **生成的项目缺文件**（真发生过 2026-09-21：模板目录有 `packages/cli/templates/scripts/clean.mjs`、build 脚本引用它，`create` 忘了写 ⇒ 新工程 `npm run build` 第一步 MODULE_NOT_FOUND） |
 | `scripts/verify-all.sh` 第 1 步 | lint 与类型检查折进同一条链（本地链 == CI 链） | Biome + `tsc` | 「本地 8/8 绿、CI 挂 Biome」（真发生过） |
 | `packages/cli/test/dist-guard.mjs` | CLI 去类型移植副本与框架真源的**逐字对拍**不得静默跳过 | 产物缺失时 CI 判失败、本地醒目警告 | 对拍变成空断言（「逐字守护」名不副实） |
 | CI `import-floor` job（`scripts/check-import-floor.mjs`） | 包在 Node 18/20 上可导入（`engines: >=18` 的声明） | CI 实跑导入 | 旧 Node 上整包加载即崩 |
@@ -74,7 +78,7 @@
 
 | 待守形状 | 历史事故 | 为什么还没有守卫 | 可能的守卫形状 |
 |---|---|---|---|
-| **`0` 的双重语义（不限 vs 已到点）** | `handler.drain({timeoutMs:1})` 跨过 deadline 后永不返回 | 已有单点用例（`host-hardening.test.ts`），但**没有**统一的「limits 语义对照表」——`mapWithConcurrency` / `drain` / `runTimeoutMs` / `maxIterations` 仍各自解释 `0` | 建一份「limits 语义」单一真源 + 集中用例（`limits.test.ts`） |
+| **`0` 的双重语义（不限 vs 已到点）** | `handler.drain({timeoutMs:1})` 跨过 deadline 后永不返回 | 已有单点用例（`host-hardening.test.ts`），但**没有**统一的「limits 语义对照表」——`mapWithConcurrency` / `drain` / `runTimeoutMs` / `maxIterations` 仍各自解释 `0`（`maxRetries` 已于 2026-09-21 归队：`adapter-options.ts` 一处判定 + 坏值矩阵用例，但那是**单点**，不是真源） | 建一份「limits 语义」单一真源 + 集中用例（`limits.test.ts`） |
 | **零/负/非有限值的语义统一** | 同上一行（`mapWithConcurrency` 已修，其余散在） | 分散在多个模块，无单一真源 | 同上，与上一行合并做 |
 | **手写转发列表不得漏字段** | `runAgentScoped` 漏 `toolTimeoutMs`（跨 3 层：engine → toolkit → ctx） | `exactOptionalPropertyTypes` 已开（见 §1），堵住了「显式传 undefined」这一半；但**「spread 转发时漏掉一个键」TS 结构类型仍不报**（`{...opts}` 少了字段照样过） | 穷尽转发类型（把可转发字段抽成 `Pick<…, ForwardableKey>` 并要求逐项出现）；或改成显式 `omitUndefined({...})` + 一处集中清单 |
 | **首屏 `0 反射` 这类策略声明** | —（尚未漂过） | 页面上写了「0 反射」（= 显式 DI，不用装饰器元数据反射），但源码里本来就有 `Reflect.ownKeys` 这类**正当**用法 ⇒ **无法从源码计数推导**。`api-page.test.ts` 只钉「别被悄悄删掉」 | 若要真守，得先能给出「反射式 DI」的可判定定义（例如「除 `Reflect.ownKeys` 外不得使用 `Reflect.*`，且不得读 `Symbol.metadata`」）—— 那是一条**可写的守卫**，但需要先确认这条口径值不值得当门禁 |
@@ -84,7 +88,11 @@
 > **浅合并被 `null` 覆盖**（`anthropic.test.ts` 的 usage 用例）、**同步 vs 真实异步 store**
 > （`tests/transport/async.test.ts` 的 `AsyncCopyStore`）、**解析器分支矩阵**（`tests/toolkit/env.test.ts`）、
 > **`0` 被 `Math.floor` 压成 0 worker**（`tests/engine/concurrency.test.ts`）、
-> **`exactOptionalPropertyTypes`**（本轮第七轮迁移，见 §1 与 spec §10 2026-09-18 ⑦）。
+> **`exactOptionalPropertyTypes`**（本轮第七轮迁移，见 §1 与 spec §10 2026-09-18 ⑦）；
+> 2026-09-21 双模型复核这一轮又移入 §1 四条：**OTLP enum 整数 + 200 partialSuccess**
+> （`tests/integrations/otlp.test.ts`）、**CUMULATIVE 窗口起点随 reset 前移**
+> （`tests/integrations/metrics.test.ts`）、**模板重建清 dist**（`scripts/e2e-cli.ts` 4d-bis）、
+> **幂等键的进程内认领**（`tests/transport/async.test.ts` 那一行）。
 
 > §2 的存在方式很重要：**它是活的**。每轮 review 挖到的形状，若暂时建不了守卫，就登记到这里；
 > 建成了就移到 §1 并注明守卫位置。「未登记的形状」= 下次必然重犯。

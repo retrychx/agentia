@@ -58,6 +58,7 @@ interface Captured {
 
 async function startCollector(
   statusCode: number,
+  responseBody = statusCode === 200 ? '{}' : 'collector exploded',
 ): Promise<{ server: Server; base: string; captured: Captured[] }> {
   const captured: Captured[] = [];
   const server = createServer((req, res) => {
@@ -70,7 +71,7 @@ async function startCollector(
         body: JSON.parse(raw),
       });
       res.writeHead(statusCode, { 'content-type': 'application/json' });
-      res.end(statusCode === 200 ? '{}' : 'collector exploded');
+      res.end(responseBody);
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -116,7 +117,7 @@ describe('createOtlpExporter', () => {
       assert.equal(root.kind, 1);
       assert.equal(root.startTimeUnixNano, String(1000 * 1e6));
       assert.equal(root.endTimeUnixNano, String(2000 * 1e6));
-      assert.deepEqual(root.status, { code: 'STATUS_CODE_OK' });
+      assert.deepEqual(root.status, { code: 1 });
       assert.deepEqual(root.attributes, [
         { key: 'agent.name', value: { stringValue: 'fake' } },
         { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
@@ -127,7 +128,7 @@ describe('createOtlpExporter', () => {
       const child = spans[1];
       assert.equal(child.parentSpanId, wireSpanId(trace.spans[0].spanId));
       assert.equal(child.name, 'tool:search');
-      assert.deepEqual(child.status, { code: 'STATUS_CODE_ERROR', message: 'boom' });
+      assert.deepEqual(child.status, { code: 2, message: 'boom' });
       const attrByKey = Object.fromEntries(
         child.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
       );
@@ -397,6 +398,91 @@ describe('createOtlpExporter', () => {
       // {stringValue: JSON.stringify(undefined)} 会序列化成 {"key":"a","value":{}} —— 非法 AnyValue
       const raw = JSON.stringify(captured[0].body);
       assert.ok(!raw.includes('"key":"a"'), 'undefined 值不得序列化成空 AnyValue');
+    } finally {
+      await close(server);
+    }
+  });
+
+  /**
+   * OTLP/JSON 的 **enum 必须整数编码**（规范原文：enum 字段用整数值编码，禁止 enum 名）。
+   * 这条守的是一个真实缺陷 + 一个假绿机制：status 曾发 `'STATUS_CODE_OK'` 字符串，而本地
+   * 假 collector 只做 `JSON.parse` —— 断言跟着写成字符串，于是 CI 一直绿，严格 collector
+   * 却会判非法并整批拒收。所以这里**扫整个 payload 的 enum 名**，而不是只比一个字段。
+   */
+  it('enum 一律整数编码：payload 里不得出现任何 OTLP enum 名（整批拒收那个坑）', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      await createOtlpExporter({ endpoint: base }).export(sampleTrace());
+
+      const raw = JSON.stringify(captured[0].body);
+      const enumNames =
+        raw.match(/"(?:STATUS_CODE|SPAN_KIND|SEVERITY_NUMBER|AGGREGATION_TEMPORALITY)_[A-Z_]+"/g) ??
+        [];
+      assert.deepEqual(
+        enumNames,
+        [],
+        `OTLP/JSON 的 enum 必须整数编码，不得出现 enum 名：${enumNames.join(', ')}`,
+      );
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      assert.equal(typeof spans[0].kind, 'number', 'kind 必须是整数');
+      assert.equal(typeof spans[0].status.code, 'number', 'status.code 必须是整数');
+      assert.equal(spans[0].status.code, 1, '1 = STATUS_CODE_OK');
+      assert.equal(spans[1].status.code, 2, '2 = STATUS_CODE_ERROR');
+    } finally {
+      await close(server);
+    }
+  });
+
+  /*
+   * HTTP 200 **不等于「全部接收」**：规范允许 collector 用 200 + `partialSuccess` 说
+   * 「收了一部分」（例如某条 span 属性过大被丢）。原先只查 `res.ok` ⇒ 静默当成完全成功：
+   * 看板少数据，而框架说一切正常。
+   * 两条判据缺一不可 —— ① 200 + 真拒收 ⇒ 报错；② 200 + `partialSuccess` 在场但零拒收
+   * ⇒ **是「全部接收」的另一种写法**（有 collector 恒发这个键），不得当失败。
+   */
+  it('HTTP 200 + partialSuccess 真拒收 → 按部分接收报错（status 仍带 200）', async () => {
+    const { server, base } = await startCollector(
+      200,
+      JSON.stringify({ partialSuccess: { rejectedSpans: 3, errorMessage: 'attribute too large' } }),
+    );
+    try {
+      await assert.rejects(
+        () => createOtlpExporter({ endpoint: base }).export(sampleTrace()),
+        (e: unknown) => {
+          assert.match((e as Error).message, /部分接收/);
+          assert.match((e as Error).message, /rejected_spans=3/);
+          assert.match((e as Error).message, /attribute too large/);
+          assert.equal(
+            (e as { status?: number }).status,
+            200,
+            'status 带 200：宿主据此区分「collector 拒收了一部分」与「连不上」',
+          );
+          return true;
+        },
+      );
+
+      // 给了 onExportError：交回调、不抛（宿主自己决定告警/计数后继续）——
+      // 这是 TraceSink 失败缺省被吞掉时**唯一**能收到这条消息的路（见 usage-guide §7）
+      const seen: unknown[] = [];
+      await createOtlpExporter({
+        endpoint: base,
+        onExportError: (err) => seen.push(err),
+      }).export(sampleTrace());
+      assert.equal(seen.length, 1, '给了回调就该收到，而不是抛出去');
+      assert.match(String((seen[0] as Error).message), /部分接收/);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('partialSuccess 在场但零拒收 → 是「全部接收」，不得报错（在场 ≠ 拒收）', async () => {
+    // int64 走字符串编码 + 空 errorMessage：两种「没有拒收」的写法一次覆盖
+    const { server, base } = await startCollector(
+      200,
+      JSON.stringify({ partialSuccess: { rejectedSpans: '0', errorMessage: '' } }),
+    );
+    try {
+      await createOtlpExporter({ endpoint: base }).export(sampleTrace());
     } finally {
       await close(server);
     }

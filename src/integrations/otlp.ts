@@ -1,6 +1,7 @@
 // 内部 id → 线缆形态的投射**单一真源**在 core/trace.ts（与 parseTraceparent 同处）——
 // 出站 traceparent 用的是同一份，改这里就等于同时改出站（见 core/trace.ts 的注释）。
 import { type Span, type SpanEvent, type Trace, wireSpanId, wireTraceId } from '../core/trace.js';
+import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
 
 /**
  * Agentia —— OTLP trace 导出（spec §9.3 生产方向，roadmap R3）。
@@ -9,7 +10,8 @@ import { type Span, type SpanEvent, type Trace, wireSpanId, wireTraceId } from '
  * 用全局 fetch POST 到 `${endpoint}/v1/traces`，零外部依赖：
  * - traceId/spanId/parentSpanId：内部用 UUID，OTLP 要求 hex —— 去掉 '-' 即 32 位 hex；
  * - kind 固定 SPAN_KIND_INTERNAL(1)；时间 ms × 1e6 转 string 纳秒；
- * - status：ok → STATUS_CODE_OK，error → STATUS_CODE_ERROR（附 error.message）；
+ * - status：ok → `{code: 1}`，error → `{code: 2, message}`（**整数** —— OTLP/JSON 的 enum
+ *   必须整数编码，禁止 enum 名；`kind` 同理走整数 1）；
  * - attributes 展平 span.attributes + usage（usage.* 前缀）；
  * - events → OTLP events（body 的原始类型字段进 attributes，其余 JSON 化）。
  *
@@ -44,6 +46,15 @@ export interface OtlpExporterOptions {
    * 上层 flushSinks 的 catch 会吞掉它 —— 观测失败不击穿业务。
    */
   timeoutMs?: number;
+  /**
+   * 导出失败回调（与 `metricsSink` 的同名选项对称）。
+   *
+   * 给了它，**所有**导出失败（非 2xx / 超时 / **HTTP 200 但 collector 报部分接收**）都走这里、
+   * 不再向 `TraceSink` 调用方抛出；不给则保持既有行为（抛出，由 `flushSinks` 吞掉）。
+   * 存在的理由：`TraceSink` 的失败缺省是**静默**的（观测失败不得击穿业务），
+   * 「导出其实少了一半数据」这类消息要有人能收到。
+   */
+  onExportError?: (err: unknown) => void;
 }
 
 export interface OtlpExporter {
@@ -241,10 +252,14 @@ function mapSpan(span: Span) {
     status:
       span.status === 'error'
         ? {
-            code: 'STATUS_CODE_ERROR',
+            // ⚠️ OTLP/JSON 的 **enum 必须编码为整数**（规范原文：enum 字段用整数值编码，
+            // 禁止 enum 名字符串）—— 2 = STATUS_CODE_ERROR / 1 = STATUS_CODE_OK。
+            // 曾经发的是 'STATUS_CODE_OK' 这种字符串：本地假 collector 只做 JSON.parse，
+            // 所以 CI 一直绿；严格的 collector 会判非法并**整批拒收**。
+            code: 2,
             ...(span.error ? { message: span.error.message } : {}),
           }
-        : { code: 'STATUS_CODE_OK' },
+        : { code: 1 },
   };
 }
 
@@ -253,36 +268,54 @@ export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
   const serviceName = opts.serviceName ?? 'agentia';
   const timeoutMs = opts.timeoutMs ?? 10_000;
 
+  // 真正发请求的那条路径：一切失败都**抛**（非 2xx / 超时 / 200 但部分接收）。
+  // 外面那层 `export` 决定抛给谁：有 onExportError 就交给它，否则保持既有行为（抛出去，
+  // 由 flushSinks 吞掉 —— 观测失败不得击穿业务）。
+  const send = async (trace: Trace): Promise<void> => {
+    const payload = {
+      resourceSpans: [
+        {
+          resource: {
+            attributes: [{ key: 'service.name', value: { stringValue: serviceName } }],
+          },
+          scopeSpans: [
+            {
+              scope: { name: 'agentia' },
+              spans: trace.spans.map(mapSpan),
+            },
+          ],
+        },
+      ],
+    };
+    const res = await fetch(`${endpoint}/v1/traces`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...opts.headers,
+      },
+      body: JSON.stringify(payload),
+      // 半开连接防护：超时后 fetch reject（TimeoutError），由上层按导出失败处理
+      ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+    });
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 200);
+      throw new OtlpExportError(res.status, `OTLP 导出失败: HTTP ${res.status} ${text}`);
+    }
+    // HTTP 200 **不等于全部接收**：collector 可以用 200 + `partialSuccess` 说「收了一部分」。
+    // 静默读成成功就是「看板少数据而框架说一切正常」。判据见 otlp-partial.ts（在场 ≠ 拒收）。
+    const partial = otlpPartialSuccess(await readOtlpResponseBody(res), 'spans');
+    if (partial !== undefined) {
+      throw new OtlpExportError(200, `OTLP 导出被部分接收（HTTP 200）: ${partial}`);
+    }
+  };
+
   return {
     async export(trace: Trace): Promise<void> {
-      const payload = {
-        resourceSpans: [
-          {
-            resource: {
-              attributes: [{ key: 'service.name', value: { stringValue: serviceName } }],
-            },
-            scopeSpans: [
-              {
-                scope: { name: 'agentia' },
-                spans: trace.spans.map(mapSpan),
-              },
-            ],
-          },
-        ],
-      };
-      const res = await fetch(`${endpoint}/v1/traces`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...opts.headers,
-        },
-        body: JSON.stringify(payload),
-        // 半开连接防护：超时后 fetch reject（TimeoutError），由上层按导出失败处理
-        ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
-      });
-      if (!res.ok) {
-        const text = (await res.text()).slice(0, 200);
-        throw new OtlpExportError(res.status, `OTLP 导出失败: HTTP ${res.status} ${text}`);
+      if (opts.onExportError === undefined) return send(trace);
+      try {
+        await send(trace);
+      } catch (e) {
+        opts.onExportError(e);
       }
     },
   };

@@ -170,6 +170,17 @@ export function copyAssetsMjs(): string {
   return renderTemplate('scripts/copy-assets.mjs');
 }
 
+/**
+ * 脚手架的 scripts/clean.mjs：构建前清 dist/（`npm run build` 的第一步）。
+ *
+ * ⚠️ 它必须**被 create 真写出去** —— 模板目录里放着它、build 脚本里引用它，但 create 忘了写，
+ * 生成的项目 `npm run build` 就第一步 MODULE_NOT_FOUND（2026-09-21 真发生过，由 e2e 里那句
+ * **字面跑 `npm run build`** 抓住；`templates.test.mjs` 现在也有「模板文件必须被引用」的守卫）。
+ */
+export function cleanMjs(): string {
+  return renderTemplate('scripts/clean.mjs');
+}
+
 // ---------- g 命令能力模板 ----------
 
 export function toolIndexTs(name: string): string {

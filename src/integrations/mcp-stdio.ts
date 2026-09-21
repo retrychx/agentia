@@ -10,6 +10,7 @@ import {
   withDeadline,
 } from './mcp.js';
 import type { Guard, McpConnector, McpToolInfo } from './mcp.js';
+import { abortError } from '../core/timeout.js';
 
 /**
  * MCP **stdio 连接器**（内置默认件之一）：spawn 子进程、换行分隔 JSON-RPC。
@@ -169,6 +170,15 @@ export function createStdioMcpConnector(
     if (fatal) return Promise.reject(fatal);
     const id = nextId++;
     return new Promise<unknown>((resolve, reject) => {
+      // ⚠️ **已经中止的调用根本不该发出去**（2026-09-21 外部复核）：此前的写法是
+      // 「把 pending 条目删掉、然后照样 write」—— 两个后果：
+      //   ① 副作用请求仍然送达 server（取消在传输层是无效的）；
+      //   ② 返回的 Promise 永远不 settle（条目已删，没人能 resolve/reject）⇒ 调用方永久挂起。
+      // 判在 write **之前**，且以 `AbortError` 收场（取消不是超时，见 core/timeout.ts）。
+      if (abandoned?.aborted === true) {
+        reject(abortError('调用已被取消（信号在发送前就处于中止态）'));
+        return;
+      }
       try {
         ensureProc();
       } catch (e) {
@@ -181,11 +191,7 @@ export function createStdioMcpConnector(
       // close」—— 对「活着但不回包」的 server 就是无界泄漏。裁判表过态就删条目：
       // 之后回包到了也没人等（:441 的 pending.get 落空即忽略，语义安全）。
       if (abandoned !== undefined) {
-        const drop = (): void => {
-          pending.delete(id);
-        };
-        if (abandoned.aborted) drop();
-        else abandoned.addEventListener('abort', drop, { once: true });
+        abandoned.addEventListener('abort', () => pending.delete(id), { once: true });
       }
       write({ jsonrpc: '2.0', id, method, params });
     });
