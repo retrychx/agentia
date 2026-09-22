@@ -11,11 +11,7 @@
  * 它要在 Node 里被直接 import 做单测。DOM 接线留在 HTML 里，且只做
  * 「取值 → 调这里 → 写回」，不再自己判断业务规则。
  */
-import type {
-  SessionMessageLike,
-  TraceRecordEventLike,
-  TraceSpanLike,
-} from './dev-protocol.js';
+import type { SessionMessageLike, TraceRecordEventLike, TraceSpanLike } from './dev-protocol.js';
 
 // ---------- 能力多选（D8） ----------
 

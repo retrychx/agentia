@@ -557,10 +557,19 @@ describe('在飞 run 的增量 trace 折回（① 实时右栏）', { skip: SKIP
     assert.equal(acc.spans.length, 1, '重复投递不该多出一个 span');
     // 指向未知 spanId（面板连上得晚，前几个 span.begin 没收到）⇒ 丢，不抛
     assert.equal(
-      L.applyTraceEvent(acc, { seq: 99, type: 'span.end', spanId: 'nope', endedAt: 1, status: 'ok' }),
+      L.applyTraceEvent(acc, {
+        seq: 99,
+        type: 'span.end',
+        spanId: 'nope',
+        endedAt: 1,
+        status: 'ok',
+      }),
       false,
     );
-    assert.equal(L.applyTraceEvent(acc, { seq: 100, type: 'span.event', spanId: 'nope', event: {} }), false);
+    assert.equal(
+      L.applyTraceEvent(acc, { seq: 100, type: 'span.event', spanId: 'nope', event: {} }),
+      false,
+    );
     assert.equal(acc.spans.length, 1, '未知 span 的事件不该凭空建节点');
     // 后到的 span.begin 对已见过的 spanId ⇒ 原地刷新（重放幂等），不重复挂到树上
     assert.equal(
@@ -587,7 +596,11 @@ describe('在飞 run 的增量 trace 折回（① 实时右栏）', { skip: SKIP
 
 describe('回复正文的归属（② 跑完的回复被自动 open 擦掉）', { skip: SKIP }, () => {
   it('只有「打开的就是这条回复的主人」才保留', () => {
-    assert.equal(L.replyBelongsTo('t1', 't1'), true, '同一条 trace ⇒ 保留（run-done 刚写上去的那句）');
+    assert.equal(
+      L.replyBelongsTo('t1', 't1'),
+      true,
+      '同一条 trace ⇒ 保留（run-done 刚写上去的那句）',
+    );
     assert.equal(L.replyBelongsTo('t2', 't1'), false, '打开别的 run ⇒ 清（防张冠李戴，原意图）');
     assert.equal(L.replyBelongsTo('t1', null), false, '不知道主人是谁 ⇒ 清（默认安全）');
     assert.equal(L.replyBelongsTo(null, null), false);
@@ -596,7 +609,11 @@ describe('回复正文的归属（② 跑完的回复被自动 open 擦掉）', 
 
 describe('目录浏览 / 选文件（③）', { skip: SKIP }, () => {
   it('浏览… 总是按输入框的值打开（不是开关）', () => {
-    assert.equal(L.browseTarget('/x/y', '/w'), '/x/y', '输入框有值 ⇒ 用它（这就是「敲了路径再点浏览」的用法）');
+    assert.equal(
+      L.browseTarget('/x/y', '/w'),
+      '/x/y',
+      '输入框有值 ⇒ 用它（这就是「敲了路径再点浏览」的用法）',
+    );
     assert.equal(L.browseTarget('  /x/y  ', '/w'), '/x/y', '首尾空白不该让路径读错');
     assert.equal(L.browseTarget('', '/w'), '/w', '空 ⇒ 回落缺省工作目录');
     assert.equal(L.browseTarget('   ', '/w'), '/w');
@@ -604,7 +621,11 @@ describe('目录浏览 / 选文件（③）', { skip: SKIP }, () => {
 
   it('选文件：只在 prompt 为空时填文件名 —— 用户写好的话一个字不动', () => {
     assert.deepEqual(L.promptAfterFilePick('', 'README.md'), { prompt: 'README.md', filled: true });
-    assert.deepEqual(L.promptAfterFilePick('  ', 'a.md'), { prompt: 'a.md', filled: true }, '空白等于空');
+    assert.deepEqual(
+      L.promptAfterFilePick('  ', 'a.md'),
+      { prompt: 'a.md', filled: true },
+      '空白等于空',
+    );
     assert.deepEqual(
       L.promptAfterFilePick('读一下这个', 'a.md'),
       { prompt: '读一下这个', filled: false },

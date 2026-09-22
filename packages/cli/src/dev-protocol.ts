@@ -205,7 +205,13 @@ export type TraceRecordEventLike =
       spanId: string;
       event: { name: string; time?: number; body?: unknown };
     }
-  | { seq: number; type: 'span.attribute'; spanId: string; key: string; value: string | number | boolean }
+  | {
+      seq: number;
+      type: 'span.attribute';
+      spanId: string;
+      key: string;
+      value: string | number | boolean;
+    }
   | { seq: number; type: 'span.link'; spanId: string; link: unknown };
 
 // ---------- dev.ts → 面板（SSE 命名事件 `dev`） ----------

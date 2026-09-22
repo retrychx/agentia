@@ -439,7 +439,11 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         '选文件必须走 promptAfterFilePick（不许悄悄改用户已经写好的 prompt）',
       );
       assert.match(page, /kind === 'trace-event'/, '面板必须处理在飞的增量帧（① 实时右栏）');
-      assert.match(page, /applyTraceEvent\(/, '在飞增量帧必须折回（applyTraceEvent），不能各写一套');
+      assert.match(
+        page,
+        /applyTraceEvent\(/,
+        '在飞增量帧必须折回（applyTraceEvent），不能各写一套',
+      );
       assert.match(
         page,
         /state\.live = null/,
@@ -500,8 +504,14 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
       );
       assert.equal((await post(base, '/run', { prompt: 'x' })).status, 503, '没有 runner ⇒ 503');
       assert.equal(
-        (await post(base, '/ingest-event', { seq: 1, type: 'span.event', spanId: 's', event: { name: 'x' } }))
-          .status,
+        (
+          await post(base, '/ingest-event', {
+            seq: 1,
+            type: 'span.event',
+            spanId: 's',
+            event: { name: 'x' },
+          })
+        ).status,
         503,
         '增量帧同样要 runner 在场才收（没有面板就没人消费它）',
       );
@@ -673,23 +683,40 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
       // 而不是任何报错 —— 那种症状只能在浏览器里查，所以入口就要拦住
       assert.equal((await post(base, '/ingest-event', { seq: 1 })).status, 400, '不认识的事件类型');
       assert.equal(
-        (await post(base, '/ingest-event', { type: 'span.end', spanId: 'x', endedAt: 1, status: 'ok' }))
-          .status,
+        (
+          await post(base, '/ingest-event', {
+            type: 'span.end',
+            spanId: 'x',
+            endedAt: 1,
+            status: 'ok',
+          })
+        ).status,
         400,
         '缺 seq',
       );
       assert.equal(
-        (await post(base, '/ingest-event', { seq: 2, type: 'span.end', spanId: 'x', endedAt: 0 / 0, status: 'ok' }))
-          .status,
+        (
+          await post(base, '/ingest-event', {
+            seq: 2,
+            type: 'span.end',
+            spanId: 'x',
+            endedAt: 0 / 0,
+            status: 'ok',
+          })
+        ).status,
         400,
         'endedAt 是 NaN',
       );
       assert.equal(
-        (await post(base, '/ingest-event', { seq: 3, type: 'span.begin', span: { spanId: 's' } })).status,
+        (await post(base, '/ingest-event', { seq: 3, type: 'span.begin', span: { spanId: 's' } }))
+          .status,
         400,
         'span.begin 缺 traceId / name / startedAt',
       );
-      assert.equal((await post(base, '/ingest-event', { seq: 4, type: 'span.event', spanId: 's' })).status, 400);
+      assert.equal(
+        (await post(base, '/ingest-event', { seq: 4, type: 'span.event', spanId: 's' })).status,
+        400,
+      );
       const res = await raw(srv.port, {
         method: 'POST',
         path: '/ingest-event',

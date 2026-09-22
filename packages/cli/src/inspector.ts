@@ -170,7 +170,8 @@ function validateTraceEvent(e: unknown): string | null {
     case 'span.begin': {
       const s = ev.span;
       if (!s || typeof s !== 'object') return 'span.begin 缺 span';
-      if (typeof s.spanId !== 'string' || s.spanId.length === 0) return 'span.begin 的 span.spanId 缺失';
+      if (typeof s.spanId !== 'string' || s.spanId.length === 0)
+        return 'span.begin 的 span.spanId 缺失';
       if (typeof s.traceId !== 'string' || s.traceId.length === 0) {
         return 'span.begin 的 span.traceId 缺失';
       }
@@ -182,7 +183,8 @@ function validateTraceEvent(e: unknown): string | null {
     }
     case 'span.end': {
       if (typeof ev.spanId !== 'string' || ev.spanId.length === 0) return 'span.end 缺 spanId';
-      if (typeof ev.endedAt !== 'number' || !Number.isFinite(ev.endedAt)) return 'span.end 的 endedAt 非法';
+      if (typeof ev.endedAt !== 'number' || !Number.isFinite(ev.endedAt))
+        return 'span.end 的 endedAt 非法';
       if (typeof ev.status !== 'string') return 'span.end 的 status 缺失';
       return null;
     }
@@ -192,7 +194,8 @@ function validateTraceEvent(e: unknown): string | null {
       return null;
     }
     case 'span.attribute': {
-      if (typeof ev.spanId !== 'string' || ev.spanId.length === 0) return 'span.attribute 缺 spanId';
+      if (typeof ev.spanId !== 'string' || ev.spanId.length === 0)
+        return 'span.attribute 缺 spanId';
       if (typeof ev.key !== 'string' || ev.key.length === 0) return 'span.attribute 缺 key';
       return null;
     }

@@ -383,7 +383,9 @@ try {
     `run 在飞期间应收到增量记账帧（trace-event），实际 0 条 —— 要么 runner 没订阅 onTraceEvent，` +
       `要么事件没经 /ingest-event 转出来。全部帧：${JSON.stringify(seen.map((e) => e.data))}`,
   );
-  const idxLive = seen.findIndex((e) => e.event === 'dev' && e.data.includes('"kind":"trace-event"'));
+  const idxLive = seen.findIndex(
+    (e) => e.event === 'dev' && e.data.includes('"kind":"trace-event"'),
+  );
   const idxDone = seen.findIndex((e) => e.event === 'dev' && e.data.includes('"kind":"run-done"'));
   assert(
     idxLive >= 0 && idxDone >= 0 && idxLive < idxDone,

@@ -19,7 +19,11 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createInspectEventSink, createInspectSink, type InspectEventSink } from './inspector-sink.js';
+import {
+  createInspectEventSink,
+  createInspectSink,
+  type InspectEventSink,
+} from './inspector-sink.js';
 import {
   APP_ENTRY_REL,
   DEFAULT_BUDGET,
