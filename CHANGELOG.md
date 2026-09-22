@@ -5,7 +5,11 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.9.2] - 2026-09-22
+
+> 本版主题（窗口 `0.9.1 → 0.9.2`）：**dev 面板的可读性** —— 模型正文按 Markdown 渲染、
+> 滚动分层（整页不滚、只滚该滚的那块）、长正文默认折叠。
+> **无破坏性变更**：框架公共 API 与脚手架模板形态逐字未变。
 
 ### 新增 · dev 面板的正文 Markdown 渲染
 
@@ -35,6 +39,30 @@
 - 判定走纯逻辑 `collapseDecision`（带单测）：按**行数 + 字符数**，不量像素 —— 像素阈值在
   字体 / 缩放 / 窄屏下会漂，同一个回复在不同机器上折叠与否都不一样。展开态活在渲染之外
   （面板每次全量重画，状态留在 DOM 里会被下一次重画合上）。
+
+### 修复
+
+- **CLI 套件里两条文件监视用例在全链下稳定假红**（`packages/cli/test/panel-logic.test.mjs`）：
+  夹具原来「**写一次**、然后轮询等满 15 秒」，而真 fs 的监视器**建立是异步的**（`fs.watch`
+  返回 ≠ 底下 FSEvents 流已开始投递）—— 那一次写整个漏掉时，**等多久都没用**。复现条件最后
+  定位到 **stdout 被管道捕获**（`verify-all.sh` 的 `out=$(bash -c …)` 与 CI 都是这么跑的）：
+  管道下稳定红、重定向到文件稳定绿；单跑套件也是绿的。改成 `writeUntilSeen`（反复写、直到
+  回调真的来，上限 15 秒）—— **断言没放宽**（那个路径仍必须触发一次回调，只是不再要求
+  「第一次写就被看见」），四条「不该触发」的负向用例一条未动。
+  ⚠️ **仅测试侧，无使用者可见行为**：生产里 dev 环**先建立监视、再对外服务**，不存在
+  「`watchTree()` 一返回用户就改文件」这个窗口。
+
+### 文档
+
+- `docs/usage-guide.md` §2.2：按使用者口吻补三段 —— Markdown 渲染口径（含协议白名单与
+  「用户轮保持字面」）、滚动三层各管一段、长正文折叠阈值与展开控件位置。
+- `docs/guards.md` §1.4：新增 `markdown.test.mjs` 一行（两条安全断言：按构造不产生 HTML、
+  链接协议白名单 + 两条反向验证），并把 `inspector.test.mjs` 那行的反向全覆盖**扩面**记上
+  （覆盖所有自建模块 + 四条页面级不变量）—— 是**扩面**，别读成「多了五条守卫」。
+- `docs/spec.md` §10 2026-09-22 **⑨**：本轮三处可读性改动的现场证据与修法，外加两条踩坑
+  （反向验证的变异体**必须能编译**，否则构建先失败、门禁空跑；对被格式化过的文件做 patch
+  时 `old_string` 用了格式化**前**的版本，靠「改完立刻回读」才发现）。
+- `docs/plans/2026-09-22-dev-debug-loop.md`：补本轮三处的落地记录。
 
 ## [0.9.1] - 2026-09-22
 
@@ -1218,7 +1246,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/retrychx/agentia/releases/tag/v0.9.2
 [0.9.1]: https://github.com/retrychx/agentia/releases/tag/v0.9.1
 [0.9.0]: https://github.com/retrychx/agentia/releases/tag/v0.9.0
 [0.8.3]: https://github.com/retrychx/agentia/releases/tag/v0.8.3
