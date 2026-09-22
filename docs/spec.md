@@ -3021,7 +3021,8 @@ run 列表里那些 run 也还指得到，只是模型不再带着它跑。当�
   但理由更正为「运行期不可知」；guards §2 四条待守形状清到只剩一条（`0` 的语义真源 / 穷尽转发 /
   队列配方门禁三件建成机器守卫）；
   **框架 API 无破坏性变更**，宿主自解析 `/run` SSE 的老客户端不认识新帧即忽略、行为逐字一致）；
-  `AGENTIA_VERSION = '0.8.3'`。决策均见 §10。
+  → v0.9.0（dev 调试环落地：常驻 runner + inspector 面板驱动 `src/app.ts`，四个控件全在面板上；含**破坏性变更**，但只在脚手架模板形态（装配/启动拆分，迁移见 CHANGELOG）—— 框架公共 API 逐字未变）；
+  `AGENTIA_VERSION = '0.9.0'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
