@@ -43,15 +43,46 @@
       }
       #banner.err { border-color: var(--err); background: #1d1416; color: var(--err); }
 
+      /* 应用外壳：**整页不滚**，滚动交给各自的栏。
+         为什么：内容一长就整页滚的话，「我正在看调用树」与「我在读回复」会互相把对方推走，
+         而且 footer 还粘在底部盖住内容 —— 三个滚动条（页面 / 树 / 展开的行）叠在一起最难用。 */
+      html, body { height: 100%; }
+      body { overflow: hidden; display: flex; flex-direction: column; }
+      header, #banner, footer { flex: none; }
       main {
+        flex: 1 1 auto; min-height: 0;
         display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px;
         padding: 14px 20px;
       }
       aside, section {
         background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+        min-height: 0;
       }
-      aside { overflow: hidden auto; max-height: calc(100vh - 200px); }
-      section { padding: 14px; min-height: 240px; font-family: var(--mono); font-size: 12px; overflow: auto; }
+      /* 左栏：页签/清空条固定，列表自己滚 */
+      aside { display: flex; flex-direction: column; overflow: hidden; }
+      #tabs, #chat-bar { flex: none; }
+      #runs, #chat { flex: 1 1 auto; min-height: 0; overflow: auto; }
+      /* 右栏分层：`#trace` 是**唯一**无界增长的部分（它随 span 数长）⇒ 只有它 flex 撑开并滚；
+         回复 / 能力排行 / 用量固定在下方，各自有上限（回复很长时在**它自己那块**里滚，
+         而不是把树推出屏幕 —— 这与「看树」和「读回复」两个动作各自独立是一致的）。 */
+      section {
+        padding: 14px; font-family: var(--mono); font-size: 12px;
+        display: flex; flex-direction: column; overflow: hidden;
+      }
+      #ttl { flex: none; }
+      #trace { flex: 1 1 auto; min-height: 140px; overflow: auto; }
+      #summary, #reply, .usage { flex: none; max-height: 38vh; overflow: auto; }
+      /* 窄屏：两栏并排已经太窄 ⇒ 回到单列 + 整页滚动（此时「整页滚」才是唯一合理的形态） */
+      @media (max-width: 860px) {
+        html, body { height: auto; }
+        body { overflow: visible; }
+        main { grid-template-columns: minmax(0, 1fr); }
+        aside { overflow: visible; }
+        section { overflow: visible; }
+        #runs, #chat, #trace { overflow: visible; }
+        #trace { min-height: 320px; }
+        #summary, #reply, .usage { max-height: none; }
+      }
       .run {
         display: block; width: 100%; text-align: left; cursor: pointer;
         background: none; border: 0; border-bottom: 1px solid var(--border);
@@ -102,9 +133,49 @@
 
       #reply {
         margin: 14px 0 0; padding: 10px; border: 1px solid var(--border); border-radius: 4px;
-        background: #0e0e10; white-space: pre-wrap; word-break: break-word; color: var(--muted);
+        background: #0e0e10; word-break: break-word; color: var(--muted);
       }
       #reply[hidden] { display: none; }
+
+      /* —— 模型正文：Markdown 渲染 ——
+         `.md` 里所有元素都是 createElement 造出来的（解析器不产生 HTML，渲染器不用 innerHTML），
+         所以这里可以有排版规则，但没有一处「把字符串塞进 DOM」。 */
+      .md { white-space: normal; word-break: break-word; line-height: 1.6; }
+      .md-p { margin: 0 0 6px; }
+      .md-p:last-child, .md-list:last-child, .md-pre:last-child { margin-bottom: 0; }
+      .md-h { margin: 10px 0 4px; font-size: 12.5px; color: var(--text); }
+      .md-h:first-child { margin-top: 0; }
+      .md-list { margin: 0 0 6px; padding-left: 18px; }
+      .md-list li { margin: 1px 0; }
+      .md-pre {
+        position: relative; margin: 0 0 6px; padding: 8px; background: #0e0e10;
+        border: 1px solid var(--border); border-radius: 4px; overflow: auto;
+      }
+      .md-pre code { font-family: var(--mono); font-size: 11.5px; white-space: pre; }
+      .md-lang { position: absolute; top: 3px; right: 7px; color: var(--faint); font-size: 9.5px; }
+      .md-c { background: #1b1b1f; border-radius: 3px; padding: 0 3px; font-family: var(--mono); }
+      .md blockquote { margin: 0 0 6px; padding-left: 9px; border-left: 2px solid var(--border); color: var(--muted); }
+      .md a { color: var(--ice); }
+      .md hr { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
+      /* 正文用无衬线正文栈（模型输出是散文，等宽栈读它更累）；码块与行内码仍是等宽。
+         挂在 `.md-wrap`（渲染器的包装节点）而不是 `#reply .md, .turn .md`：单一类选择器
+         既不用管特异性排序，也让「哪块是模型正文」只由一处决定。 */
+      .md-wrap {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+        font-size: 12px;
+      }
+      /* 折叠态：卡高度 + 底部渐隐（渐隐是「下面还有」的视觉提示；用 mask 所以不影响选中复制） */
+      .md-clamped {
+        max-height: 216px; overflow: hidden;
+        -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+        mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+      }
+      /* 展开控件：正文**下方**左对齐（长正文里没人会去右上角找一个 10px 的箭头） */
+      .md-toggle {
+        margin-top: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 4px;
+        color: var(--text); padding: 4px 9px; font: inherit; font-size: 11px; cursor: pointer;
+      }
+      .md-toggle:hover { border-color: var(--ice); }
 
       /* 输入条：固定在底部、横跨两栏、分两行（四个控件挤一行会太窄） */
       footer {
@@ -241,11 +312,13 @@
 
     <script type="module">
       import { createTraceView, playTrace, summarizeTrace, renderSummary } from './index.js';
+      import { parseMarkdown } from './markdown.js';
       import {
         HISTORY_DRAFT,
         applyTraceEvent,
         browseTarget,
         capabilityBadge,
+        collapseDecision,
         emptyTraceAccumulator,
         historyStep,
         historyText,
@@ -487,6 +560,123 @@
         }
       }
 
+      // ---------- 模型正文的渲染（Markdown + 长了就折叠） ----------
+
+      /**
+       * 展开态**活在渲染之外**（与 trace-view 的 `expanded` 同一个理由）：面板每次全量重画，
+       * 状态留在 DOM 里就会被下一次重画合上 —— 而「刚点开的那段自己收起来了」是最烦人的那种 bug。
+       * 键要**跨重画稳定**：回复用 traceId、对话轮用下标（会话是只追加的，下标稳定）。
+       */
+      const expandedMsgs = new Set();
+
+      /** 行内 token → DOM。只走 createElement / textContent —— 见 markdown.ts 的安全前提 */
+      function appendInline(parent, inline) {
+        for (const n of inline) {
+          if (n.type === 'text') {
+            parent.appendChild(document.createTextNode(n.text));
+          } else if (n.type === 'code') {
+            const c = document.createElement('code');
+            c.className = 'md-c';
+            c.textContent = n.text;
+            parent.appendChild(c);
+          } else if (n.type === 'link') {
+            // href 已在解析层过白名单（isSafeHref）；target/rel 防止把这面板当跳板
+            const a = document.createElement('a');
+            a.href = n.href;
+            a.textContent = n.text;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            parent.appendChild(a);
+          } else {
+            const w = document.createElement(n.type === 'strong' ? 'strong' : 'em');
+            appendInline(w, n.children);
+            parent.appendChild(w);
+          }
+        }
+      }
+
+      /** Markdown → DOM。块级只认 markdown.ts 的那六种；这里**没有** innerHTML —— 一个都没有 */
+      function renderMarkdownInto(el, text) {
+        for (const b of parseMarkdown(text)) {
+          if (b.type === 'hr') {
+            el.appendChild(document.createElement('hr'));
+          } else if (b.type === 'code') {
+            const pre = document.createElement('pre');
+            pre.className = 'md-pre';
+            if (b.lang) {
+              const tag = document.createElement('span');
+              tag.className = 'md-lang';
+              tag.textContent = b.lang;
+              pre.appendChild(tag);
+            }
+            const code = document.createElement('code');
+            code.textContent = b.text;
+            pre.appendChild(code);
+            el.appendChild(pre);
+          } else if (b.type === 'list') {
+            const list = document.createElement(b.ordered ? 'ol' : 'ul');
+            list.className = 'md-list';
+            for (const item of b.items) {
+              const li = document.createElement('li');
+              appendInline(li, item);
+              list.appendChild(li);
+            }
+            el.appendChild(list);
+          } else if (b.type === 'quote') {
+            const q = document.createElement('blockquote');
+            appendInline(q, b.inline);
+            el.appendChild(q);
+          } else {
+            const isH = b.type === 'h';
+            const node = document.createElement(isH ? `h${Math.min(6, Math.max(1, b.level))}` : 'p');
+            node.className = isH ? 'md-h' : 'md-p';
+            appendInline(node, b.inline);
+            el.appendChild(node);
+          }
+        }
+      }
+
+      /**
+       * 一段**模型正文**（最终回复 / 助手轮）→ 填进 `wrap`。
+       *
+       * 折叠控件放在正文**下方、左对齐**，不在行尾悬 caret：trace-view 那边 caret 靠右是因为
+       * 行是 nowrap 的表格状布局，「右端」本来就是「这一行结束了」的位置；正文块不是那个形态，
+       * 一个 10px 的箭头挂在右上角没人会去找。判定走 `collapseDecision`（纯逻辑、带单测）。
+       */
+      function renderMessage(wrap, text, key) {
+        wrap.classList.add('md-wrap');
+        const body = document.createElement('div');
+        body.className = 'md';
+        const d = collapseDecision(text);
+        const open = expandedMsgs.has(key);
+        if (d.collapsed && !open) body.classList.add('md-clamped');
+        renderMarkdownInto(body, text);
+        wrap.appendChild(body);
+        if (!d.collapsed) return; // 短正文不挂控件（挂一个「展开」是噪声）
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'md-toggle';
+        btn.textContent = open ? '收起 ▴' : `${d.hint} ▾`;
+        btn.addEventListener('click', () => {
+          if (expandedMsgs.has(key)) expandedMsgs.delete(key);
+          else expandedMsgs.add(key);
+          renderChat();
+          renderReply();
+        });
+        wrap.appendChild(btn);
+      }
+
+      /** 右栏底部那块回复正文。key 带 traceId ⇒ 换一轮就是一个新的折叠态 */
+      function renderReply() {
+        replyEl.replaceChildren();
+        if (!state.reply) {
+          replyEl.hidden = true;
+          return;
+        }
+        replyEl.hidden = false;
+        renderMessage(replyEl, state.reply, `reply:${state.replyFor ?? ''}`);
+      }
+
       // ---------- 对话流（只在多轮开 + 有会话文件时出现） ----------
       function renderChat() {
         const dev = state.dev;
@@ -514,7 +704,10 @@
           d.textContent = '会话文件还是空的。跑一次多轮 run 就有了。';
           chatEl.appendChild(d);
         }
+        // 下标当折叠态的键：会话只追加 ⇒ 下标跨重画稳定
+        let ti = -1;
         for (const t of turns) {
+          ti++;
           const box = document.createElement('div');
           box.className = 'turn' + (t.failed ? ' failed' : t.aborted ? ' aborted' : '');
           const who = document.createElement('div');
@@ -530,7 +723,10 @@
             who2.textContent = 'assistant';
             const a = document.createElement('div');
             a.className = 'msg';
-            a.textContent = t.assistant;
+            // 助手轮是**模型正文** ⇒ Markdown 渲染 + 长了折叠。
+            // 用户轮保持字面（`u.textContent = t.user` 上面那两行没动）—— 那是「我打的字」，
+            // 把它按 Markdown 重排会让面板看起来像改过我的输入。
+            renderMessage(a, t.assistant, `turn:${ti}`);
             box.append(who2, a);
           } else if (t.failed) {
             // 失败轮**标失败**，不假装那轮没发生（它没回写会话文件，靠 run 列表 join 出来）
@@ -574,8 +770,7 @@
         state.live = emptyTraceAccumulator();
         state.reply = '';
         state.replyFor = null;
-        replyEl.hidden = true;
-        replyEl.textContent = '';
+        renderReply();
         summaryEl.replaceChildren();
         usageEl.hidden = true;
         ttlEl.textContent = '';
@@ -672,8 +867,7 @@
         if (!replyBelongsTo(id, state.replyFor)) {
           state.reply = '';
           state.replyFor = null;
-          replyEl.hidden = true;
-          replyEl.textContent = '';
+          renderReply();
         }
         renderList();
       }
@@ -920,8 +1114,8 @@
           // 那时不能把回复当「别人的」擦掉（见 panel-logic 的 replyBelongsTo）
           state.replyFor = ev.traceId;
           state.live = null;
-          replyEl.hidden = state.reply.length === 0;
-          replyEl.textContent = state.reply;
+          // Markdown 渲染 + 长了折叠（渲染层不认识正文语义，只按 token 建节点）
+          renderReply();
           // 判别顺序（先 stopReason 后 ok）是**语义**，抽在 panel-logic 里并带单测 ——
           // 中止的 run `ok` 也是 false（引擎刻意给 aborted 带结构化 error），
           // 顺序反了就会把「我按了中止」显示成「run 失败」。

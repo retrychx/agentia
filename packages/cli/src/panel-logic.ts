@@ -495,3 +495,41 @@ export function promptAfterFilePick(
   if (current.trim().length > 0) return { prompt: current, filled: false };
   return { prompt: name, filled: true };
 }
+
+// ---------- ③ 消息折叠：长正文默认收起，短的不加控件 ----------
+
+/**
+ * 超过这么多行就默认折叠。12 行是「一屏大致读得完」的量级 —— 面板右栏在 1223px 下正文行高
+ * 约 18px，12 行 ≈ 216px，正好是不把调用树挤出去的上限。
+ */
+export const COLLAPSE_MAX_LINES = 12;
+/** 单行长正文的兜底阈值：一行 2000 字符（模型不换行时很常见）同样该收起来 */
+export const COLLAPSE_MAX_CHARS = 1200;
+
+/**
+ * 「这段正文要不要折叠」。**判定是纯逻辑** —— 渲染层只管按结果挂控件，
+ * 不自己量高度（量高度依赖布局与字体，单测里量不出来，等于把规则藏进浏览器）。
+ *
+ * 为什么不按像素量：像素阈值在字体/缩放/窄屏下会漂，同一个回复在不同机器上折叠与否都不一样；
+ * 行数 + 字符数是**输入本身的属性**，可复现、可断言。
+ *
+ * `hint` 是给展开控件用的文案（面板拿它当按钮标题，再加个 caret）；不折叠时是空串 ——
+ * **短消息上挂一个「展开」是噪声**，所以控件只在真的长时出现。
+ */
+export function collapseDecision(
+  text: string,
+  opts: { maxLines?: number; maxChars?: number } = {},
+): { collapsed: boolean; lines: number; chars: number; hint: string } {
+  const t = String(text ?? '');
+  const lines = t.length === 0 ? 0 : t.split('\n').length;
+  const chars = t.length;
+  const maxLines = opts.maxLines ?? COLLAPSE_MAX_LINES;
+  const maxChars = opts.maxChars ?? COLLAPSE_MAX_CHARS;
+  const collapsed = lines > maxLines || chars > maxChars;
+  const hint = collapsed
+    ? lines > 1
+      ? `展开全文（共 ${lines} 行）`
+      : `展开全文（共 ${chars} 字符）`
+    : '';
+  return { collapsed, lines, chars, hint };
+}

@@ -387,24 +387,39 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
     if (SKIP) return t.skip(SKIP);
     const srv = await startInspector();
     try {
-      const res = await fetch(`http://127.0.0.1:${srv.port}/panel-logic.js`);
-      assert.equal(res.status, 200);
-      assert.match(await res.text(), /normalizeToolSources/, '面板要能 import 到它');
-      // 页面必须真的引用它 —— 否则「抽出来」只是抽了、没接上
+      // 页面必须真的引用它们 —— 否则「抽出来」只是抽了、没接上
       const page = await (await fetch(`http://127.0.0.1:${srv.port}/`)).text();
-      assert.match(page, /from '\.\/panel-logic\.js'/, '页面必须 import 面板逻辑模块');
 
-      // 反向全覆盖：页面写进 import 列表的每个名字都必须是模块的真导出。
+      // 反向全覆盖：面板 import 的**每个自建模块**（都在 dist 根、都由本仓编译）里，
+      // 页面写进 import 列表的每个名字都必须是该模块的真导出。
       // 为什么要钉：浏览器里「import 一个不存在的导出」是**整块模块求值失败** ——
       // 面板直接白屏，而 node 侧的单测照样全绿（它们各自 import 自己要用的名字）。
-      const names = (/import \{([^}]*)\} from '\.\/panel-logic\.js'/.exec(page)?.[1] ?? '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      assert.ok(names.length > 0, '没解析出面板 import 的名单（页面结构变了？）');
-      const mod = await import(new URL('../dist/panel-logic.js', import.meta.url).href);
-      for (const n of names) {
-        assert.ok(n in mod, `panel-logic 必须导出「${n}」—— 页面 import 了它（缺失 = 浏览器白屏）`);
+      for (const file of ['panel-logic.js', 'markdown.js']) {
+        const res = await fetch(`http://127.0.0.1:${srv.port}/${file}`);
+        assert.equal(res.status, 200, `面板要能静态取到 ${file}`);
+        const src = await res.text();
+        if (file === 'markdown.js') {
+          // Markdown 解析器是**纯逻辑**：它按构造不产生 HTML，也不该碰 DOM。
+          // 这条一红就说明有人把渲染塞进了解析器（安全前提的落点，见 src/markdown.ts 头注）。
+          assert.doesNotMatch(
+            src,
+            /innerHTML|outerHTML|document\./,
+            'markdown.js 不许出现 DOM / innerHTML —— 它只负责把正文解析成 token 树',
+          );
+        }
+        const mod = await import(new URL(`../dist/${file}`, import.meta.url).href);
+        const names = (
+          new RegExp(`import \\{([^}]*)\\} from '\\./${file.replace('.', '\\.')}'`).exec(
+            page,
+          )?.[1] ?? ''
+        )
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        assert.ok(names.length > 0, `没解析出页面 import ${file} 的名单（页面结构变了？）`);
+        for (const n of names) {
+          assert.ok(n in mod, `${file} 必须导出「${n}」—— 页面 import 了它（缺失 = 浏览器白屏）`);
+        }
       }
 
       /* 中止语义的**接线**判据（2026-09-22 复核补）：判「这一轮失败了吗」必须走
@@ -449,6 +464,39 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         /state\.live = null/,
         '收尾那份整棵 trace 到达后必须让在飞的那份作废（否则迟到的帧会把树重画成残缺的一棵）',
       );
+
+      /* 2026-09-22 第二轮（Markdown 渲染 / 滚动分层 / 消息折叠）三条同类接线判据。 */
+      assert.match(page, /renderMessage\(/, '模型正文（最终回复 / 助手轮）必须走 renderMessage');
+      assert.match(
+        page,
+        /collapseDecision\(/,
+        '折叠判定必须走 collapseDecision（纯逻辑、带单测）—— 不许在渲染层量高度',
+      );
+      assert.match(page, /md-toggle/, '长正文必须有明确的展开控件（在正文下方，不在行尾悬 caret）');
+      assert.match(page, /md-clamped/, '折叠态必须真的把正文卡住');
+      // 模型正文**一个字节都不许进 innerHTML**：页面里对 innerHTML 的赋值只该有 renderSummary 那一处
+      // （summary.js 自己 escape 了）。这条是安全前提的守卫，比「某个变量名没出现」强。
+      const innerHtmlAssigns = page.split('\n').filter((l) => /\.innerHTML\s*=/.test(l));
+      assert.equal(
+        innerHtmlAssigns.length,
+        1,
+        `页面里对 innerHTML 的赋值只该有 renderSummary 那一处 —— 实际 ${innerHtmlAssigns.length} 处：${innerHtmlAssigns.join(' | ')}`,
+      );
+      assert.match(
+        innerHtmlAssigns[0],
+        /renderSummary\(/,
+        '唯一那处 innerHTML 必须是 renderSummary',
+      );
+      // 滚动分层：**整页不滚**（body 卡住），滚的是树（#trace 自己 overflow: auto）。
+      // 内容一长就整页滚的话，「看树」与「读回复」会互相把对方推走。
+      const css = page.replace(/\s+/g, ' ');
+      assert.match(css, /body \{ overflow: hidden;/, '整页不该滚：body 必须 overflow: hidden');
+      assert.match(
+        css,
+        /#trace \{[^}]*overflow: auto/,
+        '#trace 必须是那个滚动区（overflow: auto）',
+      );
+      assert.match(page, /@media \(max-width: 860px\)/, '窄屏必须有单列回退（否则两栏都不可用）');
     } finally {
       await srv.close();
     }

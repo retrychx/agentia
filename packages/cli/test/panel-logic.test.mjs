@@ -14,6 +14,26 @@ const SKIP = !L ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' 
 /* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
 if (SKIP) distReadyOrLoud(DIST, 'CLI 构建产物');
 
+/**
+ * 反复写、直到回调真的来。
+ *
+ * 为什么不是「写一次、等满 15 秒」：真 fs 的监视器**建立是异步的**（`fs.watch` 返回 ≠
+ * 底下的 FSEvents 流已经开始投递），`watchTree()` 一返回就写的那**一次**可能整个漏掉 ——
+ * 那时等多久都没用。2026-09-22 实测：同一份套件，**stdout 被管道捕获**时（`verify-all.sh`
+ * 与 CI 都这么跑）这一条等满 15s 稳定红，stdout 写文件时稳定绿 ⇒ 这是**夹具的竞态**，
+ * 不是产品缺陷（生产里 dev 环**先建立监视、再对外服务**）。
+ *
+ * ⚠️ 断言没放宽：那个路径**必须**触发一次回调 —— 只是不再要求「第一次写就被看到」。
+ */
+async function writeUntilSeen(seen, write, deadlineMs = 15_000) {
+  const deadline = Date.now() + deadlineMs;
+  do {
+    write();
+    if (seen.length > 0) return;
+    await new Promise((r) => setTimeout(r, 300));
+  } while (Date.now() < deadline);
+}
+
 describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP }, () => {
   it('能力多选 → toolSources：全选传 undefined，其余按字典序（可复现）', () => {
     const all = ['b', 'a', 'c'];
@@ -260,15 +280,14 @@ describe('dev 的文件监视（改 .md 要能触发重启）', { skip: SKIP }, 
     const stop = D.watchTree(dir, (abs) => seen.push(abs));
     try {
       // 已存在的子目录里的 .md（递归范围）
-      writeFileSync(join(dir, 'asset.md'), 'v1');
       // 新建的子目录 —— 不在初始 readdir 里，靠「新目录动态加入」才看得见
       const sub = join(dir, 'subagents');
       mkdirSync(sub, { recursive: true });
-      writeFileSync(join(sub, 'system.md'), 'v1');
-      const deadline = Date.now() + 4000;
-      while (seen.length === 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 30));
-      }
+      // 反复写（不是写一次）：监视器建立是异步的，t0 那一次可能整个漏掉 —— 见 writeUntilSeen
+      await writeUntilSeen(seen, () => {
+        writeFileSync(join(dir, 'asset.md'), 'v1');
+        writeFileSync(join(sub, 'system.md'), 'v1');
+      });
       assert.ok(seen.length > 0, '写 .md 应该触发回调（旧实现这里静默无感）');
       assert.ok(
         seen.every((p) => D.shouldWatch(p)),
@@ -355,11 +374,7 @@ describe('dev 的文件监视（改 .md 要能触发重启）', { skip: SKIP }, 
     const seen = [];
     const stop = D.watchTree(dir, (abs) => seen.push(abs));
     try {
-      writeFileSync(join(dir, 'app.ts'), 'v1');
-      const deadline = Date.now() + 4000;
-      while (seen.length === 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 30));
-      }
+      await writeUntilSeen(seen, () => writeFileSync(join(dir, 'app.ts'), 'v1'));
       assert.ok(
         seen.length > 0,
         '项目根自己叫 dist 时必须照常监视（用绝对路径段认 dist 是错的：根目录可能就叫 dist）',
@@ -388,11 +403,7 @@ describe('dev 的文件监视（改 .md 要能触发重启）', { skip: SKIP }, 
     writeFileSync(join(dir, 'README.md'), 'v0');
     const stop = D.watchRootEnvFiles(dir, (abs) => seen.push(abs));
     try {
-      writeFileSync(join(dir, '.env'), 'v1');
-      const deadline = Date.now() + 4000;
-      while (seen.length === 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 30));
-      }
+      await writeUntilSeen(seen, () => writeFileSync(join(dir, '.env'), 'v1'));
       assert.ok(
         seen.some((p) => p.endsWith(`${sep}.env`)),
         `改项目根的 .env 必须触发回调（旧实现里这条事件根本没人接），实际：${JSON.stringify(seen)}`,
@@ -632,5 +643,36 @@ describe('目录浏览 / 选文件（③）', { skip: SKIP }, () => {
       '已有内容 ⇒ 一个字都不动（悄悄改用户输入比少填一次糟得多）',
     );
     assert.equal(L.promptAfterFilePick('读一下这个', 'a.md').prompt, '读一下这个');
+  });
+});
+
+describe('消息折叠判定（③ 长正文默认收起）', { skip: SKIP }, () => {
+  it('短消息不折叠、且不产生控件文案（短消息上挂「展开」是噪声）', () => {
+    const short = L.collapseDecision('读完了，共 42 行。');
+    assert.equal(short.collapsed, false);
+    assert.equal(short.hint, '', '不折叠时文案必须是空串 —— 面板据此决定挂不挂控件');
+    assert.equal(L.collapseDecision('a\nb\nc').collapsed, false);
+  });
+
+  it('超行数或超字符数都折叠，文案说明折叠了多少', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `第 ${i + 1} 行`).join('\n');
+    const byLines = L.collapseDecision(many);
+    assert.equal(byLines.collapsed, true);
+    assert.equal(byLines.lines, 20);
+    assert.equal(byLines.hint, '展开全文（共 20 行）');
+    // 单行超长（模型不换行时很常见）同样折叠 —— 只看行数会漏掉这一类
+    const oneLine = 'x'.repeat(2000);
+    const byChars = L.collapseDecision(oneLine);
+    assert.equal(byChars.collapsed, true);
+    assert.equal(byChars.lines, 1);
+    assert.equal(byChars.hint, '展开全文（共 2000 字符）', '一行时不该说「共 1 行」');
+    // 边界：恰好等于阈值**不**折叠（阈值语义是「超过」）
+    assert.equal(L.collapseDecision('a\n'.repeat(12).trim()).collapsed, false);
+  });
+
+  it('阈值可覆盖（面板/测试要别的量级时不必抄一份判据）', () => {
+    assert.equal(L.collapseDecision('a\nb\nc', { maxLines: 2 }).collapsed, true);
+    assert.equal(L.collapseDecision('x'.repeat(50), { maxChars: 100 }).collapsed, false);
+    assert.equal(L.collapseDecision('').collapsed, false, '空正文不该折叠（它没有可展开的东西）');
   });
 });
