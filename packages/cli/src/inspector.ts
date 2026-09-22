@@ -307,6 +307,9 @@ const STATIC = new Map<string, string>([
   ['summary.js', join(ASSETS, 'summary.js')],
   ['trace-view.css', join(ASSETS, 'trace-view.css')],
   ['panel-logic.js', join(HERE, 'panel-logic.js')],
+  // 面板的 Markdown 解析器（零依赖、按构造不产生 HTML —— 见 src/markdown.ts 的头注）。
+  // 与 panel-logic.js 同处 dist 根：两个都是 CLI 自己编译出来的模块，单测直接 import 它们。
+  ['markdown.js', join(HERE, 'markdown.js')],
 ]);
 
 /** 没有 dev 钩子时的状态（面板据此隐藏输入条） */

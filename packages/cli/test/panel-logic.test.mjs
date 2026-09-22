@@ -634,3 +634,34 @@ describe('目录浏览 / 选文件（③）', { skip: SKIP }, () => {
     assert.equal(L.promptAfterFilePick('读一下这个', 'a.md').prompt, '读一下这个');
   });
 });
+
+describe('消息折叠判定（③ 长正文默认收起）', { skip: SKIP }, () => {
+  it('短消息不折叠、且不产生控件文案（短消息上挂「展开」是噪声）', () => {
+    const short = L.collapseDecision('读完了，共 42 行。');
+    assert.equal(short.collapsed, false);
+    assert.equal(short.hint, '', '不折叠时文案必须是空串 —— 面板据此决定挂不挂控件');
+    assert.equal(L.collapseDecision('a\nb\nc').collapsed, false);
+  });
+
+  it('超行数或超字符数都折叠，文案说明折叠了多少', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `第 ${i + 1} 行`).join('\n');
+    const byLines = L.collapseDecision(many);
+    assert.equal(byLines.collapsed, true);
+    assert.equal(byLines.lines, 20);
+    assert.equal(byLines.hint, '展开全文（共 20 行）');
+    // 单行超长（模型不换行时很常见）同样折叠 —— 只看行数会漏掉这一类
+    const oneLine = 'x'.repeat(2000);
+    const byChars = L.collapseDecision(oneLine);
+    assert.equal(byChars.collapsed, true);
+    assert.equal(byChars.lines, 1);
+    assert.equal(byChars.hint, '展开全文（共 2000 字符）', '一行时不该说「共 1 行」');
+    // 边界：恰好等于阈值**不**折叠（阈值语义是「超过」）
+    assert.equal(L.collapseDecision('a\n'.repeat(12).trim()).collapsed, false);
+  });
+
+  it('阈值可覆盖（面板/测试要别的量级时不必抄一份判据）', () => {
+    assert.equal(L.collapseDecision('a\nb\nc', { maxLines: 2 }).collapsed, true);
+    assert.equal(L.collapseDecision('x'.repeat(50), { maxChars: 100 }).collapsed, false);
+    assert.equal(L.collapseDecision('').collapsed, false, '空正文不该折叠（它没有可展开的东西）');
+  });
+});
