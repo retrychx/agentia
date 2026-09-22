@@ -150,6 +150,64 @@ export interface DevState {
   lastError: string | null;
 }
 
+// ---------- 增量记账事件（框架 `onTraceEvent` 的原样转发） ----------
+
+/**
+ * 框架 `core/trace.ts` 的 `TraceRecordEvent` 在协议里的**结构性镜像**。
+ *
+ * 为什么原样转发而不是在 CLI 侧重新包装成「精简事件」：框架已经钉着一条不变量 ——
+ * 按 `seq` 升序把同一次 run 的全部事件应用到 `span.begin` 建出的 span 上，结果**逐字等于**
+ * 收尾的 `snapshot()`（`tests/engine/trace-events.test.ts`）。面板照这条规则折回就得到
+ * 与收尾一致的树，**不需要**知道任何「哪些字段重要」的本地判断；包装一层反而多一处会漂的口径。
+ *
+ * 为什么形状在协议文件里再写一遍而不是 `import type` 框架：CLI 零运行时依赖，
+ * 且框架实例来自**用户工程**（`req.resolve('@migor/agentia')`），不是 CLI 的依赖。
+ */
+export interface UsageLike {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+}
+
+/** span 的**增量形状**：结构与框架的 `Span` 一致（`span.begin` 给初值，其余事件各补一摊） */
+export interface TraceSpanLike {
+  spanId: string;
+  traceId: string;
+  parentSpanId: string | null;
+  kind: string;
+  name: string;
+  startedAt: number;
+  endedAt?: number;
+  status: string;
+  error?: { type?: string; message?: string };
+  links?: unknown[];
+  usage?: UsageLike;
+  attributes: Record<string, string | number | boolean>;
+  events: Array<{ name: string; time?: number; body?: unknown }>;
+}
+
+/** 一条增量记账事件（与框架 `TraceRecordEvent` 同形的五类 + `seq`） */
+export type TraceRecordEventLike =
+  | { seq: number; type: 'span.begin'; span: TraceSpanLike }
+  | {
+      seq: number;
+      type: 'span.end';
+      spanId: string;
+      endedAt: number;
+      status: string;
+      error?: { type?: string; message?: string };
+      usage?: UsageLike;
+    }
+  | {
+      seq: number;
+      type: 'span.event';
+      spanId: string;
+      event: { name: string; time?: number; body?: unknown };
+    }
+  | { seq: number; type: 'span.attribute'; spanId: string; key: string; value: string | number | boolean }
+  | { seq: number; type: 'span.link'; spanId: string; link: unknown };
+
 // ---------- dev.ts → 面板（SSE 命名事件 `dev`） ----------
 
 export type DevEvent =
@@ -189,7 +247,22 @@ export type DevEvent =
    * 却没有「就绪」，本身就是缺一环。
    */
   | { kind: 'runner-ready' }
-  | { kind: 'runner-error'; message: string };
+  | { kind: 'runner-error'; message: string }
+  /**
+   * run **在飞期间**的一条增量记账事件（`span.begin` / `span.end` / `span.event` /
+   * `span.attribute` / `span.link`）—— 右栏的树靠它「长出来」。
+   *
+   * 为什么要有这条：`playTrace` 此前唯一的调用点在 `open()`，而 `open()` 跑在 run
+   * **收尾之后**（trace 经 `POST /ingest` 回到面板才会触发）⇒ 一次十几秒的 run 期间右栏
+   * 是死的（只有一句「正在跑…」）。框架的增量出口（`onTraceEvent`，0.8.3）本来就是为
+   * 这类消费者准备的，计划 §D7 的评审补充也点名要求接上（P1b）。
+   *
+   * ⚠️ 两条纪律：
+   * - **不保证送达**（与框架同名出口一致）：宿主自己的流断了就断了。所以面板折回的这棵树
+   *   是**临时**的 —— 收尾那份整棵 trace 回来时**覆盖**它，缺的 span 由那份补齐。
+   * - 它是**观察**，不是控制：丢了不影响 run，也不影响收尾的 trace。
+   */
+  | { kind: 'trace-event'; event: TraceRecordEventLike };
 
 // ---------- CLI 侧记账（面板发出去的东西，CLI 自己记一笔） ----------
 

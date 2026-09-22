@@ -419,6 +419,32 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         /'run' \+ \(r\.ok/,
         '面板不该再用 `r.ok` 直接决定红点（中止的 ok 也是 false ⇒ 会标成失败）',
       );
+
+      /* 本轮（2026-09-22 复核 ②③①）三条同类接线判据 —— 都是「抽到 panel-logic 了，
+       * 但页面必须真的走它」：抽出来不接上等于没抽（浏览器里没人替你发现）。
+       * 单测覆盖 panel-logic 的规则本身，这里只钉接线。 */
+      assert.match(
+        page,
+        /if \(!replyBelongsTo\(/,
+        '自动 open() 清回复必须先过 replyBelongsTo —— 无条件清会把 run-done 刚写上去的回复擦掉（实测 17 ms）',
+      );
+      assert.match(
+        page,
+        /browseTarget\(/,
+        '`浏览…` 必须走 browseTarget（否则又变回「开着时点它只是关掉」）',
+      );
+      assert.match(
+        page,
+        /promptAfterFilePick\(/,
+        '选文件必须走 promptAfterFilePick（不许悄悄改用户已经写好的 prompt）',
+      );
+      assert.match(page, /kind === 'trace-event'/, '面板必须处理在飞的增量帧（① 实时右栏）');
+      assert.match(page, /applyTraceEvent\(/, '在飞增量帧必须折回（applyTraceEvent），不能各写一套');
+      assert.match(
+        page,
+        /state\.live = null/,
+        '收尾那份整棵 trace 到达后必须让在飞的那份作废（否则迟到的帧会把树重画成残缺的一棵）',
+      );
     } finally {
       await srv.close();
     }
@@ -432,6 +458,8 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
 describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
   const mkDev = (over = {}) => {
     const calls = [];
+    /** `POST /ingest-event` 转给钩子的那些增量事件（① 实时右栏） */
+    const traceEvents = [];
     const dev = {
       state: () => ({
         available: true,
@@ -453,9 +481,10 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
       session: async () => ({ messages: [{ role: 'user', content: 'hi' }] }),
       abort: async () => ({ accepted: true, escalated: false }),
       clearSession: async () => ({ sessionId: 'dev-2' }),
+      traceEvent: (e) => traceEvents.push(e),
       ...over,
     };
-    return { dev, calls };
+    return { dev, calls, traceEvents };
   };
 
   it('没有 dev 钩子时：面板不显示输入条、/run 明确 503、目录浏览关闭', async (t) => {
@@ -470,6 +499,12 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
         '只读面板：available=false，面板据此隐藏输入条（不做空壳）',
       );
       assert.equal((await post(base, '/run', { prompt: 'x' })).status, 503, '没有 runner ⇒ 503');
+      assert.equal(
+        (await post(base, '/ingest-event', { seq: 1, type: 'span.event', spanId: 's', event: { name: 'x' } }))
+          .status,
+        503,
+        '增量帧同样要 runner 在场才收（没有面板就没人消费它）',
+      );
       assert.equal((await fetch(`${base}/api/fs?path=/tmp`)).status, 403, '只读面板不暴露文件树');
       assert.equal((await (await fetch(`${base}/api/session`)).json()).session, null);
     } finally {
@@ -532,7 +567,7 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
     }
   });
 
-  it('/api/fs 只列目录、跳过点开头，且不存在/不是目录时响亮报错', async (t) => {
+  it('/api/fs：目录 / 隐藏目录 / 文件分三类列，且不存在与「不是目录」都响亮报错', async (t) => {
     if (SKIP) return t.skip(SKIP);
     const { dev } = mkDev();
     const srv = await startInspector({ dev });
@@ -543,16 +578,20 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
       writeFileSync(join(dir, 'file.txt'), 'x');
       const base = `http://127.0.0.1:${srv.port}`;
       const ok = await (await fetch(`${base}/api/fs?path=${encodeURIComponent(dir)}`)).json();
+      assert.deepEqual(ok.dirs, ['sub'], '普通目录');
       assert.deepEqual(
-        ok.dirs,
-        ['sub'],
-        '只列目录、跳过点开头的（点目录是噪声，不是「选工作目录」的选项）',
+        ok.dotDirs,
+        ['.hidden'],
+        '隐藏目录**单列**而不是过滤掉 —— 旧实现整批跳过，于是 ~/x/.y 这类目录根本点不进去',
       );
+      assert.deepEqual(ok.files, ['file.txt'], '文件也要列（面板据此提供「选这个文件」）');
+      assert.equal(ok.filesTruncated, false);
       assert.equal(ok.path, dir);
       assert.equal(ok.parent, dirname(dir));
       assert.equal(
         (await fetch(`${base}/api/fs?path=${encodeURIComponent(dir + '/file.txt')}`)).status,
         400,
+        '「不是文件夹」要响亮报错（工作目录只能是目录）',
       );
       assert.equal(
         (await fetch(`${base}/api/fs?path=${encodeURIComponent(dir + '/nope')}`)).status,
@@ -563,6 +602,106 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
     } finally {
       await srv.close();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('POST /ingest-event：校验形状、转给钩子并广播（① 实时右栏）', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const { dev, traceEvents } = mkDev();
+    const srv = await startInspector({ dev });
+    // `dev.ts` 的钩子干的是「记一笔 + `emitDev({kind:'trace-event'})` 广播」；这里补上后半
+    // （单测用的是假钩子，它自己不会广播）。**真实的那条**（runner → HTTP → 父进程 → SSE）
+    // 由 e2e-dev 第 7-bis 步守 —— 这里只保证「/ingest-event 把帧交给了钩子」。
+    dev.traceEvent = (e) => {
+      traceEvents.push(e);
+      srv.emitDev({ kind: 'trace-event', event: e });
+    };
+    try {
+      const base = `http://127.0.0.1:${srv.port}`;
+      const begin = {
+        seq: 1,
+        type: 'span.begin',
+        span: {
+          spanId: 'r',
+          traceId: 'tr-1',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'demo',
+          startedAt: 0,
+          status: 'ok',
+          attributes: {},
+          events: [],
+        },
+      };
+      // 先连上 SSE，才能断言「广播出去了」而不只是「钩子被调了」
+      const ac = new AbortController();
+      const stream = await fetch(`${base}/stream`, { signal: ac.signal });
+      const reader = stream.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      const frames = [];
+      const pump = (async () => {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          buf += dec.decode(value, { stream: true });
+          let cut = buf.indexOf('\n\n');
+          while (cut >= 0) {
+            frames.push(buf.slice(0, cut));
+            buf = buf.slice(cut + 2);
+            cut = buf.indexOf('\n\n');
+          }
+        }
+      })();
+      const waitFrame = async (needle, ms = 3000) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+          if (frames.some((f) => f.includes(needle))) return true;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        return false;
+      };
+
+      assert.equal((await post(base, '/ingest-event', begin)).status, 202, '合法帧 → 202');
+      assert.equal(traceEvents.length, 1, '帧应转给 dev 钩子（父进程只转发、不解释）');
+      assert.ok(
+        await waitFrame('"kind":"trace-event"'),
+        `增量帧必须走 SSE 的 dev 命名事件广播给面板。收到的帧：${JSON.stringify(frames)}`,
+      );
+
+      // 坏帧一律 400：面板拿这些字段**直接建树**，缺字段的表现是「树上少一个节点」
+      // 而不是任何报错 —— 那种症状只能在浏览器里查，所以入口就要拦住
+      assert.equal((await post(base, '/ingest-event', { seq: 1 })).status, 400, '不认识的事件类型');
+      assert.equal(
+        (await post(base, '/ingest-event', { type: 'span.end', spanId: 'x', endedAt: 1, status: 'ok' }))
+          .status,
+        400,
+        '缺 seq',
+      );
+      assert.equal(
+        (await post(base, '/ingest-event', { seq: 2, type: 'span.end', spanId: 'x', endedAt: 0 / 0, status: 'ok' }))
+          .status,
+        400,
+        'endedAt 是 NaN',
+      );
+      assert.equal(
+        (await post(base, '/ingest-event', { seq: 3, type: 'span.begin', span: { spanId: 's' } })).status,
+        400,
+        'span.begin 缺 traceId / name / startedAt',
+      );
+      assert.equal((await post(base, '/ingest-event', { seq: 4, type: 'span.event', spanId: 's' })).status, 400);
+      const res = await raw(srv.port, {
+        method: 'POST',
+        path: '/ingest-event',
+        headers: { 'content-type': 'application/json' },
+        body: 'not json',
+      });
+      assert.equal(res.status, 400, 'body 不是 JSON → 400');
+      assert.equal(traceEvents.length, 1, '坏帧一个都不该转给钩子');
+      ac.abort();
+      await pump.catch(() => {});
+    } finally {
+      await srv.close();
     }
   });
 

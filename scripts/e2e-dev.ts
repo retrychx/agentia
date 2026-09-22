@@ -31,6 +31,10 @@
 //   · 坏掉的会话文件必须出现在 warning 通道 → 否则历史静默消失、新历史写不进去
 //   · `agentia dev -- "问题"` 的 prompt 真的到了模型手上 → 裸 CLI 那条会把 `--` 当 prompt
 //   · Ctrl+C 之后 runner（连它那棵进程树）必须真的没了 → 旧的 50 ms 硬退会丢 SIGKILL 兜底
+//   · run 在飞期间就有增量记账帧、且折回 == 收尾的整棵 trace → 右栏实时（①）。旧形态下
+//     `playTrace` 只在收尾后调一次，一次十几秒的 run 期间右栏是死的；这条同时钉住
+//     「帧真的在收尾前送到」与「面板的折回规则与框架的记账一致」（后者框架自己有单测，
+//     但**经过 HTTP + SSE 这条路**有没有丢/乱序，只有这里看得见）
 //
 // ⚠️ 模型侧是**本进程里的**假 Anthropic 端点（零网络、零 token），所以全程必须
 //    `spawn` + await，**不能用 spawnSync**：同步等待会阻塞事件循环，子进程永远等不到响应。
@@ -48,7 +52,8 @@ import {
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 const assert = (cond: boolean, msg: string): void => {
   if (!cond) throw new Error(`DEV E2E FAIL: ${msg}`);
@@ -367,6 +372,62 @@ try {
       `全量菜单下请求体应含能力 ${t} —— 缺了说明能力没进模型菜单`,
     );
   }
+
+  // —— 7-bis) 实时右栏（①）：在飞期间就有增量帧，且折回 == 收尾的整棵 trace ——
+  //    为什么必须在**真进程 + 真 HTTP + 真 SSE** 里守：单测能测 panel-logic 的折回规则，
+  //    但测不到「runner 到底有没有订阅 onTraceEvent」「帧有没有在 run 收尾**之前**送到面板」
+  //    —— 而缺口正在后者：旧实现的 `playTrace` 只在收尾后调一次，run 跑着的那十几秒右栏是死的。
+  const liveSeen = devFrames('trace-event');
+  assert(
+    liveSeen.length > 0,
+    `run 在飞期间应收到增量记账帧（trace-event），实际 0 条 —— 要么 runner 没订阅 onTraceEvent，` +
+      `要么事件没经 /ingest-event 转出来。全部帧：${JSON.stringify(seen.map((e) => e.data))}`,
+  );
+  const idxLive = seen.findIndex((e) => e.event === 'dev' && e.data.includes('"kind":"trace-event"'));
+  const idxDone = seen.findIndex((e) => e.event === 'dev' && e.data.includes('"kind":"run-done"'));
+  assert(
+    idxLive >= 0 && idxDone >= 0 && idxLive < idxDone,
+    `增量帧必须**先于** run-done 到达 —— 先有它才叫实时（晚到等于面板仍是收尾后才画）。` +
+      `实际位置：trace-event=${idxLive}, run-done=${idxDone}`,
+  );
+  // 折回用的是**面板自己那份**规则（CLI 的 dist/panel-logic.js）—— 不是这里重写一遍，
+  // 否则这条断言就变成「我自己和自己一致」。
+  const liveLogic = (await import(
+    pathToFileURL(join(repoRoot, 'packages', 'cli', 'dist', 'panel-logic.js')).href
+  )) as {
+    emptyTraceAccumulator: () => unknown;
+    applyTraceEvent: (acc: unknown, ev: unknown) => boolean;
+    partialTrace: (acc: unknown) => { traceId: string; spans: unknown[] };
+  };
+  /** 把**此刻**收到的增量帧折回成一棵树（每次重算 ⇒ 晚到的帧自动进来） */
+  const foldLive = (): { traceId: string; spans: unknown[] } => {
+    const acc = liveLogic.emptyTraceAccumulator();
+    for (const f of devFrames('trace-event')) liveLogic.applyTraceEvent(acc, f.event);
+    return liveLogic.partialTrace(acc);
+  };
+  const authoritative = (await api(`/api/runs/${String(done0.traceId)}`)).json as {
+    traceId: string;
+    spans: unknown[];
+  };
+  // ⚠️ 必须**等链路静默**再比：收尾的整棵 trace 走 `flushSinks`（被 await），而逐笔事件
+  //    走 fire-and-forget 的链 —— 最后几笔可能还在路上（这正是框架那条「不保证送达」的
+  //    正面表述：晚到可以，最终必须一致）。所以轮询到一致为止，超时才判失败。
+  let folded = foldLive();
+  const foldDeadline = Date.now() + 5_000;
+  while (!isDeepStrictEqual(folded.spans, authoritative.spans) && Date.now() < foldDeadline) {
+    await sleep(100);
+    folded = foldLive();
+  }
+  assert(
+    folded.traceId === authoritative.traceId,
+    `折回的 traceId 应与收尾的 trace 一致（${folded.traceId} vs ${authoritative.traceId}）`,
+  );
+  assert(
+    isDeepStrictEqual(folded.spans, authoritative.spans),
+    `折回的 spans 必须**逐字等于**收尾的整棵 trace（框架的折叠不变量，经 HTTP + SSE 之后仍要成立）。` +
+      `折回 ${folded.spans.length} 个 span、收尾 ${authoritative.spans.length} 个。\n` +
+      `折回：${JSON.stringify(folded.spans)}\n收尾：${JSON.stringify(authoritative.spans)}`,
+  );
 
   // —— 8) 收窄能力：换 toolSources ⇒ 重启 runner，且请求体真的变窄 ——
   //    这一步同时验证「重启」这条路（它在计划里是唯一的资源回收口）与能力选择器真接线。
@@ -826,7 +887,8 @@ try {
 
   console.log(
     'dev e2e: OK（IPC 就绪 / .env 生效 / 能力收窄 / .md 重启 / .env 重启 / 中止在飞 run / 清空对话 / ' +
-      '重启总账 4 次无自噬 / 重启窗口内的 409 / 坏会话文件报警 / dev -- "问题" 透传 / Ctrl+C 不留孤儿）',
+      '重启总账 4 次无自噬 / 重启窗口内的 409 / 坏会话文件报警 / dev -- "问题" 透传 / ' +
+      '右栏实时（增量帧先于 run-done，折回 == 收尾） / Ctrl+C 不留孤儿）',
   );
 } catch (e) {
   // 失败时把 dev 的输出一起打出来 —— 它是子进程的 stdout/stderr，不主动捞就什么都看不到

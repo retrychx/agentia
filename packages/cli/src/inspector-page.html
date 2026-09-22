@@ -151,6 +151,11 @@
       .fs-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
       .fs-item { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 4px 6px; border-radius: 4px; font: inherit; font-family: var(--mono); font-size: 12px; cursor: pointer; }
       .fs-item:hover { background: #202024; }
+      /* 隐藏目录：可达但不可眼（旧实现直接过滤掉，于是 .y 这类目录根本点不进去） */
+      .fs-dot { color: var(--faint); }
+      /* 文件行：点它 = 选它所在的目录（不是选文件本身当工作目录 —— 工作目录只能是目录） */
+      .fs-file { color: var(--text); }
+      .fs-sep { padding: 8px 6px 2px; margin-top: 6px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
       .fs-foot { padding-top: 8px; border-top: 1px solid var(--border); margin-top: 6px; }
       .mini { background: var(--card); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 5px 9px; font: inherit; font-size: 11.5px; cursor: pointer; }
       .mini:hover { border-color: var(--ice); }
@@ -227,7 +232,10 @@
           <span id="fs-path"></span>
         </div>
         <div id="fs-list"></div>
-        <div class="fs-foot"><button class="mini" id="fs-use" type="button">选这个目录</button></div>
+        <div class="fs-foot">
+          <button class="mini" id="fs-use" type="button">选这个目录</button>
+          <span class="hint"> 点文件名 = 选它所在的目录（prompt 为空时填文件名）</span>
+        </div>
       </div>
     </footer>
 
@@ -235,14 +243,20 @@
       import { createTraceView, playTrace, summarizeTrace, renderSummary } from './index.js';
       import {
         HISTORY_DRAFT,
+        applyTraceEvent,
+        browseTarget,
         capabilityBadge,
+        emptyTraceAccumulator,
         historyStep,
         historyText,
         mergeConversation,
         multiTurnDefault,
         multiTurnLabel,
         normalizeToolSources,
+        partialTrace,
+        promptAfterFilePick,
         pushPromptHistory,
+        replyBelongsTo,
         runDoneNotice,
         runIsFailure,
         shortenPath,
@@ -298,6 +312,17 @@
         list: [],
         current: null,
         reply: '',
+        /**
+         * 这段回复是**哪个 traceId** 的（`run-done` 带回来的）。`open()` 靠它判断
+         * 「现在打开的就是这条回复的主人」⇒ 不清。见 panel-logic 的 `replyBelongsTo`。
+         */
+        replyFor: null,
+        /**
+         * 在飞 run 的增量 trace 累加器（null = 没有在飞的 run）。
+         * 收到 `trace-event` 就折回并重画；收尾那份整棵 trace 回来时把它清掉
+         * （**收尾那份永远覆盖在飞的这份**，缺的 span 由它补齐）。
+         */
+        live: null,
         notice: '',           // 面板自己发的操作反馈（已接受 / 重启了 runner / 出错）
         noticeErr: false,
       };
@@ -536,6 +561,52 @@
         renderChat();
       }
 
+      // ---------- 在飞 run 的实时右栏（①） ----------
+
+      /**
+       * run 开跑：把右栏切成「这一轮的空树」。
+       *
+       * 为什么必须在 run-start 就切（而不是等第一条 span）：不切的话右栏留着**上一轮**那棵树，
+       * 一次十几秒的 run 期间它看起来就是「这次的结果」。同理清掉上一轮的回复 / 排行 / 用量 ——
+       * 它们都是**上一轮**的账，与在飞的这一轮无关（历史 run 在左栏列表里随时能点回来）。
+       */
+      function beginLiveRender() {
+        state.live = emptyTraceAccumulator();
+        state.reply = '';
+        state.replyFor = null;
+        replyEl.hidden = true;
+        replyEl.textContent = '';
+        summaryEl.replaceChildren();
+        usageEl.hidden = true;
+        ttlEl.textContent = '';
+        const ph = document.createElement('div');
+        ph.className = 'tr-empty';
+        ph.textContent = '// 这一轮在飞 —— span 会一个个长出来（收尾时用整棵 trace 覆盖）';
+        traceEl.replaceChildren(ph);
+      }
+
+      /**
+       * 增量事件 → 折回 → 重画整棵树。
+       *
+       * `playTrace` 是**幂等全量重画**（自己拆好树再画），所以这里不需要「局部更新」那套：
+       * 每次把当前已知的 spans 交回去就行。用 rAF 合帧是必要的 —— 一次 run 可能有几百条
+       * 记账事件，逐条重绘是白烧 CPU（而人眼只看得见一帧）。
+       */
+      let liveFrame = 0;
+      function renderLive() {
+        if (liveFrame) return;
+        liveFrame = requestAnimationFrame(() => {
+          liveFrame = 0;
+          if (!state.live) return;
+          const t = partialTrace(state.live);
+          // 空树不交给 playTrace（它对空 spans 直接返回 false，右栏会留着占位那行 —— 那正是我们要的）
+          if (t.spans.length === 0) return;
+          if (!playTrace(view, t)) return;
+          ttlEl.textContent = `${t.traceId}（在飞）`;
+          usageEl.hidden = false;
+        });
+      }
+
       // ---------- 拉数据 ----------
       async function refreshDev() {
         try {
@@ -546,6 +617,9 @@
         }
         // 会话 id 由 dev 环持有（清空对话会换它）—— 面板不自己造，只跟着走
         state.sessionId = state.dev?.sessionId ?? '';
+        // 页面**在 run 在飞时**才加载（刷新 / 新开标签）⇒ 补一个累加器，好接住后续的增量帧。
+        // 之前那些 span 收不到（SSE 不重放）—— 它们会随收尾那份整棵 trace 一起补齐。
+        if (state.dev?.running && !state.live) state.live = emptyTraceAccumulator();
         renderControls();
         renderChat();
         renderBanner();
@@ -590,10 +664,17 @@
         playTrace(view, trace);
         summaryEl.innerHTML = renderSummary(summarizeTrace(trace));
         // 回复正文只对**刚跑完的那一轮**有意义（trace 上没有它 —— 它是 run-done 事件带的）
-        // ⇒ 打开历史 run 必须清掉，否则它挂在别人的 trace 底下（张冠李戴）
-        state.reply = '';
-        replyEl.hidden = true;
-        replyEl.textContent = '';
+        // ⇒ 打开**别的** run 时必须清掉，否则它挂在别人的 trace 底下（张冠李戴）。
+        //
+        // ⚠️ 但不能**无条件**清：`run-done` 与「这条 trace 的收尾帧」几乎同毫秒到达，
+        // 而这条 handler 的链更长（refresh → refreshSession → renderChat → open）——
+        // 无条件清会把刚写上去的那句回复擦掉（端到端实测 17 ms，现象是「跑完了但没回复」）。
+        if (!replyBelongsTo(id, state.replyFor)) {
+          state.reply = '';
+          state.replyFor = null;
+          replyEl.hidden = true;
+          replyEl.textContent = '';
+        }
         renderList();
       }
 
@@ -602,10 +683,20 @@
         if (state.list.length && !state.current) await open(state.list[0].traceId);
       }
 
-      // ---------- 目录浏览 ----------
+      // ---------- 目录浏览 / 选文件（③） ----------
       // 浏览器拿不到用户选的文件夹的绝对路径（webkitdirectory 只给相对路径、
       // File System Access 只给 handle.name），而 dev 环要的是绝对路径 ⇒ 服务端列目录。
+      //
+      // 三个控件语义（2026-09-22 复核后定，前两条是实测出来的缺口）：
+      // - 点**目录名** ⇒ 进去；点 `..` ⇒ 上一层；「选这个目录」⇒ 把当前位置当工作目录。
+      // - 点**文件名** ⇒ 工作目录 = 它**所在的**目录（就是当前这一层），prompt 为空时填文件名。
+      //   只列目录的旧形态下，「让 agent 看某个文件」只能靠用户自己把名字打进 prompt。
+      // - 隐藏目录（`.git` / `~/x/.y`）单列在正常目录之后 —— 旧实现整批过滤掉，
+      //   于是那些目录**根本点不进去**（`..` 只能退到它上面，进不去）。
       let fsPath = '';
+      function closeFs() {
+        fsEl.hidden = true;
+      }
       async function openFs(at) {
         const res = await fetch('/api/fs?path=' + encodeURIComponent(at));
         if (!res.ok) {
@@ -617,30 +708,67 @@
         fsPath = body.path;
         fsPathEl.textContent = body.path;
         fsListEl.replaceChildren();
-        for (const name of body.dirs) {
+
+        const row = (text, cls, title, onClick) => {
           const b = document.createElement('button');
           b.type = 'button';
-          b.className = 'fs-item';
-          b.textContent = name + '/';
-          b.addEventListener('click', () => openFs(fsPath + '/' + name));
+          b.className = cls;
+          b.textContent = text;
+          if (title) b.title = title;
+          b.addEventListener('click', onClick);
           fsListEl.appendChild(b);
+        };
+        const enterDir = (name) => () => void openFs(`${fsPath}/${name}`);
+        /** 选一个文件：工作目录取**当前这一层**（它所在的目录），prompt 只在空时被填 */
+        const useFile = (name) => () => {
+          workdirEl.value = fsPath;
+          state.workdir = fsPath;
+          const picked = promptAfterFilePick(promptEl.value, name);
+          if (picked.filled) promptEl.value = picked.prompt;
+          closeFs();
+          setNotice(
+            picked.filled
+              ? `工作目录：${short(fsPath)}（prompt 已填「${name}」）`
+              : `工作目录：${short(fsPath)}（prompt 里已有内容，一个字没动）`,
+            false,
+          );
+        };
+
+        for (const name of body.dirs) row(name + '/', 'fs-item', '', enterDir(name));
+        for (const name of body.dotDirs ?? []) {
+          row(name + '/', 'fs-item fs-dot', '隐藏目录', enterDir(name));
+        }
+        const files = body.files ?? [];
+        if (files.length > 0) {
+          const sep = document.createElement('div');
+          sep.className = 'fs-sep';
+          sep.textContent = '文件';
+          fsListEl.appendChild(sep);
+          for (const name of files) {
+            row(name, 'fs-item fs-file', '选这个文件：工作目录设成它所在的目录，prompt 为空时填文件名', useFile(name));
+          }
+        }
+        if (body.filesTruncated) {
+          const more = document.createElement('div');
+          more.className = 'hint';
+          more.textContent = `（文件只列了前 ${files.length} 个）`;
+          fsListEl.appendChild(more);
         }
         fsEl.hidden = false;
         fsEl.dataset.parent = body.parent;
       }
-      $('fs-up').addEventListener('click', () => openFs(fsEl.dataset.parent || fsPath));
+      $('fs-up').addEventListener('click', () => void openFs(fsEl.dataset.parent || fsPath));
       $('fs-use').addEventListener('click', () => {
         workdirEl.value = fsPath;
         state.workdir = fsPath;
-        fsEl.hidden = true;
+        closeFs();
         setNotice(`工作目录：${short(fsPath)}`, false);
       });
+      // ⚠️ 这里**不是**开关：旧实现「面板开着时再点一次把它关掉」，于是
+      // 「在输入框敲了目标路径 → 点浏览…」这个最自然的动作是把面板关掉，
+      // 用户就以为「选不了别的目录」。现在点它**总是**按当前输入打开。
       $('browse').addEventListener('click', () => {
-        if (!fsEl.hidden) {
-          fsEl.hidden = true;
-          return;
-        }
-        void openFs(workdirEl.value.trim() || (state.dev ? state.dev.defaultWorkdir : '.'));
+        void openFs(browseTarget(workdirEl.value, state.dev ? state.dev.defaultWorkdir : '.'));
       });
 
       // ---------- 控件接线（只做「取值 → 调 panel-logic → 写回」） ----------
@@ -654,6 +782,9 @@
       });
       document.addEventListener('click', (e) => {
         if (capsEl.open && !capsEl.contains(e.target)) capsEl.open = false;
+        // 目录浏览器：点面板外面收起。`浏览…` 不再是开关之后，这是主要的收起方式
+        // （按钮自己那一支要排除，否则点它就会「开完立刻被这里收掉」）。
+        if (!fsEl.hidden && !fsEl.contains(e.target) && !$('browse').contains(e.target)) closeFs();
       });
 
       promptEl.addEventListener('keydown', (e) => {
@@ -758,6 +889,9 @@
         const nameEl = document.createElement('b');
         nameEl.textContent = s.name;
         liveEl.append(nameEl, ` · ${fmtMs(s.ms)}`);
+        // 收尾那份整棵 trace 到了 ⇒ 在飞的那份**作废**：`open()` 画的是权威版本，
+        // 而且此后不该再让迟到的增量帧把它重画成残缺的一棵（见 dev-protocol 的 DevEvent）
+        state.live = null;
         await refresh();
         await refreshSession();
         renderChat();
@@ -767,6 +901,8 @@
         const ev = JSON.parse(m.data);
         if (ev.kind === 'run-start') {
           liveEl.textContent = '正在跑…';
+          // 右栏从这一轮的空树开始（① 实时）：不这么做的话它留着上一轮那棵树
+          beginLiveRender();
           setNotice(
             `运行中：${short(ev.workdir)} · ${ev.toolSources === null ? '全量' : ev.toolSources.join(',')}` +
               `${ev.multiTurn ? ' · 多轮' : ''}`,
@@ -774,8 +910,16 @@
           );
           // run-start 是「确实开跑了」的权威信号 ⇒ 中止按钮在这里出现（不看面板自己的乐观状态）
           await refreshDev();
+        } else if (ev.kind === 'trace-event') {
+          // 在飞的一笔记账（①）：折回 + 合帧重画。`state.live` 为空说明收尾那份已经到了
+          // （或这一轮不是面板起的）⇒ 丢掉 —— 权威版本已经在屏幕上，别用残缺的覆盖它。
+          if (state.live && applyTraceEvent(state.live, ev.event)) renderLive();
         } else if (ev.kind === 'run-done') {
           state.reply = ev.finalText || '';
+          // 记下这条回复的**主人**：紧随其后的收尾帧会 open() 同一条 traceId，
+          // 那时不能把回复当「别人的」擦掉（见 panel-logic 的 replyBelongsTo）
+          state.replyFor = ev.traceId;
+          state.live = null;
           replyEl.hidden = state.reply.length === 0;
           replyEl.textContent = state.reply;
           // 判别顺序（先 stopReason 后 ok）是**语义**，抽在 panel-logic 里并带单测 ——
@@ -789,6 +933,8 @@
           renderChat();
         } else if (ev.kind === 'runner-restart') {
           setNotice(`重启 runner：${ev.reason}`, false);
+          // 重启前的在飞 run 已经不存在了（它的 trace 会丢，面板在别处明说）⇒ 别留一棵半截树
+          state.live = null;
           // 重启期间菜单是过期的（旧 runner 的能力）—— 先刷一次，等 runner-ready 再刷一次。
           await refreshDev();
         } else if (ev.kind === 'runner-ready') {
@@ -797,6 +943,7 @@
           await refreshDev();
         } else if (ev.kind === 'runner-error') {
           setNotice(ev.message, true);
+          state.live = null;
           await refreshDev();
         }
       });
