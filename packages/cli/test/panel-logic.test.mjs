@@ -14,6 +14,26 @@ const SKIP = !L ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' 
 /* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
 if (SKIP) distReadyOrLoud(DIST, 'CLI 构建产物');
 
+/**
+ * 反复写、直到回调真的来。
+ *
+ * 为什么不是「写一次、等满 15 秒」：真 fs 的监视器**建立是异步的**（`fs.watch` 返回 ≠
+ * 底下的 FSEvents 流已经开始投递），`watchTree()` 一返回就写的那**一次**可能整个漏掉 ——
+ * 那时等多久都没用。2026-09-22 实测：同一份套件，**stdout 被管道捕获**时（`verify-all.sh`
+ * 与 CI 都这么跑）这一条等满 15s 稳定红，stdout 写文件时稳定绿 ⇒ 这是**夹具的竞态**，
+ * 不是产品缺陷（生产里 dev 环**先建立监视、再对外服务**）。
+ *
+ * ⚠️ 断言没放宽：那个路径**必须**触发一次回调 —— 只是不再要求「第一次写就被看到」。
+ */
+async function writeUntilSeen(seen, write, deadlineMs = 15_000) {
+  const deadline = Date.now() + deadlineMs;
+  do {
+    write();
+    if (seen.length > 0) return;
+    await new Promise((r) => setTimeout(r, 300));
+  } while (Date.now() < deadline);
+}
+
 describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP }, () => {
   it('能力多选 → toolSources：全选传 undefined，其余按字典序（可复现）', () => {
     const all = ['b', 'a', 'c'];
@@ -260,15 +280,14 @@ describe('dev 的文件监视（改 .md 要能触发重启）', { skip: SKIP }, 
     const stop = D.watchTree(dir, (abs) => seen.push(abs));
     try {
       // 已存在的子目录里的 .md（递归范围）
-      writeFileSync(join(dir, 'asset.md'), 'v1');
       // 新建的子目录 —— 不在初始 readdir 里，靠「新目录动态加入」才看得见
       const sub = join(dir, 'subagents');
       mkdirSync(sub, { recursive: true });
-      writeFileSync(join(sub, 'system.md'), 'v1');
-      const deadline = Date.now() + 4000;
-      while (seen.length === 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 30));
-      }
+      // 反复写（不是写一次）：监视器建立是异步的，t0 那一次可能整个漏掉 —— 见 writeUntilSeen
+      await writeUntilSeen(seen, () => {
+        writeFileSync(join(dir, 'asset.md'), 'v1');
+        writeFileSync(join(sub, 'system.md'), 'v1');
+      });
       assert.ok(seen.length > 0, '写 .md 应该触发回调（旧实现这里静默无感）');
       assert.ok(
         seen.every((p) => D.shouldWatch(p)),
@@ -355,11 +374,7 @@ describe('dev 的文件监视（改 .md 要能触发重启）', { skip: SKIP }, 
     const seen = [];
     const stop = D.watchTree(dir, (abs) => seen.push(abs));
     try {
-      writeFileSync(join(dir, 'app.ts'), 'v1');
-      const deadline = Date.now() + 4000;
-      while (seen.length === 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 30));
-      }
+      await writeUntilSeen(seen, () => writeFileSync(join(dir, 'app.ts'), 'v1'));
       assert.ok(
         seen.length > 0,
         '项目根自己叫 dist 时必须照常监视（用绝对路径段认 dist 是错的：根目录可能就叫 dist）',
@@ -388,11 +403,7 @@ describe('dev 的文件监视（改 .md 要能触发重启）', { skip: SKIP }, 
     writeFileSync(join(dir, 'README.md'), 'v0');
     const stop = D.watchRootEnvFiles(dir, (abs) => seen.push(abs));
     try {
-      writeFileSync(join(dir, '.env'), 'v1');
-      const deadline = Date.now() + 4000;
-      while (seen.length === 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 30));
-      }
+      await writeUntilSeen(seen, () => writeFileSync(join(dir, '.env'), 'v1'));
       assert.ok(
         seen.some((p) => p.endsWith(`${sep}.env`)),
         `改项目根的 .env 必须触发回调（旧实现里这条事件根本没人接），实际：${JSON.stringify(seen)}`,
