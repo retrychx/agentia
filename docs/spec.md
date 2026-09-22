@@ -3107,7 +3107,13 @@ SSE 下断言「在飞期间真收到增量帧」「增量帧**先于** `run-don
   `/ingest-event` 原样转发 + 面板按 `seq` 折回，收尾那份整棵 trace 覆盖它）/ 刚跑完的回复不再被
   自动 `open()` 擦掉（端到端实测 17 ms）/ 工作目录选择器能选文件、隐藏目录可达、`浏览…` 不再是
   开关；**无破坏性变更**，框架公共 API 逐字未变）；
-  `AGENTIA_VERSION = '0.9.1'`。决策均见 §10。
+  → v0.9.2（dev 面板可读性三处：模型正文按 Markdown 渲染（`packages/cli/src/markdown.ts`，
+  自己写的零依赖解析器，**按构造不产生 HTML** —— 只产出 token 树、渲染层只准 `createElement` /
+  `textContent`，链接只认 `http`/`https`/`mailto`）/ 滚动分层（整页不滚，左栏列表与右栏调用树
+  各自滚，回复·排行·用量固定在下方且各有上限）/ 长正文默认折叠（`collapseDecision` 按**行数 +
+  字符数**判定，不量像素）；另修掉 CLI 套件两条文件监视用例的**夹具竞态**（`writeUntilSeen`，
+  纯测试侧、无使用者可见行为）；**无破坏性变更**，框架公共 API 与模板形态逐字未变）；
+  `AGENTIA_VERSION = '0.9.2'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
