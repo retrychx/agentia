@@ -3,9 +3,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  appTs,
   CAPABILITY_DIR_LIST,
   cleanMjs,
   copyAssetsMjs,
+  devConfigTs,
   emptyRegistryTemplate,
   mainTs,
   projectDotEnv,
@@ -14,7 +16,9 @@ import {
   projectPackageJson,
   projectReadme,
   projectTsconfig,
+  readFileToolIndexTs,
   REGISTRY_PATH,
+  sessionStoreTs,
   toolIndexTs,
 } from './templates.js';
 import { registerCapability } from './registry.js';
@@ -74,8 +78,18 @@ export function createProject(name: string, parent: string | undefined): number 
 
   write(dir, 'package.json', projectPackageJson(name));
   write(dir, 'tsconfig.json', projectTsconfig());
+  // 装配（app.ts）与启动（main.ts）分离：dev 环要复用 app.ts 的工厂，
+  // 才能把「能力选择 / 工作目录」喂进 createApp（见 templates.ts 的 appTs 注释）。
+  write(dir, 'src/app.ts', appTs(name));
   write(dir, 'src/main.ts', mainTs(name));
+  // dev 环的**数据**声明（只有数据，没有逻辑；生产路径不读它）
+  write(dir, 'src/dev.config.ts', devConfigTs());
+  // 对话型能力用的文件后端会话存储（可选件，但生成出来省得用户自己写）
+  write(dir, 'src/session-store.ts', sessionStoreTs());
   write(dir, 'src/tools/hello/index.ts', toolIndexTs('hello'));
+  // 第二个能力：它把面板上的「工作目录」控件接通（根由 DI 注入），
+  // 同时让「能力多选」在新建工程里立刻有东西可选。
+  write(dir, 'src/tools/read-file/index.ts', readFileToolIndexTs());
   write(dir, 'scripts/copy-assets.mjs', copyAssetsMjs());
   // 清 dist 那一步（build 的第一步）：**必须真写出去**，否则生成的项目 `npm run build`
   // 直接 MODULE_NOT_FOUND（模板目录里有它、build 脚本引用它，只有 create 忘了写）。
@@ -88,7 +102,8 @@ export function createProject(name: string, parent: string | undefined): number 
   for (const relDir of CAPABILITY_DIR_LIST) {
     write(dir, `${relDir}/.gitkeep`, '');
   }
-  // .env 是「填上就能跑」的入口（main.ts 首行 loadEnvFile() 读它）；
+  // .env 是「填上就能跑」的入口（app.ts 的 loadEnvFile() 读它 —— 放 app.ts 而不是 main.ts，
+  // 因为 dev 环只 import app.ts，见 templates/src/app.ts 的注释）；
   // .env.example 进版本库当变量清单。**两者必须与 gitignore 的 .env 同时存在** ——
   // 生成 .env 却不忽略它，等于把 key 直接送进用户的第一个 commit。
   write(dir, '.env', projectDotEnv());
@@ -97,6 +112,10 @@ export function createProject(name: string, parent: string | undefined): number 
   write(dir, 'AGENTS.md', guide);
 
   registerCapability(dir, 'hello', 'tool');
+  // read-file 的构造器要一个工作目录（DI 注入），而 discover 自动注册的 provider
+  // **没有 deps** ⇒ 它必须走显式注册（registry.ts 的 providers 里那个 WORKDIR 是它的依赖）。
+  // 不登记的话 `agentia doctor` 会报「存在但未登记」—— 新生成的工程不该自带一条警告。
+  registerCapability(dir, 'read-file', 'tool', ['WORKDIR']);
 
   console.log(`已创建项目 ${dir}
 
@@ -104,7 +123,7 @@ export function createProject(name: string, parent: string | undefined): number 
   cd ${dir}
   npm install
   把 API key 填进 .env（已生成，且已被 .gitignore 忽略）
-  npm run dev                  # = agentia dev：tsx watch + 本地 inspector 面板
+  npm run dev                  # = agentia dev：本地 inspector 面板（可输入 prompt / 选能力 / 选工作目录）
 
 生产构建：npm run build && npm start（先清 dist/，再 tsc → dist/，.md 资产由 scripts/copy-assets.mjs 跟随拷贝）
           dev 跑 src/、start 跑 dist/ —— 能力目录按文件位置解析，两边都成立。

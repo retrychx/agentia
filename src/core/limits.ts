@@ -26,11 +26,15 @@
  * ⚠️ 本模块**不是公共 API**（不进 `src/index.ts`）：它是内部口径的真源，不是给使用者的旋钮。
  * 面向使用者的口径在 `docs/usage-guide.md` 的「边界」一节。
  *
- * ⚠️ 表里的 `zeroClause` 是**报错文案的一部分**：五处构造期校验（`runTimeoutMs` /
- * `approvalTimeoutMs` / `traceLimits.maxEvents` / `maxRetries` / `streamBufferEvents`）
- * 把它插进错误消息里
+ * ⚠️ 表里的 `zeroClause` 是**报错文案的一部分**：有构造期校验的旋钮由实现代码直接把它插进
+ * 错误消息里（`runTimeoutMs` / `approvalTimeoutMs` / `traceLimits.maxEvents` / `maxRetries` /
+ * `streamBufferEvents` / `retainTerminal`）
  * （`…（0 = 不重试），收到 -1 —— …`）。所以「文案里怎么解释 0」与「代码里怎么实现 0」
  * 是同一个值，改一处等于同时改另一处 —— 这正是先前缺的那条单源。
+ *
+ * ⚠️ **别在这里写死「几处」**：计数会随旋钮增减立刻过期 —— 本行曾写「五处」并列举五个，
+ * 而漏掉的正是**同一次改动里新增**的 `retainTerminal`（实为六处）。要核对当前全集：
+ * `grep -rn 'zeroClauseOf' src/`。清单本身有价值，计数没有。
  */
 
 /**

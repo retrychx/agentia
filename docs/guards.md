@@ -72,6 +72,11 @@
 | `scripts/verify-all.sh` 第 1 步 | lint 与类型检查折进同一条链（本地链 == CI 链） | Biome + `tsc` | 「本地 8/8 绿、CI 挂 Biome」（真发生过） |
 | `packages/cli/test/dist-guard.mjs` | CLI 去类型移植副本与框架真源的**逐字对拍**不得静默跳过 | 产物缺失时 CI 判失败、本地醒目警告 | 对拍变成空断言（「逐字守护」名不副实） |
 | CI `import-floor` job（`scripts/check-import-floor.mjs`） | 包在 Node 18/20 上可导入（`engines: >=18` 的声明） | CI 实跑导入 | 旧 Node 上整包加载即崩 |
+| `packages/cli/test/panel-logic.test.mjs` | **面板逻辑可在 Node 里直测**（`panel-logic.ts` 零 DOM 引用），且各条口径逐条钉住：全选/空集 ⇒ `undefined`（`toolSources: []` 是收窄到**空菜单**的陷阱值）、收窄按**字典序**（不是点击序）、多轮初始值 = 所选能力声明的 **OR** 且带来源、**失败轮**靠 run 根的 `session.id` join 回对话流、**`runDoneNotice` 的判别顺序**（先 `stopReason` 后 `ok` —— 中止的 run `ok` 也是 false，反了就把「我按的中止」显示成「run 失败」）、**`nextSessionId` 的轮换与正则转义**。另含 watch 判据：`WATCH_EXT` 允许清单含 `.md`、`WATCH_SKIP` 排除 `dist`/`.agentia`（`shouldWatch` 与 `watchTree` 从 `dev.ts` 导出专供测试，`nextSessionId` 同理），其中**一条用例专测「启动之后才出现」的跳过目录**（`dist/` 与 `.agentia/` 各自一轮、中间等过去抖窗口 —— 不让 `flush` 只报第一条的合并掩盖被测行为），测的是 `watchTree` **自己的**契约「跳过判据对**初始递归**与**动态新增**两条路都成立」；另有 `watchRootEnvFiles`（**项目根**的 `.env` / `.env.local`）：改它必须回调，而项目根的 `README.md` / `package.json`（扩展名**都在** `WATCH_EXT` 里）必须被**名字过滤**挡掉。⚠️ 这两条都只测函数**自己的**契约 ——「调用点接上了没有」只能由 `e2e-dev` 真跑守（根是**调用点**决定的） | 面板 JS 抽成模块、单测 import `dist/` 产物；watch 用例起**真 tempdir** 写真文件（含新建子目录的动态纳入）。反向验证过：`nextSessionId` 改成不轮换 ⇒ 2 条红（`expected 'dev-2' actual 'dev'`）；去掉 base 的正则转义 ⇒ 红（`expected '.dev-2' actual '.dev-5'` —— 未转义时 `.` 变成「任意字符」，`Xdev` 会被当成 `dev` 的下一号）；把 `runDoneNotice` 的两个分支对调 ⇒ 红；把目录跳过判据**只留在初始递归那个调用点**（即摘掉本轮修复）⇒ 恰好那条红（`dist/ 是启动后才出现的跳过目录，里面的写入不该触发重启`），其余 15 条保持绿；把 `watchRootEnvFiles` 的**名字过滤**换成 `shouldWatch`（丢掉「只认名字」）⇒ 恰好那条红（`项目根的非 env 文件不该触发`），其余 16 条保持绿 | 面板成为仓库里**唯一没有测试的复杂逻辑**（它已是这批工作里最大的一块，比 `dev.ts` 的进程管理还大）；`.md` 掉出允许清单 ⇒ 改 `system.md` **静默无感**（G3b 实测过）；`.agentia/` 进 watch 范围 ⇒ dev 环每轮往 `session.json` 写一次 ⇒ **每次 run 重启一次子进程**的自噬循环。⚠️ 但要说清**两层**：真跑时的第一层是**监视根**（`devServer` 只 `watchTree(<projectRoot>/src)`，而 `.agentia/` 与 `dist/` 在项目根、根本不在范围内），`WATCH_SKIP` 是**第二层**，防的是「哪天有人把根改成项目根」；两条路（初始递归 / 动态新增）都判才叫「判据成立」，只判一条叫「碰巧打不到」（见 §2 尾注 ⑤） |
+| `packages/cli/test/inspector.test.mjs`（dev 环 HTTP 面） | ① **鉴权**：`Origin` **缺失放行** / `Origin: null` **拒绝** / 跨源拒绝，per-session token 在**每个**端点生效、三种载体（`?t=` → `Set-Cookie` 带 `HttpOnly`+`SameSite=Strict` / `x-agentia-token` 头 / cookie）都验；② `POST /run` 的入参校验与**状态码透传**（409 在飞 / 400 目录不存在 / 500 兜底 —— 4xx 不得被吞成 500）；③ `/api/fs` 只列目录、跳过点目录、路径不存在时**响亮报错**；④ SSE 的 `dev` 命名事件与既有 run 汇总帧共存；⑤ `POST /run/abort`（没有 runner ⇒ 503、没在飞 ⇒ 钩子的 409 原样回、`escalated` 两态都 202 透传、**`GET` 不落钩子**）；⑥ `POST /session/clear`（503 / 409 / 200 + 新 id 透传）；⑦ **面板 import 名单的反向全覆盖** —— 页面 `import {...} from './panel-logic.js'` 里每个名字都必须是该模块的真导出 | 真 HTTP + 假钩子（本文件不知道子进程 / tsx / runner 的存在）；伪造 `Host`/`Origin` 一律走 `node:http` 的 `request` —— **fetch 把这两个列为禁改头、会静默丢掉**，用 fetch 写这组用例会**假绿**。⑦ 的机制是「从页面 HTML 里正则抠出 import 名单 → 逐名 `in mod`」：浏览器里 import 一个不存在的导出是**整块模块求值失败**（面板白屏），而 node 侧各用例各自 import 自己要用的名字，**照样全绿** | 未鉴权的本机进程能驱动 agent（任意 prompt × 任意工作目录 = 让 agent 读你整个盘）；面板把「你手快点了两下」显示成「服务器炸了」，真实原因被 500 掩掉；⑤⑥ 的路由若只写在面板里而不在服务端（或反之），点下去**看着像成功了**却什么都没发生 —— 反向验证过：把 `/run/abort` 改成「忽略钩子、一律报 202/不升级」⇒ 红；`/session/clear` 同理 ⇒ 红；⑦ 往页面 import 名单里塞一个不存在的名字 ⇒ 红（`panel-logic 必须导出「runDoneNoticeTypo」`） |
+| `packages/cli/test/templates.test.mjs`（能力名一致性） | 模板里被装饰的方法名**就是模型看到的工具名** ⇒ 生成物必须统一 snake_case（占位符 `__METHOD_NAME__` 由 `kebabToSnake` 渲染，逐例断言；框架侧只**建议** snake_case、不强制，所以这条守的是本仓生成物的**自洽**） | 扫 `templates/**/*.ts` 的 `@Tool/@Skill/@SubAgent/@Prompt`：按**括号配平**（并跳过字符串字面量 —— 描述文案里一个孤立的 `(` 就再也配不平）跳过装饰器实参，再跳过注释读方法名；`seen >= 5` 防抽词器退化成空断言。反向验证过：`read_file` 改回 `readFile` ⇒ 恰好那条红（15/16 通过） | 同一份生成物里 `doc_reviewer` 与 `readFile` 混着来 ⇒ 使用者在 `dev.config.ts` 的 `multiTurn` 与面板的能力选择器里得先**猜**写法，猜错就是静默不生效（真发生过：本轮模板写成 `readFile`，模板单测全绿，是 `e2e-cli` 的整菜单断言抓出来的） |
+| `scripts/e2e-dev.ts` | **`agentia dev` 整条链真跑**（此前**零覆盖**：`rg -ln "agentia dev\|dev-runner" scripts/*.ts` 返回空，`e2e-cli` 只断言了生成物 `package.json` 里有 `dev` 这个 script 名）。前四条都是**行为**断言：① 能力菜单非空且**精确等于** `["hello","read-file"]`（菜单是 runner 经 IPC 报回来的，父进程在 `ready` 前拿的是初值 `[]` ⇒ 非空才等于 IPC 通了）；② 一次 run 成功且 `finalText` 来自假端点；③ 收窄 `toolSources` 后**假端点收到的请求体真的变窄**（收窄前含 `read_file`、之后不含）；④ 改一个 `.md` 触发重启、且重启后能再跑通。另含鉴权边界（无 token ⇒ 403）与 `runner-ready` 广播。**⑤ 中止在飞 run**（第 10 步）：先让假端点**挂住不回复**（否则窗口只有几毫秒，测到的其实是 409 那条分支），再断言「在飞时 `running=true`」「在飞时第二次 `POST /run` ⇒ 409」「`POST /run/abort` ⇒ 202 且 `escalated=false`」「`run-done.stopReason === 'aborted'` 且**带 traceId**」「该 trace 真的出现在 run 列表里」「中止后 `running` 回 false **且 `lastError` 仍是 null**」。**⑥ 清空对话**（第 11 步）：`POST /session/clear` 换 id → 断言 id 已**落盘**且与 `/api/dev` 报的一致 → 再跑一次多轮 → 断言会话写进**新**那本账、**没写进**旧 id，且 `/api/session` 跟着新 id 走。**⑦ 重启次数总账**（第 12 步）：全程只该有 4 次重启（收窄 `toolSources` / 改 `.md` / **改项目根 `.env`** / 回到全量菜单），且每条理由都不得提到 `.agentia` 或 `dist/`。**⑧ 改项目根的 `.env`**（第 9-bis 步）：真改一次 `<工程根>/.env`，必须触发重启且理由里带 `.env` —— 守的是 `WATCH_NAMES` 这条判据的**可达性**（`shouldWatch` 的单测只证明它「认得」，证明不了「够得着」，见下） | 起真 `agentia dev`（`node <cli> dev`，cwd = 生成工程）+ 本进程内的假 Anthropic 端点（`ANTHROPIC_BASE_URL`）+ SSE 收 `dev` 帧。**凭据只写进工程 `.env`，进程环境里显式 `delete` 掉 `ANTHROPIC_*`** —— 不删的话，本机 export 过 key 的人会拿到一条假绿。全程 `spawn` + await（假端点在本进程里，`spawnSync` 会死锁）；被挂住的响应由 `finally` 收掉（否则 `fake.close()` 的回调永不触发）；第 12 步要**等过「重启延后到 run 结束」的窗口**（`afterRun()` 紧跟在 run-done 之后）再数 | 这一整块（`dev.ts` / `dev-runner.ts` / `inspector-page.html`）重新变成没有守卫的最大块。反向验证过**六条**：`npx tsx` 塞回链路 ⇒ 红（`runner 装配失败："dev runner 退出（code=0）…"`）；把 `loadEnvFile()` 从 `app.ts` 摘掉 ⇒ 红（run 打到真端点、403）；去掉 `runner-ready` 广播 ⇒ 红（`等第 1 条 dev/runner-ready 超时`）；把 runner 的 `run-abort` 处理去掉 ⇒ 红（`escalated:true` —— 顺带证明 5 s 升级重启那条兜底真的在工作）；让 runner 把会话 id 写死 `'dev'` ⇒ 红（`实际 keys：["dev"]`）；把 `!ok` 判据恢复成不排除 `aborted` ⇒ 红（`实际 "run 已被取消"` —— 告警条上会永远挂一条红字）；**摘掉 `watchRootEnvFiles` 的接线**（`.env` 又变回一条够不着的判据）⇒ 红（`等第 4 条 dev/runner-restart 超时（只收到 3 条）` —— 帧转储里那次 `.env` 写入**一条事件都没有**）。⚠️ **第 12 步（重启总账）的反向验证是反例**：把 `WATCH_SKIP` 修复摘掉 ⇒ **e2e 照样绿** —— 不是断言错，而是这条缺陷在 e2e 里**不可达**（监视根是 `<projectRoot>/src`，而 `.agentia/` 在项目根）。所以第 12 步守的是「**监视根保持 `src/`**」，**不守**「`WATCH_SKIP` 判据完整」（后者由 `panel-logic.test.mjs` 的单测守）。两件事都值得守，但**必须说清哪条守哪件** |
+| `packages/cli/test/templates.test.mjs`（`.env` 接线**成对**断言） | `loadEnvFile()` 必须在 `app.ts` **且不在** `main.ts`（dev 环只 import app.ts、从不执行 main.ts）。同一条断言在 `scripts/e2e-cli.ts` 里也成对写（该在哪 + 不该在哪 —— 只写一半就还能被搬到错的一侧） | 锚**精确形态**（`^loadEnvFile\(\);$` 独立调用 + `import {...loadEnvFile...} from`）而不是裸标识符：`main.ts` 的报错文案里就有 `loadEnvFile()` 这个词，裸判会误红 | 搬错一侧 ⇒ `npm run dev` 静默读不到 `.env`、`npm start` 读得到；用户看到的是「没配 key」，然后去怀疑框架（真发生过：2026-09-22 拆分 app.ts/main.ts 时，而当时那条断言指着 `main.ts`，所以一路绿到真跑探针才发现） |
 
 ---
 
@@ -97,6 +102,59 @@
 > （`src/core/limits.ts` + `tests/limits.test.ts`，含伴随行「零/负/非有限值的语义统一」）、
 > **穷尽转发**（`src/engine/forwarded.ts` + `tests/types/forwarding.types.ts`）、
 > **队列消费者配方**（`tests/transport/queueConsumer.test.ts`）。
+> 2026-09-22 ②（dev 调试环）又移入三条：**面板纯逻辑可测 + watch 允许清单**
+> （`packages/cli/test/panel-logic.test.mjs`）、**dev 环鉴权与 HTTP 面**
+> （`packages/cli/test/inspector.test.mjs`）、**生成物能力名一致性**
+> （`packages/cli/test/templates.test.mjs` 的能力名用例）。本表**仍只剩一行**。
+> 2026-09-22 ③（真跑探针抓出两个缺陷后）再移入两条：**`agentia dev` 整链真跑**
+> （`scripts/e2e-dev.ts` —— 上面那三条都拦不住这次的两个缺陷，因为它们是**单元**面：
+> 一个问「模板函数返回了什么」、一个拿假钩子测 HTTP，谁都不起真进程、谁都不 import
+> 用户的 `app.ts`）与 **`.env` 接线成对断言**（`templates.test.mjs` / `e2e-cli.ts`）。
+> 本表**仍只剩一行**。教训记在这里：**「门禁全绿」只覆盖门禁问过的形状** ——
+> 本轮改动里最大的一块（dev 环）此前一条守卫都没有，而它一次真跑就露了两个洞。
+> 2026-09-22 ④（拿功能文档逐项对照做审计后）**没有新移入 §1 的行**，而是把三条已有守卫
+> **扩了面**（同一个文件、同一类断言，只是多了几条口径）：
+> `panel-logic.test.mjs` 增 `nextSessionId` / `runDoneNotice`；`inspector.test.mjs` 增
+> `POST /run/abort` · `POST /session/clear` · **面板 import 名单的反向全覆盖**；
+> `scripts/e2e-dev.ts` 增第 10/11 步（真在飞的中止 + 清空后换账）。
+> 这一轮真正的收获不是「又补了测试」，而是**同一条事实的第三个影子**：
+> 中止的 run `ok` 是 `false`（引擎的 `abortedResult()` 刻意带结构化 error）——
+> 于是面板的反馈语、`dev.ts` 的 `lastError`、终端的日志三处都把它当成了「失败」。
+> 判别顺序因此被抽进 `panel-logic.ts` 并配单测（顺序是语义，不是渲染）。
+> ⇒ 补一条可复用的自查问：**「一个值有几种写法」查完之后，还要查「它被几个地方各自判过一次」**。
+> 2026-09-22 ⑤（追一次瞬时红 → 抓出 `WATCH_SKIP` **半实现**）**没有新移入 §1 的行**，而是把
+> `panel-logic.test.mjs` 又扩了一条用例。事故形状：`watchTree` 的目录跳过判据此前只在
+> **初始递归**那个调用点执行，watcher 回调里动态 `addDir` 那条路漏了 ⇒「启动时就存在的
+> `dist/` 不看、**启动后才出现**的 `dist/` 看」。修法是把判据收进 `addDir` 内部（唯一一处），
+> root 由调用方显式豁免（项目根本身叫 `dist` / `.foo` 是合法的，判据只看**目录名**）。
+> **更值钱的是验证侧的教训**：我先给 e2e 加了一条「重启次数总账 + 理由里不许出现 `.agentia`」
+> 的断言，反向验证时**单测红了、e2e 照样绿**。逐条排除三种解释（修复没生效 / 断言错 /
+> **缺陷在这里不可达**）后落到第三种：`devServer` 的**监视根是 `<projectRoot>/src`**，
+> 而 `.agentia/` 与 `dist/` 在**项目根**，从来不在范围内 ⇒ 那条 e2e 断言真正守的是
+> 「**监视根保持 `src/`**」，它**碰不到** `WATCH_SKIP` 那条路。
+> ⇒ **两件事都要守，但必须说清哪条守哪件** —— 否则下一个人看到「有 e2e 钉着」就以为
+> 漏判被覆盖了。这正是本仓一直在猎的**假守卫**：断言是真的、绿的、也是对的，
+> 只是它守的是**另一件事**。改法是把 dev.ts 的 `WATCH_SKIP` 注释改写成「**第二层**」、
+> 把「第一层是监视根」写进注释，e2e 那段注释也照实写明它**抓不到**什么。
+> ⇒ 补一条可复用的自查问：写完一条守卫，问「**它在什么形状下才可能红**」；
+> 若答案里含一个当前架构下不可达的前提，它就不是这条修复的守卫 —— 要么换个能红的形状，
+> 要么**改名**（说清它守的那件事）并注明它不守什么。
+> 2026-09-22 ⑥（拿 ⑤ 那条「监视根是 `src/`」去核**每一条**判据 → 又照出一条）**没有新移入 §1
+> 的行**，而是把 `panel-logic.test.mjs` 与 `e2e-dev.ts` 各再扩一条。
+> 事故形状：`WATCH_NAMES = {'.env', '.env.local'}` 把这两份列进**允许清单**、`usage-guide`
+> 也把 `.env` 写进「看什么」，但 `watchTree` 的根是 `<projectRoot>/src`，而 `.env` 在
+> **项目根** ⇒ 这条判据**没有任何一个 watch 够得着**（改 `.env` 静默无感，与 G3b 同类；
+> `dev.ts` 顶部那张结构图当时写的还是 `fs.watch(src/**, **.md)` —— 连图里都没有 `.env` 的位置）。
+> 修法：单开 `watchRootEnvFiles(projectRoot, …)` —— **不递归**且**只认名字**；**不能**把
+> `watchTree` 的根抬到项目根（那会让「改任何文档也重启」）。两处 watch 共用抽出来的
+> `makeNotifier()` 去抖器。
+> ⇒ 可复用的自查问：⑤ 查的是「判据有没有在**每条路**上执行」，⑥ 查的是「判据有没有
+> **任何人**执行」—— **判据的正确性**（`shouldWatch` 有单测、写得也对）与**可达性**
+> （调用点的根）是两件事，各要各的守卫：前者单测，后者**只能真跑**。
+> ⚠️ 附带一条**探针自身**的教训：第一版探针用 `waitDev('runner-restart', …, 2)`（写死等第 3 帧），
+> 而它前面已经有一条 `runner-restart`（回到全量菜单）⇒ **立刻拿到旧帧**，报错文案与
+> 「`.env` 根本没触发」一模一样，差点据此下错结论。改成「先数当前帧数 N，再等第 N+1 帧」才分辨得开。
+> ⇒ 断言「某事件发生了」时，**别用与事件总数耦合的绝对序号**：先取基线、再等增量。
 
 > §2 的存在方式很重要：**它是活的**。每轮 review 挖到的形状，若暂时建不了守卫，就登记到这里；
 > 建成了就移到 §1 并注明守卫位置。「未登记的形状」= 下次必然重犯。

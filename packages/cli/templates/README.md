@@ -15,10 +15,25 @@
 
 ## 两条装配路线
 
-1. **目录扫描**：`createApp({ discover: [...] })` 启动期按给定顺序扫各目录下的 `<name>/index.ts`，default export 为类时以文件夹名为 DI token 注册（见 `src/main.ts`）。
+1. **目录扫描**：`createApp({ discover: [...] })` 启动期按给定顺序扫各目录下的 `<name>/index.ts`，default export 为类时以文件夹名为 DI token 注册（见 `src/app.ts`）。
 2. **显式装配**：`createApp({ providers, system })`，providers 来自 `src/registry.ts` 注册表（由 `agentia g` 自动维护，也可手工编辑）。
 
 两者二选一或混用。
+
+## 文件分工（**装配与启动是分开的**）
+
+| 文件 | 作用 |
+|---|---|
+| `src/app.ts` | **装配**：导出 `createAgentApp({ toolSources?, workdir? })` 工厂 + `CAPABILITY_DIRS` + `createSessionStore()`；`.env` 也在这里读 |
+| `src/main.ts` | **启动**：薄入口 —— 调工厂 → `app.run(...)` → 处理 `result.error` |
+| `src/dev.config.ts` | 开发期**数据**声明（`multiTurn` / `budget` / `workdir`）；只有 `agentia dev` 读它 |
+| `src/session-store.ts` | 多轮的会话后端（`FileSessionStore`，落盘 `.agentia/session.json`） |
+| `src/registry.ts` | 显式注册表（`agentia g` 自动维护） |
+
+**为什么拆**：`agentia dev` 要**复用同一个工厂**才能把「这次调哪个能力 / 工作目录是哪个」喂进
+`createApp`。所以装配必须以**函数**形态待在 `app.ts` 里 —— 别把 `createApp(...)` 搬回 `main.ts`：
+搬回去 dev 环就起不来（`agentia dev` 会直接报错并给出迁移方法，不会静默降级成一个「面板能用但
+什么都驱动不了」的空壳）。
 
 ## 生成能力
 
@@ -58,5 +73,6 @@ export ANTHROPIC_API_KEY=sk-ant-...
 npm run dev -- "你的问题"
 ```
 
-`.env` 由 `src/main.ts` 首行的 `loadEnvFile()` 读取。框架**不会自动读**它 ——
+`.env` 由 `src/app.ts` 的 `loadEnvFile()` 读取（放在装配模块里，`npm run dev` 与 `npm start`
+两个入口才都会读到）。框架**不会自动读**它 ——
 读哪个文件、什么时候读由你的启动代码决定（这样「换目录跑」不会悄悄改变行为）。

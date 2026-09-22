@@ -96,14 +96,24 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   + **字面跑产物自己的 `npm run typecheck` / `npm run build`**
 │                            #   （'@migor/agentia'、@types、.bin/tsc 经 node_modules 软链解析 ——
 │                            #   即发布形态；测试不复刻脚本里的命令）+ 第 4d-bis 步真删一个能力
-│                            #   再重建，断言旧产物消失；第 8 步 pack → 离线安装 → 真跑最小 run）
-├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第二步：examples/complete 真构建、真起服务，
+│                            #   再重建，断言旧产物消失；第 9 步 pack → 离线安装 → 真跑最小 run，
+│                            #   并用**装出来的** CLI 真建一个工程点验文件 —— 「模板没进 tarball」
+│                            #   这类问题 `--version` 抓不到，只在用户 `agentia create` 时才炸）
+├── scripts/e2e-dev.ts       # dev 环端到端（npm run e2e 第二步：`agentia create` 建工程 →
+│                            #   真起 `agentia dev` → 真跑 run。守的是一整块**没有单测能覆盖**的
+│                            #   东西：IPC 就绪（菜单非空）/ 工程 `.env` 真被读 / 能力收窄后请求体
+│                            #   真变窄 / 改 `.md` 与项目根 `.env` 真触发重启 / 中止在飞 run 且 trace
+│                            #   落盘 / 清空对话换 id 且落盘 / 重启总账无自噬 / 换能力选择的重启
+│                            #   窗口内第二个 POST /run 必须 409 / 坏会话文件必须进 warning 通道 /
+│                            #   `dev -- "问题"` 的 prompt 真到模型手上 / Ctrl+C 后不留孤儿进程。
+│                            #   模型侧是本进程里的假 Anthropic 端点，零网络零 token）
+├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第三步：examples/complete 真构建、真起服务，
 │                            #   按它 README 跑完 /healthz · 鉴权 401 · 同步 /run · SSE · 异步 /tasks ·
 │                            #   /metrics · 优雅停机；模型侧是内置假 OpenAI 兼容端点，不联网）
-├── scripts/e2e-deploy.ts    # 部署示例端到端（npm run e2e 第三步：examples/deploy 真构建、真起服务，
+├── scripts/e2e-deploy.ts    # 部署示例端到端（npm run e2e 第四步：examples/deploy 真构建、真起服务，
 │                            #   跑 /healthz · 同步 /run · /metrics · 优雅停机 + **崩溃续跑**
 │                            #   （SIGKILL 后同库重启 resumePending 续跑）；假 Anthropic 端点，不联网）
-├── scripts/e2e-grpc.ts      # gRPC 宿主端到端（npm run e2e 第四步：examples/grpc-host 真构建、真起宿主，
+├── scripts/e2e-grpc.ts      # gRPC 宿主端到端（npm run e2e 第五步：examples/grpc-host 真构建、真起宿主，
 │                            #   用**示例自带的客户端**跑四个 RPC —— 一元 / 服务端流 / 异步投递 / 查任务；
 │                            #   守四处语义：deadline 到期服务端 run 真被 abort、metadata traceparent →
 │                            #   run 根 link、同 session_id 共享历史、同 idempotency-key 不重复执行；
@@ -121,6 +131,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   缺省 / 不截断 / 截断 200 三种口径 × 工具调用数；实测大出参下「不截断」是
 │                            #   缺省的 13.7× ⇒ spec §9.4「全量记录成本 vs 采样阈值」的答案来源。
 │                            #   零网络零 token；PAYLOAD_ROWS / CALLS 可调；不进 verify-all（与 e2e:live 同档））
+├── scripts/bench-app-assembly.ts  # 装配税基准（npm run bench:assembly：D8「换一次能力选择 = 重建一次 app」
+│                            #   的真实代价 —— S1 纯装配 / S2 发现+装配（热 import）/ S6a 进程启动 /
+│                            #   S6b 进程启动+装配 / S6c 走 dist 的对照 / S4-S5 MCP 握手的冷热两档。
+│                            #   零网络零 token（MCP 侧是本地夹具）；CAPS / RUNS / BOOT_DIST 可调；
+│                            #   与 bench:trace 同档，不进 verify-all / CI）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── scripts/release-surface.mjs  # **发布面清单（单源）**：一次发版要动哪些文件的哪个值 ——
@@ -156,8 +171,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   （gitignore/env/env.example）：.env 会被根 .gitignore 吞掉、
 │   │                        #   .gitignore 会被 npm pack 剥掉。Biome 对 templates/** 只关 formatter
 │   │                        #   （生成物字节是兼容契约），lint 照常。
-│   │                        #   dev = tsx watch + 本地 inspector 面板（trace-view 产物拷进 dist/inspector；
-│   │                        #   inspector 有 Host 头校验，非 localhost 403）；dev/add 支持 Windows
+│   │                        #   dev = 本地 inspector 面板 + CLI 自己管的 runner 子进程（不用 tsx watch：
+│   │                        #   watch 由 dev.ts 收编，允许清单含 .md；面板带 Origin 校验 + per-session token，
+│   │                        #   非 localhost 的 Host 头仍 403；trace-view 产物拷进 dist/inspector）；
+│   │                        #   dev/add 支持 Windows
 │   │                        #   （npmSpawn：win32 走 cmd.exe /d /s /c 包装 + 逐参数脱敏 ——
 │   │                        #   CVE-2024-27980 后裸 spawn .cmd 会 EINVAL，shell:true 不转义
 │   │                        #   参数、add 的包名是用户输入有注入面）；build 自给自足（copy-assets 在 trace-view

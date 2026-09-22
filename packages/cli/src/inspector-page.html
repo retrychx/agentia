@@ -14,6 +14,9 @@
         --border: #27272a;
         --bg: #0b0b0d;
         --card: #111113;
+        --pop: #17171a;
+        --warn: #e0af68;
+        --err: #f7768e;
         --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
       * { box-sizing: border-box; }
@@ -31,29 +34,126 @@
       header .sub { color: var(--faint); font-size: 12px; }
       header .live { margin-left: auto; color: var(--faint); font-size: 12px; }
       header .live b { color: var(--ice); font-weight: 500; }
-      main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; padding: 14px 20px; }
+
+      /* 告警条：dev 环的「能跑但有东西不对劲」全在这里，不静默降级 */
+      #banner {
+        margin: 0 20px; padding: 9px 12px; border: 1px solid var(--warn); border-radius: 6px;
+        background: #1c1a14; color: var(--warn); font-family: var(--mono); font-size: 12px;
+        white-space: pre-wrap; word-break: break-word;
+      }
+      #banner.err { border-color: var(--err); background: #1d1416; color: var(--err); }
+
+      main {
+        display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px;
+        padding: 14px 20px;
+      }
       aside, section {
         background: var(--card); border: 1px solid var(--border); border-radius: 6px;
       }
-      aside { overflow: hidden auto; max-height: calc(100vh - 90px); }
+      aside { overflow: hidden auto; max-height: calc(100vh - 200px); }
       section { padding: 14px; min-height: 240px; font-family: var(--mono); font-size: 12px; overflow: auto; }
       .run {
         display: block; width: 100%; text-align: left; cursor: pointer;
         background: none; border: 0; border-bottom: 1px solid var(--border);
         color: var(--text); padding: 10px 12px; font: inherit;
       }
-      .run:hover { background: #17171a; }
-      .run.active { background: #17171a; box-shadow: inset 2px 0 0 var(--ice); }
+      .run:hover { background: var(--pop); }
+      .run.active { background: var(--pop); box-shadow: inset 2px 0 0 var(--ice); }
       .run .r1 { display: flex; align-items: center; gap: 6px; }
       .run .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ice); flex: none; }
-      .run.err .dot { background: #f7768e; }
+      .run.err .dot { background: var(--err); }
+      /* 被中止的 run 不是失败：给它一个中性偏警告的颜色，不跟失败共用红色 ——
+         否则用户会把「我自己按了中止」读成「我把工程改坏了」 */
+      .run.aborted .dot { background: var(--warn); }
       .run .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .run .r2 { margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
+      .run .r2, .run .r3 { margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
+      .run .r3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .empty { color: var(--faint); padding: 16px; }
       #ttl { color: var(--faint); margin-bottom: 10px; font-family: var(--mono); font-size: 11.5px; }
       .usage { display: flex; gap: 16px; margin-top: 12px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
       /* biome-ignore lint/style/noDescendingSpecificity: 本行只颜色/字重，对手是 33 行的 header .live b —— 两者祖先容器不同（.usage 在面板区、.live 在 header），结构上不可能命中同一元素，是规则「只比末段标签」的误报。 */
       .usage b { color: var(--text); font-weight: 500; }
+
+      /* 页签：对话视图按需出现（多轮开 + 有会话文件），不做空壳 */
+      .tabs { display: flex; border-bottom: 1px solid var(--border); }
+      .tab {
+        flex: 1; background: none; border: 0; border-bottom: 2px solid transparent;
+        color: var(--faint); padding: 9px 6px; font: inherit; font-size: 12px; cursor: pointer;
+      }
+      .tab.active { color: var(--text); border-bottom-color: var(--ice); }
+
+      /* 对话流 */
+      .turn { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+      .turn .who { color: var(--faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; }
+      .turn .msg { margin-top: 3px; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 11.5px; }
+      .turn.failed { border-left: 2px solid var(--err); }
+      .turn.failed .msg { color: var(--err); }
+      /* 中止轮：左边线用警告色而不是错误色（它不是失败，只是没跑完） */
+      .turn.aborted { border-left: 2px solid var(--warn); }
+      .turn.aborted .msg { color: var(--muted); }
+
+      /* 清空对话条：只在对话视图出现时显示（不做空壳） */
+      #chat-bar {
+        display: flex; align-items: center; gap: 8px;
+        padding: 7px 12px; border-bottom: 1px solid var(--border);
+      }
+      #chat-bar[hidden] { display: none; }
+      #chat-sid { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+
+      #reply {
+        margin: 14px 0 0; padding: 10px; border: 1px solid var(--border); border-radius: 4px;
+        background: #0e0e10; white-space: pre-wrap; word-break: break-word; color: var(--muted);
+      }
+      #reply[hidden] { display: none; }
+
+      /* 输入条：固定在底部、横跨两栏、分两行（四个控件挤一行会太窄） */
+      footer {
+        position: sticky; bottom: 0; margin-top: 4px;
+        border-top: 1px solid var(--border); background: var(--bg);
+        padding: 10px 20px 14px; display: grid; gap: 8px;
+      }
+      footer[hidden] { display: none; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .ctl {
+        background: var(--card); border: 1px solid var(--border); border-radius: 5px;
+        color: var(--text); padding: 7px 10px; font: inherit; font-size: 12px;
+      }
+      .ctl:focus { outline: 1px solid var(--ice); border-color: var(--ice); }
+      .ctl:disabled { opacity: .55; cursor: default; }
+      /* 中止：唯一带破坏性的按钮，用告警色区分（只在有在飞 run 时出现） */
+      #abort { color: var(--err); border-color: var(--err); }
+      #abort[hidden] { display: none; }
+      #caps-sum { cursor: pointer; list-style: none; user-select: none; font-family: var(--mono); }
+      #caps-sum::-webkit-details-marker { display: none; }
+      details { position: relative; }
+      .pop {
+        position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 10;
+        min-width: 260px; max-height: 320px; overflow: auto;
+        background: var(--pop); border: 1px solid var(--border); border-radius: 6px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, .5); padding: 8px;
+      }
+      .pop[hidden] { display: none; }
+      .cap {
+        display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px;
+        cursor: pointer; font-family: var(--mono); font-size: 12px;
+      }
+      .cap:hover { background: #202024; }
+      #workdir { flex: 1; min-width: 0; font-family: var(--mono); }
+      #prompt { flex: 1; min-width: 0; }
+      #run {
+        background: var(--ice); border-color: var(--ice); color: #04222a;
+        font-weight: 600; min-width: 88px;
+      }
+      #run:disabled { opacity: .45; cursor: not-allowed; }
+      .mt { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; }
+      .hint { color: var(--faint); font-size: 11px; }
+      .fs-head { display: flex; align-items: center; gap: 8px; padding: 4px 6px 8px; font-family: var(--mono); font-size: 11px; }
+      .fs-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+      .fs-item { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 4px 6px; border-radius: 4px; font: inherit; font-family: var(--mono); font-size: 12px; cursor: pointer; }
+      .fs-item:hover { background: #202024; }
+      .fs-foot { padding-top: 8px; border-top: 1px solid var(--border); margin-top: 6px; }
+      .mini { background: var(--card); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 5px 9px; font: inherit; font-size: 11.5px; cursor: pointer; }
+      .mini:hover { border-color: var(--ice); }
     </style>
   </head>
   <body>
@@ -62,13 +162,31 @@
       <span class="sub">每次 run 的调用树与能力执行</span>
       <span class="live" id="live">等待 run…</span>
     </header>
+    <div id="banner" hidden></div>
     <main>
-      <aside id="runs"><div class="empty">还没有 run。触发一次 agent 调用即可。</div></aside>
+      <aside>
+        <div class="tabs" id="tabs" hidden>
+          <button class="tab active" id="tab-runs" type="button">run 列表</button>
+          <button class="tab" id="tab-chat" type="button">对话</button>
+        </div>
+        <div id="runs"><div class="empty">还没有 run。触发一次 agent 调用即可。</div></div>
+        <!--
+          清空对话（§6 待定 3）：清空 = **换一个 sessionId**（不动 session.json ——
+          那是 store 的账，面板对它只读）。所以旧对话还在盘上、run 列表里也还看得到，
+          只是模型不再带着它跑了。只在对话视图出现时才显示（不做空壳）。
+        -->
+        <div id="chat-bar" hidden>
+          <span id="chat-sid" class="hint"></span>
+          <button class="mini" id="chat-clear" type="button">清空对话</button>
+        </div>
+        <div id="chat" hidden></div>
+      </aside>
       <section>
         <div id="ttl"></div>
         <div id="trace"><div class="tr-empty">// 选一个 run 查看调用树</div></div>
         <!-- 能力排行（G2）：哪个能力慢 / 贵 / 爱失败 —— 调优从这里下手 -->
         <div id="summary"></div>
+        <pre id="reply" hidden></pre>
         <div class="usage" id="usage" hidden>
           <span>in <b id="u-in">0</b></span>
           <span>out <b id="u-out">0</b></span>
@@ -76,22 +194,113 @@
       </section>
     </main>
 
+    <!--
+      输入条（D7）：固定在底部、横跨两栏、分两行。
+      第一行 = 这次 run 的配置（能力多选 / 工作目录 / 多轮开关）；第二行 = 主操作（prompt + 运行）。
+      只在 dev 环在场时出现（GET /api/dev 的 available）—— 不做空壳。
+    -->
+    <footer id="bar" hidden>
+      <div class="row">
+        <details id="caps">
+          <summary class="ctl" id="caps-sum">能力</summary>
+          <div class="pop" id="caps-pop"></div>
+        </details>
+        <input id="workdir" class="ctl" type="text" spellcheck="false" placeholder="工作目录（绝对路径）" />
+        <button id="browse" class="ctl mini" type="button">浏览…</button>
+        <label class="mt ctl" title="多轮的初始值 = 所选能力声明的 OR；可在这里覆盖">
+          <input type="checkbox" id="mt" /> <span id="mt-label">单轮</span>
+        </label>
+      </div>
+      <div class="row">
+        <input id="prompt" class="ctl" type="text" spellcheck="false" placeholder="输入 prompt，回车运行（↑/↓ 调回历史）" />
+        <button id="run" class="ctl" type="button">▶ 运行</button>
+        <!--
+          中止（§6 待定 5 的 kill 按钮）：只在有在飞 run 时出现。
+          没有它的话，一个卡住的 run 会让「运行」永远 409 —— 面板锁死。
+        -->
+        <button id="abort" class="ctl" type="button" hidden>■ 中止</button>
+      </div>
+      <div class="hint" id="bar-hint"></div>
+      <div class="pop" id="fs" hidden>
+        <div class="fs-head">
+          <button class="mini" id="fs-up" type="button">..</button>
+          <span id="fs-path"></span>
+        </div>
+        <div id="fs-list"></div>
+        <div class="fs-foot"><button class="mini" id="fs-use" type="button">选这个目录</button></div>
+      </div>
+    </footer>
+
     <script type="module">
       import { createTraceView, playTrace, summarizeTrace, renderSummary } from './index.js';
+      import {
+        HISTORY_DRAFT,
+        capabilityBadge,
+        historyStep,
+        historyText,
+        mergeConversation,
+        multiTurnDefault,
+        multiTurnLabel,
+        normalizeToolSources,
+        pushPromptHistory,
+        runDoneNotice,
+        runIsFailure,
+        shortenPath,
+      } from './panel-logic.js';
 
-      const runsEl = document.getElementById('runs');
-      const traceEl = document.getElementById('trace');
-      const summaryEl = document.getElementById('summary');
-      const ttlEl = document.getElementById('ttl');
-      const liveEl = document.getElementById('live');
-      const usageEl = document.getElementById('usage');
+      const $ = (id) => document.getElementById(id);
+      const runsEl = $('runs');
+      const chatEl = $('chat');
+      const chatBarEl = $('chat-bar');
+      const chatSidEl = $('chat-sid');
+      const chatClearEl = $('chat-clear');
+      const traceEl = $('trace');
+      const summaryEl = $('summary');
+      const ttlEl = $('ttl');
+      const liveEl = $('live');
+      const usageEl = $('usage');
+      const replyEl = $('reply');
+      const bannerEl = $('banner');
+      const barEl = $('bar');
+      const tabsEl = $('tabs');
+      const capsEl = $('caps');
+      const capsSumEl = $('caps-sum');
+      const capsPopEl = $('caps-pop');
+      const workdirEl = $('workdir');
+      const mtEl = $('mt');
+      const mtLabelEl = $('mt-label');
+      const promptEl = $('prompt');
+      const runEl = $('run');
+      const abortEl = $('abort');
+      const hintEl = $('bar-hint');
+      const fsEl = $('fs');
+      const fsListEl = $('fs-list');
+      const fsPathEl = $('fs-path');
+
       const view = createTraceView(traceEl, {
         // 无公开单价 → 不估算成本；只展示 token
-        usage: { in: document.getElementById('u-in'), out: document.getElementById('u-out') },
+        usage: { in: $('u-in'), out: $('u-out') },
       });
 
-      let current = null;
-      let list = [];
+      // ---------- 状态 ----------
+      // 只放「渲染要用到的东西」；所有判断都走 panel-logic（那份有单测，这份没有）
+      const state = {
+        dev: null,            // GET /api/dev 的结果；null = 还没拿到
+        sessionId: '',        // 当前会话 id（来自 dev.sessionId）—— **不写死**：清空对话会换它
+        selected: [],         // 选中的能力 token
+        multiTurn: null,      // 用户显式覆盖后的值；null = 跟随默认
+        workdir: '',
+        history: [],
+        cursor: HISTORY_DRAFT,
+        draft: '',
+        session: null,        // { messages } | null
+        tab: 'runs',
+        list: [],
+        current: null,
+        reply: '',
+        notice: '',           // 面板自己发的操作反馈（已接受 / 重启了 runner / 出错）
+        noticeErr: false,
+      };
 
       const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
       const fmtNum = (n) => Number(n || 0).toLocaleString('en-US');
@@ -99,50 +308,447 @@
         const s = Math.max(0, Math.round((Date.now() - t) / 1000));
         return s < 60 ? s + 's 前' : Math.round(s / 60) + 'm 前';
       };
+      const short = (p) => shortenPath(p, { home: state.dev?.home ?? '', cwd: state.dev?.projectRoot ?? '' });
 
-      function renderList() {
-        if (!list.length) {
-          runsEl.innerHTML = '<div class="empty">还没有 run。触发一次 agent 调用即可。</div>';
+      // ---------- 告警条 ----------
+      // dev 环的 warning / lastError、以及面板自己的操作反馈，都在这里显示 ——
+      // 一律 textContent（内容含用户路径与模型输出）
+      function renderBanner() {
+        const dev = state.dev;
+        const parts = [];
+        if (state.notice) parts.push(state.notice);
+        if (dev?.warning) parts.push('⚠ ' + dev.warning);
+        if (dev?.lastError) parts.push('✖ ' + dev.lastError);
+        if (parts.length === 0) {
+          bannerEl.hidden = true;
+          bannerEl.textContent = '';
           return;
         }
-        runsEl.innerHTML = '';
-        for (const r of list) {
+        bannerEl.hidden = false;
+        bannerEl.textContent = parts.join('\n');
+        bannerEl.className = state.noticeErr ? 'err' : '';
+      }
+
+      // ---------- 输入条 ----------
+      function renderControls() {
+        const dev = state.dev;
+        if (!dev?.available) {
+          barEl.hidden = true;
+          return;
+        }
+        barEl.hidden = false;
+
+        // 能力多选（默认全选）。全选时 badge 显示 N/N —— 一眼看出这次是全量还是收窄
+        const all = dev.capabilities;
+        if (state.selected.length === 0 && all.length > 0) state.selected = [...all];
+        capsSumEl.textContent = `能力 ${capabilityBadge(state.selected, all)} ▾`;
+        capsPopEl.replaceChildren();
+        if (all.length === 0) {
+          const d = document.createElement('div');
+          d.className = 'hint';
+          d.textContent = '没发现能力（app.ts 是否导出了 CAPABILITY_DIRS？）';
+          capsPopEl.appendChild(d);
+        }
+        for (const name of all) {
+          const label = document.createElement('label');
+          label.className = 'cap';
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.checked = state.selected.includes(name);
+          box.addEventListener('change', () => {
+            const next = box.checked
+              ? [...state.selected, name]
+              : state.selected.filter((x) => x !== name);
+            // 不许取消到空：空集与「全量」在语义上打架（normalizeToolSources 会兜成全量，
+            // 但那样勾选态与实发参数就不一致了）—— 在 UI 层就挡住
+            if (next.length === 0) {
+              box.checked = true;
+              setNotice('至少留一个能力（全不选与全选同义，直接用全选）', true);
+              return;
+            }
+            state.selected = next;
+            state.multiTurn = null; // 选择变了 ⇒ 回到默认位（默认值本身跟着选择走）
+            renderControls();
+            renderBanner();
+          });
+          const text = document.createElement('span');
+          text.textContent = name;
+          const star = document.createElement('span');
+          star.className = 'hint';
+          star.textContent = dev.multiTurn.includes(name) ? '多轮' : '';
+          label.append(box, text, star);
+          capsPopEl.appendChild(label);
+        }
+
+        // 多轮开关：初始值 = 所选能力声明的 OR，**并把来源标出来**（混选时默认有歧义）
+        const def = multiTurnDefault(state.selected, dev.multiTurn);
+        const value = state.multiTurn ?? def.value;
+        mtEl.checked = value;
+        mtLabelEl.textContent = multiTurnLabel(value, def.sources, state.multiTurn === null);
+
+        // 工作目录：默认值来自 dev.config / 项目根；这里是 per-run 的输入
+        if (workdirEl.value === '') workdirEl.value = dev.defaultWorkdir;
+        state.workdir = workdirEl.value;
+        runEl.disabled = dev.running;
+        runEl.textContent = dev.running ? '运行中…' : '▶ 运行';
+        // 中止（§6 待定 5 的 kill 按钮）：只在有在飞 run 时出现。
+        // 没有它，一个卡住的 run 会让「运行」永远 409 —— 面板锁死（这正是它存在的理由）。
+        abortEl.hidden = !dev.running;
+        abortEl.disabled = !dev.running;
+      }
+
+      function setNotice(text, isError) {
+        state.notice = text;
+        state.noticeErr = !!isError;
+        renderBanner();
+      }
+
+      function readControls() {
+        const dev = state.dev;
+        const all = dev ? dev.capabilities : [];
+        return {
+          prompt: promptEl.value.trim(),
+          workdir: workdirEl.value.trim(),
+          toolSources: normalizeToolSources(state.selected, all),
+          multiTurn: state.multiTurn ?? multiTurnDefault(state.selected, dev ? dev.multiTurn : []).value,
+        };
+      }
+
+      // ---------- run 列表 ----------
+      function renderList() {
+        if (!state.list.length) {
+          runsEl.replaceChildren();
+          const d = document.createElement('div');
+          d.className = 'empty';
+          d.textContent = '还没有 run。触发一次 agent 调用即可。';
+          runsEl.appendChild(d);
+          return;
+        }
+        runsEl.replaceChildren();
+        for (const r of state.list) {
           const b = document.createElement('button');
-          b.className = 'run' + (r.ok ? '' : ' err') + (r.traceId === current ? ' active' : '');
-          b.innerHTML =
-            `<span class="r1"><span class="dot"></span><span class="name"></span></span>` +
-            `<span class="r2">${fmtMs(r.ms)} · ${fmtNum(r.tokens)} tok · ${ago(r.startedAt)}</span>`;
-          b.querySelector('.name').textContent = r.name;
+          // 三态：失败 / **被中止** / 正常。中止不是失败（判别走 panel-logic 的
+          // runIsFailure，与通知条同一条语义）—— 给中止的 run 标红会让用户以为
+          // 是自己把工程改坏了，而那正是「aborted 也带 error」这条引擎约定造成的误读。
+          const tone = runIsFailure(r) ? ' err' : r.stopReason === 'aborted' ? ' aborted' : '';
+          b.className = 'run' + tone + (r.traceId === state.current ? ' active' : '');
+          b.type = 'button';
+
+          const r1 = document.createElement('span');
+          r1.className = 'r1';
+          const dot = document.createElement('span');
+          dot.className = 'dot';
+          const name = document.createElement('span');
+          name.className = 'name';
+          name.textContent = r.name; // 模型可控内容 ⇒ 只能 textContent
+          r1.append(dot, name);
+
+          const r2 = document.createElement('span');
+          r2.className = 'r2';
+          r2.textContent = `${fmtMs(r.ms)} · ${fmtNum(r.tokens)} tok · ${ago(r.startedAt)}`;
+
+          b.append(r1, r2);
+
+          // 第三行 = CLI 侧记账（目标目录 + 能力组合）。不是 dev 起的 run 没有这一行
+          if (r.note) {
+            const r3 = document.createElement('span');
+            r3.className = 'r3';
+            const caps = r.note.toolSources === null ? '全量' : r.note.toolSources.join(',');
+            r3.textContent = `${short(r.note.workdir)} · ${caps}${r.note.multiTurn ? ' · 多轮' : ''}`;
+            b.appendChild(r3);
+          }
           b.addEventListener('click', () => open(r.traceId));
           runsEl.appendChild(b);
         }
       }
 
+      // ---------- 对话流（只在多轮开 + 有会话文件时出现） ----------
+      function renderChat() {
+        const dev = state.dev;
+        const def = multiTurnDefault(state.selected, dev ? dev.multiTurn : []);
+        const value = state.multiTurn ?? def.value;
+        // 三条都要满足才显示：多轮开着、会话文件读得到、dev 环在场 —— 不做空壳
+        const show = !!dev && dev.available && value && state.session !== null;
+        tabsEl.hidden = !show;
+        // 清空对话条与对话视图同生共死（它清的就是这份对话）——
+        // **还要跟页签走**：它长在对话视图上，切回 run 列表时不该留在那儿
+        chatBarEl.hidden = !(show && state.tab === 'chat');
+        if (!show) {
+          chatEl.hidden = true;
+          return;
+        }
+        chatSidEl.textContent = `会话 ${state.sessionId}`;
+        // 清空会换 id、而 run 在飞时后端会 409（run 结束要写回当前会话）—— 在 UI 层先挡住
+        chatClearEl.disabled = dev.running;
+        // 会话 id 从 dev 环取，**不写死**：清空对话换的就是它（写死 = 「同一事实两个写法」）
+        const turns = mergeConversation(state.session.messages ?? [], state.list, state.sessionId);
+        chatEl.replaceChildren();
+        if (turns.length === 0) {
+          const d = document.createElement('div');
+          d.className = 'empty';
+          d.textContent = '会话文件还是空的。跑一次多轮 run 就有了。';
+          chatEl.appendChild(d);
+        }
+        for (const t of turns) {
+          const box = document.createElement('div');
+          box.className = 'turn' + (t.failed ? ' failed' : t.aborted ? ' aborted' : '');
+          const who = document.createElement('div');
+          who.className = 'who';
+          who.textContent = 'user';
+          const u = document.createElement('div');
+          u.className = 'msg';
+          u.textContent = t.user;
+          box.append(who, u);
+          if (t.assistant !== null) {
+            const who2 = document.createElement('div');
+            who2.className = 'who';
+            who2.textContent = 'assistant';
+            const a = document.createElement('div');
+            a.className = 'msg';
+            a.textContent = t.assistant;
+            box.append(who2, a);
+          } else if (t.failed) {
+            // 失败轮**标失败**，不假装那轮没发生（它没回写会话文件，靠 run 列表 join 出来）
+            const f = document.createElement('div');
+            f.className = 'msg';
+            f.textContent = '（这一轮失败了 —— 会话文件里没有它的回复）';
+            box.appendChild(f);
+          } else if (t.aborted) {
+            // 中止轮同样没回写会话（框架只在成功路径回写）⇒ 也靠 join 出来，
+            // 但它不是失败：文案与左边线都要与失败区分开
+            const f = document.createElement('div');
+            f.className = 'msg';
+            f.textContent = '（这一轮被中止了 —— 没有回复写回会话）';
+            box.appendChild(f);
+          }
+          chatEl.appendChild(box);
+        }
+        chatEl.hidden = state.tab !== 'chat';
+      }
+
+      function selectTab(tab) {
+        state.tab = tab;
+        $('tab-runs').className = 'tab' + (tab === 'runs' ? ' active' : '');
+        $('tab-chat').className = 'tab' + (tab === 'chat' ? ' active' : '');
+        runsEl.hidden = tab !== 'runs';
+        chatEl.hidden = tab !== 'chat';
+        // 对话视图上的那条「清空对话」也跟着页签显隐 —— 它的可见性在 renderChat 里判
+        renderChat();
+      }
+
+      // ---------- 拉数据 ----------
+      async function refreshDev() {
+        try {
+          const res = await fetch('/api/dev');
+          state.dev = res.ok ? await res.json() : null;
+        } catch {
+          state.dev = null;
+        }
+        // 会话 id 由 dev 环持有（清空对话会换它）—— 面板不自己造，只跟着走
+        state.sessionId = state.dev?.sessionId ?? '';
+        renderControls();
+        renderChat();
+        renderBanner();
+      }
+
+      async function refreshSession() {
+        if (!state.dev?.available) return;
+        try {
+          const res = await fetch('/api/session');
+          const body = res.ok ? await res.json() : { session: null };
+          state.session = body.session ?? null;
+        } catch {
+          state.session = null;
+        }
+      }
+
       async function refresh() {
-        const res = await fetch('/api/runs');
-        list = await res.json();
-        renderList();
+        // ⚠️ 必须查 `res.ok`：token 过期 / 403 时 body 是 `{ error: … }`，而
+        // `renderList` 对非数组只走「`!state.list.length`」那一支 ⇒ 会显示误导性的
+        // 空态「还没有 run」。**一个错误的空态比一句错误更难发现**（用户以为只是没跑过）。
+        try {
+          const res = await fetch('/api/runs');
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            setNotice(`读 run 列表失败：${body.error || res.status}`, true);
+            return;
+          }
+          state.list = await res.json();
+          renderList();
+        } catch (e) {
+          setNotice(`读 run 列表失败：${e.message}`, true);
+        }
       }
 
       async function open(id) {
         const res = await fetch('/api/runs/' + encodeURIComponent(id));
         if (!res.ok) return;
         const trace = await res.json();
-        current = id;
+        state.current = id;
         ttlEl.textContent = trace.traceId;
         usageEl.hidden = false;
         playTrace(view, trace);
         summaryEl.innerHTML = renderSummary(summarizeTrace(trace));
+        // 回复正文只对**刚跑完的那一轮**有意义（trace 上没有它 —— 它是 run-done 事件带的）
+        // ⇒ 打开历史 run 必须清掉，否则它挂在别人的 trace 底下（张冠李戴）
+        state.reply = '';
+        replyEl.hidden = true;
+        replyEl.textContent = '';
         renderList();
       }
 
-      // 打开最新一条（首屏/新 run 到达时）
       async function openLatest() {
         await refresh();
-        if (list.length && !current) await open(list[0].traceId);
+        if (state.list.length && !state.current) await open(state.list[0].traceId);
       }
 
-      // SSE：新 run 到达即刷新列表并切到最新
+      // ---------- 目录浏览 ----------
+      // 浏览器拿不到用户选的文件夹的绝对路径（webkitdirectory 只给相对路径、
+      // File System Access 只给 handle.name），而 dev 环要的是绝对路径 ⇒ 服务端列目录。
+      let fsPath = '';
+      async function openFs(at) {
+        const res = await fetch('/api/fs?path=' + encodeURIComponent(at));
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({ error: '读目录失败' }));
+          setNotice(body.error || '读目录失败', true);
+          return;
+        }
+        const body = await res.json();
+        fsPath = body.path;
+        fsPathEl.textContent = body.path;
+        fsListEl.replaceChildren();
+        for (const name of body.dirs) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'fs-item';
+          b.textContent = name + '/';
+          b.addEventListener('click', () => openFs(fsPath + '/' + name));
+          fsListEl.appendChild(b);
+        }
+        fsEl.hidden = false;
+        fsEl.dataset.parent = body.parent;
+      }
+      $('fs-up').addEventListener('click', () => openFs(fsEl.dataset.parent || fsPath));
+      $('fs-use').addEventListener('click', () => {
+        workdirEl.value = fsPath;
+        state.workdir = fsPath;
+        fsEl.hidden = true;
+        setNotice(`工作目录：${short(fsPath)}`, false);
+      });
+      $('browse').addEventListener('click', () => {
+        if (!fsEl.hidden) {
+          fsEl.hidden = true;
+          return;
+        }
+        void openFs(workdirEl.value.trim() || (state.dev ? state.dev.defaultWorkdir : '.'));
+      });
+
+      // ---------- 控件接线（只做「取值 → 调 panel-logic → 写回」） ----------
+      workdirEl.addEventListener('input', () => {
+        state.workdir = workdirEl.value;
+      });
+      mtEl.addEventListener('change', () => {
+        state.multiTurn = mtEl.checked; // 显式覆盖（调试就是要试开/关的区别）
+        renderControls();
+        renderChat();
+      });
+      document.addEventListener('click', (e) => {
+        if (capsEl.open && !capsEl.contains(e.target)) capsEl.open = false;
+      });
+
+      promptEl.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          // (乙) prompt 回显：只把文字填回输入框，模型看不见 —— 与多轮开关无关
+          if (state.cursor === HISTORY_DRAFT) state.draft = promptEl.value;
+          state.cursor = historyStep(state.history, state.cursor, e.key === 'ArrowUp' ? 'older' : 'newer');
+          promptEl.value = historyText(state.history, state.cursor, state.draft);
+          promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+          e.preventDefault();
+          return;
+        }
+        if (e.key === 'Enter') submit();
+      });
+      runEl.addEventListener('click', submit);
+      abortEl.addEventListener('click', abortRun);
+      chatClearEl.addEventListener('click', clearSession);
+
+      async function submit() {
+        const req = readControls();
+        if (req.prompt.length === 0) {
+          setNotice('prompt 不能为空', true);
+          return;
+        }
+        state.history = pushPromptHistory(state.history, req.prompt);
+        state.cursor = HISTORY_DRAFT;
+        state.draft = '';
+        // 先禁用（防连点），但**不自己恢复** —— 恢复交给 refreshDev()：
+        // 「能不能再跑」的真值只在 dev.running 一处，面板自己存一份就会漂
+        runEl.disabled = true;
+        try {
+          const res = await fetch('/run', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            // 刻意**不**带 sessionId：它由 dev 环（父进程）自己决定，面板只是视图。
+            // 带上它反而危险 —— 一个停留在「清空对话」之前的页面能把新 run 写回**旧**会话
+            // （刚清掉的对话自己回来）。理由见 dev-protocol 的 `DevMessage`。
+            body: JSON.stringify(req),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setNotice(`没跑起来：${body.error || res.status}`, true);
+            await refreshDev();
+            return;
+          }
+          setNotice(body.restarted ? '已接受（换能力选择 ⇒ 重启了 runner 进程）' : '已接受', false);
+          await refreshDev();
+        } catch (e) {
+          setNotice(`请求失败：${e.message}`, true);
+          await refreshDev();
+        }
+      }
+
+      // ---------- 中止 / 清空对话 ----------
+      // 两个都不是「面板自己说了算」的操作：真值在后端（running / sessionId），
+      // 面板发完请求一律 refreshDev() 回读，不本地改状态。
+
+      async function abortRun() {
+        abortEl.disabled = true;
+        try {
+          const res = await fetch('/run/abort', { method: 'POST' });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setNotice(`中止失败：${body.error || res.status}`, true);
+          } else if (body.escalated) {
+            setNotice('中止超时（工具不响应 signal）⇒ 已重启 runner 兜底。这次 run 的 trace 丢了', true);
+          } else {
+            setNotice('已发出中止：run 会以 aborted 收尾，trace 保得住', false);
+          }
+        } catch (e) {
+          setNotice(`中止请求失败：${e.message}`, true);
+        }
+        await refreshDev();
+      }
+
+      async function clearSession() {
+        chatClearEl.disabled = true;
+        try {
+          const res = await fetch('/session/clear', { method: 'POST' });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setNotice(`清空失败：${body.error || res.status}`, true);
+          } else {
+            setNotice(`已清空：新会话 ${body.sessionId}（旧对话还在盘上，模型不再带着它跑）`, false);
+          }
+        } catch (e) {
+          setNotice(`清空请求失败：${e.message}`, true);
+        }
+        await refreshDev();
+        await refreshSession();
+        renderChat();
+      }
+
+      // ---------- SSE ----------
+      // 两个事件源：默认事件 = run 摘要（老行为）；命名事件 `dev` = dev 环的生命周期
       const es = new EventSource('/stream');
       es.onmessage = async (m) => {
         const s = JSON.parse(m.data);
@@ -153,11 +759,58 @@
         nameEl.textContent = s.name;
         liveEl.append(nameEl, ` · ${fmtMs(s.ms)}`);
         await refresh();
+        await refreshSession();
+        renderChat();
         await open(s.traceId);
       };
-      es.onerror = () => { liveEl.textContent = '连接断开（dev 进程还在吗？）'; };
+      es.addEventListener('dev', async (m) => {
+        const ev = JSON.parse(m.data);
+        if (ev.kind === 'run-start') {
+          liveEl.textContent = '正在跑…';
+          setNotice(
+            `运行中：${short(ev.workdir)} · ${ev.toolSources === null ? '全量' : ev.toolSources.join(',')}` +
+              `${ev.multiTurn ? ' · 多轮' : ''}`,
+            false,
+          );
+          // run-start 是「确实开跑了」的权威信号 ⇒ 中止按钮在这里出现（不看面板自己的乐观状态）
+          await refreshDev();
+        } else if (ev.kind === 'run-done') {
+          state.reply = ev.finalText || '';
+          replyEl.hidden = state.reply.length === 0;
+          replyEl.textContent = state.reply;
+          // 判别顺序（先 stopReason 后 ok）是**语义**，抽在 panel-logic 里并带单测 ——
+          // 中止的 run `ok` 也是 false（引擎刻意给 aborted 带结构化 error），
+          // 顺序反了就会把「我按了中止」显示成「run 失败」。
+          const n = runDoneNotice(ev);
+          setNotice(n.text, n.isError);
+          await refreshDev();
+          // 多轮 run 会回写会话文件 —— 这里补刷一次，别等默认事件的时序
+          await refreshSession();
+          renderChat();
+        } else if (ev.kind === 'runner-restart') {
+          setNotice(`重启 runner：${ev.reason}`, false);
+          // 重启期间菜单是过期的（旧 runner 的能力）—— 先刷一次，等 runner-ready 再刷一次。
+          await refreshDev();
+        } else if (ev.kind === 'runner-ready') {
+          // 冷启动时首次 refreshDev() 早于 runner 装配完成 ⇒ 拿到空菜单。
+          // 这条事件就是补那一次的（否则菜单空着且无解释，要等用户先跑一次才填上）。
+          await refreshDev();
+        } else if (ev.kind === 'runner-error') {
+          setNotice(ev.message, true);
+          await refreshDev();
+        }
+      });
+      es.onerror = () => {
+        liveEl.textContent = '连接断开（dev 进程还在吗？）';
+      };
 
-      openLatest();
+      $('tab-runs').addEventListener('click', () => selectTab('runs'));
+      $('tab-chat').addEventListener('click', () => selectTab('chat'));
+
+      await refreshDev();
+      await refreshSession();
+      await openLatest();
+      renderChat();
     </script>
   </body>
 </html>

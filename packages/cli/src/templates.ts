@@ -110,7 +110,7 @@ function capabilityVars(name: string): Record<string, string> {
 
 /**
  * 脚手架 package.json（templates/package.json）。两处口径钉在这里，改动前先读：
- * - `scripts.dev` 走 CLI 的 dev（tsx watch + 本地 inspector 面板）：与文档/其它命令同一条路，
+ * - `scripts.dev` 走 CLI 的 dev（本地 inspector 面板 + CLI 自己管的 runner）：与文档/其它命令同一条路，
  *   而不是「npm run dev 少一个面板、CLI dev 多一个面板」两种 dev；`npm run dev -- "你的问题"`
  *   的参数由 CLI 原样透传给脚本。
  * - `@migor/cli` 装进 devDependencies（而不是让用户每次 npx 去 registry 拉）：工程内
@@ -134,9 +134,60 @@ export function projectTsconfig(): string {
 }
 
 /**
- * 入口 main.ts（templates/src/main.ts）。`CAPABILITY_DIRS` 数组在模板里是字面量
- * `['tools', 'skills', 'prompts', 'subagents']`，必须与上面 CAPABILITY_DIR_LIST 去掉
- * `src/` 前缀后保持一致（顺序即装配顺序）—— templates.test.mjs 钉着这条对应关系。
+ * 装配入口 app.ts（templates/src/app.ts）—— **与启动分离**的那个工厂。
+ *
+ * 为什么单独一个文件（D9(d)）：dev 环要驱动用户的 app，就得有个「接受选项的工厂」
+ * 能喂进能力选择与工作目录。`CAPABILITY_DIRS` 也在它里面，且**同时是面板能力选择器的
+ * 菜单来源** —— 两侧同一个常量，不会漂移。
+ *
+ * ⚠️ 它是**破坏性模板变更**的一部分：老工程只有 main.ts，`agentia dev` 会明确报错
+ * 并给出迁移指引（不静默降级）。迁移是机械的：把 main.ts 里 createApp(...) 那一段
+ * 整体搬进 app.ts 并包成工厂。
+ */
+export function appTs(name: string): string {
+  return renderTemplate('src/app.ts', { __PROJECT_NAME__: name });
+}
+
+/**
+ * dev 环的数据声明（templates/src/dev.config.ts）。
+ *
+ * 只放**数据**，不放逻辑 —— 逻辑副本会漂移（CLI 修了 bug，工程里那份不会变），
+ * 数据不会。所以 `dev.ts` 被否掉，`dev.config.ts` 留下（D8 ②）。
+ */
+export function devConfigTs(): string {
+  return renderTemplate('src/dev.config.ts');
+}
+
+/**
+ * 文件后端 SessionStore（templates/src/session-store.ts）。
+ *
+ * 放在**模板**而不是框架里：它是对话型能力的**可选件**（任务型能力根本不需要对话历史，
+ * 对它们是负担 —— 跨仓库串味）。用户能直接改，换 sqlite / Redis 只改这一个文件。
+ */
+export function sessionStoreTs(): string {
+  return renderTemplate('src/session-store.ts');
+}
+
+/**
+ * 脚手架自带的第二个能力：read-file 工具（templates/src/tools/read-file/index.ts）。
+ *
+ * 它存在的理由是**把「工作目录」这条线接通**：面板上那个文件夹控件，只有某个能力真的
+ * 消费了注入进来的根，才有可观测的效果。顺带它也是能力多选的第一个演示对象
+ * （一个工程里 ≥2 个能力，选择器才有东西可选）。
+ */
+export function readFileToolIndexTs(): string {
+  return renderTemplate('src/tools/read-file/index.ts');
+}
+
+/**
+ * 入口 main.ts（templates/src/main.ts）。**薄入口**：调工厂 → 处理 result。
+ *
+ * 装配搬去了 app.ts（见上），这里只留「跑一次」。两件事的顺序与语义都不能变 ——
+ * 尤其 `result.error` 那段：run 失败**不抛**，不检查就是「打印空行 + 退出 0」，
+ * 让首次运行（比如忘了配 ANTHROPIC_API_KEY）看起来像成功。
+ *
+ * ⚠️ `loadEnvFile()` **不在**这里，在 app.ts —— dev 环只 import app.ts、从不执行本文件，
+ * 把读 .env 留在这边会让 `npm run dev` 与 `npm start` 对同一份 `.env` 有两个行为。
  */
 export function mainTs(name: string): string {
   return renderTemplate('src/main.ts', { __PROJECT_NAME__: name });

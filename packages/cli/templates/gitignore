@@ -4,3 +4,6 @@ dist
 # 本地环境变量（可能含 key）—— 绝不提交
 .env
 .env.local
+
+# dev 环的本地状态：对话历史（.agentia/session.json）等 —— 是本机调试产物，不进版本库
+.agentia/
