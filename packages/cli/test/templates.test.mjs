@@ -13,6 +13,20 @@ const SKIP = !T ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' 
 /* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
 if (SKIP) distReadyOrLoud(DIST, 'CLI 构建产物');
 
+/**
+ * 只看**代码**，不看注释。
+ *
+ * 断言「模板里没有 X」时必须过这一道：模板的注释恰恰要**解释**那条规矩（比如
+ * main.ts 里写着「别把 createApp(...) 搬回这里」），逐字匹配会把解释当成违例 ——
+ * 于是为了过测试，只能把注释写得含糊。那是让测试把文档质量压下去，方向反了。
+ */
+const code = (src) =>
+  src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n');
+
 describe('templates 目录约定（四分类目录，无伞形词）', { skip: SKIP }, () => {
   it('四个分类目录都在 src/ 下，且与四个能力类型一一对应', () => {
     assert.deepEqual(T.CAPABILITY_DIR_LIST, [
@@ -38,21 +52,215 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     assert.equal(T.REGISTRY_PATH, 'src/registry.ts');
   });
 
-  it('main.ts 模板的 discover 按【本文件位置】解析，且列全四分类目录（顺序即装配顺序）', () => {
+  it('app.ts 模板的 discover 按【本文件位置】解析，且列全四分类目录（顺序即装配顺序）', () => {
     // 原实现是 cwd 相对的 'src/tools' 等：dev（tsx src/main.ts）恰好对，但 `node dist/main.js`
     // 会去加载 src 下的 .ts 源码 —— 装饰器不是可擦除的类型语法，Node 直接抛
     // "Invalid or unexpected token"，即**生产路径从未通过**；换个 cwd 跑则连目录都找不到。
-    const main = T.mainTs('demo');
+    // 装配从 main.ts 搬进 app.ts 之后（dev 环要复用工厂），这条守卫跟着搬。
+    const app = T.appTs('demo');
     for (const dir of T.CAPABILITY_DIR_LIST) {
       const bare = dir.replace(/^src\//, '');
-      assert.ok(main.includes(`'${bare}'`), `main.ts 缺分类目录 ${bare}`);
+      assert.ok(app.includes(`'${bare}'`), `app.ts 缺分类目录 ${bare}`);
     }
-    assert.ok(main.indexOf("'tools'") < main.indexOf("'skills'"), '分类顺序即装配顺序，不能被重排');
-    assert.ok(main.includes('import.meta.url'), 'main.ts 必须按本文件位置解析（而非 cwd）');
-    assert.ok(!main.includes("'src/tools'"), "main.ts 不该再出现 cwd 相对的 'src/tools'");
+    assert.ok(app.indexOf("'tools'") < app.indexOf("'skills'"), '分类顺序即装配顺序，不能被重排');
+    assert.ok(app.includes('import.meta.url'), 'app.ts 必须按本文件位置解析（而非 cwd）');
+    assert.ok(!app.includes("'src/tools'"), "app.ts 不该出现 cwd 相对的 'src/tools'");
     assert.ok(
-      main.includes('existsSync'),
-      'main.ts 必须过滤不存在的分类目录：tsc 不为空目录产出 dist/<分类>/，而 discover 对显式给出的不存在路径是报错的',
+      app.includes('existsSync'),
+      'app.ts 必须过滤不存在的分类目录：tsc 不为空目录产出 dist/<分类>/，而 discover 对显式给出的不存在路径是报错的',
+    );
+  });
+
+  it('app.ts 模板：导出 dev 环要的三件套（工厂 / CAPABILITY_DIRS / 会话后端）', () => {
+    // 这三件是「CLI 驱动用户代码」的接口面（D9(d)）。少一件 = dev 环缺一条能力，
+    // 而缺的那条**不会**在单测里现形（它们问的是模板返回了什么，不是 dev 环读到了什么）。
+    const app = T.appTs('demo');
+    assert.ok(
+      /export\s+async\s+function\s+createAgentApp\s*\(/.test(app),
+      'app.ts 必须导出 createAgentApp 工厂（dev 环靠它喂四个控件）',
+    );
+    assert.ok(
+      /export\s+const\s+CAPABILITY_DIRS\s*=/.test(app),
+      'app.ts 必须导出 CAPABILITY_DIRS —— 它同时是面板能力选择器的菜单来源（两侧同一个常量）',
+    );
+    assert.ok(
+      /export\s+function\s+createSessionStore\s*\(/.test(app),
+      'app.ts 必须导出 createSessionStore —— 多轮开关打开时 dev 环要用它',
+    );
+    assert.ok(
+      /toolSources/.test(app) && /workdir/.test(app),
+      'createAgentApp 必须接受 toolSources 与 workdir 两个选项（能力选择 / 工作目录）',
+    );
+    assert.ok(
+      /deps:\s*\[\s*'WORKDIR'\s*\]/.test(app),
+      "app.ts 必须给 read-file 声明 deps: ['WORKDIR']（discover 自动注册的 provider 没有 deps）",
+    );
+  });
+
+  it('main.ts 模板是薄入口：装配搬去 app.ts，这里只留「读 .env → 调工厂 → 处理 result」', () => {
+    const main = T.mainTs('demo');
+    const body = code(main); // 注释里会出现「别把 createApp(...) 搬回这里」，那不是违例
+    assert.ok(
+      !body.includes('createApp('),
+      'main.ts 不该再直接调 createApp —— 装配搬进 app.ts，否则 dev 环拿不到那个工厂',
+    );
+    assert.ok(
+      /from\s+'\.\/app\.js'/.test(body),
+      "main.ts 必须从 './app.js' 取工厂（注意 .js 后缀：NodeNext 的产物路径）",
+    );
+    assert.ok(body.includes('createAgentApp()'), 'main.ts 必须真的调用那个工厂');
+    // 反面：main.ts 也不该自己调 run 之外的装配动作（比如再建一个 createApp 的旁路）
+    assert.ok(!/createApp\s*\(/.test(body), 'main.ts 里不该有 createApp 调用');
+  });
+
+  it('dev.config.ts 模板只放数据（且 multiTurn 缺省为空 = 全部单轮）', () => {
+    // 判据（D8 ②）：逻辑副本会漂移，数据不会 ⇒ dev.ts（逻辑）不要，dev.config.ts（数据）可以。
+    const cfg = T.devConfigTs();
+    assert.ok(
+      /export\s+default\s*\{/.test(cfg),
+      'dev.config.ts 应是 export default {...} 的数据声明',
+    );
+    assert.ok(
+      /multiTurn:\s*\[\s*\]/.test(cfg),
+      'multiTurn 缺省必须是空数组（任务型是安全默认：不会把上一个仓库的上下文串进来）',
+    );
+    assert.ok(
+      !/\bimport\b/.test(code(cfg)),
+      'dev.config.ts 不该 import 任何东西 —— 它是数据，一旦有逻辑就会漂移',
+    );
+  });
+
+  it('read-file 工具：构造期校验注入值 + 越界响亮报错（不静默截断）', () => {
+    // 它是「工作目录」这条线的落点：面板上那个文件夹控件，只有某个能力真的消费了注入的根，
+    // 才有可观测的效果。两条纪律都不能少：
+    //   ① 没注入就**响亮报错**（否则容器无参构造出 root=undefined，工具静默按 cwd 解析）；
+    //   ② 越界**抛错**（否则 agent 能跑到工作目录外面读写）。
+    const tool = T.readFileToolIndexTs();
+    assert.ok(
+      /constructor\s*\(/.test(tool) && tool.includes('throw new Error'),
+      'read-file 必须在构造期校验注入的工作目录（缺失时抛错，不静默回退 cwd）',
+    );
+    assert.ok(
+      tool.includes('safeResolve') && /startsWith\(base \+ sep\)/.test(tool),
+      'read-file 必须把模型给的路径约束在工作目录内（越界响亮报错）',
+    );
+    /* 归一化（补的，2026-09-22 复核）：工作目录由调用方给 —— 面板输入框、`dev.config.ts`、
+     * 从 Finder 粘过来的路径都可能带尾斜杠，而越界判定是**字符串前缀**比较
+     * （`base + sep`）。不归一化时前缀会拼成 `/a/b//`，判定恒为假 ⇒ **每一次**
+     * read_file 都报「路径越出工作目录」：不是误报，是工具整个变坏（还会误导模型）。 */
+    assert.ok(
+      /const base = resolve\(root\)/.test(tool) && /this\.root = resolve\(root\)/.test(tool),
+      'read-file 必须归一化工作目录（尾斜杠 ⇒ 越界判定恒假 ⇒ 工具全挂）',
+    );
+    assert.ok(/export\s+default\s+class/.test(tool), 'discover 只认 default export 的类');
+  });
+
+  it('subagent 的 system.md 自带「你的回复就是报告」约定（函数形态不追加 REPORT_HINT）', () => {
+    /* 为什么这条要钉在这儿：模板把 `system` 写成**函数形态**（改 `.md` 立刻生效；
+     * 值形态在**类定义时**就把文件读死了 —— 而 `.md` 不在 tsx 的 import 图里，
+     * 连「改了要重启」都不会提示你）。但框架只对**值形态**追加 `REPORT_HINT`：
+     * `src/toolkit/subagent.ts` 的 `resolveSubSystem` 里 `typeof spec === 'function'`
+     * 直接 `return spec(task)`，值形态 / SystemPrompt 才追加那句约定
+     * （单测 `tests/toolkit/subagent.test.ts` 也只覆盖值形态）。
+     * ⇒ 这句约定**只能由模板自己写**：少了它，子代理不知道最终回复就是交付物，
+     * 会退化成「一句话交差」，而所有测试照样全绿（没有任何东西在看这段文本）。
+     */
+    const md = T.subagentSystemMd('demo');
+    assert.match(md, /最终回复/, 'system.md 必须写明「最终回复会原样交回主 agent」');
+    assert.match(
+      md,
+      /REPORT_HINT/,
+      '必须点明「框架只在值形态追加 REPORT_HINT」——否则下一个人会以为框架会补这句',
+    );
+  });
+
+  it('模板里的能力名统一 snake_case（模型看到的就是那个方法名）', () => {
+    /* 判据不是框架的硬规则 —— 框架只校验 `^[A-Za-z0-9_-]{1,64}$`，并在 spec 里**建议**
+     * snake_case。这里守的是**本仓自己模板的一致性**，理由是使用者的实际成本：
+     * 被装饰的方法名就是模型看到的工具名，而同一个名字还要被 `dev.config.ts` 的
+     * `multiTurn: [...]` 与面板的能力选择器逐字引用 ⇒ 生成物里两种写法混着来，
+     * 使用者得先猜「到底写 doc_reviewer 还是 docReviewer」，猜错就是静默不生效。
+     *
+     * 这条是**补的**：`read-file` 模板最初写成 `readFile`，单测全绿（它只断言
+     * `safeResolve` / `constructor` 那些形状），是 e2e-cli 那份整菜单断言把它抓出来的。 */
+    const root = fileURLToPath(new URL('../templates', import.meta.url));
+    const tsFiles = (dir) =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory()
+          ? tsFiles(join(dir, e.name))
+          : e.name.endsWith('.ts')
+            ? [join(dir, e.name)]
+            : [],
+      );
+
+    const bad = [];
+    let seen = 0;
+    for (const file of tsFiles(root)) {
+      const src = readFileSync(file, 'utf8');
+      const dec = /@(Tool|Skill|SubAgent|Prompt)\s*\(/g;
+      let m = dec.exec(src);
+      while (m !== null) {
+        // 按**括号配平**跳过装饰器实参再读方法名：schema 里全是括号，非贪婪正则会提前收尾。
+        // 扫的时候跳过字符串字面量 —— 描述文案里出现一个孤立的 `(` 就再也配不平了。
+        let i = dec.lastIndex - 1;
+        let depth = 0;
+        for (; i < src.length; i += 1) {
+          const c = src[i];
+          if (c === '"' || c === "'" || c === '`') {
+            i += 1;
+            while (i < src.length && src[i] !== c) {
+              if (src[i] === '\\') i += 1;
+              i += 1;
+            }
+            continue;
+          }
+          if (c === '(') depth += 1;
+          else if (c === ')') {
+            depth -= 1;
+            if (depth === 0) break;
+          }
+        }
+        const name = /^(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(/.exec(
+          // 跳过装饰器与方法之间的**注释与空行** —— subagent / read-file 都在那里写了说明，
+          // 而 `^\s*` 匹配不到 `//`（最初就是这么漏掉 2 个的）
+          src.slice(i + 1).replace(/^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/, ''),
+        )?.[1];
+        if (name !== undefined) {
+          seen += 1;
+          // `__METHOD_NAME__` 是能力模板的占位符，由 `kebabToSnake()` 渲染（下面单独测它）；
+          // 其余是手写字面名，必须自己就是 snake_case。
+          if (name !== '__METHOD_NAME__' && !/^[a-z][a-z0-9]*(_[a-z0-9]+)*$/.test(name)) {
+            bad.push(`${file.slice(root.length + 1)}: @${m[1]} ${name}`);
+          }
+        }
+        m = dec.exec(src);
+      }
+    }
+    // 抽词器退化（比如模板换了写法）必须**响亮**失败，否则这条守卫会变成永远绿的空断言
+    assert.ok(seen >= 5, `只解析到 ${seen} 个被装饰的方法名 —— 抽词器可能退化了`);
+    assert.deepEqual(bad, [], `这些能力名不是 snake_case（模型看到的名字）：\n${bad.join('\n')}`);
+
+    // 占位符那一半：`__METHOD_NAME__` 渲染成什么，决定了**生成物**里的能力名。
+    // 它此前没有直测（只被 e2e-cli 的整菜单断言间接盖到 doc-reviewer 一个名字）。
+    for (const [kebab, snake] of [
+      ['doc-reviewer', 'doc_reviewer'],
+      ['note-writer', 'note_writer'],
+      ['hello', 'hello'],
+      ['read-file', 'read_file'],
+      ['style-guide', 'style_guide'],
+    ]) {
+      const got = T.kebabToSnake(kebab);
+      assert.equal(got, snake, `kebabToSnake('${kebab}')`);
+      assert.match(got, /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/, `渲染出的能力名必须 snake_case：${got}`);
+    }
+  });
+
+  it('.gitignore 挡住 dev 环的本地状态（.agentia/）', () => {
+    // 会话文件是**本机调试产物**（对话历史），进版本库等于把对话内容提交上去。
+    const ignore = T.projectGitignore();
+    assert.ok(
+      ignore.split('\n').includes('.agentia/'),
+      `.gitignore 模板必须忽略 .agentia/（对话历史等本地状态），实际：${JSON.stringify(ignore)}`,
     );
   });
 
@@ -86,7 +294,7 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
 
   it('.env 三件套：生成 .env / .env.example，且 .gitignore 必须挡住 .env', () => {
     // 这三行是一组契约，少一行就是事故：生成 .env 却不 ignore = 把 key 送进用户的第一个 commit；
-    // ignore 了 .env 却没有 main.ts 的 loadEnvFile() = 文件形同废纸（用户只会看到「没配 key」）。
+    // ignore 了 .env 却没有 loadEnvFile() = 文件形同废纸（用户只会看到「没配 key」）。
     const ignore = T.projectGitignore();
     assert.ok(
       ignore.split('\n').includes('.env'),
@@ -105,12 +313,24 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     assert.ok(example.includes('ANTHROPIC_API_KEY='), '.env.example 应列 key');
     assert.ok(example.includes('.env'), '.env.example 应说明「复制成 .env」的用法');
 
-    // 接线：main.ts 模板里必须有一句独立调用（框架不自动读 .env）
-    const main = T.mainTs('demo');
-    assert.ok(/^loadEnvFile\(\);$/m.test(main), 'main.ts 模板应有独立的 loadEnvFile(); 调用');
+    // 接线：**app.ts**（不是 main.ts）里必须有一句独立调用（框架不自动读 .env）。
+    // 事故（2026-09-22）：装配/启动拆开时，loadEnvFile() 留在了 main.ts —— 而 dev 环
+    // （agentia dev）只 import app.ts、**从不执行 main.ts** ⇒ `npm run dev` 静默读不到 .env，
+    // `npm start` 读得到。当时这条断言指着 main.ts，所以它一路绿到真跑探针才发现。
+    // 下面成对写：**该在哪** + **不该在哪** —— 只写一半就还是能被搬到错的一侧。
+    const app = T.appTs('demo');
+    assert.ok(/^loadEnvFile\(\);$/m.test(app), 'app.ts 模板应有独立的 loadEnvFile(); 调用');
     assert.ok(
-      /import \{[^}]*\bloadEnvFile\b[^}]*\} from/.test(main),
-      'main.ts 模板应从框架导入 loadEnvFile（否则生成的项目编译不过）',
+      /import \{[^}]*\bloadEnvFile\b[^}]*\} from/.test(app),
+      'app.ts 模板应从框架导入 loadEnvFile（否则生成的项目编译不过）',
+    );
+    // ⚠️ 反断言只锚**精确形态**（独立调用 / import 语句），不能拿裸标识符判 ——
+    // main.ts 的报错文案里就有 `loadEnvFile()` 这个词（给用户看的提示），裸判会误红。
+    const mainCode = code(T.mainTs('demo'));
+    assert.ok(
+      !/^loadEnvFile\(\);$/m.test(mainCode) &&
+        !/import \{[^}]*\bloadEnvFile\b[^}]*\} from/.test(mainCode),
+      'main.ts 模板不得再调 loadEnvFile —— dev 环不执行 main.ts，放这儿等于 npm run dev 读不到 .env',
     );
   });
 });

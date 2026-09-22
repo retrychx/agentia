@@ -2596,6 +2596,378 @@ CI 必需检查名里**（「verify-all 8 步」），加检查一律折进已�
 另写死一条：**采样采的是导出，不是记账**（被采样掉的 trace 在框架内仍完整记账），
 所以别拿「有采样」当「可以少记账」。
 
+### 2026-09-22 ①：**e2e 端口 TOCTOU 的修法被取代** —— 删 `startExampleRetrying()`，改 `PORT=0`（补 2026-09-14 那条的取代记录）
+
+**背景**：本文件 2026-09-14 的「附」记的是 `e2e-deploy` 端口 TOCTOU 的修法 —— 新增
+`startExampleRetrying()`，**只对端口争用**换端口重试（3 次），并用「占住一个端口 +
+把 `freePort()` 注入成第一次返回它」证明了它。那条记录**写下时是如实的**；但它描述的修法
+此后被取代，而 §10 的规矩是**追加不改写** ⇒ 缺的是**这一条取代记录**，不是去改旧条目。
+（判定方法记一笔：旧段落里引用的符号去全仓 grep，若只剩历史文档提到它，那段记的就是**已死的修法**。）
+
+**决定**：`freePort()` 与 `startExampleRetrying()` **一并删除**；两条 e2e 链
+（`scripts/e2e-examples.ts` / `scripts/e2e-deploy.ts`）改 `PORT: '0'` + 解析**就绪日志**里的
+实际端口（`/\[boot\] listening on :(\d+)/`，30 s deadline），示例侧打 `server.address().port`
+—— 与 `e2e-grpc` 早已确立的形态同构（见 `docs/guards.md` §1.3 那条：`PORT=0` 由服务自报端口）。
+
+*为什么「换端口重试」是错的*：它治的是**症状**。根因是「`listen(0)` 探到端口 → `close()`
+→ 交给子进程 bind」**两步之间**的窗口；重试只是把撞上窗口的概率压低，还把「启动失败」
+这一类**真错误**也裹进重试路径（诊断变糊、可能被掩盖成「多试几次就好」）。让**服务自己
+分配端口**（`PORT=0`）是**消除**窗口，不是缩小窗口。⇒ 根因消失后，为它加的重试**一并删掉**：
+留着它就是一份「没人知道为什么存在」的补丁。
+
+**原「证明」作废**：那条证明依赖把 `freePort()` 注入成「第一次返回被占用的端口」——
+`freePort()` 已不存在，实验**无法复现**。新的证据是 e2e 自身**真跑**（`npm run e2e`，
+`verify-all.sh` 第 7 步；本仓既有纪律：测产物就用产物自己的输入）。
+
+**判据**：`grep -rn 'freePort' scripts/` 应为空（仅历史文档可留引用）。
+
+### 2026-09-22 ②：**dev 环补上「驱动 run」** —— 面板四个旋钮 + 脚手架模板破坏性拆分（`app.ts` / `main.ts`）
+
+**背景**：`agentia dev` 此前只能「spawn 时用 argv 定死一次 run，然后看 trace」。于是开发期
+真正想做的事一件都做不了：换一句 prompt 要改代码重跑；指定 agent 的工作目录**完全不可能**
+（根由工具代码写死）；改文本资产（`system.md` / `asset.md`）**静默无感**；想只调一个子 agent
+只能把整份菜单端上去。设计文档 `docs/plans/2026-09-22-dev-debug-loop.md` 把诉求拆成
+G1–G5 并逐条实证了缺口（含探针数字），本轮按它的 P0 → P2 全部落码。
+
+**决定一：调试面复用现有 inspector，不新建调试面。**
+「面板 / Playground / `report` 的能力排行」三处共用同一份 `@migor/trace-view` 渲染层，
+这条既有结论继续成立。新增的只是**输入端**：`POST /run` + 输入条。
+
+**决定二（本轮支点）：**「**调用方**」是 CLI，不是用户工程。**
+四个控件（调哪个能力 / prompt / 工作目录 / 多轮）全部落在 `createApp` 与 `app.run` 的选项上
+—— 而**谁调用 app 谁就能设它们**。`agentia dev` 自己 import 用户的 `src/app.ts` 并驱动它，
+⇒ CLI 就是调用方 ⇒ **用户工程里不需要任何 dev 文件**（只多一个**数据**文件 `dev.config.ts`）。
+据此否掉了「往用户工程里写一个 `dev.ts`」的方案：`dev.ts` 是**逻辑**，逻辑副本会漂移
+（CLI 修了 bug，各工程里的副本不会跟着修），而 `dev.config.ts` 是**数据**（声明哪个能力
+该多轮），数据不会漂移。判据就是这一条 —— 与 D9 否掉「能力收集逻辑抄一份到 CLI」是同一条。
+
+落地形状：
+- `src/app.ts`：导出 `createAgentApp({ toolSources?, workdir? })` 工厂 + `CAPABILITY_DIRS`；
+  `discover` 的路径按**文件位置**解析（dev 落 `src/`、build 后落 `dist/`），不依赖 cwd。
+- `src/main.ts`：薄入口（`loadEnvFile()` → `createAgentApp()` → `app.run`），**不再**直接调 `createApp`。
+- `packages/cli/src/dev-runner.ts`：CLI 自己的子进程，import 并驱动用户的 `app.ts`。
+  ⚠️ 框架入口必须从**用户工程**解析（`createRequire(join(root,'package.json'))` + `pathToFileURL`），
+  不能从 CLI 自己的安装位置解析 —— 装饰器注册表是模块级 `WeakMap`，两份模块实例 = 收集结果静默为空。
+
+**决定三：模板结构变更 = 破坏性变更（按 minor 发）。**
+`src/main.ts` 的装配段搬进 `src/app.ts` 是**机械**的，但老工程必须手动改
+（不迁移则 `agentia dev` 起不来）。迁移说明进 CHANGELOG。
+
+**决定四：鉴权分两层，零依赖。**
+① `Origin` 校验：**缺失 = 放行**（同源导航 / 非浏览器客户端），`Origin: null` = **拒绝**
+（沙箱 iframe / `file://` 是明确不可信的一方）；跨源 `fetch` 必带 `Origin` ⇒ 这一层是 CSRF 的那一半。
+② **per-session token**：`randomBytes(16).toString('hex')`，**每个端点**都校验。
+它的真正作用是挡住**本机其它被攻陷的进程**（它们能 `curl`，不受 `Origin` 约束），
+**不是**在补 `Origin` 的洞。携带方式三种：首帧 `?t=` → `Set-Cookie: agentia_dev_token=…;
+Path=/; HttpOnly; SameSite=Strict`；preload/脚本走 `x-agentia-token` 头；后续面板请求走 cookie。
+比较用 `timingSafeEqual`。
+
+**决定五：watch 收编进 `dev.ts`，「重启」只有一个主人。**
+旧实现把「文件变 → 重跑」交给 `tsx watch`，同时面板又能触发重启 —— **两个主人**。
+新形态：`tsx` **不带 `watch`** 启动 CLI 自己的 runner，重启路径**只有一条**（`dev.ts` 决定）。
+判据是**允许清单**（`WATCH_EXT`）而不是排除清单：`.md` **必须在**里面 —— 文本资产不在 tsx 的
+import 图里，旧实现因此对它们**静默无感**（这就是 G3b 的实测结论）。同时按目录排除
+`node_modules` / `dist` / `.git` / `.agentia` / `coverage`：`.agentia` 那条不是洁癖，
+dev 环自己每轮多轮对话都往 `.agentia/session.json` 写一次，一旦进 watch 范围就是
+「每次 run 重启一次子进程」的自噬循环。
+
+**重启与「不重启」的边界（刻意不对称）**：
+- 改 `toolSources`（能力选择）⇒ **重启进程**。理由**不是贵** —— 实测进程内重建只要 2.6 ms，
+  初稿的「几秒」高估约两个数量级；真正拦住进程内重建的是**回收口**：框架没有
+  `AgentApp.close()`，MCP 连接器由用户代码持有 ⇒ 进程内反复重建会攒孤儿 MCP 子进程。
+  ⇒ 配套约定（写进模板注释）：**进程外资源一律在模块作用域创建并注入**，
+  不许在 provider 构造函数里建。这是把「重建 app」解锁成纯 CPU 动作的前提。
+- 改**工作目录** ⇒ **不重启**，进程内重建（毫秒级 vs ~0.67 s 重启）。
+- 改 prompt / 多轮 ⇒ 不重启。
+- 在飞 run 期间要重启 ⇒ **延后到该 run 结束**，不杀在飞的 run。
+
+**决定六：四个控件的口径。**
+- **能力选择（D8）**：多选，默认全选；**全选传 `undefined`**（与「不传即全量」同义，
+  且省掉一次白跑的孤儿能力告警）；**空集也传 `undefined`**（`toolSources: []` 会收窄到
+  **空菜单**，是纯陷阱值）；顺序按**字典序**而非点击序（可复现）；不认识的名字丢弃。
+  ⚠️ 许诺要写准：收窄的是**菜单**，不是「只可能调它」—— 其他能力 `tools` 里的显式引用
+  仍能调到被排除的能力（`module.ts` 的孤儿告警讲的就是这条边界）。
+- **多轮**：由能力**显式声明**（`src/dev.config.ts` 的 `multiTurn: [...]`，数据不是逻辑）；
+  文件缺失 ⇒ 全部单轮且不告警；**格式错误 ⇒ 响亮告警**（不静默当空）。混选时初始值取
+  所选能力声明的 **OR**，且面板**标出来源**（`多轮·trip-planner`）——「不静默改变行为」。
+- **工作目录**：走**现成 DI `deps`** 注入 `WORKDIR`（`ClassProvider.deps` 本来就有），
+  **零框架改动**。代价：per-app 而非 per-run（重启式下等价），且不进 `config.*`。
+  `ToolRunContext.workdir` 推迟到会话式落地时再评估。
+  ⚠️ `discover` 自动注册的 provider **没有 deps** ⇒ 需要注入的能力必须走显式 `providers`。
+- **预算护栏**：面板上「点一下 = 一次真 run」⇒ runner 缺省套
+  `{ maxCostUsd: 1, maxTotalTokens: 200_000 }`（用现成机制）。**面板不是无限烧 token 的入口。**
+
+**决定七：对话历史（G4）的「两层」读法。**
+- **(乙) prompt 回显**：输入框记住打过的 prompt（`↑`/`↓` 调回）。**永远有**，与多轮无关；
+  它解决「手」的问题（任务型 agent 的 prompt 几乎不变，要的是 `↑` 调回 + 回车）。
+- **(甲) 对话历史**：面板显示整段多轮对话。**跟多轮开关走** —— 没开多轮时**不出现**
+  （一次 run = 一句输入 + 一段输出，那个东西 run 列表已经在显示了；凭空多一个对话视图
+  会让人以为上个仓库的评审被带进来了）。
+- ⚠️ **join 键**：`runtime/run.ts` 只在**成功**轮次回写 session ⇒ **失败的轮次在会话文件里
+  根本不存在**。面板必须用 run 根 span 的 `session.id`（`attributes['session.id']`）
+  把 run 列表与会话文件对上，否则显示的是**一份少了一轮的对话**。
+
+**本轮结论：P0–P2 全程零框架改动。** 逐项核对：鉴权在 `inspector.ts`（CLI 内）；
+模板拆分在模板；watch / 进程管理 / IPC 在 `dev.ts`；能力收窄用现成 `AppOptions.toolSources`；
+工作目录用现成 DI `deps`。⇒ **`src/` 下没有一行改动**（`src/core/limits.ts` 那处注释是同日
+另一件事）。动框架的只剩会话式那一步（`ToolRunContext.workdir`）。
+
+**同时修掉的两处旧账**：
+- **`--import` preload 消失**：子进程现在跑 CLI 自己的 `dev-runner.js`，不再需要
+  `NODE_OPTIONS=--import`（连带它那条 Node ≥ 20.6 / ≥ 18.19 的版本闸与字符串拼接一起删了）。
+  代价是**顺序变成承重的**：必须在 import 用户 `app.ts` **之前** `await registerTraceSink()`
+  —— `createApp` 在构造时就把 `defaultSinks` 快照下来了。
+- **模板 `@SubAgent` 的 `system` 改函数形态**（`() => asset(...)`）：值形态在**类定义时**求值，
+  于是 `system.md` 要重启进程才生效 —— 而 `.md` 不在 tsx 的 import 图里，连「该重启了」
+  都不会提示（静默失效）。通则：**模块加载期读 = 冻；调用期读 = 热。**
+
+**判据**：`env -u NODE_OPTIONS npm test` + `npm run e2e`（`verify-all.sh` 第 6/7 步）。
+新增守卫见 `docs/guards.md` §1.4：面板纯逻辑可单测（`panel-logic.ts` 零 DOM）、
+`shouldWatch` 允许清单与目录递归、模板能力名 snake_case 一致性。
+
+### 2026-09-22 ③：**dev 环真跑一次抓出两个缺陷** —— 门禁全绿不等于没洞
+
+上一条的落码在 `verify-all.sh` 8/8 全绿的状态下收尾。但复核时注意到一件刺眼的事：
+`rg -ln "agentia dev|dev-runner" scripts/*.ts` **返回空** —— 本轮改动里最大的一块
+（`dev.ts` / `dev-runner.ts` / `inspector-page.html`）**一条守卫都没有**；`e2e-cli` 只断言了
+生成物 `package.json` 里有 `dev` 这个 script 名。于是写了个真跑探针，一次就抓到两个真缺陷。
+
+**缺陷一：`npx` 吞掉 IPC 通道（静默，且退出的形状像「成功」）。**
+子进程原本是 `spawn('npx', ['tsx', runner])`。`npx` 是个**包装器**：它自己再 spawn 一层，
+而**不给孙进程转发 fd 3 的 IPC 通道**。后果不是「启动失败」而是**静默**：runner 里
+`process.send` 变成 `undefined`，而代码写的是 `process.send?.(msg)`（可选链）—— 所有协议消息
+被无声丢弃：面板永远等不到 `ready`、`POST /run` 永远回不来；更坏的是没有 IPC 通道之后
+事件循环无事可做，进程以 **`code=0` 干净退出**，看起来像「用户代码自己跑完了」。
+三方对照（同一个 hello 脚本，实测）：
+
+| 启动方式 | `typeof process.send` | IPC |
+|---|---|---|
+| `node whoami.mjs` | `function` | ✅ |
+| `npx tsx whoami.mjs` | `undefined` | ❌（还多出 npx 的 spinner 噪音） |
+| `node <tsx>/dist/cli.mjs whoami.mjs` | `function` | ✅ |
+
+**修复**：`process.execPath` + 解析出的 `tsx/cli` 入口直起（`resolveTsxCli()`：**用户工程优先**
+—— tsx 是脚手架声明的 devDependency，尊重他们的版本 pin；再退到 CLI 自身解析位置）。
+不 spawn `node_modules/.bin/tsx` 的理由是 Windows 上它是 `.cmd` shim，会绕回 `npm-bin.ts`
+专门要避开的那个 CVE-2024-27980 坑。
+
+**缺陷二：`.env` 加载留在了 `main.ts`（两个入口两个行为）。**
+P0 把模板拆成 `app.ts`（装配）+ `main.ts`（启动）时，`loadEnvFile()` 留在了 `main.ts`。
+而 dev 环只 import `app.ts`、**从不执行 `main.ts`** ⇒ `npm run dev` 静默读不到 `.env`，
+`npm start` 读得到。这是**静默不一致**的教科书形状：用户看到的是「没配 key」，然后去怀疑框架。
+修复：`loadEnvFile()` 挪进 `app.ts`（装配模块是**两个入口都经过**的那条路）。
+⚠️ 连带教训：当时 `templates.test.mjs` 与 `e2e-cli.ts` **都有一条断言钉着这件事**，但都指着
+`main.ts` —— 断言存在 ≠ 断言钉对了位置。所以两处都改成**成对**写（该在 `app.ts` + 不该在 `main.ts`）。
+
+**顺带补的第三个洞：生命周期里没有「就绪」。**
+`DevEvent` 有 `runner-restart` / `runner-error` / `run-start` / `run-done`，**唯独没有 ready**；
+而面板加载时只查一次 `/api/dev`，那时 runner 还没装配完（`capabilities` 是父进程的初值 `[]`）
+⇒ 能力选择器**空着且没有任何解释**，要等用户先跑一次（`run-done` 才触发刷新）。
+新增 `{ kind: 'runner-ready' }`，面板收到即重刷；`runner-restart` 也补了一次刷新。
+（这条是写 e2e 时被自己的轮询兜底照出来的 —— **测试里的 workaround 往往是产品缺陷的影子**。）
+
+**修复一个措辞级的误导**：`proc.on('exit')` 在「没等到 `ready` 就退出」时先 `fail()`（reject）
+再同步走到 `emit`，而那时 `lastError` 还是 `null` ⇒ 面板收到的是更笼统的
+「意外退出」，真正有信息量的那句只进了终端（reject 要到下一个微任务才被调用方的 catch 接住）。
+改成先写 `lastError` 再 `fail`。
+
+**新增守卫**：`scripts/e2e-dev.ts`（折进 `verify-all.sh` 第 7 步 = `npm run e2e`，
+不加步骤 —— 步骤数写在 CI 必需检查的 job 名里）。四条**行为**断言：能力菜单**精确等于**
+`["hello","read-file"]`（菜单是 runner 经 IPC 报回来的 ⇒ 非空才等于 IPC 通了）；run 成功且
+`finalText` 来自假端点；收窄 `toolSources` 后**假端点收到的请求体真的变窄**；改 `.md` 触发重启
+且能恢复。凭据**只写进工程 `.env`**、进程环境里显式 `delete` 掉 `ANTHROPIC_*`（不删的话
+本机 export 过 key 的人会拿到假绿）。**三条修复各做了反向验证**：塞回 `npx` ⇒ 红；
+摘掉 `loadEnvFile()` ⇒ 红（打到真端点 403）；去掉 `runner-ready` ⇒ 红。
+
+**代价与教训**：这一轮多花的时间全部来自「改动最大的一块没有守卫」。记进 `guards.md` §2 的尾注：
+**「门禁全绿」只覆盖门禁问过的形状。**
+
+### 2026-09-22 ④：**拿功能文档逐项对照做审计** —— 又抓出两处「文档里有、代码里没有」
+
+③ 修完缺陷之后问了一个不同的问题：**不是「测试绿不绿」，而是「文档里承诺的每一件，代码里都在不在」**。
+逐条对照 `docs/plans/2026-09-22-dev-debug-loop.md` 的 §5 优先级表与 §6 待定清单，
+找出两处**只写在文档里、代码里没有**的条目：
+
+1. **§6 待定 5 的后半 —— 显式 kill 按钮。** 文档建议「拒绝并提示 **+ 显式 kill 按钮**」，
+   只做了前一半（在飞时 `POST /run` 回 409）。后果不是小事：**一个卡住的 run 会让面板永久锁死**
+   —— 此后每次 `POST /run` 都 409，而面板**没有任何办法**把它解开（只能去终端 Ctrl-C 整个 dev 进程）。
+2. **§6 待定 3 —— 对话历史的「清空」入口。** 没有它，一份串味的对话只能手工删 `.agentia/session.json`。
+
+两条都没有前置依赖，所以一直没进 §5 的优先级表（那张表按「依赖 / 爆炸半径」排），
+也就一直没被发现「其实还没做」。**这是「按优先级表施工」这种工作方式的固有盲区**：
+表外的东西不在任何人的清单上。
+
+**① 中止在飞 run（`POST /run/abort`）。** 走 IPC 让 runner 自己 `abort()`，**不是**父进程杀子进程 ——
+理由是 **trace**：`RunInvocationOptions.signal` 是 `toolkit/module.ts` 的**契约字段**（原样送进引擎），
+中止后在回合边界以 `stopReason='aborted'` **正常返回**（`engine/loop-result.ts` 的 `abortedResult()`）
+⇒ trace 照常落盘。杀进程那条路会把这次 run 的 trace 整个丢掉（trace 是收尾才 POST 的）。
+**但 signal 是协作式的**：工具不读它就没人理（本仓已知的「MCP 在途中止 ⇒ Promise 永不 settle」正是这一类），
+`running` 会永远为 `true` ⇒ 面板永远 409。所以补一条文档里**没写到**的兜底：
+`ABORT_GRACE_MS = 5_000` 之后仍没结束就**重启进程**（此时这次 run 的 trace 会丢，面板明说）。
+反向验证时把 runner 的 abort 处理去掉，e2e 正好报到 `escalated: true` —— 这条兜底真的在工作。
+
+**② 清空对话（`POST /session/clear`）。** 清空 = **换一个 sessionId**，**不删** `session.json`：
+后者是 `SessionStore` 的账，而面板对它是**只读**的（写它会造出「面板显示的对话」与
+「模型真正看到的对话」不一致 —— 正是本仓最忌讳的那种静默不一致）。旧对话仍在盘上、
+run 列表里那些 run 也还指得到，只是模型不再带着它跑。当前 id 落盘到 `.agentia/dev-session-id`
+（**不是** `session.json` 的一部分）：只放内存的话，重启 `npm run dev` 之后刚清空的对话会**自己回来**；
+该路径已在 `WATCH_SKIP` 里，所以写它不触发重启。id 由**父进程**决定并经 IPC 下传 ——
+它是面板级状态，必须跨 runner 重启（改代码就会重启）稳定。
+
+**③ 同一条事实的第三个影子（本轮真正的收获）。** 实现②的时候发现：中止的 run `ok` 是 **false** ——
+引擎的 `abortedResult()` **刻意**给已取消的 run 带上结构化 `error`（取消不是失败，但原因要可查，
+`engine/loop-result.ts` 的注释就写着这句），而 runner 的 `ok` 定义是 `!result.error`。
+于是「只看 `ok`」这个写法在**三个地方**各自把用户按的中止当成了失败：
+
+| 位置 | 错误表现 | 修法 |
+|---|---|---|
+| 面板的 `run-done` 反馈语 | 显示「run 失败（aborted）：run 已被取消」 | **先认 `stopReason` 再认 `ok`**，并抽进 `panel-logic.ts`（顺序是**语义**，不是渲染 —— 面板那份没有单测） |
+| `dev.ts` 的 `lastError` | 告警条上永远挂一条红字「run 已被取消」，且不会再消 | `if (!msg.ok && msg.stopReason !== 'aborted')` |
+| `dev-runner.ts` 的终端日志 | 打成「run 失败（stopReason=aborted）」 | 单独一句「run 已中止（面板点的中止）」 |
+
+（②的说明原先写的「中止是正常返回、`ok` 两者都是 true」是**错的** —— 那是把
+「不抛异常」误当成「不设 `error`」。它只活在注释里，正是这一轮对照审计才照出来的。）
+
+**新增 / 扩面的守卫**（都逐条反向验证过，还原后 `git hash-object` 逐字节比对）：
+
+- `packages/cli/test/panel-logic.test.mjs`：`nextSessionId`（轮换 / 认不出的形状兜到 `-2` /
+  **base 进正则前转义**）、`runDoneNotice`（判别顺序、`error` 为空要说「未知原因」）。
+- `packages/cli/test/inspector.test.mjs`：`POST /run/abort`（503 / 409 / 202 两态 / **`GET` 不落钩子**）、
+  `POST /session/clear`（503 / 409 / 200）、**面板 import 名单的反向全覆盖**
+  （页面 import 的每个名字都必须是 `panel-logic` 的真导出 —— 浏览器里 import 一个不存在的导出是
+  **整块模块求值失败**（白屏），而 node 侧各用例各自 import 自己要用的名字，**照样全绿**）。
+- `scripts/e2e-dev.ts` 第 10/11 步：假端点加「**挂住不回复**」开关（否则一次 run 只活几毫秒，
+  那个窗口里插不进中止 —— 测到的其实是 409 那条分支，看着绿、什么都没验）；第 11 步断言
+  会话写进**新** id 且**没写进**旧 id（这条能挡住「面板换了 id、runner 还写死旧 id」）。
+
+**可复用的自查问**（补进 `guards.md` §2 尾注）：查完「一个值有几种写法」之后，
+还要查「**它被几个地方各自判过一次**」。本轮三处错判是同一件事的三个影子，
+而任何单点测试都只覆盖其中一个。
+
+### 2026-09-22 ⑤：追一次**瞬时红** → 抓出 `WATCH_SKIP` 的**半实现**；顺带照出一条「假守卫」
+
+**起点是一次没人解释的红。** 上一轮完整门禁里 CLI 套件红过一次，重跑又绿。没有把它当噪声
+跳过，而是连跑三次复现、再隔离到 `panel-logic.test.mjs` 的 watch 用例，最后坐实：
+`watchTree` 的目录跳过判据（`WATCH_SKIP` / 点开头）此前**只在「初始递归」那一个调用点执行**，
+而 watcher 回调里发现新目录时调 `addDir` 走的是**另一条路**，那条路上**一次判据都没有**
+⇒ 行为是「启动时就存在的 `dist/` 不看、**启动后才出现**的 `dist/` 看」。
+（用临时探针坐实：启动后再 `mkdir dist` 并写 `dist/out.js` ⇒ 回调真的被触发。）
+
+**修法**：判据收进 `addDir` **内部**（唯一一处），初始递归与动态新增两条路共用；
+`root` 由调用方**显式豁免**（`isRoot`）—— 判据只看**目录名**、不看路径段，因为项目根本身
+就叫 `dist` / `node_modules` / `.foo` 是合法的（用绝对路径段去认 `dist` 会把整个项目判成「不该看」）。
+
+**本轮真正值钱的是验证侧的教训。** 补守卫时我做了两处：单测（构造「启动后才出现」的形状）
++ e2e（重启次数总账 + 理由里不许出现 `.agentia` / `dist/`）。**反向验证时：单测红了，e2e 照样绿。**
+逐条排除三种解释 —— ① 修复没生效？不是（`git hash-object` 确认文件是改坏态，单测那条红了）；
+② 断言写错？不是（计数与理由两条都对）；③ **缺陷在这里不可达** ← 真相：
+`devServer` 的**监视根是 `<projectRoot>/src`**（`dev.ts` 的 `watchTree` 调用点），
+而 `.agentia/` 与 `dist/` 都在**项目根**，从来不在范围内 ⇒ 那条 e2e 断言**碰不到** `WATCH_SKIP` 那条路。
+
+⇒ 它真正守的是「**监视根保持 `src/`**」（这本身也值得守：哪天有人把根扩到项目根，
+`.agentia/session.json` 立刻变成「每次多轮 run 重启一次子进程」的自噬循环）。
+**两件事都要守，但必须说清哪条守哪件** —— 否则下一个人看到「有 e2e 钉着」就以为漏判被覆盖了。
+这就是本仓一直在猎的**假守卫**：断言是真的、绿的、也是对的，只是它守的是**另一件事**。
+
+**落地的改动**（三条注释 + 一条用例；**零行为变化**的部分只有注释）：
+- `packages/cli/src/dev.ts`：`WATCH_SKIP` 的注释改写成「**第二层**」，把「第一层是**监视根**」
+  写进注释（两层都要有，只靠根 = 碰巧打不到）；新增 `shouldDescend()` 并在注释里说明
+  「判据必须由 `addDir` 自己执行」的原因；`addDir` 加 `isRoot` 豁免。
+- `packages/cli/test/panel-logic.test.mjs`：新增一条用例，`dist/` 与 `.agentia/` **各自一轮**、
+  中间等过去抖窗口 —— 因为 `flush` 只报 pending 里的**第一条**，把两件事放一起会被**事件合并**
+  掩盖（上一版用例正是这么侥幸通过的，注释里写明了这一点）。
+- `scripts/e2e-dev.ts` 第 12 步：断言改成「3 次重启且理由里无 `.agentia` / `dist/`」，
+  **并把注释改准** —— 照实写明它抓不到 `WATCH_SKIP` 那条路、它守的是监视根。
+
+**反向验证**：把判据还原成「只在初始递归判」⇒ 单测**恰好红那一条**（其余 15 条绿）；
+再把 `isRoot` 豁免去掉 ⇒ 红「项目根自己叫 `dist` 时必须照常监视」（这条是修复**自己的**失败模式）。
+两次都 `cp` 还原 + `git hash-object` 逐字节比对。
+⚠️ 顺带记进 skill：**`git checkout -- <file>` 对未跟踪的新文件静默无效**（`panel-logic.ts` 是 `??`），
+还原一律用 `cp` + 哈希比对 —— `git diff --stat` 对未跟踪文件恒为空，不能当证据。
+
+**可复用的自查问**（补进 `guards.md` §2 尾注 ⑤）：写完一条守卫，问「**它在什么形状下才可能红**」；
+若答案里含一个当前架构下不可达的前提，它就不是这条修复的守卫 —— 要么换个能红的形状，
+要么**改名**（说清它守的那件事）并注明它不守什么。
+
+### 2026-09-22 ⑥：**`.env` 是一条「够不着」的判据** —— 改 `.env` 静默不重启
+
+⑤ 把「监视根是 `src/`」这条事实写进注释之后，顺手拿它去核**每一条**判据，立刻照出第二条：
+
+`WATCH_NAMES = {'.env', '.env.local'}` 把这两份文件列进**允许清单**（`shouldWatch` 按文件名命中），
+`usage-guide` 的「看什么」也把 `.env` 写进去 —— 但 `watchTree` 的根是 `<projectRoot>/src`，
+而 `.env` 在**项目根** ⇒ 这条判据**没有任何一个 watch 够得着**。改 `.env` 静默无感，
+与 G3b 完全同类（文档承诺了、代码够不着）。`dev.ts` 顶部那张结构图当时写的还是
+`fs.watch(src/**, **.md)` —— 连图里都没有 `.env` 的位置。
+
+**真跑坐实**：`scripts/e2e-dev.ts` 新增第 9-bis 步，真改一次**项目根**的 `.env`。
+摘掉修复后帧转储里**一条事件都没有**（`等第 4 条 dev/runner-restart 超时（只收到 3 条）`）。
+
+**修法**：单开一个 `watchRootEnvFiles(projectRoot, onFile)` —— **不递归**、且**只认名字**
+（不认扩展名：项目根的 `package.json` 也不该由它管）。**不能**把 `watchTree` 的根抬到项目根：
+那会把 `README.md` / `docs/` / `examples/` 全收进来，「改代码要重启」就变成「改任何文档也重启」。
+两处 watch 共用一个抽出来的 `makeNotifier()` 去抖器（各写一份会漂 —— 比如只有一处清理 `timer`，
+停机后仍会回调一次）。`onFileChange` 也抽成一处，重启理由的文案因此只有一种写法。
+
+**两条可复用的教训**：
+
+1. **「一条判据要问它有没有执行者」。** ⑤ 查的是「判据有没有在**每条路**上执行」，
+   ⑥ 查的是「判据有没有**任何人**执行」—— 后者更隐蔽：`shouldWatch` 有单测、写得也对，
+   但**没有任何调用点够得着**那两种情况。⇒ 判据的**正确性**（`shouldWatch` 本身）与判据的
+   **可达性**（调用点的根）是两件事，各要各的守卫：前者单测，后者**只能真跑**。
+2. **⚠️ 探针自身会假红 —— 断言别用写死的序号。** 第一版探针写的是
+   `waitDev('runner-restart', …, 2)`（等第 3 帧）。但在这之前 `ack2` 那次 run 已经产生过一条
+   `runner-restart`（回到全量菜单），于是它**立刻拿到那条旧帧** ⇒ 报错文案
+   「理由里没有 `.env`」与「`.env` 根本没触发」长得一模一样，差点据此下错结论。
+   改成**「先数当前帧数 N，再等第 N+1 帧」**才分辨得开。
+   ⇒ 一般规则：**断言「某事件发生了」时，绝不能用与「事件总数」耦合的绝对序号** ——
+   先取基线、再等增量。
+
+### 2026-09-22 ⑦：**复核轮修复** —— 窄窗口竞态 / 收尾路径 / 两个表面口径不一致 / 登记漂移，
+外加一次「假门禁」的自我纠正
+
+⑥ 收口后 `docs/plans/2026-09-22-dev-debug-loop.md` 的需求已全部实现。这一轮**不动设计**，
+是拿复核结论逐条回读代码后的边界修复。四条值得留痕：
+
+1. **并发闸必须覆盖「受理 → 真正发出去」之间的那次 await。** `submitRun` 里换能力选择要
+   `await restart(...)`（停旧进程 + spawn + 装配，几百毫秒起），而 `running` 只能等到 run **真的
+   发进通道之后**才置位（它是「runner 里有个 run 在飞」的口径 —— 面板的按钮与 `abortRun` 都读它）
+   ⇒ 只看 `running` 的闸在这条路径上会**放两个请求进来**：两个 `runOnce` 并发、`currentAbort`
+   被覆盖、`pendingNote` 挂到别人的 traceId 上。修法是加一个**只给闸看**的 `launching` 占位。
+   刻意**不**并进 `running`：那会让面板在还没 run 时就把「中止」按钮点亮，而 `abortRun` 此刻
+   只能回 409 —— 一个自相矛盾的面板。
+   ⇒ 一般规则：**「忙」有两种含义 ——「资源在飞」与「请求已受理」，它们的时间窗不同，
+   别用一个布尔把两者盖住。**
+2. **收尾必须等宽限期走完再 `exit`。** `stopChild()` SIGTERM 之后要等 `KILL_GRACE_MS`（3 s）
+   才补 SIGKILL，而旧的 SIGINT 处理器是 `shutdown(); setTimeout(() => process.exit(0), 50)`：
+   父进程在宽限期内就没了 ⇒ 那个计时器随它消失（SIGKILL 兜底一起丢），`process.on('exit')` 那条
+   兜底此刻也已空转（`stopChild` 第一行就把 `child` 置成 null，而归属判定是 `child?.child === proc`）
+   ⇒ 一个不响应 SIGTERM 的 runner（连同它自己 spawn 的 MCP 子进程）活成孤儿。
+   注意 **SIGTERM 那条路径本来是好的** —— **同一个动作的两条出口口径不一致**本身就是缺陷信号。
+3. **「中止」落在装配窗口里也必须生效。** `runOnce` 的顺序是 `send('run-start')` →
+   `await ensureApp(...)` → 才 `new AbortController()`；窗口内到达的 `run-abort` 只能看到
+   `currentAbort === null`，把它当「没在跑」静默丢掉的话 run 照跑，而父进程 5 s 后会把这次
+   **健康的** run 升级成重启兜底（trace 丢掉 + `lastError` 写成「工具不响应 signal」——
+   一个错误的归因）。窗口宽度取决于工程的装配开销（有 MCP 握手时是几百毫秒），
+   **不能靠「窗口很窄」免修**。修法：窗口内到达的中止记在 `abortRequested` 上，建完 controller 立刻补。
+4. **同一个事实的多个表面必须共用一条判别。** 「这一轮失败了吗」在面板上有三个表面
+   （通知条 / run 列表红点 / 对话视图红边），而引擎的 `abortedResult()` 刻意给已取消的 run 带
+   结构化 error ⇒ 中止时 `ok === false`：只修通知条那一处（先 `stopReason` 后 `ok`）等于让另外两处
+   继续把「我按了中止」显示成「这一轮失败了」。⇒ 判别抽进 `panel-logic.runIsFailure`（先 stopReason
+   后 ok），并在测试里钉「页面不许裸读 `r.ok`」。同时**中止轮不能从对话视图里消失**：
+   框架只在成功路径回写会话 ⇒ 排除它等于显示一份**少了一轮**的对话（另一种静默不一致）。
+
+**⚠️ 本轮的教训：我写的第一个新门禁是「假绿」，而它差点就这么进了库。** 为验第 1 条，我加了
+「换能力选择后立刻再发一次 `POST /run`，必须 409」。它全绿 —— 直到**摘掉修复再跑一遍**才发现
+摘掉后照样全绿：`await api('/run')` 要等 restart 走完才拿到 202，所以第二个请求是**在窗口之后**
+发出去的，压根没进窗口。改成「先不等回包，等 `runner-restart` 广播帧（`restart()` 的第一行就 emit）
+再发第二个请求」才真的落在窗口里。
+⇒ 一般规则（⑤ 那条的升级版）：**新增门禁必须做一次「把修复摘掉、看它红不红」的反向验证。**
+假绿比没有门禁更坏 —— 它把「没人验」伪装成「验过了」。本轮三条关键修复全部做了反向验证
+（①摘掉后真红、②③同样真红），并顺手抓出两条复核没提的缺陷：裸 CLI `agentia dev -- "问题"`
+会把分隔符 `--` 当成 prompt 传给模型（`npm run dev -- "问题"` 那条因为 npm 吃掉 `--` 而一直是对的）、
+`read-file` 未归一化工作目录（带尾斜杠时**每一次**调用都误报「路径越出工作目录」——
+不是误报，是工具整个变坏）。两条都补了真跑用例。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

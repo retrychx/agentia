@@ -78,9 +78,14 @@ try {
   for (const f of [
     'package.json',
     'tsconfig.json',
+    // 装配（app.ts）与启动（main.ts）分离：dev 环要复用 app.ts 的工厂
+    'src/app.ts',
     'src/main.ts',
+    'src/dev.config.ts',
+    'src/session-store.ts',
     'src/registry.ts',
     'src/tools/hello/index.ts',
+    'src/tools/read-file/index.ts',
     'scripts/copy-assets.mjs',
     'scripts/clean.mjs',
     'AGENTS.md',
@@ -100,14 +105,23 @@ try {
     ignoreLines.includes('.env'),
     `.gitignore 必须忽略 .env（否则脚手架生成的 .env 会被提交），实际：${ignoreLines.join(' | ')}`,
   );
-  // 接线：生成的 main.ts 真的调了 loadEnvFile —— 框架**不自动**读 .env，全靠这一行。
+  // 接线：生成的 **app.ts** 真的调了 loadEnvFile —— 框架**不自动**读 .env，全靠这一行。
   // 必须锚到**独立语句行**（`^loadEnvFile();$`）：先写成「文本里含 loadEnvFile()」，
   // 结果被同文件注释里的那句说明满足了 —— 把调用删掉门禁照样绿（反向验证抓到的假绿）。
   // 这一条是语法层面的（要知道它真能被读到，见下面 4b 的行为验证）。
+  //
+  // ⚠️ 位置是 app.ts，不是 main.ts（2026-09-22 修）：装配/启动拆开后 dev 环只 import app.ts、
+  // **从不执行 main.ts**，所以读 .env 必须在装配模块里。这条断言原先指着 main.ts ——
+  // 于是 `npm run dev` 静默读不到 .env 而 `npm start` 读得到，一路绿到真跑探针才发现。
+  const appSrc = readFileSync(join(proj, 'src/app.ts'), 'utf8');
+  assert(
+    /^loadEnvFile\(\);$/m.test(appSrc),
+    'src/app.ts 里应有独立的 `loadEnvFile();` 调用（否则生成的 .env 形同废纸，且 npm run dev 读不到它）',
+  );
   const mainSrc = readFileSync(join(proj, 'src/main.ts'), 'utf8');
   assert(
-    /^loadEnvFile\(\);$/m.test(mainSrc),
-    'src/main.ts 里应有独立的 `loadEnvFile();` 调用（否则生成的 .env 形同废纸）',
+    !/^loadEnvFile\(\);$/m.test(mainSrc),
+    'src/main.ts 不该再调 loadEnvFile —— dev 环不执行它，放这儿等于两个入口两个行为',
   );
   // tsconfig 必须只 include 'src' —— 能力目录/注册表全在 src 下，一个 include 全覆盖。
   // 曾经是 ['src', 'capabilities.ts'] 却漏掉能力目录本身 → 未登记的能力静默不参与类型检查。
@@ -151,9 +165,28 @@ try {
 
   // —— 3) 注册表 codemod ——
   const registry = readFileSync(join(proj, 'src/registry.ts'), 'utf8');
-  for (const tok of ['hello', 'doc-reviewer', 'note-writer', 'style-guide', 'echo-back']) {
+  // 注册表 codemod：hello 与 read-file 都该在（read-file 带 deps —— discover 自动注册的
+  // provider 没有 deps，所以它只能走显式注册；不登记会让 doctor 报「存在但未登记」）。
+  for (const tok of [
+    'hello',
+    'read-file',
+    'doc-reviewer',
+    'note-writer',
+    'style-guide',
+    'echo-back',
+  ]) {
     assert(registry.includes(`'${tok}'`), `src/registry.ts 缺 token: ${tok}`);
   }
+  assert(
+    /\{\s*provide:\s*'read-file',\s*useClass:\s*ReadFile,\s*deps:\s*\[\s*'WORKDIR'\s*\]\s*\}/.test(
+      registry,
+    ),
+    "registry.ts 里 read-file 必须带 deps: ['WORKDIR']（否则容器无参构造它，构造期就抛）",
+  );
+  assert(
+    /\{\s*provide:\s*'WORKDIR',\s*useValue:/.test(registry),
+    'registry.ts 必须提供 WORKDIR（read-file 的依赖），否则显式装配路线跑不起来',
+  );
   // import 前缀按分类目录走（相对 src/registry.ts）
   for (const rel of [
     './tools/hello/index.js',
@@ -237,6 +270,9 @@ try {
   npmRun('build', proj);
   for (const f of [
     'dist/main.js',
+    // 装配搬进 app.ts 之后，生产路径也依赖它 —— 少一个产物 `node dist/main.js` 立刻 MODULE_NOT_FOUND
+    'dist/app.js',
+    'dist/session-store.js',
     'dist/prompts/style-guide/asset.md',
     'dist/subagents/doc-reviewer/system.md',
   ]) {
@@ -387,11 +423,18 @@ try {
   const tokens = discovered.map((p) => p.provide).sort();
   assert(
     JSON.stringify(tokens) ===
-      JSON.stringify(['doc-reviewer', 'echo-back', 'hello', 'note-writer', 'style-guide']),
+      JSON.stringify([
+        'doc-reviewer',
+        'echo-back',
+        'hello',
+        'note-writer',
+        'read-file',
+        'style-guide',
+      ]),
     `发现 token=${tokens}`,
   );
 
-  // —— 6) createApp({ discover }) + mock 模型：装配五能力并真跑一个工具 ——
+  // —— 6) createApp({ discover }) + mock 模型：装配六能力并真跑一个工具 ——
   // 复用 tests/helpers.ts 的共用 mock：手搓那份的类型不完整，是给 scripts/ 接上类型检查时才暴露的
   // （共用版在 helpers 里以 `as never` 收口，且被全部单测覆盖）。onParams 用来抓第二次往返的入参。
   let secondParams: unknown = null;
@@ -405,15 +448,29 @@ try {
     },
   ]);
 
+  // read-file 的构造器要一个工作目录，而 discover 自动注册的 provider **没有 deps**
+  // ⇒ 走显式 providers 覆盖它（与模板 src/app.ts 里那两行同形）。不覆盖的话构造期就抛。
+  const { default: ReadFile } = await import(`${proj}/src/tools/read-file/index.ts`);
   const app = await createApp({
     name: 'cli-app',
     discover: capabilityDirs,
+    providers: [
+      { provide: 'WORKDIR', useValue: proj },
+      { provide: 'read-file', useClass: ReadFile, deps: ['WORKDIR'] },
+    ],
     system: new SystemPrompt().add('role', '测试装配', true),
   });
   const menu = app.tools.map((t) => t.name).sort();
   assert(
     JSON.stringify(menu) ===
-      JSON.stringify(['doc_reviewer', 'echo_back', 'hello', 'note_writer', 'style_guide']),
+      JSON.stringify([
+        'doc_reviewer',
+        'echo_back',
+        'hello',
+        'note_writer',
+        'read_file',
+        'style_guide',
+      ]),
     `菜单=${menu}`,
   );
 
@@ -433,7 +490,7 @@ try {
     providers: registryMod.providers,
     system: new SystemPrompt().add('role', '测试装配', true),
   });
-  assert(app2.tools.length === 5, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
+  assert(app2.tools.length === 6, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
 
   // —— 8) 发布物完整性：CHANGELOG.md 必须在两个 npm 包里（npm 的「总是包含」只覆盖
   // README/LICENSE，CHANGELOG 不在其列 —— 曾因 files 只写 dist 漏发，外部 review 抓出）——
@@ -508,11 +565,11 @@ try {
     assert(probeOut.includes('TARBALL_OK'), `装出来的框架包跑不通：${probeOut}`);
     // CLI 包：装出来的 bin 入口真跑 --version（读的是**包内**的 package.json —
     // 装漏了 package.json 或 dist/cli.js 都会在这里炸）
-    const cliVersion = execFileSync(
-      process.execPath,
-      [join(probe, 'node_modules', '@migor', 'cli', 'dist', 'cli.js'), '--version'],
-      { cwd: probe, encoding: 'utf8' },
-    ).trim();
+    const cliBin = join(probe, 'node_modules', '@migor', 'cli', 'dist', 'cli.js');
+    const cliVersion = execFileSync(process.execPath, [cliBin, '--version'], {
+      cwd: probe,
+      encoding: 'utf8',
+    }).trim();
     const expectedCliVersion = (
       JSON.parse(readFileSync(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8')) as {
         version: string;
@@ -522,6 +579,28 @@ try {
       cliVersion === expectedCliVersion,
       `装出来的 CLI --version=${cliVersion}，应为 ${expectedCliVersion}`,
     );
+    // 光报版本不够：**模板是随包发的**（`dist/templates/`），而「模板没进 tarball /
+    // 新加的文件漏了」这类问题 `--version` 一个都抓不到 —— 它们只在用户 `agentia create`
+    // 的那一刻才炸。所以这里用**装出来的** CLI 真建一个工程，逐个点验关键文件。
+    execFileSync(process.execPath, [cliBin, 'create', 'packed-app'], {
+      cwd: probe,
+      encoding: 'utf8',
+    });
+    for (const rel of [
+      'src/app.ts', // 装配工厂（dev 环的入口）
+      'src/main.ts', // 启动薄入口
+      'src/dev.config.ts', // 开发期数据声明
+      'src/session-store.ts', // 多轮的会话后端
+      'src/tools/hello/index.ts',
+      'src/tools/read-file/index.ts',
+      'src/registry.ts',
+      'AGENTS.md',
+    ]) {
+      assert(
+        existsSync(join(probe, 'packed-app', rel)),
+        `装出来的 CLI 建出的工程缺 ${rel} —— 模板没进 tarball 或漏了文件`,
+      );
+    }
   } finally {
     rmSync(packDir, { recursive: true, force: true });
     rmSync(probe, { recursive: true, force: true });

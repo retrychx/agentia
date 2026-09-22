@@ -88,7 +88,7 @@ export const GET: APIRoute = ({ site }) => {
 \`\`\`bash
 npm i @migor/agentia
 npx @migor/cli create my-app     # 生成项目（含使用者向 AGENTS.md）
-npx @migor/cli dev               # tsx watch + 本地 inspector 面板
+npx @migor/cli dev               # 本地 inspector 面板：输入 prompt 驱动一次 run + 看 trace
 npx @migor/cli doctor            # 静态体检
 \`\`\`
 

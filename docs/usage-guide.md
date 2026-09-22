@@ -83,7 +83,7 @@ console.log(result.finalText, result.stopReason, result.trace.totalUsage);
 npx @migor/cli create my-app     # 首次创建：必须带 scope（短名 agentia 在 npm 上是别人的包）
 cd my-app && npm install         # 框架与 CLI 都装进工程
 $EDITOR .env                     # 填 ANTHROPIC_API_KEY（脚手架已生成，且已被 .gitignore 挡住）
-npm run dev                      # = agentia dev：tsx watch + 本地 inspector 面板
+npm run dev                      # = agentia dev：本地 inspector 面板（输入 prompt / 选能力 / 选工作目录）
 npx agentia g tool fetch-weather   # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
 npx agentia doctor               # 静态体检（未登记/悬空/命名/重复）
 npx agentia --version            # CLI 版本（= -v）
@@ -96,11 +96,93 @@ npx agentia --version            # CLI 版本（= -v）
 
 四分类目录，一能力一文件夹：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— **目录名就是类型**，不用记别名。每个文件夹的 `index.ts` 是入口，`default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。显式注册表在 `src/registry.ts`（`agentia g` 自动维护，也可手改）。
 
-> **脚手架 `src/main.ts` 怎么找这些目录**：按**本文件位置**解析（`fileURLToPath(new URL('tools/', import.meta.url))`），
+### 2.1 脚手架生成的文件（**装配与启动是分开的**）
+
+| 文件 | 作用 |
+|---|---|
+| `src/app.ts` | **装配**：导出 `createAgentApp({ toolSources?, workdir? })` 工厂 + `CAPABILITY_DIRS` + `createSessionStore()`，并在模块顶部 `loadEnvFile()` 读 `.env` |
+| `src/main.ts` | **启动**：薄入口 —— `createAgentApp()` → `app.run(...)`，再处理 `result.error` |
+| `src/dev.config.ts` | **数据**（不是逻辑）：开发期的声明，如 `multiTurn: ['trip-planner']`；见 §2.2 |
+| `src/session-store.ts` | `FileSessionStore`：把多轮对话落成 `.agentia/session.json`（原子写）；见 §6.4「对话历史」 |
+| `src/registry.ts` | 显式注册表（`agentia g` 自动维护） |
+| `src/tools/read-file/` | 示例工具：读**工作目录**下的文本文件（工作目录由 DI 注入，见 §2.2） |
+
+**为什么拆**：`agentia dev` 的调试环要**复用同一个工厂**，才能把「这次调哪个能力 / 工作目录是哪个」
+喂进 `createApp`。所以装配必须在 `app.ts` 里、以**函数**形态存在 —— 别把 `createApp(...)` 搬回
+`main.ts`（搬回去 dev 环就起不来了）。
+
+> **脚手架 `src/app.ts` 怎么找这些目录**：按**本文件位置**解析（`fileURLToPath(new URL('tools/', import.meta.url))`），
 > 所以 dev 解析到 `src/`、`npm run build` 之后解析到 `dist/` —— 从任何目录启动都成立，也不受 cwd 影响。
 > 别改成 cwd 相对写法（形如 `src/tools` 的字符串）：那样 `node dist/main.js` 会去加载 `src/` 下的 `.ts`
 > 源码，而装饰器不是可擦除的类型语法，Node 直接跑不了。空分类目录（还没有该类型的能力 ⇒ 构建后没有
 > 对应 `dist/<分类>/`）要过滤掉，否则 `discover` 会因「显式给出的路径不存在」而报错。
+
+> **进程外资源的所有权**（`app.ts` 里最容易写错的一处）：MCP 连接器、数据库句柄、定时器这类
+> **进程外资源一律在模块作用域创建、再以 `useValue` 注入**，不许在 provider 的构造函数里建。
+> 理由见 §2.2 的重启策略：框架没有 `AgentApp.close()`，构造函数里建的东西会随每次重建攒下孤儿进程。
+
+### 2.2 开发期调试环（`agentia dev`）
+
+`npm run dev` 起一个**本地 inspector 面板**，四组输入都在面板上（不用改代码重跑）。
+另有两个操作按钮（都不是「装饰」—— 缺了各自的后果见下面两段）：**■ 中止**（只在有 run 在飞时出现）
+与**清空对话**（只在对话视图出现时显示）：
+
+| 输入 | 口径 |
+|---|---|
+| **prompt** | 输入框 + `↑`/`↓` 调回历史（像 shell）。面板上「点一下 = 一次**真** run」 |
+| **能力** | 多选，缺省全选。收窄的是**菜单**（主 agent 仍在环里），不是「只可能调它」—— 别的能力 `tools` 里的显式引用仍能调到被排除的那个 |
+| **工作目录** | 目录选择器（`浏览…`）。**它是这个环的主控件**：任务型 agent 的 prompt 几乎不变，变的是目录 |
+| **多轮** | 跟能力走：`src/dev.config.ts` 里 `multiTurn: [...]` 声明哪些能力该多轮，混选时取 **OR** 且面板**标出来源**（`多轮·trip-planner`） |
+
+`npm run dev -- "你的问题"` 可以直接把第一句 prompt 带上（等价于启动后在输入框里敲）。
+
+**为什么用 `agentia dev` 而不是 `tsx watch`**：`agentia dev` 自己 import 你的 `src/app.ts` 并驱动它，
+于是**它才是调用方**，四个输入才可能生效。它也**自己管文件监视**（不再叠一层 `tsx watch`）：
+
+- **看什么**：`.ts` / `.mts` / `.cts` / `.tsx` / `.js` / `.mjs` / `.cjs` / `.json` / **`.md`** / `.env` / `.env.local`。
+  `.md` **必须在**里面 —— 文本资产（`@Prompt` 拉的 `.md`、子 agent 的 `system.md`）不在 tsx 的
+  import 图里，交给 `tsx watch` 会**静默无感**：改了没反应、也不提示。
+- **看哪里**：代码与文本资产看 `<项目根>/src/` **整棵树**（含启动后新建的子目录）；
+  `.env` / `.env.local` 在**项目根**，所以那两份**单独**盯。**只有**这两份 —— 项目根的
+  `README.md` / `package.json` 不触发重启（把根抬到项目根会让「改文档也重启」）。
+- **不看什么**：`node_modules` / `dist` / `.git` / `.agentia` / `coverage`（`.agentia` 是 dev 环自己的
+  对话历史，看它就变成「每次 run 重启一次」的自噬循环）。
+- **什么时候重启**：改代码或**改能力选择** ⇒ 重启子进程；改**工作目录** / prompt / 多轮 ⇒ 不重启。
+  在飞 run 期间需要重启时**延后到它结束**，不杀在飞的 run。
+- **面板怎么知道它起来了**：runner 装配完成会广播 `runner-ready`，面板收到就重刷 `/api/dev`。
+  少了这条事件，面板加载时那次查询（早于装配完成）拿到的 `capabilities` 是父进程的初值空数组，
+  能力选择器会**空着且没有任何解释**，要等你先跑一次才填上。
+
+**子进程是 `node <tsx/cli>`，不是 `npx tsx`**：`npx` 是包装器，它**不给孙进程转发 fd 3 的 IPC 通道**，
+于是 runner 里 `process.send` 变成 `undefined` —— 而代码写的是 `process.send?.()`（可选链），
+所以所有协议消息被**静默**丢弃：面板永远等不到 `ready`、`POST /run` 永远回不来；没有 IPC 通道后
+事件循环排空，进程还会以 `code=0` 干净退出（看起来像「用户代码自己跑完了」）。这条有 e2e 钉着
+（`scripts/e2e-dev.ts`）。
+
+**`.env` 由 `src/app.ts` 读**：runner 只 import `app.ts`、**从不执行 `main.ts`**，所以读 `.env`
+的那一行必须在装配模块里 —— 放 `main.ts` 会让 `npm run dev` 静默读不到、而 `npm start` 读得到。
+
+**安全**：面板只绑 `127.0.0.1`，并做两层校验 —— `Origin` 校验（缺失放行，`Origin: null` 拒绝）
++ **每次启动生成的一次性 token**（首帧 `?t=` 换成 `HttpOnly` cookie，后续请求带着走）。
+token 的作用是挡住**本机其它进程**，别把它当网络边界：这个面板**不要**暴露到 `0.0.0.0`。
+
+**成本**：面板缺省给每次 run 套一层预算护栏（`maxCostUsd: 1` / `maxTotalTokens: 200_000`，
+可用 `dev.config.ts` 的 `budget` 覆盖）。手快点两下就是两次真 run —— 护栏就是为这个存在的。
+
+**会话历史**：开了多轮的能力才有对话视图，对话落在 `.agentia/session.json`（已被 `.gitignore` 挡住）。
+失败的轮次**不在会话文件里**（框架只在成功轮次回写），面板靠 trace 的 `session.id` 把它们 join 回来。
+对话视图旁边有一个**「清空对话」**按钮：清空 = **换一个 `sessionId`**（`dev` → `dev-2` → …），
+**不删** `session.json` —— 旧对话还在盘上、run 列表里也还指得到，只是模型不再带着它跑。
+当前用哪个 id 记在 `.agentia/dev-session-id`（**不是** `session.json` 的一部分）：只放内存的话，
+重启 `npm run dev` 之后刚清空的对话会**自己回来**。有 run 在飞时不能清空（会 409）。
+
+**中止在飞的 run**：run 跑着的时候输入条上会多一个**「■ 中止」**按钮（没在飞时不显示）。
+点了之后：
+- run 在**回合边界**以 `stopReason='aborted'` **正常收尾**，**trace 照常落盘**（面板也会说「已中止」，
+  不是「失败」—— 中止的 `ok` 是 `false`，判别看 `stopReason`）；
+- 在飞时的第二次 `POST /run` 会被**拒绝**（409，提示先等它结束或先中止）；
+- ⚠️ 中断是**协作式**的：工具若不读 `signal`（例如某些 MCP 在途调用）就没人理。所以 5 秒后
+  **兜底重启 runner**，此时这次 run 的 trace 会丢 —— 面板会**明说**这一点（不静默）。
 
 > **陷阱**：装饰器注册表是模块级 `WeakMap`。框架必须是**单一模块实例** —— 混用 `src` 与 `dist`、或在一个仓库里装两份 agentia，会让能力收集为空。让 CLI 生成的 `package.json` 里只依赖一份框架即可。
 
@@ -359,11 +441,15 @@ const app = await createApp({ ... });
 
 三条语义（都刻意，别当成实现细节）：
 
-- **框架不自动读 `.env`** —— 读哪个文件、什么时候读是宿主的启动决策。塞进 `createApp` 里自动做，会让「同一份代码换个目录跑结果不同」变成要花时间排查的悬案；而放 CLI 里只有 `agentia dev` 生效。写在**你的** `main.ts` 里，`node dist/main.js`、docker、别的宿主都一样读得到。
+- **框架不自动读 `.env`** —— 读哪个文件、什么时候读是宿主的启动决策。塞进 `createApp` 里自动做，会让「同一份代码换个目录跑结果不同」变成要花时间排查的悬案；而放 CLI 里只有 `agentia dev` 生效。写在**你的** `app.ts` 里，`npm run dev`、`node dist/main.js`、docker、别的宿主都一样读得到。
 - **真实环境变量优先**（缺省不覆盖）：`process.env` 里已定义（哪怕空串）的键保持不动 —— CI / docker / `FOO=bar npm start` 永远赢过文件。要让文件里的值压过环境变量就 `loadEnvFile({ override: true })`。
 - **想知道「生效没」看返回值**，别去看文件：被挡下的键不在返回对象里。
 
-`agentia create` 生成的脚手架把 `.env`、`.env.example` 与 `main.ts` 首行的 `loadEnvFile();` 都备好了，并在 `.gitignore` 里挡住 `.env` —— 生成 `.env` 却不 ignore，等于把 key 送进用户的第一个 commit。
+`agentia create` 生成的脚手架把 `.env`、`.env.example` 与 `app.ts` 里的 `loadEnvFile();` 都备好了，并在 `.gitignore` 里挡住 `.env` —— 生成 `.env` 却不 ignore，等于把 key 送进用户的第一个 commit。
+
+> ⚠️ **`loadEnvFile()` 必须在 `app.ts`，不能在 `main.ts`**：`agentia dev` 的 runner 只 import
+> `app.ts`、**从不执行 `main.ts`**。放错一侧的失败形状是静默的 —— `npm run dev` 读不到 `.env`
+> 而 `npm start` 读得到，用户只会看到「没配 key」然后去怀疑框架。这条有 e2e 钉着（`scripts/e2e-dev.ts`）。
 
 > ⚠️ **本机 export 过 `ANTHROPIC_API_KEY` 的人**（比如同时用 Claude Code）：按上面的优先级，脚手架 `.env` 里的 key 会被**静默压住**。改了 `.env` 却「没生效」时，先 `echo $ANTHROPIC_API_KEY` 看看环境里是不是已经有一份。
 
@@ -821,6 +907,28 @@ async placeOrder(input: { sku: string }) {
 - **展开只能展开 trace 里存着的正文** —— 想看到被截断掉的部分，得在**记账时**就别截：`maxEventChars: false`（见 §4）。缺省截到 2000 字符，展开了也只有那 2000 字符。
 - 入参折叠态的摘要被砍到 62 字符（4 个键 / 每值 21 字符）；**展开拿到的是原文**，不是那份摘要 ——
   本地面板与官网 Playground 两个宿主都是如此（两个宿主都不该只喂摘要，否则点开什么都没多出来）。
+
+> 本地面板比 Playground 多一层**输入端**（prompt / 能力 / 工作目录 / 多轮四组控件 + 输入框历史），
+> 见 §2.2。Playground 是只读展示 trace 的。
+
+#### 对话历史（多轮）从哪来
+
+开了**多轮**的能力，面板上多一个「对话」页签，内容 = 会话文件里的消息 **∪ 失败的 run**。
+
+| 概念 | 落点 | 说明 |
+|---|---|---|
+| 会话存储 | `SessionStore` 接口 | `load()` / `append()`；脚手架给的是 `FileSessionStore`（写 `.agentia/session.json`，**原子写**：临时文件 + rename） |
+| 会话标识 | `RunInvocationOptions.sessionId` | 同 id 的多次 run 共享历史；面板的 dev 环固定用 `'dev'` |
+| 回写时机 | `runtime/run.ts` | ⚠️ **只在成功轮次回写** ⇒ 失败的轮次**在会话文件里不存在** |
+| 面板怎么补上失败轮 | run 根 span 的 `attributes['session.id']` | 用它与 run 列表 join，再按 prompt 文本对上；少了这一步就是「显示一份**少了**一轮的对话」 |
+
+**两层「历史」别混**（这是开发期最容易误导人的一处）：
+
+- **prompt 回显**（输入框 `↑`/`↓`）：只是把文字填回输入框，**模型看不见** —— 你还能改，
+  模型收到的仍是你最终回车的那句。与多轮开关无关，**永远有**。
+- **对话历史**（对话页签）：前面说过的话**真的进模型上下文**（更长、更贵、可能被裁剪）。
+  **只在开了多轮时出现** —— 没开多轮时一次 run = 一句输入 + 一段输出，凭空多一个对话视图
+  会让人以为上个仓库的评审被带进来了（它没有，而且不该有）。
 
 #### 调优报告（**哪个能力慢 / 贵 / 爱失败**）
 

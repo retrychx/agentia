@@ -588,9 +588,9 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><th>命令</th><th>作用</th></tr>
           </thead>
           <tbody>
-            <tr><td>agentia create &lt;name&gt;</td><td>脚手架新项目：四分类目录（含 .gitkeep）、src/registry.ts 注册表、src/main.ts 入口、tsconfig。</td></tr>
+            <tr><td>agentia create &lt;name&gt;</td><td>脚手架新项目：四分类目录（含 .gitkeep）、src/registry.ts 注册表、src/app.ts（装配工厂）+ src/main.ts（薄入口）+ src/dev.config.ts、tsconfig。</td></tr>
             <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>生成能力到对应的分类目录（tool → src/tools/、skill → src/skills/、prompt → src/prompts/、subagent → src/subagents/），并自动登记 src/registry.ts；长文本资产（system.md / asset.md）一并生成。</td></tr>
-            <tr><td>agentia dev</td><td>tsx watch 启动 src/main.ts：改能力文件自动重启。</td></tr>
+            <tr><td>agentia dev</td><td>起本地 inspector 面板：在面板上输入 prompt 驱动一次真 run（带 ↑/↓ 历史），可多选能力（收窄菜单）、选工作目录、开关多轮，再在 trace-view 里看调用树。CLI 自己管文件监视（允许清单含 .md —— 改文本资产不用重启）。只绑 127.0.0.1，带 Origin 校验 + 每次启动一次性 token。</td></tr>
             <tr><td>agentia doctor</td><td>装配体检：未登记/悬空能力、命名规范、重复条目。</td></tr>
             <tr><td>agentia report &lt;trace.jsonl&gt;</td><td>从 trace 落盘文件生成调优报告：能力耗时 / 成本 / 错误率排行（跨行按能力合并）。每行一个 JSON —— 裸 Trace，或含 <code>result.trace</code> 的 TaskRecord。<strong>文件要自己落</strong>：接一个 <code>TraceSink</code> 追加 JSON 行，或用 <code>FileTaskStore</code> 的导出文件。</td></tr>
             <tr><td>agentia harvest &lt;trace.jsonl&gt;</td><td>把线上 trace 翻成 eval 用例脚手架（<code>--out &lt;file.ts&gt;</code> / <code>--failed</code> / <code>--limit N</code>）：scriptedClient 脚本按主循环 llm.turn 重建，expect 预填工具序列断言。<strong>脚手架不是成品</strong> —— assistant 文本是占位（trace 不记文本），人工核对后再进 CI。</td></tr>
@@ -609,7 +609,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
           </thead>
           <tbody>
             <tr><td>ANTHROPIC_API_KEY</td><td>必填。Anthropic API 密钥（亦支持 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL 兼容端点）。</td></tr>
-            <tr><td>.env（<code>loadEnvFile()</code>）</td><td>框架<strong>不自动</strong>读 <code>.env</code>：脚手架 <code>src/main.ts</code> 首行的 <code>loadEnvFile()</code> 把它读进 <code>process.env</code>。<strong>真实环境变量优先</strong> —— 已定义（含空串）的键不被文件覆盖，除非显式 <code>{ override: true }</code>。</td></tr>
+            <tr><td>.env（<code>loadEnvFile()</code>）</td><td>框架<strong>不自动</strong>读 <code>.env</code>：脚手架 <code>src/app.ts</code> 的 <code>loadEnvFile()</code> 把它读进 <code>process.env</code>（放在装配模块，<code>agentia dev</code> 与 <code>npm start</code> 两个入口才都会读到）。<strong>真实环境变量优先</strong> —— 已定义（含空串）的键不被文件覆盖，除非显式 <code>{ override: true }</code>。</td></tr>
             <tr><td>AGENTIA_MODEL</td><td>可选。全局缺省模型覆盖，无则回落 <code>claude-opus-5</code>；显式传参优先级最高。</td></tr>
             <tr><td>OPENAI_API_KEY</td><td>可选。OpenAI 兼容 provider 的密钥，多 provider 场景使用。</td></tr>
           </tbody>

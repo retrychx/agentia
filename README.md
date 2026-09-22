@@ -22,7 +22,7 @@
 npx @migor/cli create my-app         # 脚手架（含 .env / .env.example）
 cd my-app && npm install             # 框架与 CLI 都装进工程
 $EDITOR .env                         # 填 ANTHROPIC_API_KEY（也可直接 export，真实环境变量优先）
-npm run dev                          # = agentia dev：tsx watch + 本地 inspector 面板
+npm run dev                          # = agentia dev：本地 inspector 面板（输入 prompt / 选能力 / 选工作目录）
 # 可选：ANTHROPIC_BASE_URL（兼容端点）、AGENTIA_MODEL（缺省 claude-opus-5）
 
 # 工程内直接用：npx agentia g tool fetch-weather / npx agentia doctor / npx agentia --version
@@ -31,7 +31,9 @@ npm run dev                          # = agentia dev：tsx watch + 本地 inspec
 # 想全局装（到处都能敲 agentia）：npm i -g @migor/cli
 ```
 
-> 框架**不自动**读 `.env`：脚手架 `src/main.ts` 首行的 `loadEnvFile()` 负责把它读进 `process.env`。
+> 框架**不自动**读 `.env`：脚手架 `src/app.ts` 的 `loadEnvFile()` 负责把它读进 `process.env`。
+> 放在**装配模块**（app.ts）而不是启动入口（main.ts），是因为 `agentia dev` 只 import app.ts、
+> 从不执行 main.ts —— 写错一侧会让 `npm run dev` 静默读不到 `.env` 而 `npm start` 读得到。
 > 真实环境变量优先（CI / docker / 命令行永远赢过文件），`loadEnvFile({ override: true })` 才反过来。
 
 > **版本**：`0.8.3`（`@migor/agentia` 与 `@migor/cli` 均已发布到 npm）。`examples/` **刻意**用
@@ -56,7 +58,7 @@ agentia g tool weather                 # 生成 src/tools/weather/index.ts 并�
 agentia g subagent doc-reviewer        # 生成 src/subagents/doc-reviewer/{index.ts,system.md}
 agentia g skill note-writer            # 生成 src/skills/note-writer/index.ts
 agentia g prompt style-guide           # 生成 src/prompts/style-guide/{index.ts,asset.md}
-agentia dev                            # tsx watch + 本地 inspector 面板
+agentia dev                            # 本地 inspector 面板：输入 prompt 驱动一次 run + 看 trace
 ```
 
 **目录约定**：四分类目录，一能力一文件夹 —— `src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/`。

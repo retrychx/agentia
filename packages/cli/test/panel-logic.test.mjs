@@ -1,0 +1,451 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { distReadyOrLoud } from './dist-guard.mjs';
+
+/* 对构建产物测试（未构建时跳过而非报错）。 */
+const DIST = fileURLToPath(new URL('../dist/panel-logic.js', import.meta.url));
+let L = null;
+if (existsSync(DIST)) L = await import(new URL('../dist/panel-logic.js', import.meta.url).href);
+const SKIP = !L ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' : false;
+/* dist 缺失不许静默：本地醒目警告后照旧 skip；CI（build 先于测试）里直接判失败 */
+if (SKIP) distReadyOrLoud(DIST, 'CLI 构建产物');
+
+describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP }, () => {
+  it('能力多选 → toolSources：全选传 undefined，其余按字典序（可复现）', () => {
+    const all = ['b', 'a', 'c'];
+    // 全选 ⇒ undefined：与「不传即全量」同义，且省掉一次白跑的孤儿能力告警
+    assert.equal(L.normalizeToolSources(['a', 'b', 'c'], all), undefined, '全选应传 undefined');
+    assert.equal(L.normalizeToolSources(['c', 'a', 'b'], all), undefined, '顺序无关，仍是全选');
+    // 收窄 ⇒ 固定顺序（字典序），**不是点击顺序** —— 否则同一组能力两次跑出不同菜单序
+    assert.deepEqual(L.normalizeToolSources(['c', 'a'], all), ['a', 'c'], '收窄应按字典序');
+    assert.deepEqual(
+      L.normalizeToolSources(['c', 'a'], all),
+      L.normalizeToolSources(['a', 'c'], all),
+    );
+    // 空集也当全量：toolSources: [] 会收窄到**空菜单**（每个 provider 都成孤儿），是纯陷阱值
+    assert.equal(L.normalizeToolSources([], all), undefined, '空选应兜成全量，绝不传空数组');
+    // 不认识的名字静默丢弃（能力被删了 / 面板缓存旧了），但结果里就没有它了
+    assert.deepEqual(L.normalizeToolSources(['a', 'gone'], all), ['a'], '未知 token 应丢弃');
+    assert.equal(L.normalizeToolSources(['gone'], all), undefined, '全是未知 token ⇒ 退化成全量');
+  });
+
+  it('「已选/总数」计数：全量时显示 N/N（一眼看出这次是全量还是收窄）', () => {
+    assert.equal(L.capabilityBadge(['a', 'b'], ['a', 'b']), '2/2');
+    assert.equal(L.capabilityBadge(['a'], ['a', 'b', 'c']), '1/3');
+  });
+
+  it('多轮默认值 = 所选能力声明的 OR，并给出**来源**（混选时默认值有歧义）', () => {
+    const declared = ['trip-planner'];
+    // 只选任务型 ⇒ 单轮
+    assert.deepEqual(L.multiTurnDefault(['code-review'], declared), { value: false, sources: [] });
+    // 只选对话型 ⇒ 多轮，来源就是它
+    assert.deepEqual(L.multiTurnDefault(['trip-planner'], declared), {
+      value: true,
+      sources: ['trip-planner'],
+    });
+    // 混选 ⇒ **OR**（只要有一个声明多轮就默认多轮），且来源标出来 —— 不让你面对「为什么这次带了上下文」的谜
+    assert.deepEqual(L.multiTurnDefault(['code-review', 'trip-planner'], declared), {
+      value: true,
+      sources: ['trip-planner'],
+    });
+    // 没选到任何声明多轮的 ⇒ 单轮（任务型是安全默认，不会串味）
+    assert.deepEqual(L.multiTurnDefault([], declared), { value: false, sources: [] });
+  });
+
+  it('多轮开关文案必须说清「几轮」与「为什么」', () => {
+    assert.equal(L.multiTurnLabel(true, ['trip-planner'], true), '多轮·trip-planner');
+    assert.equal(L.multiTurnLabel(true, [], true), '多轮');
+    assert.equal(L.multiTurnLabel(true, [], false), '多轮（手动开）');
+    assert.equal(L.multiTurnLabel(false, [], true), '单轮');
+    // 覆盖默认时要说明被覆盖的是谁 —— 否则「我明明声明了多轮，怎么这次是单轮」无从查起
+    assert.match(L.multiTurnLabel(false, ['trip-planner'], false), /覆盖默认.*trip-planner/);
+  });
+
+  it('prompt 回显（乙）：连续重复不入栈、空白丢弃、超上限截断', () => {
+    let h = [];
+    h = L.pushPromptHistory(h, '帮我 review 一下代码');
+    assert.deepEqual(h, ['帮我 review 一下代码']);
+    // 与 shell 的 HISTCONTROL=ignoredups 同口径：只与栈顶比
+    h = L.pushPromptHistory(h, '帮我 review 一下代码');
+    assert.deepEqual(h, ['帮我 review 一下代码'], '连续重复不该占两格');
+    h = L.pushPromptHistory(h, '   ');
+    assert.deepEqual(h, ['帮我 review 一下代码'], '空白串直接丢弃');
+    h = L.pushPromptHistory(h, '换个文件夹再看');
+    assert.deepEqual(h, ['帮我 review 一下代码', '换个文件夹再看']);
+    // 上限截断（保留最近的）
+    // 注意：不能写成 `.reduce(L.pushPromptHistory, [])` —— reduce 会把**下标**当第三个实参
+    // 传进去，正好落在 limit 上，于是「上限」变成了 0..59 的滑动值。包一层箭头函数。
+    const long = Array.from({ length: 60 }, (_, i) => `p${i}`).reduce(
+      (acc, p) => L.pushPromptHistory(acc, p),
+      [],
+    );
+    assert.equal(long.length, L.PROMPT_HISTORY_LIMIT);
+    assert.equal(long[long.length - 1], 'p59', '截断必须保留最近的');
+  });
+
+  it('↑/↓ 游标：不绕回（按过头不该把人送回一个没想到的位置）', () => {
+    const h = ['a', 'b', 'c'];
+    // cursor: -1 = 草稿，0 = 最新，n-1 = 最旧
+    assert.equal(L.historyStep(h, L.HISTORY_DRAFT, 'older'), 0, '↑ 从草稿到最新一条');
+    assert.equal(L.historyStep(h, 0, 'older'), 1);
+    assert.equal(L.historyStep(h, 1, 'older'), 2);
+    assert.equal(L.historyStep(h, 2, 'older'), 2, '到最旧就夹住，不绕回');
+    assert.equal(L.historyStep(h, 2, 'newer'), 1);
+    assert.equal(L.historyStep(h, 0, 'newer'), L.HISTORY_DRAFT, '↓ 回到草稿');
+    assert.equal(L.historyStep(h, L.HISTORY_DRAFT, 'newer'), L.HISTORY_DRAFT, '草稿位再 ↓ 不动');
+    assert.equal(L.historyStep([], L.HISTORY_DRAFT, 'older'), L.HISTORY_DRAFT, '没有历史时不动');
+    // 文本取值：草稿位返回草稿本身（按 ↓ 回到你还没发出去的那句）
+    assert.equal(L.historyText(h, 0, 'draft'), 'c');
+    assert.equal(L.historyText(h, 2, 'draft'), 'a');
+    assert.equal(L.historyText(h, L.HISTORY_DRAFT, 'draft'), 'draft');
+  });
+
+  it('对话流 = 会话文件的消息 ∪ 失败 run（D6 的 join，键是 session.id）', () => {
+    const messages = [
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '第一答' },
+      { role: 'user', content: '第二问' },
+      { role: 'assistant', content: [{ type: 'text', text: '第二答' }] },
+    ];
+    const runs = [
+      // 成功的 run：已经在会话文件里了，不该被重复追加
+      { traceId: 't1', ok: true, sessionId: 'dev', prompt: '第一问' },
+      // 失败的 run：`runtime/run.ts` 只在成功轮次回写 session ⇒ 它在会话文件里**根本不存在**，
+      // 靠 run 列表 join 出来。少了这一步就是「显示一份**少了**一轮的对话」。
+      { traceId: 't2', ok: false, sessionId: 'dev', prompt: '第三问（失败了）' },
+      // 别的 session：不掺进来
+      { traceId: 't3', ok: false, sessionId: 'other', prompt: '别人的失败' },
+      // 没开会话的 run（sessionId 为 null）：也不掺进来
+      { traceId: 't4', ok: false, sessionId: null, prompt: '没开会话的失败' },
+    ];
+    const turns = L.mergeConversation(messages, runs, 'dev');
+    assert.equal(turns.length, 3, `轮数=${turns.length}`);
+    assert.equal(turns[0].user, '第一问');
+    assert.equal(turns[0].assistant, '第一答');
+    assert.equal(turns[0].failed, false);
+    assert.equal(turns[1].assistant, '第二答', 'content block 数组也要能取文本');
+    assert.equal(turns[2].user, '第三问（失败了）');
+    assert.equal(turns[2].assistant, null);
+    assert.equal(turns[2].failed, true, '失败轮必须标失败，不假装那轮没发生');
+    assert.equal(turns[2].traceId, 't2', '失败轮要能指回它的 run');
+  });
+
+  it('中止轮：**也 join 进来**，但不算失败（aborted 的 ok 同样是 false）', () => {
+    /* 2026-09-22 复核补的。引擎的 `abortedResult()` 刻意给已取消的 run 带结构化 error
+     * （取消不是失败，但原因要可查）⇒ `ok === false`。而上面的 join 原本只看 `ok`
+     * ⇒ 被中止的那轮在对话视图里被标红「（这一轮失败了…）」，同一个 run 的通知条却写着
+     * 「已中止」—— 同一件事在两个表面上说法相反。
+     * 但它**不能**被排除掉：框架只在成功路径回写会话 ⇒ 被中止的轮在会话文件里同样不存在，
+     * 排除它等于显示一份**少了一轮**的对话（另一种静默不一致，且更难发现）。 */
+    const messages = [
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '第一答' },
+    ];
+    const runs = [
+      { traceId: 't1', ok: false, stopReason: 'aborted', sessionId: 'dev', prompt: '被中止的问题' },
+      { traceId: 't2', ok: false, stopReason: 'error', sessionId: 'dev', prompt: '真失败的问题' },
+    ];
+    const turns = L.mergeConversation(messages, runs, 'dev');
+    assert.equal(turns.length, 3, `轮数=${turns.length}（中止轮必须留在对话里）`);
+    const aborted = turns.find((t) => t.user === '被中止的问题');
+    assert.ok(aborted, '中止轮不能从对话视图里消失 —— 用户确实发过它');
+    assert.equal(aborted.failed, false, '中止不是失败（不该标红）');
+    assert.equal(aborted.aborted, true, '面板要能认出「这一轮是被中止的」');
+    assert.equal(aborted.traceId, 't1');
+    const failed = turns.find((t) => t.user === '真失败的问题');
+    assert.equal(failed.failed, true);
+    assert.equal(failed.aborted, false);
+  });
+
+  it('runIsFailure：**先认 stopReason 再认 ok**（与通知条同一条语义，两个表面共用）', () => {
+    // run 列表的红点与对话视图的红边都走它 —— 各写一份判断就会漂，而漂开的症状是
+    // 「同一个 run 在左边标红、在右边说已中止」。
+    assert.equal(L.runIsFailure({ ok: false, stopReason: 'aborted' }), false);
+    assert.equal(L.runIsFailure({ ok: false, stopReason: 'error' }), true);
+    assert.equal(L.runIsFailure({ ok: false }), true, '老 trace 没有 stop_reason ⇒ 只能按 ok 判');
+    assert.equal(L.runIsFailure({ ok: true, stopReason: 'end_turn' }), false);
+  });
+
+  it('CLI 侧记账有上限：等不到 trace 的 note 也要被淘汰（dev 是长跑进程）', () => {
+    /* 为什么需要这条：`noteRun` 记的 traceId 可能**永远进不了** runs —— trace 走
+     * `POST /ingest` 另一路投递，sink 失败 / 进程被杀就没有那条 trace。旧实现把淘汰
+     * 只挂在「traceId 进 runs」那条路上（注释还写着「与 runs 同步淘汰」）⇒
+     * 那些无人认领的 note 只涨不降。 */
+    const notes = new Map();
+    L.rememberNote(notes, 't1', { prompt: 'a' }, 2);
+    L.rememberNote(notes, 't2', { prompt: 'b' }, 2);
+    L.rememberNote(notes, 't3', { prompt: 'c' }, 2);
+    assert.deepEqual([...notes.keys()], ['t2', 't3'], '超上限按**插入序**淘汰最旧的');
+    L.rememberNote(notes, 't3', { prompt: 'c2' }, 2);
+    assert.deepEqual([...notes.keys()], ['t2', 't3'], '重复记同一个 traceId 不改变淘汰顺序');
+    assert.equal(notes.get('t3').prompt, 'c2', '后写的记账覆盖前一条');
+  });
+
+  it('run-done 的反馈语：**先认 stopReason 再认 ok**（中止的 ok 也是 false）', () => {
+    // 引擎的 abortedResult() 刻意给已取消的 run 带上结构化 error（取消不是失败，
+    // 但原因要可查）⇒ 中止时 ok === false。判别顺序反了，用户按的中止会显示成
+    // 一句「run 失败：请求已被取消」—— 这条断言就是钉这个顺序的。
+    const aborted = L.runDoneNotice({ ok: false, stopReason: 'aborted', error: 'run 已被取消' });
+    assert.equal(aborted.isError, false, '中止不是错误（不该标红）');
+    assert.match(aborted.text, /中止/, `应说「中止」，实际：${aborted.text}`);
+    assert.doesNotMatch(aborted.text, /失败/, '中止不该被说成失败');
+
+    const failed = L.runDoneNotice({ ok: false, stopReason: 'error', error: '模型 500' });
+    assert.equal(failed.isError, true);
+    assert.match(failed.text, /失败/);
+    assert.match(failed.text, /模型 500/, '原因要带出来，不能只说「失败」');
+    assert.match(failed.text, /error/, 'stopReason 也要露出来 —— 同一句文案要能区分不同收尾');
+    // error 为空时不能显示成空字符串（那是静默）
+    assert.match(L.runDoneNotice({ ok: false, stopReason: 'error', error: null }).text, /未知原因/);
+
+    const done = L.runDoneNotice({ ok: true, stopReason: 'end_turn', error: null });
+    assert.equal(done.isError, false);
+    assert.match(done.text, /完成/);
+    assert.match(done.text, /end_turn/);
+  });
+
+  it('路径压短只影响显示（发给子进程的永远是完整绝对路径）', () => {
+    assert.equal(L.shortenPath('/Users/me/proj/a', { home: '/Users/me' }), '~/proj/a');
+    assert.equal(L.shortenPath('/Users/me', { home: '/Users/me' }), '~');
+    assert.equal(L.shortenPath('/w/proj/src', { cwd: '/w/proj' }), './src');
+    // 不是前缀就原样（'/Users/megan' 不该被 '/Users/me' 吃掉）
+    assert.equal(L.shortenPath('/Users/megan/x', { home: '/Users/me' }), '/Users/megan/x');
+    assert.equal(L.shortenPath('', { home: '/Users/me' }), '');
+  });
+});
+
+/**
+ * 文件监视：**「改文本资产不用重启」那条承诺的落点**。
+ *
+ * 旧实现把它交给 `tsx watch`，而 `.md` 不在 tsx 的 import 图里 ⇒ 改 `system.md` /
+ * `asset.md` **静默无感**（G3b，实测过）。这里守住新的判据：
+ * ① 该看的类型（含 `.md`）看得见；② 不该看的（产物 / 依赖 / 编辑器噪声）看不见；
+ * ③ 递归到子目录，且**新建**的子目录也进 watch 范围。
+ */
+describe('dev 的文件监视（改 .md 要能触发重启）', { skip: SKIP }, () => {
+  it('允许清单：代码 / 文本资产 / .env 看，产物与噪声不看', () => {
+    // 动态 import dist/dev.js —— 它的模块体没有副作用（副作用都在 devServer() 里）
+    return import(new URL('../dist/dev.js', import.meta.url).href).then((D) => {
+      for (const yes of [
+        '/p/src/main.ts',
+        '/p/src/app.ts',
+        '/p/src/subagents/x/system.md',
+        '/p/src/prompts/y/asset.md',
+        '/p/src/registry.ts',
+        '/p/tsconfig.json',
+        '/p/.env',
+        '/p/.env.local',
+      ]) {
+        assert.equal(D.shouldWatch(yes), true, `应该看：${yes}`);
+      }
+      for (const no of ['/p/README.md.bak', '/p/.DS_Store', '/p/src/main.ts.swp', '/p/src/x.png']) {
+        assert.equal(D.shouldWatch(no), false, `不该看：${no}`);
+      }
+      // `/p/dist/main.js` **故意不在这里**：shouldWatch 是纯「扩展名 / 文件名」判据，
+      // `.js` 本身就在允许清单里，把 `dist` 排除掉的是 watchTree 的目录递归（WATCH_SKIP）。
+      // 想用绝对路径段去认 `dist` 是错的：项目根目录自己就叫 dist / node_modules 时会把
+      // 整个项目判成「不该看」。所以那条排除在下面的递归用例里断言（那里才有 root）。
+      assert.equal(D.shouldWatch('/p/dist/main.js'), true, '扩展名判据不认识目录，这是有意的');
+    });
+  });
+
+  it('递归 + 新建子目录也在范围内：写 .md 真的回调', async () => {
+    const D = await import(new URL('../dist/dev.js', import.meta.url).href);
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-watch-'));
+    const seen = [];
+    const stop = D.watchTree(dir, (abs) => seen.push(abs));
+    try {
+      // 已存在的子目录里的 .md（递归范围）
+      writeFileSync(join(dir, 'asset.md'), 'v1');
+      // 新建的子目录 —— 不在初始 readdir 里，靠「新目录动态加入」才看得见
+      const sub = join(dir, 'subagents');
+      mkdirSync(sub, { recursive: true });
+      writeFileSync(join(sub, 'system.md'), 'v1');
+      const deadline = Date.now() + 4000;
+      while (seen.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      assert.ok(seen.length > 0, '写 .md 应该触发回调（旧实现这里静默无感）');
+      assert.ok(
+        seen.every((p) => D.shouldWatch(p)),
+        `回调只该带允许清单里的文件，实际：${JSON.stringify(seen)}`,
+      );
+
+      // 目录级排除：这两处里面的文件**扩展名都在允许清单里**，能挡住它们的只有 WATCH_SKIP，
+      // 所以这是「递归排除」唯一的有效断言点。
+      // ⚠️ 别把这条说成「防 `.agentia` 自噬」就完事：**真正的第一层是监视根** ——
+      // `devServer` 只 `watchTree(<projectRoot>/src)`，而 `.agentia` / `dist` 在项目根，
+      // 根本不在范围内（`scripts/e2e-dev.ts` 第 12 步钉的是这条）。WATCH_SKIP 是第二层，
+      // 防的是「哪天把根改成项目根」—— 那时 `.agentia/session.json` 会立刻变成
+      // 「每次多轮 run 重启一次子进程」的自噬循环。
+      mkdirSync(join(dir, 'dist'), { recursive: true });
+      writeFileSync(join(dir, 'dist', 'out.js'), 'v1'); // .js 是允许清单里的类型
+      mkdirSync(join(dir, '.agentia'), { recursive: true });
+      writeFileSync(join(dir, '.agentia', 'session.json'), '{}'); // .json 同理
+      // 等过 150ms 去抖窗口，让「有事件」也来得及落进 seen —— 否则分不清「没看见」和「还没看见」
+      await new Promise((r) => setTimeout(r, 600));
+      assert.ok(
+        !seen.some((p) => p.includes(`${sep}dist${sep}`)),
+        `dist 里的产物不该触发重启，实际：${JSON.stringify(seen)}`,
+      );
+      // 这条不是洁癖：dev 环自己每轮多轮对话都往 .agentia/session.json 写一次，
+      // 一旦它进了 watch 范围，就是「每次 run 都重启一次子进程」的自噬循环。
+      assert.ok(
+        !seen.some((p) => p.includes(`${sep}.agentia${sep}`)),
+        `dev 自己的状态目录不该触发重启（会自噬），实际：${JSON.stringify(seen)}`,
+      );
+    } finally {
+      stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * ⚠️ 上面那条用例**抓不到**下面这个形状（它靠事件合并侥幸通过）：它把 `dist/` 与
+   * `.agentia/` 建在「已有一批写入」之后，而 `flush` 只报 pending 里的**第一条**
+   * —— 于是那两条目录里的写入被合并掉，断言就绿了。
+   *
+   * 真正的形状是「**启动之后**才出现的跳过目录」：判据若只写在初始递归那个调用点，
+   * 动态新增那条路（watcher 回调里的 `addDir`）就漏了。而 `.agentia/` **必然**属于这一类
+   * —— 它是 dev 环自己在第一次多轮 run 时创建的（`FileSessionStore.append` 会 mkdir）。
+   * 漏掉的后果就是本文件上面那条注释警告的自噬循环：**每次多轮 run 重启一次子进程**。
+   * （生产可达性另说：真跑时 root 是 `<projectRoot>/src`，`.agentia/` 不在范围内 ——
+   * 见上面 `mkdirSync(join(dir, 'dist'))` 那段注释。这里测的是 `watchTree` **自己的**契约：
+   * 「跳过判据对初始递归与动态新增两条路都成立」。）
+   *
+   * 所以这条用例刻意把两件事分开、中间等过去抖窗口 —— 不让合并掩盖被测行为。
+   */
+  it('启动后才出现的 dist/ 与 .agentia/：里面的写入**不该**触发回调（否则自噬）', async () => {
+    const D = await import(new URL('../dist/dev.js', import.meta.url).href);
+    for (const dirName of ['dist', '.agentia']) {
+      const dir = mkdtempSync(join(tmpdir(), 'agentia-watchskip-'));
+      const seen = [];
+      const stop = D.watchTree(dir, (abs) => seen.push(abs));
+      try {
+        // 启动时还不存在 —— 这正是 `.agentia` 的真实时序
+        mkdirSync(join(dir, dirName), { recursive: true });
+        // 等过 150ms 去抖窗口 + 余量，让「建目录」那一批事件先冲完
+        await new Promise((r) => setTimeout(r, 500));
+        seen.length = 0;
+        // 扩展名**在允许清单里**（.js / .json）—— 能挡住它的只有目录级排除
+        writeFileSync(join(dir, dirName, dirName === 'dist' ? 'out.js' : 'session.json'), 'v1');
+        await new Promise((r) => setTimeout(r, 700));
+        assert.equal(
+          seen.length,
+          0,
+          `${dirName}/ 是启动后才出现的跳过目录，里面的写入不该触发重启，实际：${JSON.stringify(seen)}`,
+        );
+      } finally {
+        stop();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('项目根本身叫 dist / .foo 时**仍然要**看（跳过判据只看子目录名，不认路径段）', async () => {
+    const D = await import(new URL('../dist/dev.js', import.meta.url).href);
+    // 建一个**名字就叫 dist** 的目录当项目根：它自己不该被跳过（否则整个项目静默不监视）
+    const parent = mkdtempSync(join(tmpdir(), 'agentia-rootname-'));
+    const dir = join(parent, 'dist');
+    mkdirSync(dir, { recursive: true });
+    const seen = [];
+    const stop = D.watchTree(dir, (abs) => seen.push(abs));
+    try {
+      writeFileSync(join(dir, 'app.ts'), 'v1');
+      const deadline = Date.now() + 4000;
+      while (seen.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      assert.ok(
+        seen.length > 0,
+        '项目根自己叫 dist 时必须照常监视（用绝对路径段认 dist 是错的：根目录可能就叫 dist）',
+      );
+    } finally {
+      stop();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `watchRootEnvFiles`：只盯**项目根**的 `.env` / `.env.local`。
+   *
+   * ⚠️ 这条**不能**靠 `watchTree` 顶替：`watchTree` 的根是 `<projectRoot>/src`，而 `.env`
+   * 在项目根 ⇒ 允许清单里的 `.env` 曾经是一条**够不着**的判据（改 `.env` 静默无感，
+   * 与 G3b 同类）。但**「调用点到底接上了没有」只有真跑能验**（根是**调用点**决定的，
+   * `watchTree` 自己无从知道该看哪儿）⇒ 那是 `scripts/e2e-dev.ts` 第 9-bis 步的活。
+   * 这里测的是它**自己的**契约：名字过滤（非 env 一律不看）与不递归。
+   */
+  it('watchRootEnvFiles：只看项目根的 .env / .env.local，别的一律不看', async () => {
+    const D = await import(new URL('../dist/dev.js', import.meta.url).href);
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-envwatch-'));
+    const seen = [];
+    // 先建好再 watch —— 测「改」而不是「建」，更贴近真实用法（`.env` 早就在了）
+    writeFileSync(join(dir, '.env'), 'v0');
+    writeFileSync(join(dir, 'README.md'), 'v0');
+    const stop = D.watchRootEnvFiles(dir, (abs) => seen.push(abs));
+    try {
+      writeFileSync(join(dir, '.env'), 'v1');
+      const deadline = Date.now() + 4000;
+      while (seen.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      assert.ok(
+        seen.some((p) => p.endsWith(`${sep}.env`)),
+        `改项目根的 .env 必须触发回调（旧实现里这条事件根本没人接），实际：${JSON.stringify(seen)}`,
+      );
+      // 等过去抖窗口，清掉 `.env` 那一批，再验「别的文件不看」
+      await new Promise((r) => setTimeout(r, 500));
+      seen.length = 0;
+      // 这两个的扩展名**都在** `WATCH_EXT` 里（`.md` / `.json`）—— 能挡住它们的只有
+      // 「只认名字」这一条，所以这是该判据唯一的有效断言点。
+      writeFileSync(join(dir, 'README.md'), 'v1');
+      writeFileSync(join(dir, 'package.json'), '{}');
+      await new Promise((r) => setTimeout(r, 700));
+      assert.equal(
+        seen.length,
+        0,
+        `项目根的非 env 文件不该触发（.md / .json 在这里都该被名字过滤挡掉），实际：${JSON.stringify(seen)}`,
+      );
+    } finally {
+      stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * 「清空对话」换到的下一个 id（§6 待定 3）。与上面那组同处一个文件：两者都是
+ * `dist/dev.js` 里的**纯件**（无副作用、可脱离子进程单测），而 `dev.ts` 的其余部分
+ * 要真起 runner 才有意义（那部分由 `scripts/e2e-dev.ts` 守）。
+ */
+describe('dev 环的会话 id（清空对话 = 换 id，不删账）', { skip: SKIP }, () => {
+  it('dev → dev-2 → dev-3 …（单调递增，不撞旧 id）', async () => {
+    const D = await import(new URL('../dist/dev.js', import.meta.url).href);
+    assert.equal(D.nextSessionId('dev'), 'dev-2', '首次清空');
+    assert.equal(D.nextSessionId('dev-2'), 'dev-3');
+    assert.equal(D.nextSessionId('dev-9'), 'dev-10', '两位数照常递增（不是字符串拼接）');
+  });
+
+  it('认不出的形状 ⇒ 回到 -2，不抛（一个怪 id 不该让面板坏掉）', async () => {
+    const D = await import(new URL('../dist/dev.js', import.meta.url).href);
+    // 用户手工改了 .agentia/dev-session-id，或那是别的工程留下的值
+    for (const weird of ['', 'other', 'dev-', 'dev-x', 'DEV', 'dev-2x', 'dev-1-2']) {
+      assert.equal(D.nextSessionId(weird), 'dev-2', `怪 id「${weird}」应兜到 dev-2`);
+    }
+  });
+
+  it('base 进正则前被转义（参数化导出 ⇒ 脏值迟早被传进来）', async () => {
+    const D = await import(new URL('../dist/dev.js', import.meta.url).href);
+    // ⚠️ 断言必须**带序号**才问得出「有没有转义」：`Xdev` 在转义前后都返回 `.dev-2`
+    // （前者是「没匹配上」，后者是「匹配上了但没序号」—— 两条路撞在同一个返回值上），
+    // 所以那是个**假绿**用例。`Xdev-4` 才分得开：未转义时 `.` 吃掉 `X` ⇒ 认成 `.dev-4` ⇒ `.dev-5`。
+    assert.equal(D.nextSessionId('Xdev-4', '.dev'), '.dev-2', '`.dev` 只该匹配字面量 .dev');
+    assert.equal(D.nextSessionId('Xdev', '.dev'), '.dev-2', '（这条单独看不区分，留着当形状说明）');
+    assert.equal(D.nextSessionId('.dev', '.dev'), '.dev-2');
+    assert.equal(D.nextSessionId('.dev-4', '.dev'), '.dev-5');
+  });
+});

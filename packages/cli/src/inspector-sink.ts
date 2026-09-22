@@ -8,17 +8,23 @@ export interface InspectSink {
   export(trace: unknown): Promise<void>;
 }
 
-export function createInspectSink(opts: { port: number; host?: string }): InspectSink {
+export function createInspectSink(opts: {
+  port: number;
+  host?: string;
+  /**
+   * dev token（D0 的鉴权）。走**自定义头**而不是 URL：这个进程不是浏览器，
+   * 没有 cookie 可用，而把 token 拼进 URL 会进日志。
+   */
+  token?: string;
+}): InspectSink {
   const url = `http://${opts.host ?? '127.0.0.1'}:${opts.port}/ingest`;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (opts.token) headers['x-agentia-token'] = opts.token;
   return {
     async export(trace: unknown): Promise<void> {
       try {
         // Node 18+ 全局 fetch；这里不做降级 —— dev 场景 Node 版本由 dev.ts 统一把关
-        await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(trace),
-        });
+        await fetch(url, { method: 'POST', headers, body: JSON.stringify(trace) });
       } catch {
         /* 面板未开 / 已关：静默 */
       }

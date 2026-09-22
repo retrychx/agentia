@@ -19,7 +19,9 @@ const USAGE = `agentia —— Agentia 框架命令行工具
   agentia create <name> [--dir <parent>]   创建项目脚手架（目录 <parent|当前目录>/<name>/）
   agentia g <type> <name>                  在当前目录生成能力（别名：generate）
                                            type: ${CAPABILITY_TYPES.join(' | ')}
-  agentia dev                              启动开发模式（tsx watch 热重载 + 本地 inspector 面板）
+  agentia dev [-- "问题"]                   启动开发模式（常驻 runner + 本地 inspector 面板：
+                                           在面板里选能力/工作目录、输入 prompt 驱动一次 run，
+                                           并看它的调用树；改代码或 .md 自动重启）
   agentia doctor [--json]                  装配体检（未登记/悬空能力/命名规范/重复条目）
   agentia report <trace.jsonl> [--json]    从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
   agentia harvest <trace.jsonl>            把线上 trace 翻成 eval 用例骨架
@@ -46,7 +48,7 @@ const SUB_USAGE: Record<string, string | undefined> = {
   create: CREATE_USAGE,
   g: G_USAGE,
   generate: G_USAGE,
-  dev: '用法：agentia dev',
+  dev: '用法：agentia dev [-- "首次 run 的 prompt"]',
   doctor: '用法：agentia doctor [--json]',
   report: REPORT_USAGE,
   harvest: HARVEST_USAGE,

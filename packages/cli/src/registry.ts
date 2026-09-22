@@ -45,11 +45,18 @@ function importPrefix(type: CapabilityType): string {
   return './' + CAPABILITY_DIRS[type].replace(/^src\//, '');
 }
 
-/** 把能力登记进 src/registry.ts；已存在同名条目则跳过。标记行缺失时报错。 */
+/**
+ * 把能力登记进 src/registry.ts；已存在同名条目则跳过。标记行缺失时报错。
+ *
+ * `deps` 是给「构造期需要注入值」的能力用的（先例：脚手架的 `read-file` 要 `WORKDIR`）。
+ * `discover` 自动注册的 provider **没有 deps**（`discover.ts` 只产出 `{ provide, useClass }`），
+ * 所以这类能力必须走显式注册 —— 显式装配路线本来就该能表达「这个能力的根从哪来」。
+ */
 export function registerCapability(
   dir: string,
   name: string,
   type: CapabilityType,
+  deps: readonly string[] = [],
 ): RegisterResult {
   const file = ensureRegistry(dir);
   const content = readFileSync(file, 'utf8');
@@ -57,7 +64,8 @@ export function registerCapability(
   const prefix = importPrefix(type);
   const source = `${prefix}/${name}/index.js`;
   const importLine = `import ${kebabToPascal(name)} from '${source}';`;
-  const entryLine = `  { provide: '${name}', useClass: ${kebabToPascal(name)} },`;
+  const depsPart = deps.length > 0 ? `, deps: [${deps.map((d) => `'${d}'`).join(', ')}]` : '';
+  const entryLine = `  { provide: '${name}', useClass: ${kebabToPascal(name)}${depsPart} },`;
 
   if (content.includes(`'${source}'`) || content.includes(`provide: '${name}'`)) {
     return 'already';

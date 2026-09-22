@@ -42,7 +42,7 @@ $EDITOR my-app/.env           # put ANTHROPIC_API_KEY here (export works too —
 agentia create my-app
 cd my-app && npm install
 agentia g tool weather          # create src/tools/weather/index.ts and register it
-agentia dev                     # tsx watch + local inspector panel
+agentia dev                     # local inspector panel (drive a run, pick capabilities/workdir)
 ```
 
 Four self-describing directories hold capabilities — the directory name **is** the kind:

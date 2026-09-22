@@ -576,6 +576,201 @@
 
 ## [Unreleased]
 
+> **本节是「未发布窗口」的暂存区。** 本仓的发版流程是 `release.mjs bump` 在**文件顶部**插一节
+> `## [x.y.z] - 日期` 的 `TODO(发版)` 骨架 —— **发版时把下面这些搬进那一节、并删掉本节**，
+> 别让两处各说各话。（文件中间那一节长期为空的 `## [Unreleased]`，就是漏搬留下的痕迹。）
+
+### 破坏性变更 · 脚手架模板：装配与启动拆开（新增 `src/app.ts`）
+
+**要做的动作**：把老工程 `src/main.ts` 里的 `createApp({...})` 整段搬进新的 `src/app.ts`，
+包成一个**工厂函数**；`main.ts` 只留「读 `.env` → 调工厂 → `app.run` → 处理 `result.error`」。
+
+**为什么**：`agentia dev` 的调试环要把「这次调哪个能力 / 工作目录是哪个」喂进 `createApp`，
+而**只有调用者能设这些选项**。拆出工厂之后 CLI 才是调用者 ⇒ **工程里一个 dev 文件都不需要**
+（只多一个**数据**文件 `src/dev.config.ts`）。不迁移的后果是**明确报错**，不是静默降级：
+`agentia dev` 会指出 `src/app.ts` 缺失并打印迁移说明。
+
+**最小迁移**（对着 `agentia create` 新生成的工程看最省事）：
+
+1. 新建 `src/app.ts`：把 `main.ts` 里的 `CAPABILITY_DIRS` + `discover` + `createApp({...})` 搬进去，
+   改成 `export async function createAgentApp(opts: CreateAgentAppOptions = {})`。老的那段可以**原样**搬
+   —— 第 3 步不做也能跑，只是面板上的「工作目录」旋钮不生效。
+2. `src/main.ts` 改薄入口：`import { createAgentApp } from './app.js'`（**注意 `.js` 后缀**）→
+   `const app = await createAgentApp();`，删掉 `createApp` 的 import 与 `CAPABILITY_DIRS`。
+3. （要「工作目录」真生效就得做）在 `providers` 里加 `{ provide: 'WORKDIR', useValue: opts.workdir ?? <项目根> }`，
+   并把需要工作目录的能力从 `discover` 挪到显式 `providers` 声明 `deps: ['WORKDIR']`
+   —— **`discover` 自动注册的 provider 没有 `deps`**，拿不到注入值。
+4. （可选）新建 `src/dev.config.ts` 声明多轮（`export default { multiTurn: ['trip-planner'] }`），
+   并给 `.gitignore` 补一行 `.agentia/`（dev 环的对话历史落盘处）。
+
+### 新增
+
+- **面板的「中止」按钮：中止在飞的 run（`POST /run/abort`）。** 此前只做了「在飞时拒绝第二次
+  `POST /run`（409）」这一半 —— 后果不是小事：**一个卡住的 run 会让面板永久锁死**，
+  此后每次运行都 409，而面板**没有任何办法**解开它。
+  实现走 IPC 让 runner 自己 `abort()`，**不是**父进程杀子进程 —— 理由是 **trace**：
+  `RunInvocationOptions.signal` 是契约字段（原样送进引擎），中止后在回合边界以
+  `stopReason='aborted'` **正常返回**（`engine/loop-result.ts` 的 `abortedResult()`）
+  ⇒ **trace 照常落盘**。杀进程那条路会把这次 run 的 trace 整个丢掉。
+  ⚠️ signal 是**协作式**的：工具不读它就没人理（「MCP 在途中止 ⇒ Promise 永不 settle」正是这一类），
+  `running` 会永远为 `true` ⇒ 所以补一条兜底：**5 s（`ABORT_GRACE_MS`）后仍没结束就重启进程**，
+  此时这次 run 的 trace 会丢，面板**明说**这一点（不静默）。
+- **面板的「清空对话」按钮（`POST /session/clear`）。** 清空 = **换一个 `sessionId`**，
+  **不删** `session.json` —— 后者是 `SessionStore` 的账，面板对它**只读**（写它会造出
+  「面板显示的对话」与「模型真正看到的对话」不一致）。旧对话仍在盘上、run 列表里也还指得到，
+  只是模型不再带着它跑。当前 id 落盘到 `.agentia/dev-session-id`（**不是** `session.json` 的一部分）：
+  只放内存的话，重启 `npm run dev` 之后刚清空的对话会**自己回来**；该路径已在监视排除清单里，
+  写它不触发重启。id 由**父进程**决定并经 IPC 下传 —— 它是面板级状态，必须跨 runner 重启稳定。
+
+### 变更
+
+- **`agentia dev` 从「看 trace」补上「驱动 run」**：面板上多四组输入 —— prompt 输入框（带 `↑`/`↓` 历史）、
+  能力多选（缺省全选；收窄的是**菜单**，主 agent 仍在环里 —— 别的能力 `tools` 里的显式引用仍能调到
+  被排除的那个）、工作目录选择器、多轮开关（按能力声明，混选取 **OR** 且面板**标出来源**）。
+  `npm run dev -- "你的问题"` 仍可直接带上第一句。
+- **文件监视收编进 CLI**：`agentia dev` 不再叠一层 `tsx watch`（旧形态有**两个重启主人**，保存的瞬间
+  恰好点运行会双双 spawn），自己按**允许清单**看文件 —— **`.md` 必须在里面**：文本资产
+  （`@Prompt` 拉的 `.md`、子 agent 的 `system.md`）不在 tsx 的 import 图里，旧实现改它们
+  **静默无感**（改了没反应、也不提示）。排除 `node_modules` / `dist` / `.git` / `.agentia` / `coverage`
+  —— `.agentia` 那条不是洁癖：它是 dev 环自己的对话历史，看它就变成「每次 run 重启一次」的自噬循环。
+- **重启与不重启的边界**：改代码或改**能力选择** ⇒ 重启子进程；改**工作目录** / prompt / 多轮 ⇒ 不重启。
+  在飞 run 期间的重启**延后**到它结束。⚠️ 重启能力选择的理由**不是贵**（进程内重建实测 **2.6 ms**，
+  初稿的「几秒」高估约两个数量级），而是**回收口**：框架没有 `AgentApp.close()`，MCP 连接器由用户代码
+  持有 ⇒ 进程内反复重建会攒孤儿 MCP 子进程。配套硬约定（写进模板注释）：**进程外资源一律在模块作用域
+  创建并注入**，不许在 provider 构造函数里建。
+- **dev 环鉴权（两层，零依赖）**：`Origin` 校验（**缺失放行** / `Origin: null` **拒绝** / 跨源拒绝）
+  + **每次启动生成的一次性 token**（首帧 `?t=` → `HttpOnly; SameSite=Strict` cookie；脚本走
+  `x-agentia-token` 头；`timingSafeEqual` 比较），**每个端点**都校验。token 挡的是**本机其它进程**
+  （它们能 `curl`、不受 `Origin` 约束），**别把它当网络边界** —— 面板只绑 `127.0.0.1`。
+- **dev 环缺省预算护栏**：面板上「点一下 = 一次**真** run」⇒ 缺省套
+  `{ maxCostUsd: 1, maxTotalTokens: 200_000 }`（可用 `dev.config.ts` 的 `budget` 覆盖）。
+- **模板 `@SubAgent` 的 `system` 改函数形态**（`() => asset(...)`）：值形态在**类定义时**求值 ⇒
+  `system.md` 要重启进程才生效，而 `.md` 不在 tsx 的 import 图里 ⇒ 静默失效。
+  通则：**模块加载期读 = 冻；调用期读 = 热**。
+- **去掉 `NODE_OPTIONS=--import` 注入**：子进程改跑 CLI 自己的 `dev-runner.js`，
+  连带那条 Node ≥ 20.6 / ≥ 18.19 的版本闸与字符串拼接一起删掉。
+  ⚠️ 代价是顺序变成**承重的**：必须在 import 用户 `app.ts` **之前** `await registerTraceSink()`
+  —— `createApp` 在构造时就把 `defaultSinks` 快照下来了。
+- **脚手架自带 `read-file` 工具**：读**工作目录**下的文本文件，根由 DI 注入（`WORKDIR`）——
+  它是「面板上那个文件夹选择器真的生效」的接线。越界**响亮报错**，不静默截断。
+- **脚手架自带 `src/session-store.ts`**（`FileSessionStore`，**原子写**：临时文件 + rename）
+  与 `src/dev.config.ts`（**数据**，不是逻辑）。
+
+### 修复（dev 环真跑一次抓出来的 —— 上面那些改动全绿时它们照样在）
+
+- **`agentia dev` 起不来：`npx` 吞掉了 IPC 通道。** 子进程原本是 `spawn('npx', ['tsx', runner])`，
+  而 `npx` 是包装器、**不给孙进程转发 fd 3** ⇒ runner 里 `process.send` 是 `undefined`，
+  代码写的是 `process.send?.()`（可选链）⇒ 所有协议消息**静默丢弃**：面板等不到 `ready`、
+  `POST /run` 永远不回来，且进程会以 `code=0` **干净退出**（看起来像「用户代码跑完了」）。
+  改成 `node <tsx/cli>` 直起（`resolveTsxCli()`：用户工程优先，退到 CLI 自身；不走
+  `node_modules/.bin/tsx` —— Windows 上那是 `.cmd` shim，会绕回 CVE-2024-27980 那个坑）。
+- **`npm run dev` 读不到 `.env`（`npm start` 读得到）。** 上一节把模板拆成 `app.ts` / `main.ts` 时，
+  `loadEnvFile()` 留在了 `main.ts`，而 dev 环只 import `app.ts`、**从不执行 `main.ts`**。
+  失败形状是静默的：用户看到「没配 key」，然后去怀疑框架。已挪进 `src/app.ts`。
+  ⚠️ 当时**两处**断言都钉着这件事，但都指着 `main.ts` —— 断言存在 ≠ 钉对了位置，现已改成成对断言。
+- **面板能力选择器空着且无解释。** `DevEvent` 有 restart / error / run-start / run-done，
+  **唯独没有「就绪」**；而面板加载时只查一次 `/api/dev`，那时 runner 还没装配完
+  （拿到的是父进程初值 `[]`）⇒ 菜单要等用户先跑一次才填上。新增 `{ kind: 'runner-ready' }` 广播。
+- **「runner 没起来就退出」广播了一句更没用的原因。** `exit` 处理器先 `fail()`（reject）再同步
+  `emit`，而那时 `lastError` 还是 `null` ⇒ 面板收到笼统的「意外退出」，真正的原因只进了终端
+  （reject 要到下一个微任务才被 catch 接住）。改成先写 `lastError` 再 reject。
+- **新增 `scripts/e2e-dev.ts`**：`agentia dev` 整条链真跑（此前**零覆盖**），四条行为断言
+  （IPC 就绪 / `.env` 生效 / 能力收窄真的收窄了请求体 / 改 `.md` 触发重启且能恢复）。
+  折进 `verify-all.sh` 第 7 步（`npm run e2e`），不加步骤。
+- **中止的 run 被三个地方各自当成「失败」（同一个事实的三个影子）。** 引擎的 `abortedResult()`
+  **刻意**给已取消的 run 带上结构化 `error`（取消不是失败，但原因要可查），而 runner 的
+  `ok` 定义是 `!result.error` ⇒ **中止时 `ok` 也是 `false`**。于是：
+  ① 面板把「我按的中止」显示成「run 失败（aborted）：run 已被取消」；
+  ② `dev.ts` 把它写进 `lastError` ⇒ 告警条上永远挂一条红字、且不会再消；
+  ③ 终端打成「run 失败（stopReason=aborted）」。
+  三处统一为「**先认 `stopReason` 再认 `ok`**」，并把面板那一处的判别抽进 `panel-logic.ts`
+  （顺序是**语义**，不是渲染 —— 面板那份没有单测）。
+  判别口径此前只活在注释里，且**写错了**（写成「中止是正常返回、`ok` 两者都是 true」——
+  那是把「不抛异常」误当成「不设 `error`」）。
+- **`watchTree` 的目录跳过判据是「半实现」的**（追一次**瞬时红**追出来的 —— 一次完整门禁里
+  CLI 套件红过一次、重跑又绿，没当噪声放过，连跑三次复现后隔离到 watch 用例）。
+  `WATCH_SKIP` / 点开头此前**只在「初始递归」那一个调用点**执行，而 watcher 回调里发现新目录时
+  调 `addDir` 走的是**另一条路**、那条路上一次判据都没有 ⇒ 行为是「启动时就存在的 `dist/` 不看、
+  **启动后才出现**的 `dist/` 看」。判据已收进 `addDir` **内部**（唯一一处），`root` 由调用方
+  显式豁免 —— 判据只看**目录名**、不看路径段（项目根本身就叫 `dist` / `.foo` 是合法的；
+  用绝对路径段去认 `dist` 会把整个项目判成「不该看」）。
+  ⚠️ 真跑时的**第一层**防护是**监视根**：`devServer` 只 `watchTree(<projectRoot>/src)`，
+  而 `.agentia/` 与 `dist/` 在项目根、根本不在范围内。`WATCH_SKIP` 是**第二层**，两层都要有 ——
+  只靠根的话，哪天有人把根改成项目根，`.agentia/session.json` 会立刻变成
+  「每次多轮 run 重启一次子进程」的自噬循环。
+  ⚠️ **这一轮最值钱的不是修好，而是照出一条「假守卫」**：我给 e2e 加了一条「重启次数总账 +
+  理由里不许出现 `.agentia` / `dist/`」的断言，反向验证时**单测红了、e2e 照样绿** ——
+  逐条排除后确认不是「修复没生效」也不是「断言写错」，而是这条缺陷在 e2e 里**不可达**
+  （监视根是 `src/`）。也就是说那条断言真正守的是「**监视根保持 `src/`**」，它**碰不到**
+  `WATCH_SKIP` 那条路。断言是真的、绿的、也是对的，只是它守的是**另一件事** ——
+  所以 dev.ts 与 e2e 两处的注释都已照实改准（说清哪条守哪件、以及它**不守**什么）。
+- **改 `.env` 不会重启（文档承诺了、代码够不着）。** `WATCH_NAMES` 把 `.env` / `.env.local`
+  列进允许清单、`usage-guide` 也把 `.env` 写进「看什么」，但 `watchTree` 的根是
+  `<项目根>/src`，而这两份文件在**项目根** ⇒ 这条判据**没有任何一个 watch 够得着**，
+  改 `.env` 静默无感。与上面那条是同一类的两个面：**判据认得它**（`shouldWatch` 有单测、
+  写得也对）≠ **有人够得着它**（根在调用点决定）。
+  新增 `watchRootEnvFiles()` 单开一个 watch：**不递归**、且**只认名字**（不认扩展名 ——
+  项目根的 `package.json` 也不该由它管）。刻意**不**把 `watchTree` 的根抬到项目根：
+  那会把 `README.md` / `docs/` / `examples/` 全收进来，「改代码要重启」就变成「改任何文档也重启」。
+  两处 watch 共用抽出来的去抖器（各写一份会漂 —— 比如只有一处清理 `timer`，停机后仍会回调一次）。
+  ⚠️ **这条只有真跑能守**：根是**调用点**决定的，`watchTree` 自己无从知道该看哪儿 ——
+  所以钉它的是 `scripts/e2e-dev.ts` 第 9-bis 步（真改一次项目根的 `.env`）。
+
+### 修复（复核轮：四条窄窗口 / 口径缺陷 + 两条顺手抓出的）
+
+同一天对这轮 dev 环改动做了一次逐条回读代码的复核（决策链见 `docs/spec.md` §10 2026-09-22 ⑦）。
+下面每条都补了**反向验证**（把修复摘掉 ⇒ 新加的门禁真的会红）：
+
+- **并发闸没盖住「换能力选择 ⇒ 重启」那条路径**（双击运行会真并发两次）。受理到 run 真正发出去之间
+  有 `await restart(...)`，而 `running` 只在 run 发进通道之后才置位 ⇒ 两个请求双双通过检查，
+  runner 里两个 run 并发、`currentAbort` 被覆盖、CLI 侧记账挂到别人的 traceId 上。
+  现在多了个只给闸看的 `launching` 占位（刻意不并进 `running`：「中止」按钮据此仍只在真在飞时出现）。
+- **Ctrl+C 会丢掉 SIGKILL 兜底 ⇒ 不响应 SIGTERM 的子进程树活成孤儿**。旧的 SIGINT 处理器固定
+  50 ms 就 `process.exit(0)`，而 `stopChild()` 给子进程的宽限期是 3 s（SIGTERM 后等满才补 SIGKILL）——
+  父进程先没，那段宽限连同兜底一起消失，`process.on('exit')` 那条也已空转。现在等收尾真的做完再退
+  （另有 5 s 硬上限兜「面板连接没关掉」这类卡死，再按一次 Ctrl+C 立即硬退）。
+- **「中止」落在装配窗口里会被静默丢弃**。`runOnce` 是先 `await ensureApp(...)` 再建 AbortController，
+  窗口内到达的中止只能看到「没有在飞的 controller」⇒ run 照跑，而父进程 5 s 后把这次**健康的** run
+  升级成重启兜底（trace 丢掉、原因还写成「工具不响应 signal」）。现在窗口内的中止会被记住并立即补上。
+- **被中止的 run 在面板上被标成「失败」**（通知条已修好，但 run 列表的红点与对话视图的红边走的是
+  `ok` —— 中止的 `ok` 同样是 `false`）。判别统一到 `panel-logic.runIsFailure`（先 `stopReason` 后 `ok`），
+  且**中止轮仍留在对话视图里**（框架只在成功路径回写会话，排除它会显示一份少了一轮的对话）。
+- **会话文件损坏时只在 dev 环告警**（`FileSessionStore` 自己会响亮抛错，但框架在 load / append 里
+  刻意吞掉会话侧异常 —— 既定口径「辅助动作不击穿 run」）⇒ 历史被当成「第一轮」且新历史写不进去，
+  全程无声。现在 runner 在**启动期**探测一次，把原因送进既有的 warning 通道（面板告警条）。
+- **`agentia dev -- "你的问题"`**：裸 CLI 形状会把分隔符 `--` 当成 prompt 传给模型
+  （`npm run dev -- "…"` 那条因为 npm 吃掉 `--` 而一直是对的，两条形状都文档化了）。现在两者都取到真 prompt。
+- **模板 `read-file` 未归一化工作目录**：工作目录带尾斜杠时（面板输入框 / `dev.config.ts` / 从 Finder
+  粘过来都常见），越界判定 `abs.startsWith(root + '/')` 恒为假 ⇒ **每一次**调用都报「路径越出工作目录」。
+  那不是误报，是工具整个变坏，且错误归因会把模型带偏。
+- **模板 subagent 的 `system.md` 补上「你的回复就是报告」约定**：模板这轮把 `system` 改成了**函数形态**
+  （改 `.md` 立刻生效），而框架只对**值形态**追加 `REPORT_HINT` ⇒ 函数形态下子代理不知道自己的最终回复
+  就是交回主 agent 的交付物，措辞差异没有任何测试看得见。约定现在写在模板自己那份 `system.md` 里。
+
+### 文档
+
+- `docs/usage-guide.md` §2.1 / §2.2（新）：脚手架文件分工 + `agentia dev` 的四组输入 / 监视规则 /
+  重启边界 / 鉴权 / 成本 / 会话历史；§6.4 补「对话历史从哪来」与**两层「历史」**的区别
+  （prompt 回显模型看不见；对话历史真的进上下文，且只在开了多轮时出现）。
+  §2.2 另补一条「**看哪里**」—— 此前只写了「看什么扩展名」，没写监视根（`<项目根>/src` 整棵树
+  ＋ 项目根单独的 `.env` / `.env.local`）⇒ 读者无从知道「改项目根的 `README.md` 不触发重启」。
+- `docs/spec.md` §10 2026-09-22 ②：本轮决策记录，含「**P0–P2 全程零框架改动**」的逐项核对。
+  §10 2026-09-22 ③：真跑探针抓出的两个缺陷与三条修复（含反向验证记录）。
+  §10 2026-09-22 ④：拿功能文档逐项对照做审计 —— 又抓出两处「文档里有、代码里没有」，
+  以及「同一条事实的第三个影子」（中止的 `ok` 是 `false`）。
+  §10 2026-09-22 ⑤：追一次瞬时红 → `WATCH_SKIP` 的半实现 + 那条「守了另一件事」的假守卫。
+  §10 2026-09-22 ⑥：拿 ⑤ 的「监视根」去核每条判据 → `.env` 是一条**够不着**的判据
+  （含「判据的正确性 vs 可达性」与「探针别用写死序号」两条可复用的教训）。
+- `docs/guards.md` §1.4：新增五条守卫登记（面板纯逻辑 + watch 允许清单 / dev 环鉴权与 HTTP 面 /
+  生成物能力名一致性 / `agentia dev` 整链真跑 / `.env` 接线成对断言），并随 ④ 扩面
+  （`nextSessionId` / `runDoneNotice` / `POST /run/abort` / `POST /session/clear` /
+  面板 import 名单反向全覆盖 / e2e 第 10-11 步）、随 ⑤ 再扩面（`watchTree` 的**动态新增目录**
+  用例 + e2e 第 12 步重启总账，并注明 e2e 第 12 步**不守**什么）、随 ⑥ 三度扩面
+  （`watchRootEnvFiles` 的名字过滤用例 + e2e 第 9-bis 步改项目根 `.env`）。
+  §2 尾注补三条可复用的自查问。
+- `docs/plans/2026-09-11-dev-inspector.md`：非目标清单修订 —— **`run 重放执行` 仍然不做**，
+  面板做的是「发一次**新的** run」，两者相邻但不同。
+
 ## [0.6.3] - 2026-09-18
 
 > 本版主题：把第六轮 16 条的共同根因（「约定写在文档里、但没有门禁」）收口 ——
