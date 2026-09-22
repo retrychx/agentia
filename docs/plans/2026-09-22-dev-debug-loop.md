@@ -731,6 +731,11 @@ AppOptions.workdir?            // 缺省根
 > （trace-view 只收数据）。它还顺带消解「kill 在飞 run 丢 trace」的一半顾虑：
 > 已投递的部分留得住。落地时把「runner 订阅 `onTraceEvent` → inspector 增量帧」
 > 列进 P1b 的面板侧工作。
+>
+> **✅ 2026-09-22 已落地（v0.9.1 / PR #124）**：runner 订阅 `onTraceEvent` → 逐笔
+> `POST /ingest-event`（FIFO 链保序）→ 父进程原样广播 → 面板按 `seq` 折回临时树，
+> 收尾那份整棵 trace 覆盖它；渲染层确实**一字未改**（trace-view 只收数据）。
+> 现场证据与修法见 `docs/spec.md` §10 2026-09-22 ⑧ 与 `docs/guards.md` §1.4。
 
 > 面板宽度本就紧张（`spec.md:966` 记过 1223px 下的行宽读数），所以**不加第三栏**是刻意的：
 > 输入条横跨底部比再切一列省地方，而且它本来就该是「全局面板级」的控件，不是某一栏的附属。
