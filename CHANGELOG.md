@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-22
+
 ### 新增 · dev 面板的实时右栏（在飞就看得到调用树）
 
 - **右栏从「收尾才有」变成「一个个长出来」**：runner 订阅框架的增量记账出口
@@ -1184,7 +1186,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/retrychx/agentia/releases/tag/v0.9.1
 [0.9.0]: https://github.com/retrychx/agentia/releases/tag/v0.9.0
 [0.8.3]: https://github.com/retrychx/agentia/releases/tag/v0.8.3
 [0.8.2]: https://github.com/retrychx/agentia/releases/tag/v0.8.2
