@@ -41,6 +41,7 @@ import {
   type RunNote,
   type RunRequest,
   type SessionMessageLike,
+  type TraceRecordEventLike,
 } from './dev-protocol.js';
 import { rememberNote } from './panel-logic.js';
 
@@ -109,6 +110,13 @@ export interface DevHooks {
   abort(): Promise<{ accepted: boolean; escalated: boolean }>;
   /** 清空对话 = 换 sessionId（§6 待定 3）。返回换到的那个 id */
   clearSession(): Promise<{ sessionId: string }>;
+  /**
+   * 一条**在飞** run 的增量记账事件（① 实时右栏）：`POST /ingest-event` 收下就转给它。
+   *
+   * 同步、无返回值：框架派发事件本身就是同步的（不 await 订阅者），这里也只做「广播给 SSE」。
+   * 与 `run` / `abort` 那些「面板让它做事」的钩子不同，这条是**观察**的回程。
+   */
+  traceEvent(e: TraceRecordEventLike): void;
 }
 
 export interface InspectorServer {
@@ -145,6 +153,59 @@ function validateTrace(t: unknown): string | null {
     }
   }
   return null;
+}
+
+/**
+ * 入站校验：**增量记账事件**的形状（`POST /ingest-event`，① 实时右栏）。
+ *
+ * 为什么卡得比 `validateTrace` 还细：面板拿这些字段**直接建树**，而坏帧的报错现场在
+ * 浏览器里（最难查的地方）。缺一个 `spanId` 的表现是「树上少一个节点」而不是任何报错 ——
+ * 所以宁可在这里响亮拒（400 会被 runner 的 event sink 静默吞掉，但至少不会污染面板）。
+ */
+function validateTraceEvent(e: unknown): string | null {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return '事件必须是对象';
+  const ev = e as TraceRecordEventLike;
+  if (typeof ev.seq !== 'number' || !Number.isFinite(ev.seq)) return 'seq 必须是有穷 number';
+  switch (ev.type) {
+    case 'span.begin': {
+      const s = ev.span;
+      if (!s || typeof s !== 'object') return 'span.begin 缺 span';
+      if (typeof s.spanId !== 'string' || s.spanId.length === 0)
+        return 'span.begin 的 span.spanId 缺失';
+      if (typeof s.traceId !== 'string' || s.traceId.length === 0) {
+        return 'span.begin 的 span.traceId 缺失';
+      }
+      if (typeof s.name !== 'string') return 'span.begin 的 span.name 缺失';
+      if (typeof s.startedAt !== 'number' || !Number.isFinite(s.startedAt)) {
+        return 'span.begin 的 span.startedAt 非法';
+      }
+      return null;
+    }
+    case 'span.end': {
+      if (typeof ev.spanId !== 'string' || ev.spanId.length === 0) return 'span.end 缺 spanId';
+      if (typeof ev.endedAt !== 'number' || !Number.isFinite(ev.endedAt))
+        return 'span.end 的 endedAt 非法';
+      if (typeof ev.status !== 'string') return 'span.end 的 status 缺失';
+      return null;
+    }
+    case 'span.event': {
+      if (typeof ev.spanId !== 'string' || ev.spanId.length === 0) return 'span.event 缺 spanId';
+      if (!ev.event || typeof ev.event.name !== 'string') return 'span.event 缺 event.name';
+      return null;
+    }
+    case 'span.attribute': {
+      if (typeof ev.spanId !== 'string' || ev.spanId.length === 0)
+        return 'span.attribute 缺 spanId';
+      if (typeof ev.key !== 'string' || ev.key.length === 0) return 'span.attribute 缺 key';
+      return null;
+    }
+    case 'span.link': {
+      if (typeof ev.spanId !== 'string' || ev.spanId.length === 0) return 'span.link 缺 spanId';
+      return null;
+    }
+    default:
+      return `不认识的事件类型：${String((ev as { type?: unknown }).type)}`;
+  }
 }
 
 /** 防 DNS rebinding：面板只服务本机，Host 不是 localhost/127.0.0.1/[::1] 的一律拒 */
@@ -224,6 +285,11 @@ const MAX_RUNS = 50;
  * （见 `rememberNote`），所以它有自己的一条淘汰线。
  */
 const MAX_NOTES = MAX_RUNS;
+/**
+ * `GET /api/fs` 一次最多回多少个**文件**名（目录不设限：一个位置要列几百个目录，本身就
+ * 说明位置选错了）。超限回 `filesTruncated: true` —— 截断必须**明示**，不许静默少给。
+ */
+const FILE_LIMIT = 200;
 /** 静态资源目录（构建期由 scripts/copy-assets.mjs 就位） */
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ASSETS = join(HERE, 'inspector');
@@ -456,6 +522,42 @@ export function startInspector(
         return;
       }
 
+      /**
+       * **在飞 run 的增量记账事件**（① 实时右栏）：`POST /ingest-event`。
+       *
+       * 与 `POST /ingest` 的分工是刻意的两条缝（框架侧同名区分）：
+       * - 这条 = **此刻看到**：高频、逐笔、不落库、**不保证送达**；
+       * - 那条 = **最终账**：收尾一次、进 run 列表、被 `/api/runs` 读。
+       *
+       * 所以这里**只广播**、不建 run 记录：面板拿它把树「长」出来，收尾那份整棵 trace
+       * 回来时覆盖（`open()` 的渲染永远以收尾那份为准）。
+       *
+       * 202 而不是 200：已经广播出去了，但面板收没收到不归这里管（SSE 是单向流）。
+       * 没有 dev 钩子时回 503 —— 与 `/run` / `/run/abort` 同一口径（没有面板消费它）。
+       */
+      if (req.method === 'POST' && path === '/ingest-event') {
+        if (!opts.dev) {
+          json(res, 503, { error: '这个 inspector 不是 agentia dev 起的（没有 runner）' });
+          return;
+        }
+        const body = await readBody(req);
+        let ev: unknown;
+        try {
+          ev = JSON.parse(body);
+        } catch {
+          json(res, 400, { error: 'body 不是合法 JSON' });
+          return;
+        }
+        const problem = validateTraceEvent(ev);
+        if (problem) {
+          json(res, 400, { error: problem });
+          return;
+        }
+        opts.dev.traceEvent(ev as TraceRecordEventLike);
+        json(res, 202, { ok: true });
+        return;
+      }
+
       if (req.method === 'GET' && path === '/api/runs') {
         json(
           res,
@@ -485,14 +587,25 @@ export function startInspector(
       }
 
       /**
-       * 目录浏览器：`GET /api/fs?path=<绝对路径>` → 该目录下的**子目录名**（不含文件）。
+       * 目录浏览器：`GET /api/fs?path=<绝对路径>` →
+       * `{ path, parent, dirs, dotDirs, files, filesTruncated }`。
        *
        * 为什么需要它：浏览器**拿不到**用户选的文件夹的绝对路径 —— `<input webkitdirectory>`
        * 只给相对路径，File System Access API 只给 handle.name。而 dev 环要的是绝对路径
        * （工具按它解析）。⇒ 要么让用户手打路径，要么服务端列目录。后者才是「工作目录是
        * 主控件」（D3/D7）该有的手感。
        *
-       * 只列**目录**、不读文件内容；且只在 dev 钩子在场时开放（只读面板不暴露文件树）。
+       * 三条口径（2026-09-22 复核后改，前两条是实测出来的缺口）：
+       * - **文件也列**（`files`，只给名字、不读内容）：面板据此提供「选这个文件」——
+       *   工作目录取它所在目录、prompt 空时填文件名。只列目录时，「让 agent 看某个文件」
+       *   只能靠用户自己把文件名打进 prompt。
+       * - **隐藏目录单列**（`dotDirs`，不在 `dirs` 里）：以前一批过滤掉，于是
+       *   `~/xxx/.yyy` 这类目录**根本点不进去**（`..` 只能退到它上面，进不去）。
+       *   单列是为了不把 `.git` / `.cache` 混进正常浏览，同时保证**可达**。
+       * - `files` 有上限（`FILE_LIMIT`）并回 `filesTruncated`：一次列几千个文件的名
+       *   没有意义，但**必须明示**截断（本仓纪律：不许静默少给）。
+       *
+       * 只列名字、**不读文件内容**；且只在 dev 钩子在场时开放（只读面板不暴露文件树）。
        * 越界不是威胁（本机 dev 工具，token 已经挡住了其它进程），但**不存在 / 不是目录**
        * 要响亮报错 —— 静默回退到项目根会让 agent 对着错的目录乱写（D5）。
        */
@@ -518,11 +631,25 @@ export function startInspector(
           json(res, 400, { error: `读不了这个目录：${(e as Error).message}` });
           return;
         }
-        const dirs = entries
-          .filter((e) => !e.name.startsWith('.') && isDirLikeEntry(join(abs, e.name), e))
-          .map((e) => e.name)
-          .sort();
-        json(res, 200, { path: abs, parent: dirname(abs), dirs });
+        const dirs: string[] = [];
+        const dotDirs: string[] = [];
+        const files: string[] = [];
+        for (const e of entries) {
+          if (isDirLikeEntry(join(abs, e.name), e)) {
+            (e.name.startsWith('.') ? dotDirs : dirs).push(e.name);
+            continue;
+          }
+          // 读不了内容的条目（管道 / socket / 权限）也当文件列出来 —— 列名字不需要读它
+          if (!e.name.startsWith('.')) files.push(e.name);
+        }
+        json(res, 200, {
+          path: abs,
+          parent: dirname(abs),
+          dirs: dirs.sort(),
+          dotDirs: dotDirs.sort(),
+          files: files.sort().slice(0, FILE_LIMIT),
+          filesTruncated: files.length > FILE_LIMIT,
+        });
         return;
       }
 

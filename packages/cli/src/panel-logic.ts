@@ -11,7 +11,7 @@
  * 它要在 Node 里被直接 import 做单测。DOM 接线留在 HTML 里，且只做
  * 「取值 → 调这里 → 写回」，不再自己判断业务规则。
  */
-import type { SessionMessageLike } from './dev-protocol.js';
+import type { SessionMessageLike, TraceRecordEventLike, TraceSpanLike } from './dev-protocol.js';
 
 // ---------- 能力多选（D8） ----------
 
@@ -331,4 +331,167 @@ export function shortenPath(abs: string, opts: { home?: string; cwd?: string } =
   if (home && (abs === home || abs.startsWith(`${home}/`))) return `~${abs.slice(home.length)}`;
   if (cwd && (abs === cwd || abs.startsWith(`${cwd}/`))) return `.${abs.slice(cwd.length)}`;
   return abs;
+}
+
+// ---------- ① 实时右栏：把增量记账帧折回成一棵树 ----------
+
+/**
+ * 面板侧的 trace 累加器：**按 `seq` 把增量记账事件应用到一个一个 span 上**。
+ *
+ * 为什么在面板侧复刻这条折叠规则、而不是让父进程折好再发：框架已经钉着一条不变量
+ * （`tests/engine/trace-events.test.ts`）—— 按 `seq` 升序把同一次 run 的全部事件应用到
+ * `span.begin` 建出的 span 上，结果**逐字等于**收尾的 `snapshot()`。照它折回就得到与
+ * 收尾一致的树，**不需要**任何「哪些字段重要」的本地判断；父进程插一手只会多一处会漂的口径。
+ *
+ * 两条纪律（与框架同名出口一致）：
+ * - **不保证送达**：宿主自己的流断了就断了。所以折出来的这棵是**临时**的 ——
+ *   收尾那份整棵 trace 回来时**覆盖**它（面板据此把累加器丢掉），缺的 span 由那份补齐。
+ * - **是观察，不是控制**：丢了不影响 run，也不影响收尾的 trace。
+ */
+export interface TraceAccumulator {
+  /** 已应用的最大 `seq` —— 重复投递 / 乱序靠它丢掉（送达的那些只能应用一次） */
+  lastSeq: number;
+  /** 从第一个 `span.begin` 上读到的 traceId（还没建出节点时是空串） */
+  traceId: string;
+  spans: TraceSpanLike[];
+}
+
+/** 空累加器：`state.live` 的初值，也是 e2e 折回的起点 */
+export function emptyTraceAccumulator(): TraceAccumulator {
+  return { lastSeq: 0, traceId: '', spans: [] };
+}
+
+/**
+ * 应用一条增量记账事件。返回**它有没有被用上**（false = 丢了）。
+ *
+ * 丢的三种情形都是刻意的、**都不抛**：
+ * - `seq` 不前进（重复投递、迟到的旧帧）—— SSE 不保证送达，但送达的只能应用一次；
+ * - 指向**没见过的 `spanId`**（面板连上得晚，那个 `span.begin` 没收到）—— 绝不能凭空建
+ *   节点：那会造出一棵缺了上半截的假树。收尾那份会补齐；
+ * - 形状不认识（框架将来加了新事件类型）—— 静默放过，别让整个右栏停摆。
+ */
+export function applyTraceEvent(acc: TraceAccumulator, ev: TraceRecordEventLike): boolean {
+  // 先卡 seq：它同时挡住「重复投递」与「乱序的旧帧」
+  if (!ev || typeof ev.seq !== 'number' || ev.seq <= acc.lastSeq) return false;
+  const find = (spanId: string): TraceSpanLike | undefined =>
+    acc.spans.find((s) => s.spanId === spanId);
+  switch (ev.type) {
+    case 'span.begin': {
+      const src = ev.span;
+      // 拷一份：折回不该持有（更不该改写）协议对象 —— 面板会重画很多次
+      const copy: TraceSpanLike = {
+        ...src,
+        attributes: { ...src.attributes },
+        events: (src.events ?? []).map((e) => ({ ...e })),
+      };
+      const seen = find(src.spanId);
+      // 同一个 `spanId` 再来一次 ⇒ **原地刷新**（重放幂等），不再挂一个同 id 的节点
+      if (seen) Object.assign(seen, copy);
+      else {
+        acc.spans.push(copy);
+        if (!acc.traceId) acc.traceId = src.traceId;
+      }
+      break;
+    }
+    case 'span.end': {
+      const s = find(ev.spanId);
+      if (!s) return false;
+      s.endedAt = ev.endedAt;
+      s.status = ev.status;
+      if (ev.error) s.error = { ...ev.error };
+      if (ev.usage) s.usage = { ...ev.usage };
+      break;
+    }
+    case 'span.event': {
+      const s = find(ev.spanId);
+      if (!s) return false;
+      s.events.push({ ...ev.event });
+      break;
+    }
+    case 'span.attribute': {
+      const s = find(ev.spanId);
+      if (!s) return false;
+      s.attributes = { ...s.attributes, [ev.key]: ev.value };
+      break;
+    }
+    case 'span.link': {
+      const s = find(ev.spanId);
+      if (!s) return false;
+      s.links = [...(s.links ?? []), ev.link];
+      break;
+    }
+    default:
+      return false;
+  }
+  acc.lastSeq = ev.seq;
+  return true;
+}
+
+/**
+ * 当前已知的这棵树（交给 `playTrace` 画）。返回的是**副本** —— 渲染层拿它排序 / 展开，
+ * 不该回头改到累加器（下一次重画还要用同一份账）。
+ *
+ * `status` 只区分**在飞**与**已收尾**：根 span 还没有 `endedAt` 就是「在飞」，渲染层据此
+ * **不收尾**（否则根会被画成「已在某一刻完成」，那是个假事实）。收尾后取根自己的状态
+ * （`ok` / `error`），与框架口径一致。
+ */
+export function partialTrace(acc: TraceAccumulator): {
+  traceId: string;
+  spans: TraceSpanLike[];
+  status: string;
+} {
+  const spans = acc.spans.map((s) => ({
+    ...s,
+    attributes: { ...s.attributes },
+    events: s.events.map((e) => ({ ...e })),
+  }));
+  const root = spans.find((s) => s.parentSpanId === null);
+  const status = root && root.endedAt === undefined ? 'running' : (root?.status ?? 'running');
+  return { traceId: acc.traceId, spans, status };
+}
+
+// ---------- ② 回复正文的归属 ----------
+
+/**
+ * 「`open(id)` 该不该**保留**屏幕上这条回复」。
+ *
+ * 背景：`run-done` 把回复正文写上去之后，面板会**自动 open 刚跑完的那一轮** ——
+ * 而 `open()` 原本无条件清掉回复区，于是那句回复在十几毫秒后被自己擦掉（看起来像「没回复」）。
+ *
+ * 口径与 `open()` 的原意图对齐：只有「现在打开的就是这条回复的主人」才保留；其余一律清
+ * （打开一条历史 run 时若还挂着**别人**的回复，那是张冠李戴 —— 比空白更糟）。
+ * `replyFor` 为 null（还没跑过 / 已清）**不等于**「谁都对」：默认清。
+ */
+export function replyBelongsTo(openId: string | null, replyFor: string | null): boolean {
+  if (!openId || !replyFor) return false;
+  return openId === replyFor;
+}
+
+// ---------- ③ 目录浏览 / 选文件 ----------
+
+/**
+ * 点「浏览…」时该打开哪个目录：**总是**按输入框的值。
+ *
+ * 旧实现把它当**开关**（面板开着时再点一次就关掉），于是「在输入框敲了目标路径 → 点浏览…」
+ * 这个最自然的动作反而是把面板关掉，用户就以为「选不了别的目录」。空值才回落到缺省工作目录；
+ * 首尾空白不该让路径读错。
+ */
+export function browseTarget(value: string, defaultDir: string): string {
+  const v = value.trim();
+  return v.length > 0 ? v : defaultDir;
+}
+
+/**
+ * 点一个**文件**之后的 prompt 该是什么。
+ *
+ * 口径：**只在 prompt 为空时**填文件名（省一次打字）；用户已经写好的话**一个字都不动** ——
+ * 悄悄改写用户输入比少填一次糟得多。`filled` 是给面板回话用的（提示文案不同）。
+ * 工作目录的切换（取该文件**所在的**目录）由调用方做，不在这个纯判定里。
+ */
+export function promptAfterFilePick(
+  current: string,
+  name: string,
+): { prompt: string; filled: boolean } {
+  if (current.trim().length > 0) return { prompt: current, filled: false };
+  return { prompt: name, filled: true };
 }

@@ -19,7 +19,11 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createInspectSink } from './inspector-sink.js';
+import {
+  createInspectEventSink,
+  createInspectSink,
+  type InspectEventSink,
+} from './inspector-sink.js';
 import {
   APP_ENTRY_REL,
   DEFAULT_BUDGET,
@@ -99,6 +103,28 @@ async function registerTraceSink(): Promise<void> {
     // 面板是增强项：观测挂不上不该阻断 dev（与旧 preload 同一条纪律）
     console.warn(`[agentia] inspector 未挂载：${(e as Error).message}`);
   }
+}
+
+/**
+ * ① 实时右栏：**增量**记账事件的出口（框架 `onTraceEvent` 的落点）。
+ *
+ * 与上面那个 trace sink 是**两条缝**，差别都是刻意的：
+ * - trace sink 走收尾的 `snapshot()`（一次、被 `flushSinks` await、保证送达）；
+ * - 这里走运行期的 `onTraceEvent`（逐笔、同步派发、**不保证送达**）——「此刻看到」。
+ *
+ * 为什么必须有它：此前右栏唯一的画树点在 run **收尾之后**，一次十几秒的 run 期间
+ * 面板上的树是死的（只有一句「正在跑…」）。框架的增量出口本来就是为这类消费者准备的
+ * （`RunInvocationOptions.onTraceEvent`，0.8.3），计划 §D7 的评审补充也点名要求接上。
+ *
+ * 纪律（与框架同名出口一致）：不 await、失败静默、由 sink 自己排 FIFO 链保序
+ * （见 `createInspectEventSink`）。**丢帧只会让树少长一会儿**：收尾那份整棵 trace
+ * 会把面板上折回的临时树覆盖掉，缺的 span 由它补齐 —— 不会让面板看到一棵错的树。
+ */
+function registerEventSink(): void {
+  const port = Number(process.env.AGENTIA_INSPECT_PORT || 0);
+  if (port <= 0) return;
+  const token = process.env.AGENTIA_INSPECT_TOKEN || undefined;
+  eventSink = createInspectEventSink({ port, ...(token ? { token } : {}) });
 }
 
 // ---------- dev.config.ts（**数据**，不是逻辑） ----------
@@ -390,6 +416,9 @@ let runInFlight = false;
 /** 窗口内到达的中止请求：建完 controller 立刻补一次 `abort()`（见 `runOnce` 的 await 顺序） */
 let abortRequested = false;
 
+/** ① 增量记账事件的出口（`registerEventSink()` 建；端口没给就是 null —— 面板没开） */
+let eventSink: InspectEventSink | null = null;
+
 async function runOnce(msg: Extract<DevMessage, { type: 'run' }>): Promise<void> {
   const { request } = msg;
   send({ type: 'run-start' });
@@ -411,6 +440,10 @@ async function runOnce(msg: Extract<DevMessage, { type: 'run' }>): Promise<void>
     maxTotalTokens: budget.maxTotalTokens,
     signal: ac.signal,
   };
+  // ① 实时右栏：**在 run 之前**挂上（框架只在运行期派发 —— 晚一步就等于整轮都收不到）。
+  // 单次 run 的 `onTraceEvent` 与应用级缺省是**叠加**的（不是覆盖），所以这里挂上
+  // 不会把用户在 `createApp` 里配的那个挤掉。
+  if (eventSink) opts.onTraceEvent = (e: unknown) => eventSink?.send(e);
   try {
     if (request.multiTurn) {
       const mod = await importAppModule();
@@ -452,6 +485,8 @@ async function runOnce(msg: Extract<DevMessage, { type: 'run' }>): Promise<void>
 async function main(): Promise<void> {
   // ⚠️ 顺序不能换：sink 必须早于用户 app 的 import（createApp 构造期对 defaultSinks 快照）
   await registerTraceSink();
+  // 增量出口只是个 HTTP 出口（不碰框架注册表），但同样在这里建：一个进程一次。
+  registerEventSink();
   let built: BuildResult;
   try {
     built = await build();

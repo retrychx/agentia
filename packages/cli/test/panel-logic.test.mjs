@@ -449,3 +449,188 @@ describe('dev 环的会话 id（清空对话 = 换 id，不删账）', { skip: S
     assert.equal(D.nextSessionId('.dev-4', '.dev'), '.dev-5');
   });
 });
+
+describe('在飞 run 的增量 trace 折回（① 实时右栏）', { skip: SKIP }, () => {
+  /**
+   * 一次 run 的**事件流**与它收尾的 trace 是同一个事实的两个投影 —— 框架侧钉着
+   * 「按 seq 升序折回必须逐字等于 snapshot()」（tests/engine/trace-events.test.ts）。
+   * 面板是这条不变量的第二个消费者，所以这里复刻同一条：**手写**一小段事件流与它
+   * 对应的收尾 spans，两者对不上就说明面板的折回规则漂了。
+   *
+   * 为什么值得单测：折回错了在浏览器里的表现是「树缺一个节点 / 少一条事件」，
+   * 那是最难从现象反推回代码的一类症状（而且 dev 环本就没有别的守卫）。
+   */
+  const FINAL_SPANS = [
+    {
+      spanId: 'r',
+      traceId: 'tr-1',
+      parentSpanId: null,
+      kind: 'run',
+      name: 'demo',
+      startedAt: 0,
+      endedAt: 100,
+      status: 'ok',
+      attributes: { stop_reason: 'end_turn' },
+      events: [],
+    },
+    {
+      spanId: 't',
+      traceId: 'tr-1',
+      parentSpanId: 'r',
+      kind: 'llm.turn',
+      name: 'm',
+      startedAt: 5,
+      endedAt: 50,
+      status: 'ok',
+      usage: { inputTokens: 10, outputTokens: 5 },
+      attributes: { model: 'm' },
+      events: [{ name: 'tool.input', time: 6, body: { tool: 'echo', input: { a: 1 } } }],
+    },
+  ];
+  const EVENTS = [
+    {
+      seq: 1,
+      type: 'span.begin',
+      span: {
+        spanId: 'r',
+        traceId: 'tr-1',
+        parentSpanId: null,
+        kind: 'run',
+        name: 'demo',
+        startedAt: 0,
+        status: 'ok',
+        attributes: {},
+        events: [],
+      },
+    },
+    {
+      seq: 2,
+      type: 'span.begin',
+      span: {
+        spanId: 't',
+        traceId: 'tr-1',
+        parentSpanId: 'r',
+        kind: 'llm.turn',
+        name: 'm',
+        startedAt: 5,
+        status: 'ok',
+        attributes: {},
+        events: [],
+      },
+    },
+    {
+      seq: 3,
+      type: 'span.event',
+      spanId: 't',
+      event: { name: 'tool.input', time: 6, body: { tool: 'echo', input: { a: 1 } } },
+    },
+    { seq: 4, type: 'span.attribute', spanId: 't', key: 'model', value: 'm' },
+    {
+      seq: 5,
+      type: 'span.end',
+      spanId: 't',
+      endedAt: 50,
+      status: 'ok',
+      usage: { inputTokens: 10, outputTokens: 5 },
+    },
+    { seq: 6, type: 'span.attribute', spanId: 'r', key: 'stop_reason', value: 'end_turn' },
+    { seq: 7, type: 'span.end', spanId: 'r', endedAt: 100, status: 'ok' },
+  ];
+
+  const fold = (events) => {
+    const acc = L.emptyTraceAccumulator();
+    for (const e of events) L.applyTraceEvent(acc, e);
+    return L.partialTrace(acc);
+  };
+
+  it('按 seq 折回 == 收尾的整棵 trace（框架那条不变量，面板侧复刻）', () => {
+    const folded = fold(EVENTS);
+    assert.equal(folded.traceId, 'tr-1', 'traceId 从第一个 span.begin 的 span 上读到');
+    assert.deepEqual(folded.spans, FINAL_SPANS, '折回结果必须逐字等于收尾的 spans');
+  });
+
+  it('乱序 / 重复 / 未知 span：丢得干净，不污染已折回的部分', () => {
+    // seq 不前进（重复投递）⇒ 丢：SSE 不保证送达，但送达的那些只能应用一次
+    const acc = L.emptyTraceAccumulator();
+    assert.equal(L.applyTraceEvent(acc, EVENTS[0]), true);
+    assert.equal(L.applyTraceEvent(acc, EVENTS[0]), false, '同一条 seq 再来一次应被丢');
+    assert.equal(acc.spans.length, 1, '重复投递不该多出一个 span');
+    // 指向未知 spanId（面板连上得晚，前几个 span.begin 没收到）⇒ 丢，不抛
+    assert.equal(
+      L.applyTraceEvent(acc, {
+        seq: 99,
+        type: 'span.end',
+        spanId: 'nope',
+        endedAt: 1,
+        status: 'ok',
+      }),
+      false,
+    );
+    assert.equal(
+      L.applyTraceEvent(acc, { seq: 100, type: 'span.event', spanId: 'nope', event: {} }),
+      false,
+    );
+    assert.equal(acc.spans.length, 1, '未知 span 的事件不该凭空建节点');
+    // 后到的 span.begin 对已见过的 spanId ⇒ 原地刷新（重放幂等），不重复挂到树上
+    assert.equal(
+      L.applyTraceEvent(acc, {
+        seq: 101,
+        type: 'span.begin',
+        span: { ...EVENTS[0].span, name: 'renamed' },
+      }),
+      true,
+    );
+    assert.equal(acc.spans.length, 1, '同一个 spanId 不该出现两次');
+    assert.equal(acc.spans[0].name, 'renamed', '原地刷新应生效');
+    // 空折回：还没收到任何 span.begin 时是空树（右栏据此保留占位，不画一棵假树）
+    assert.deepEqual(L.partialTrace(L.emptyTraceAccumulator()).spans, []);
+  });
+
+  it('partialTrace 给未收尾的树留出「在飞」的形状（根没有 endedAt ⇒ 渲染层不收尾）', () => {
+    const folded = fold(EVENTS.slice(0, 2)); // 只到两个 span.begin
+    assert.equal(folded.spans.length, 2);
+    assert.equal(folded.spans[0].endedAt, undefined, '在飞时根不该有 endedAt');
+    assert.equal(folded.status, 'running');
+  });
+});
+
+describe('回复正文的归属（② 跑完的回复被自动 open 擦掉）', { skip: SKIP }, () => {
+  it('只有「打开的就是这条回复的主人」才保留', () => {
+    assert.equal(
+      L.replyBelongsTo('t1', 't1'),
+      true,
+      '同一条 trace ⇒ 保留（run-done 刚写上去的那句）',
+    );
+    assert.equal(L.replyBelongsTo('t2', 't1'), false, '打开别的 run ⇒ 清（防张冠李戴，原意图）');
+    assert.equal(L.replyBelongsTo('t1', null), false, '不知道主人是谁 ⇒ 清（默认安全）');
+    assert.equal(L.replyBelongsTo(null, null), false);
+  });
+});
+
+describe('目录浏览 / 选文件（③）', { skip: SKIP }, () => {
+  it('浏览… 总是按输入框的值打开（不是开关）', () => {
+    assert.equal(
+      L.browseTarget('/x/y', '/w'),
+      '/x/y',
+      '输入框有值 ⇒ 用它（这就是「敲了路径再点浏览」的用法）',
+    );
+    assert.equal(L.browseTarget('  /x/y  ', '/w'), '/x/y', '首尾空白不该让路径读错');
+    assert.equal(L.browseTarget('', '/w'), '/w', '空 ⇒ 回落缺省工作目录');
+    assert.equal(L.browseTarget('   ', '/w'), '/w');
+  });
+
+  it('选文件：只在 prompt 为空时填文件名 —— 用户写好的话一个字不动', () => {
+    assert.deepEqual(L.promptAfterFilePick('', 'README.md'), { prompt: 'README.md', filled: true });
+    assert.deepEqual(
+      L.promptAfterFilePick('  ', 'a.md'),
+      { prompt: 'a.md', filled: true },
+      '空白等于空',
+    );
+    assert.deepEqual(
+      L.promptAfterFilePick('读一下这个', 'a.md'),
+      { prompt: '读一下这个', filled: false },
+      '已有内容 ⇒ 一个字都不动（悄悄改用户输入比少填一次糟得多）',
+    );
+    assert.equal(L.promptAfterFilePick('读一下这个', 'a.md').prompt, '读一下这个');
+  });
+});

@@ -971,6 +971,14 @@ export function devServer(argv: string[] = []): number {
           session: readSession,
           abort: abortRun,
           clearSession,
+          /**
+           * ① 实时右栏：runner 逐笔 POST 上来的增量记账事件**原样广播**给面板。
+           *
+           * 父进程在这一层**不做任何解释**（不折回、不缓存、不裁剪）：折回是面板的活
+           * （它有 `panel-logic.applyTraceEvent` 与单测），而父进程插一手就多一处会漂的口径。
+           * 这里只保证「按收到的顺序、同步转发」—— SSE 写入本身是有序的。
+           */
+          traceEvent: (e) => emit({ kind: 'trace-event', event: e }),
         },
       });
       console.log(

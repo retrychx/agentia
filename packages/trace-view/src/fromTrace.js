@@ -81,7 +81,14 @@ function eventFull(ev) {
 }
 
 /**
- * 把真实 Trace 线性回放给视图（同步、一次性；用于 run 结束后的静态展示）。
+ * 把真实 Trace 线性回放给视图（同步、一次性）。
+ *
+ * 两种用途共用本函数（这也是它必须呆在 trace-view 里、不进 CLI 的理由）：
+ * - **收尾的整棵 trace**（run 结束后一次画完）；
+ * - **在飞的那棵树**（CLI inspector 的实时右栏：每收到一条增量记账事件就整体重画一次，
+ *   见 `packages/cli/src/panel-logic.ts` 的 `applyTraceEvent`）。重画是幂等的 ——
+ *   同一棵 spans 交给它多少次，画出来的都是同一棵树。
+ *
  * 返回 false 表示 trace 空、未做任何渲染。
  */
 export function playTrace(view, trace) {
@@ -158,6 +165,9 @@ export function playTrace(view, trace) {
     }
   }
 
-  view.finish(root.endedAt != null ? root.endedAt - root.startedAt : 0, root.status, root.error);
+  // 根 span 还没结束（`span.end` 尚未到达）⇒ **不收尾**：`finish()` 会把根标成已完成
+  // （● + 耗时），而这棵树其实还在长 —— 在飞时看到「已完成」是假事实。留 ◌ 才对。
+  // 收尾的整棵 trace 根必有 `endedAt`，所以这条分支只对「在飞 / 截断」的树生效。
+  if (root.endedAt != null) view.finish(root.endedAt - root.startedAt, root.status, root.error);
   return true;
 }
