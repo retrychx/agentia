@@ -26,7 +26,11 @@ jobs:
     name: 全链验证（verify-all 8 步）
     runs-on: ubuntu-latest
     steps:
+      # 全历史（默认 depth=1 是**浅克隆**）：`tests/docs/commit-refs.test.ts` 要判「文档引用的
+      # 提交是否在主干祖先链上」—— 浅克隆下历史不可见，那条守卫会**空转**（它会因解析下限而红）。
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
