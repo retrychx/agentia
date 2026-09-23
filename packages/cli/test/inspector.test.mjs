@@ -1146,4 +1146,64 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
       await srv2.close();
     }
   });
+
+  /* 「选完文件夹 → 透传给 run 的就是所选目录」这条链的两端**接线**。
+   *
+   * 为什么要有这条：2026-09-24 真用户反馈「选完之后透传给 agent 的不是所选文件夹」。
+   * 逐环核实后链路是通的（`docs/guards.md` §2 那条 2026-09-24 的记录），但**当时没有任何
+   * 守卫钉着这条链**：e2e 第 15-ter 步只覆盖 `POST /run` **直带** workdir，选择器那一跳
+   * （返回值 → 控件 → 请求体）全靠人读码 —— 而「抽出来没接上」在浏览器里没人替你发现
+   * （与上面 pagehide 那条、structure.test.mjs 的 ⑦ 同一条纪律）。
+   *
+   * 本条钉两个端点，都不需要浏览器 / 原生对话框：
+   *   ① 页面接线：`/api/fs/pick` 的返回值必须写进工作目录控件，且 readControls 读的是**控件**
+   *      （不是另一份镜像 state —— 两处各存一份就是「选完不生效」的温床）；
+   *   ② 服务端接线：把 ① 拿到的 path **原样**喂给 /run ⇒ 钩子收到的 workdir 就是它。
+   * 两端合起来 = 「选择器返回什么，run 就用什么」。再往下的「工具真正看到的根」由
+   * `scripts/e2e-dev.ts` 第 15-ter 步守着（真跑，判据落在模型请求体里的 tool_result）。 */
+  it('选完文件夹 → 透传给 run 的就是所选目录（选择器返回值 / 控件 / /run 三处接线）', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const TOKEN = 'tok-picker-wire';
+    const PICKED = '/picked/from/native';
+    const { dev, calls } = mkDev({ pickFolder: async () => PICKED });
+    const srv = await startInspector({ dev, token: TOKEN });
+    try {
+      const base = `http://127.0.0.1:${srv.port}`;
+
+      // ① 页面接线（读下发到浏览器的页面文本，与 pagehide 那条同一手法）
+      const page = await (await fetch(`${base}/?t=${TOKEN}`)).text();
+      assert.match(
+        page,
+        /workdirEl\.value\s*=\s*body\.path/,
+        'pick 成功分支必须把 /api/fs/pick 返回的 path 写进工作目录控件 —— 少了这行，' +
+          '选择器选完什么都不会进 /run，而服务端单测与 e2e 全都照样绿',
+      );
+      assert.match(
+        page,
+        /workdir:\s*workdirEl\.value\.trim\(\)/,
+        'readControls 必须从控件取值（不是另一份镜像 state）—— 两处各存一份就是「选完不生效」的温床',
+      );
+
+      // ② 服务端接线：选择器返回的 path 原样喂给 /run ⇒ 钩子收到的 workdir 就是它
+      const picked = await post(base, `/api/fs/pick?t=${TOKEN}`, {});
+      assert.equal(picked.status, 200, `选择器应 200，实际 ${picked.status}`);
+      const { path } = await picked.json();
+      assert.equal(path, PICKED, '选择器返回的就是它给的那个目录');
+
+      const run = await post(base, `/run?t=${TOKEN}`, {
+        prompt: 'x',
+        workdir: path,
+        toolSources: ['a'],
+      });
+      assert.equal(run.status, 202, `带 workdir 的 /run 应 202，实际 ${run.status}`);
+      assert.equal(
+        calls.at(-1)?.workdir,
+        PICKED,
+        '把选择器返回值原样喂给 /run ⇒ 钩子必须收到同一个目录（且**不是**回落到 defaultWorkdir：' +
+          `这里 defaultWorkdir 是 /w/proj，收到它就说明 workdir 被丢了）。实际 ${JSON.stringify(calls.at(-1))}`,
+      );
+    } finally {
+      await srv.close();
+    }
+  });
 });

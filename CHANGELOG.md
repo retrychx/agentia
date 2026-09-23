@@ -5,6 +5,21 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 仓库自身（不面向使用者）
+
+- **`packages/cli/test/inspector.test.mjs` 新增 ⑫「选完文件夹 → 透传给 run 的就是所选目录」**：
+  2026-09-24 真用户反馈「选完之后透传给 agent 的不是所选文件夹」，逐环核实后**链路是通的**
+  （`createApp` 把显式 `providers` 拼在 discover 结果**之后** ⇒ 模板的 `WORKDIR = opts.workdir`
+  赢过目录里扫出来的无 deps 版本；面板 `readControls` 读 DOM 单源，重画只填空值不覆盖已选），
+  但**当时没有任何守卫钉着这条链** —— `scripts/e2e-dev.ts` 第 15-ter 步只覆盖 `POST /run`
+  **直带** workdir，选择器那一跳（返回值 → 控件 → 请求体）全靠人读码。新用例钉两端接线：
+  ① **页面接线**：`/api/fs/pick` 的返回值必须写进工作目录控件，且 `readControls` 从**控件**
+  取值（不是镜像 `state`）；② **服务端接线**：把返回值原样喂给 `/run` ⇒ 钩子收到的 `workdir`
+  就是它（且不是回落 `defaultWorkdir`）。反向验证三条各自变红（摘页面接线 / 摘
+  `parseRunRequest` 的 workdir 转发 / 把 `readControls` 换成镜像 `state`）。
+
 ## [0.9.3] - 2026-09-23
 
 > 本版主题（窗口 `0.9.2 → 0.9.3`）：**dev 面板两个真用户反馈的落地** —— 原生文件夹选择器
