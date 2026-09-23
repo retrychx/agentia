@@ -155,6 +155,39 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     assert.ok(/export\s+default\s+class/.test(tool), 'discover 只认 default export 的类');
   });
 
+  it('read-file 工具：list_files 进菜单（模型「知道自己在哪个目录」的通道）', () => {
+    /* 真用户反馈（2026-09-22）：面板上换了文件夹，agent 行为看起来没变。链路是通的
+     * （workdir 确实注入到工具），缺口在**模型感知** —— prompt 不变、菜单里没有
+     * 「列目录」的工具 ⇒ 模型不知道自己在哪、里面有什么，只能瞎猜文件名。
+     * 修法落在模板（零框架改动）：同一个类里加一个 list_files。三条契约都要钉住： */
+    const tool = T.readFileToolIndexTs();
+    assert.ok(
+      tool.includes('async list_files('),
+      'read-file 必须带 list_files 工具（先看有什么 → 再读，与 read_file 同一个类、同一个 provider）',
+    );
+    // ① 输出**第一行**是工作目录的绝对路径 —— 那是模型「知道自己在哪」的通道，
+    //    且 description 里必须把这一点写给模型看（模型是按 description 选工具的）。
+    assert.ok(
+      tool.includes('工作目录：$' + '{this.root}'),
+      'list_files 的输出第一行必须写工作目录的绝对路径（工作目录：/abs/path）',
+    );
+    assert.ok(
+      /description:[\s\S]*?绝对路径/.test(tool),
+      'list_files 的 description 必须写明「输出带工作目录绝对路径」—— 模型按 description 选工具',
+    );
+    // ② 输出有上限且**截断明示**（本仓纪律：不许静默少给）。
+    assert.ok(
+      /LIST_LIMIT/.test(tool) && /截断/.test(tool),
+      'list_files 必须有输出上限且截断时明示（不静默少给）',
+    );
+    // ③ 越界判定复用 safeResolve —— 读目录也是读，同一道闸。
+    assert.ok(
+      /async list_files[\s\S]*?safeResolve\(/.test(tool),
+      'list_files 必须用 safeResolve 判越界（读目录也是读）',
+    );
+    // snake_case 由下面「模板里的能力名统一 snake_case」那条钉住（list_files 本身合规）。
+  });
+
   it('subagent 的 system.md 自带「你的回复就是报告」约定（函数形态不追加 REPORT_HINT）', () => {
     /* 为什么这条要钉在这儿：模板把 `system` 写成**函数形态**（改 `.md` 立刻生效；
      * 值形态在**类定义时**就把文件读死了 —— 而 `.md` 不在 tsx 的 import 图里，

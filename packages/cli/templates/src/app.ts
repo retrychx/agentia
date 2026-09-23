@@ -78,6 +78,9 @@ export async function createAgentApp(opts: CreateAgentAppOptions = {}): Promise<
       // 里声明 `{ provide: '<能力 token>', useClass: Xxx, deps: ['WORKDIR'] }`
       // （discover 自动注册的 provider **没有 deps**，所以要注入的能力得从 discover 挪到显式
       // providers；同一个 token 混用不会重复收集菜单）。
+      // ⚠️ 若同时用 src/registry.ts（那里也有一份 `WORKDIR = process.cwd()`）：
+      // 同 token **后注册覆盖先注册**，registry 的 providers 必须排在**这份之前**，
+      // 否则面板喂进来的 workdir 会被 process.cwd() 静默顶掉。
       { provide: 'WORKDIR', useValue: opts.workdir ?? PROJECT_ROOT },
       // 例子：把工作目录注入给 read-file 工具（脚手架自带的第二个能力，
       // 也是「面板上的文件夹选择器真的生效」的那个接线）

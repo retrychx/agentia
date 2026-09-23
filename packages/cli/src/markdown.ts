@@ -23,6 +23,7 @@
  * - 不做表格 / 任务列表 / 嵌套列表 / 脚注 / 数学 —— 面板是调试视图，不是文档站
  * - 不做 setext 标题（`===` 下划线式）—— 与分隔线歧义大、收益小
  * - 不做图片（`![]()`）—— 面板**不去外网取图**：一次 run 的正文不该触发网络请求
+ * - 不做**词内** `_` 强调（`read_file_tool` 原样显示）—— 与 CommonMark 同口径，见 `parseInline`
  */
 
 export type MdInline =
@@ -59,6 +60,13 @@ const QUOTE = /^\s{0,3}>\s?(.*)$/;
 const UL = /^(\s*)([-*+])\s+(.*)$/;
 const OL = /^(\s*)(\d{1,9})[.)]\s+(.*)$/;
 const BLANK = /^\s*$/;
+/** 「单词字符」：`_` 的词内排除用它判边界（与 CommonMark 的 intraword 规则同口径） */
+const WORD_CHAR = /[A-Za-z0-9_]/;
+
+/** 下标可能越界（`text[-1]` / `text[len]` 都是 `undefined`）⇒ 越界一律当「不是单词字符」 */
+function isWordChar(ch: string | undefined): boolean {
+  return ch !== undefined && WORD_CHAR.test(ch);
+}
 
 /**
  * 把一段 Markdown 文本解析成块序列。
@@ -256,7 +264,20 @@ export function parseInline(text: string, depth: number): MdInline[] {
       const end = text.indexOf(mark, i + mark.length);
       if (end > i + mark.length) {
         const inner = text.slice(i + mark.length, end);
-        if (inner.trim() && !inner.startsWith(' ') && !inner.endsWith(' ')) {
+        /**
+         * `_` 的**词内排除**（CommonMark 的 intraword 规则）：两侧只要有一边紧贴单词字符，
+         * 就不构成强调。
+         *
+         * 没有这条，`read_file_tool` 会被切成 `read` + <em>file</em> + `tool`、
+         * `src/my_dir/my_file.ts` 同理 —— 而面板渲染的正是**模型正文**，标识符是那里最常见的东西。
+         * 单下划线（`read_file`）本来就不配对、不受影响；真正被切开的是有两个及以上 `_` 的标识符。
+         *
+         * ⚠️ `*` **不做**这条限制：CommonMark 里 `a*b*c` **就是** `a<em>b</em>c`。
+         * 只修 `_`、不修 `*`，是照口径修，不是照直觉修。
+         */
+        const intraword =
+          c === '_' && (isWordChar(text[i - 1]) || isWordChar(text[end + mark.length]));
+        if (!intraword && inner.trim() && !inner.startsWith(' ') && !inner.endsWith(' ')) {
           pushText();
           const children =
             depth < 3 ? parseInline(inner, depth + 1) : [{ type: 'text' as const, text: inner }];

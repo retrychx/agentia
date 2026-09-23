@@ -41,6 +41,25 @@ export function capabilityBadge(selected: string[], all: string[]): string {
   return `${selected.length}/${all.length}`;
 }
 
+/**
+ * 渲染前丢掉**已失效**的 token（能力被删 / runner 重启后菜单变了）。不过滤徽标就说谎：
+ * 分子里混着菜单上已不存在的名字 ⇒ `4/3`。空集返回空数组（「回落全选」是**调用方**的
+ * 规则），且保留入参顺序 —— 过滤不重排，排序是 `normalizeToolSources` 发送前的活。
+ */
+export function filterSelected(selected: string[], all: string[]): string[] {
+  const known = new Set(all);
+  return [...new Set(selected)].filter((s) => known.has(s));
+}
+
+/**
+ * 一条 run 的「已选来源」显示口径（`null` = 全量，与 `RunNote.toolSources` 同义）。
+ * **两处共用一份**：run 列表第三行与 `run-start` 提示条 —— 各写一份就会出现「同一组
+ * 能力两个说法」，而面板的纪律是「显示的就是生效的那份」。
+ */
+export function formatToolSources(sources: string[] | null): string {
+  return sources === null ? '全量' : sources.join(',');
+}
+
 // ---------- 多轮开关（D8 ②③） ----------
 
 export interface MultiTurnDefault {
@@ -262,6 +281,27 @@ export function mergeConversation(
     turns.push({ user: prompt, assistant: null, failed, aborted: !failed, traceId: r.traceId });
   }
   return turns;
+}
+
+/**
+ * 对话视图出不出现。三条**都**满足才显示，不做空壳：① dev 环在场且可用（只读面板没有
+ * 输入条 ⇒ 没有多轮）；② 多轮开着（单轮不写会话文件）；③ 会话文件读得到（工程没配
+ * `SessionStore` 时它是 null）。缺一条就只剩空壳 —— 那比不显示更糟：用户以为对话跑丢了。
+ */
+export function chatViewVisible(
+  dev: { available: boolean } | null,
+  multiTurn: boolean,
+  session: { messages: unknown[] } | null,
+): boolean {
+  return dev?.available === true && multiTurn && session !== null;
+}
+
+/**
+ * 对话轮折叠态的键：**必须混进 sessionId**。清空对话换 id 后下标从 0 重来，
+ * 只用下标当键会把旧会话第 0 轮的展开态套到新会话第 0 轮上（张冠李戴）。
+ */
+export function turnKey(sessionId: string, index: number): string {
+  return `turn:${sessionId}:${index}`;
 }
 
 // ---------- CLI 侧记账（面板发出去的东西，CLI 自己记一笔） ----------

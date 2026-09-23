@@ -58,6 +58,30 @@ describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP
     assert.equal(L.capabilityBadge(['a'], ['a', 'b', 'c']), '1/3');
   });
 
+  it('徽标不许说谎：渲染前过滤失效 token（filterSelected）', () => {
+    // runner 重启后菜单变了、state.selected 里残留旧 token ⇒ 不过滤徽标就是「4/3」
+    const all = ['a', 'b', 'c'];
+    assert.deepEqual(L.filterSelected(['a', 'gone', 'b'], all), ['a', 'b'], '失效 token 应被丢掉');
+    assert.equal(
+      L.capabilityBadge(L.filterSelected(['a', 'b', 'gone', 'gone2'], all), all),
+      '2/3',
+      '过滤后的计数才配得上分母（不混进菜单上已不存在的名字）',
+    );
+    assert.deepEqual(
+      L.filterSelected(['gone'], all),
+      [],
+      '全是失效 token ⇒ 空（面板据此回落全选）',
+    );
+    assert.deepEqual(L.filterSelected([], all), []);
+    assert.deepEqual(L.filterSelected(['a', 'a'], all), ['a'], '顺手去重');
+  });
+
+  it('「已选来源」显示口径：null = 全量（formatToolSources，两处共用一份）', () => {
+    assert.equal(L.formatToolSources(null), '全量');
+    assert.equal(L.formatToolSources(['a', 'b']), 'a,b');
+    assert.equal(L.formatToolSources([]), '', '空数组不是全量（全量由 null 表示）');
+  });
+
   it('多轮默认值 = 所选能力声明的 OR，并给出**来源**（混选时默认值有歧义）', () => {
     const declared = ['trip-planner'];
     // 只选任务型 ⇒ 单轮
@@ -188,6 +212,27 @@ describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP
     assert.equal(L.runIsFailure({ ok: false, stopReason: 'error' }), true);
     assert.equal(L.runIsFailure({ ok: false }), true, '老 trace 没有 stop_reason ⇒ 只能按 ok 判');
     assert.equal(L.runIsFailure({ ok: true, stopReason: 'end_turn' }), false);
+  });
+
+  it('对话视图出现条件（chatViewVisible）：三条都满足才显示，不做空壳', () => {
+    const dev = { available: true };
+    assert.equal(L.chatViewVisible(dev, true, { messages: [] }), true);
+    assert.equal(L.chatViewVisible(null, true, { messages: [] }), false, 'dev 还没拿到 ⇒ 不显示');
+    assert.equal(
+      L.chatViewVisible({ available: false }, true, { messages: [] }),
+      false,
+      '只读面板 ⇒ 不显示',
+    );
+    assert.equal(L.chatViewVisible(dev, false, { messages: [] }), false, '单轮 ⇒ 不显示');
+    assert.equal(L.chatViewVisible(dev, true, null), false, '工程没配 session ⇒ 不显示');
+  });
+
+  it('对话轮折叠键混进 sessionId（turnKey）：清空对话后旧展开态不套到新对话上', () => {
+    // 「清空对话」换 sessionId 后对话流下标从 0 重来 —— 只用下标当键，
+    // 旧会话第 0 轮的展开态会套到新会话第 0 轮上。
+    assert.equal(L.turnKey('dev', 0), 'turn:dev:0');
+    assert.notEqual(L.turnKey('dev', 0), L.turnKey('dev-2', 0), '换 sessionId ⇒ 同下标也不同键');
+    assert.notEqual(L.turnKey('dev', 0), L.turnKey('dev', 1), '同会话内下标仍区分各轮');
   });
 
   it('CLI 侧记账有上限：等不到 trace 的 note 也要被淘汰（dev 是长跑进程）', () => {

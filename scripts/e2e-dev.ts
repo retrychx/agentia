@@ -188,6 +188,20 @@ try {
    * 打开它之后端点只发 `message_start` 就不再说话，run 就停在模型调用上。
    */
   let holdReply = false;
+  /**
+   * 「驱动一次工具调用」开关（第 15-ter 步用）：开启后假端点不回正文，而是发一个
+   * `read_file` 的 tool_use —— 引擎执行工具后带着 tool_result 回来，那时才回正文。
+   * 判据落在**第二次请求体里的 tool_result 内容**：它装着工具真正读到的那棵树，
+   * 「换了文件夹，工具看到的根换没换」只有这里看得见（run 列表上那行目录记账是
+   * CLI 自己写的，证明不了）。
+   */
+  let driveToolUse = false;
+  /**
+   * 「下一次请求直接 400」开关（第 15-quater 步用）：造一次**失败的 run**，让父进程的
+   * lastError 留下一条旧错误 —— 之后才测得到「下一代 runner 起不来时，告警条有没有
+   * 错拿这条旧错误归因」。400 是 api 类错误（不重试），一次调用就收尾。
+   */
+  let failNext = false;
   fake.on('request', (req, res) => {
     // 被 abort 掐断的连接上再写会 emit 'error'，没有监听器就是未捕获异常
     res.on('error', () => {
@@ -199,6 +213,19 @@ try {
     });
     req.on('end', () => {
       seenBodies.push(raw);
+      if (failNext) {
+        // 第 15-quater 步：造一次失败的 run（400 = api 类，不重试）。
+        // ⚠️ 必须在 writeHead(200) **之前**拦截 —— SSE 响应头一旦发出就不能再改状态码。
+        failNext = false;
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            type: 'error',
+            error: { type: 'invalid_request_error', message: 'E2E_RUN_FAIL_MARK' },
+          }),
+        );
+        return;
+      }
       const ev = (event: string, data: unknown): void => {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       };
@@ -219,6 +246,29 @@ try {
       if (holdReply) {
         held.push(res);
         return; // 就停在这里：run 卡在模型调用上，等第 10 步来中止
+      }
+      // 第 15-ter 步：带 tool_result 回来的请求 = 工具已执行完，回正文收尾；
+      // 否则发 tool_use 让引擎去调 read_file（input 走 input_json_delta 增量帧）。
+      if (driveToolUse && !raw.includes('"tool_result"')) {
+        ev('content_block_start', {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_wd_probe', name: 'read_file', input: {} },
+        });
+        ev('content_block_delta', {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"rel":"marker.txt"}' },
+        });
+        ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+        ev('message_delta', {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use', stop_sequence: null },
+          usage: { output_tokens: 8 },
+        });
+        ev('message_stop', { type: 'message_stop' });
+        res.end();
+        return;
       }
       ev('content_block_start', {
         type: 'content_block_start',
@@ -833,6 +883,125 @@ try {
     );
   }
 
+  // —— 15-ter) 工作目录必须**真的到工具手上**（「切了文件夹，执行没变」的守门）——
+  //    链路：面板 → POST /run → IPC → runner 进程内重建 app（appKey 含 workdir）→
+  //    DI 注入 WORKDIR → read_file 的 this.root。任何一环断掉，「换文件夹」就只剩
+  //    run 列表上那行目录记账在变 —— 而那行记账是 CLI 自己写的，证明不了工具看到的根。
+  //    判据因此落在**模型请求体里的 tool_result**：两个目录各放一个内容不同的
+  //    marker.txt，两次 run 各读各的 —— 换目录没生效的话，第二次读到的还是 IN_A。
+  //    顺带验「收窄菜单（只留 read-file）+ 换目录」的组合（那是一次重启 + 两次进程内重建）。
+  {
+    const dirA = join(tmp, 'wd-a');
+    const dirB = join(tmp, 'wd-b');
+    mkdirSync(dirA);
+    mkdirSync(dirB);
+    writeFileSync(join(dirA, 'marker.txt'), 'IN_A');
+    writeFileSync(join(dirB, 'marker.txt'), 'IN_B');
+    driveToolUse = true;
+    try {
+      const bodiesBeforeWd = seenBodies.length;
+      const ackA = await api('/run', {
+        method: 'POST',
+        body: { prompt: '读 marker.txt', workdir: dirA, toolSources: ['read-file'] },
+      });
+      assert(ackA.status === 202, `目录 A 的 POST /run 应 202，实际 ${ackA.status}`);
+      const doneA = await waitDev('run-done', 60_000, 7);
+      assert(doneA.ok === true, `目录 A 的 run 应成功，实际：${JSON.stringify(doneA)}`);
+      const ackB = await api('/run', {
+        method: 'POST',
+        body: { prompt: '读 marker.txt', workdir: dirB, toolSources: ['read-file'] },
+      });
+      assert(ackB.status === 202, `目录 B 的 POST /run 应 202，实际 ${ackB.status}`);
+      const doneB = await waitDev('run-done', 60_000, 8);
+      assert(doneB.ok === true, `目录 B 的 run 应成功，实际：${JSON.stringify(doneB)}`);
+      // 每次 run = 2 次模型调用（发 tool_use 一次、带 tool_result 回来一次）；
+      // 带 tool_result 的那次请求体里装着工具真正读到的内容。
+      const toolResults = seenBodies.slice(bodiesBeforeWd).filter((b) => b.includes('tool_result'));
+      assert(
+        toolResults.length === 2,
+        `两次 run 应各产生一条 tool_result（共 2 条），实际 ${toolResults.length} 条 —— ` +
+          '少了说明工具根本没被调用（收窄没生效？）',
+      );
+      assert(
+        (toolResults[0] as string).includes('IN_A') && !(toolResults[0] as string).includes('IN_B'),
+        `目录 A 的 run 应读到 IN_A，实际 tool_result：${toolResults[0]}`,
+      );
+      assert(
+        (toolResults[1] as string).includes('IN_B') && !(toolResults[1] as string).includes('IN_A'),
+        `目录 B 的 run 应读到 IN_B —— 读到 IN_A 说明换目录没生效（工具看到的还是旧根）。` +
+          `实际 tool_result：${toolResults[1]}`,
+      );
+    } finally {
+      driveToolUse = false;
+    }
+  }
+
+  // —— 15-quater) lastError 不许**跨代复用**：下一代 runner 起不来时，告警条不能挂上一代的错误 ——
+  //    lastError 全程没有清零点 ⇒ 若退出处理用 `??=`，「run #1 失败留下的错误」会被当成
+  //    「这次 runner 起不来的原因」显示出来（归因误导）。修复是 spawn 时记 errBaseline、
+  //    只在这一代没写出新原因时才用通用文案；成功 run 会把旧错误摘下来。
+  //    判据全是 /api/dev 的 lastError 内容：旧错误在场 ⇒ 误归因；通用文案在场 ⇒ 正确。
+  {
+    // ① 先造一次失败的 run，让 lastError 留下带标记的旧错误
+    failNext = true;
+    const ackF = await api('/run', { method: 'POST', body: { prompt: '这次会失败' } });
+    assert(ackF.status === 202, `失败用例的 POST /run 应 202，实际 ${ackF.status}`);
+    const doneF = await waitDev('run-done', 60_000, 9);
+    assert(doneF.ok === false, `这次 run 应失败（假端点 400），实际：${JSON.stringify(doneF)}`);
+    const stF = await api('/api/dev');
+    assert(
+      JSON.stringify(stF.json.lastError).includes('E2E_RUN_FAIL_MARK'),
+      `失败 run 的错误应进 lastError（带标记），实际：${JSON.stringify(stF.json.lastError)}`,
+    );
+    // ② 让下一代 runner「什么都没来得及说就死掉」：往 app.ts 顶部塞 `process.exit(1)`。
+    //    ⚠️ 为什么不是「写一段坏语法」：import 抛错那条路 runner **来得及发 run-error**
+    //    （esbuild 的报错原文就是它带上来的），那条消息是**无条件**写 lastError 的 ——
+    //    新旧两种实现下归因都对，分不出修复与否（第一版就是这么写的，反向验证时
+    //    「摘掉修复照样绿」= 假门禁）。`process.exit` 不可捕获、立即死，runner 什么消息
+    //    都发不出 ⇒ 父进程只能走退出处理的「通用文案」那条路 —— `??=` 与 errBaseline
+    //    的区别**只在这里**才暴露。
+    const appTsPath = join(proj, 'src', 'app.ts');
+    const appSrc = readFileSync(appTsPath, 'utf8');
+    writeFileSync(
+      appTsPath,
+      '// e2e 注入（只在这个临时工程里）：模拟「runner 一句话都没说就死了」\n' +
+        'process.exit(1);\n' +
+        appSrc,
+    );
+    try {
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        const st = (await api('/api/dev')).json;
+        const le = typeof st.lastError === 'string' ? st.lastError : '';
+        // 归因正确的标志：标记没了。新原因的具体措辞不限定（可能是通用文案，也可能是
+        // runner 报上来的 esbuild 原始报错 —— 后者信息更足，同样是正确答案）
+        if (le.length > 0 && !le.includes('E2E_RUN_FAIL_MARK')) break;
+        if (Date.now() > deadline) {
+          // 旧实现（`??=`）会永远停在 ① 那条旧错误上 —— 归因误导，正是这一步守的东西
+          throw new Error(
+            `60s 内 lastError 没有换成「这一代 runner 起不来」的原因（仍是：${le}）—— ` +
+              '若还是 E2E_RUN_FAIL_MARK 那条，说明退出处理把上一代的旧错误当成了这一代的原因',
+          );
+        }
+        await sleep(200);
+      }
+    } finally {
+      // ③ 修好 app.ts ⇒ runner 回来；再跑通一次 ⇒ 旧错误应被摘下（lastError 回 null）
+      writeFileSync(appTsPath, appSrc);
+    }
+    const readyAfterFix = devFrames('runner-ready').length;
+    await waitDev('runner-ready', 60_000, readyAfterFix);
+    const ackR = await api('/run', { method: 'POST', body: { prompt: '恢复后再跑一次' } });
+    assert(ackR.status === 202, `恢复后的 POST /run 应 202，实际 ${ackR.status}`);
+    const doneR = await waitDev('run-done', 60_000, 10);
+    assert(doneR.ok === true, `恢复后的 run 应成功，实际：${JSON.stringify(doneR)}`);
+    const stR = await api('/api/dev');
+    assert(
+      stR.json.lastError === null,
+      `成功的 run 应把旧错误从告警条上摘下（lastError 回 null），实际：${JSON.stringify(stR.json.lastError)}`,
+    );
+  }
+
   // —— 16) Ctrl+C 的收尾：连**不响应 SIGTERM** 的 runner 也不能活成孤儿 ——
   //    旧的 SIGINT 处理器是「shutdown(); setTimeout(() => process.exit(0), 50)」：父进程
   //    50 ms 就没了，而 `stopChild()` 给子进程的宽限期是 3 s（SIGTERM 之后等满才补
@@ -890,7 +1059,8 @@ try {
   console.log(
     'dev e2e: OK（IPC 就绪 / .env 生效 / 能力收窄 / .md 重启 / .env 重启 / 中止在飞 run / 清空对话 / ' +
       '重启总账 4 次无自噬 / 重启窗口内的 409 / 坏会话文件报警 / dev -- "问题" 透传 / ' +
-      '右栏实时（增量帧先于 run-done，折回 == 收尾） / Ctrl+C 不留孤儿）',
+      '右栏实时（增量帧先于 run-done，折回 == 收尾） / 工作目录真到工具（IN_A vs IN_B） / ' +
+      'lastError 不跨代复用（失败标记不盖到下一代） / Ctrl+C 不留孤儿）',
   );
 } catch (e) {
   // 失败时把 dev 的输出一起打出来 —— 它是子进程的 stdout/stderr，不主动捞就什么都看不到
