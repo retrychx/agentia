@@ -261,11 +261,13 @@ describe('官网 api.html 与源码一致', () => {
  * 加一个运行时依赖、加/删一类能力或触发宿主，页面会继续写旧数字而没人拦
  * （本仓库已有这类漂移的先例：`1 个运行时依赖 → 0 个` 就是靠人眼改的）。
  *
- * ⚠️ 两个**刻意不推导**的，如实标出，别把它们当已守：
+ * ⚠️ 两个**计数推不出来**的，如实标出，别把它们当已守（它们各自有别的守卫，但**不在本文件**）：
  * - `1:1 run ↔ trace`：是不变量不是计数，真正的守卫在 `tests/engine/traceLink.test.ts`
  *   （断言 `traceId == runId` 不被破坏）；这里只钉「首屏别把它删了」。
  * - `0 反射`：策略声明（显式 DI，不用装饰器元数据反射）—— 源码里本来就有 `Reflect.ownKeys`
- *   这类正当用法，**无法从源码计数推导**。已登记在 `docs/guards.md` §2「待守」。
+ *   这类**正当**用法，**计数推不出来**（`Reflect.*` 出现几次说明不了任何事）。
+ *   声明本身的可执行版本是 `tests/architecture/no-legacy-decorator-metadata.test.ts`
+ *   （2026-09-23 建成，已从 `docs/guards.md` §2「待守」移入 §1）；这里仍只钉「首屏别删」。
  */
 describe('官网手写数字与源码一致（chips 之外的）', () => {
   const INDEX = join(repoRoot, 'packages', 'website', 'src', 'fragments', 'index.html');
@@ -331,12 +333,17 @@ describe('官网手写数字与源码一致（chips 之外的）', () => {
     assert.equal(heroValue('类触发'), String(TRIGGERS.length));
   });
 
-  it('首屏那两条不可推导的声明**别被悄悄删掉**（不是「已守」，见本 describe 的注释）', () => {
+  it('首屏那两条计数推不出来的声明**别被悄悄删掉**（各自的守卫在别处，见本 describe 的注释）', () => {
     assert.equal(
       heroValue('run ↔ trace'),
       '1:1',
       '真正的不变量守卫在 tests/engine/traceLink.test.ts',
     );
-    assert.equal(heroValue('反射'), '0', '策略声明，无法从源码计数推导 —— guards.md §2 待守');
+    assert.equal(
+      heroValue('反射'),
+      '0',
+      '计数推不出来（Reflect.ownKeys 是正当用法）—— 声明的守卫在 ' +
+        'tests/architecture/no-legacy-decorator-metadata.test.ts，本文件只钉首屏别删',
+    );
   });
 });
