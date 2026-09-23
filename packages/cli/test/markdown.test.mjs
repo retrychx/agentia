@@ -101,6 +101,23 @@ describe('面板的 Markdown 解析（纯逻辑，零依赖）', { skip: SKIP },
     assert.equal(inlineText(M.parseInline('`**不是粗体**`', 0)), '`**不是粗体**`');
   });
 
+  it('词内 `_` 不构成强调（snake_case 原样）；词外的 `_` 与词内的 `*` 照旧', () => {
+    // 面板渲染的是**模型正文**，而标识符是那里最常见的东西 ——
+    // 把它们切成「read + 斜体(file) + tool」比少渲染一点强调糟得多。
+    for (const id of ['read_file_tool', 'max_total_tokens', 'src/my_dir/my_file.ts']) {
+      assert.equal(inlineText(M.parseInline(id, 0)), id, `${id} 不该被切开`);
+    }
+    assert.equal(
+      inlineText(M.parseInline('cost_usd = input_tokens * rate', 0)),
+      'cost_usd = input_tokens * rate',
+    );
+    // 排除规则不能顺手把**正常**的斜体也打掉：词外（两侧不贴单词字符）的 `_` 仍要强调
+    assert.equal(inlineText(M.parseInline('这是 _斜体_ 没错', 0)), '这是 *斜体* 没错');
+    assert.equal(inlineText(M.parseInline('foo _bar_ baz', 0)), 'foo *bar* baz');
+    // `*` **不做**词内排除：CommonMark 里 `a*b*c` 就是 a<em>b</em>c（照口径，不照直觉）
+    assert.equal(inlineText(M.parseInline('a*b*c', 0)), 'a*b*c');
+  });
+
   it('**安全性**：整棵树里只可能出现白名单里的 token —— 没有任何「HTML 透传」这一类', () => {
     const blocks = M.parseMarkdown(
       '# t\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>',

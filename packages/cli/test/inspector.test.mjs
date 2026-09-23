@@ -422,6 +422,27 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         }
       }
 
+      /* `./index.js`（trace-view）同一口径：页面 import 的四个符号
+       * （createTraceView / playTrace / summarizeTrace / renderSummary）必须都是它的真导出。
+       * 它在 dist/inspector/ 下（构建期从 packages/trace-view 拷入，零依赖 ESM），
+       * 与上面同一做法：直接 import 构建产物、逐个符号点名。 */
+      {
+        const res = await fetch(`http://127.0.0.1:${srv.port}/index.js`);
+        assert.equal(res.status, 200, '面板要能静态取到 index.js（trace-view）');
+        const mod = await import(new URL('../dist/inspector/index.js', import.meta.url).href);
+        const names = (/import \{([^}]*)\} from '\.\/index\.js'/.exec(page)?.[1] ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        assert.ok(names.length > 0, '没解析出页面 import index.js 的名单（页面结构变了？）');
+        for (const n of names) {
+          assert.ok(
+            n in mod,
+            `index.js（trace-view）必须导出「${n}」—— 页面 import 了它（缺失 = 浏览器白屏）`,
+          );
+        }
+      }
+
       /* 中止语义的**接线**判据（2026-09-22 复核补）：判「这一轮失败了吗」必须走
        * `runIsFailure`，不能裸读 `r.ok`。引擎的 `abortedResult()` 刻意给已取消的 run 带
        * 结构化 error（取消不是失败，但原因要可查）⇒ 中止时 `ok === false`：裸读 ok 的两个
@@ -925,6 +946,121 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
       assert.deepEqual(await res.json(), { sessionId: 'dev-7' });
     } finally {
       await s2.close();
+    }
+  });
+
+  /* 原生目录选择器（POST /api/fs/pick）：面板侧只认这份契约 ——
+   * 200 {path} 选了 / 200 {path:null} 取消 / 409 已有一个在等 / 500 其它失败，
+   * 鉴权与其它接口同一条缝（cookie/query/header 任一）。服务端由 dev 钩子
+   * `pickFolder` 提供（另一批改动并行接入中）：还没接上（404）时形状断言跳过，
+   * 接上之后自动开始守；缺 token ⇒ 403 那条与路由是否接上无关，始终断言。 */
+  it('POST /api/fs/pick：走 dev 钩子；缺 token 403；路径 / 取消 / 冲突 / 失败四种形状', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const TOKEN = 'tok-picker';
+    const mk = (pickFolder) => {
+      const { dev } = mkDev({ pickFolder });
+      return startInspector({ dev, token: TOKEN });
+    };
+    const call = (srv, authed) =>
+      post(`http://127.0.0.1:${srv.port}`, `/api/fs/pick${authed ? `?t=${TOKEN}` : ''}`, {});
+
+    const srv = await mk(async () => '/picked/dir');
+    try {
+      assert.equal((await call(srv)).status, 403, '缺 token → 403（与其它接口同一条缝）');
+      const probe = await call(srv, true);
+      if (probe.status === 404) {
+        return t.skip('服务端 /api/fs/pick 还没接上（并行开发）—— 接上后本用例自动生效');
+      }
+      assert.equal(probe.status, 200);
+      assert.deepEqual(await probe.json(), { path: '/picked/dir' }, '选了目录 ⇒ 200 { path }');
+    } finally {
+      await srv.close();
+    }
+
+    const srvNull = await mk(async () => null);
+    try {
+      const res = await call(srvNull, true);
+      assert.equal(res.status, 200, '取消也是 200（不是错误）');
+      assert.deepEqual(await res.json(), { path: null }, '取消 ⇒ { path: null }');
+    } finally {
+      await srvNull.close();
+    }
+
+    const srvBusy = await mk(async () => {
+      throw new HttpError(409, '已有一个系统选择框在等');
+    });
+    try {
+      const res = await call(srvBusy, true);
+      assert.equal(res.status, 409, '钩子的 409 原样回（面板据此提示重重点击）');
+      assert.match((await res.json()).error, /在等/);
+    } finally {
+      await srvBusy.close();
+    }
+
+    const srvBad = await mk(async () => {
+      throw new Error('系统对话框炸了');
+    });
+    try {
+      const res = await call(srvBad, true);
+      assert.equal(res.status, 500, '不带状态码的错误兜底 500（不伪装成 4xx）');
+      assert.match((await res.json()).error, /炸了/);
+    } finally {
+      await srvBad.close();
+    }
+  });
+
+  /* 客户端断开出口：等待系统选择框期间刷新 / 关标签页 ⇒ 路由必须通知钩子收掉
+   * 在飞的选择框。缺了这条：桌面上的对话框没人看、钩子里的「在飞」标志永远不落，
+   * 之后每次点「系统选择…」都 409 —— 症状像「功能坏了」，与「面板锁死」同族。 */
+  it('POST /api/fs/pick：客户端断开 ⇒ cancelPick 被调，且后续请求不再 409', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const TOKEN = 'tok-picker-drop';
+    let cancelled = 0;
+    let calls = 0;
+    let resolveFirst;
+    const { dev } = mkDev({
+      // 第一次调用挂住（用户还没选）；取消后才 settle。之后直接给结果（证明不再 409）
+      pickFolder: () => {
+        calls++;
+        return calls === 1
+          ? new Promise((r) => {
+              resolveFirst = r;
+            })
+          : Promise.resolve('/next/dir');
+      },
+      cancelPick: () => {
+        cancelled++;
+        resolveFirst?.(null);
+      },
+    });
+    const srv = await startInspector({ dev, token: TOKEN });
+    try {
+      // 裸 socket 发了就毁 —— 「刷新 / 关标签页」是底层连接没了；fetch 的 abort()
+      // 走的是受控关闭，不是同一个事件面。
+      await new Promise((resolve) => {
+        const req = request({
+          host: '127.0.0.1',
+          port: srv.port,
+          path: `/api/fs/pick?t=${TOKEN}`,
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+        });
+        req.on('error', () => resolve()); // 对端 RST 也算「断了」
+        req.end('{}', () => {
+          req.destroy();
+          resolve();
+        });
+      });
+      const deadline = Date.now() + 3_000;
+      while (cancelled === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.equal(cancelled, 1, '客户端断开必须通知 cancelPick —— 否则选择框挂在桌面上没人收');
+      const again = await post(`http://127.0.0.1:${srv.port}`, `/api/fs/pick?t=${TOKEN}`, {});
+      assert.equal(again.status, 200, '取消之后再来一次不该 409（在飞标志要落下来）');
+      assert.deepEqual(await again.json(), { path: '/next/dir' });
+    } finally {
+      await srv.close();
     }
   });
 });

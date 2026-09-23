@@ -283,6 +283,9 @@
         </details>
         <input id="workdir" class="ctl" type="text" spellcheck="false" placeholder="工作目录（绝对路径）" />
         <button id="browse" class="ctl mini" type="button">浏览…</button>
+        <!-- 系统选择…：浏览器弹不出系统目录对话框（拿不到绝对路径），由 dev 进程代弹
+             （POST /api/fs/pick）。与「浏览…」（服务端列目录）并列，互为兜底。 -->
+        <button id="pick" class="ctl mini" type="button" title="弹出系统目录选择框（在你的桌面上，不在浏览器里）">系统选择…</button>
         <label class="mt ctl" title="多轮的初始值 = 所选能力声明的 OR；可在这里覆盖">
           <input type="checkbox" id="mt" /> <span id="mt-label">单轮</span>
         </label>
@@ -318,8 +321,11 @@
         applyTraceEvent,
         browseTarget,
         capabilityBadge,
+        chatViewVisible,
         collapseDecision,
         emptyTraceAccumulator,
+        filterSelected,
+        formatToolSources,
         historyStep,
         historyText,
         mergeConversation,
@@ -333,6 +339,7 @@
         runDoneNotice,
         runIsFailure,
         shortenPath,
+        turnKey,
       } from './panel-logic.js';
 
       const $ = (id) => document.getElementById(id);
@@ -438,6 +445,9 @@
 
         // 能力多选（默认全选）。全选时 badge 显示 N/N —— 一眼看出这次是全量还是收窄
         const all = dev.capabilities;
+        // runner 重启后菜单可能变了：先丢掉已失效的 token（不丢的话徽标会说谎成「4/3」，
+        // 分子里混着菜单上已不存在的名字），再兜空集回落全选
+        state.selected = filterSelected(state.selected, all);
         if (state.selected.length === 0 && all.length > 0) state.selected = [...all];
         capsSumEl.textContent = `能力 ${capabilityBadge(state.selected, all)} ▾`;
         capsPopEl.replaceChildren();
@@ -551,7 +561,7 @@
           if (r.note) {
             const r3 = document.createElement('span');
             r3.className = 'r3';
-            const caps = r.note.toolSources === null ? '全量' : r.note.toolSources.join(',');
+            const caps = formatToolSources(r.note.toolSources);
             r3.textContent = `${short(r.note.workdir)} · ${caps}${r.note.multiTurn ? ' · 多轮' : ''}`;
             b.appendChild(r3);
           }
@@ -565,7 +575,9 @@
       /**
        * 展开态**活在渲染之外**（与 trace-view 的 `expanded` 同一个理由）：面板每次全量重画，
        * 状态留在 DOM 里就会被下一次重画合上 —— 而「刚点开的那段自己收起来了」是最烦人的那种 bug。
-       * 键要**跨重画稳定**：回复用 traceId、对话轮用下标（会话是只追加的，下标稳定）。
+       * 键要**跨重画稳定**：回复用 traceId、对话轮用 `sessionId + 下标`
+       * （`turnKey` —— 只追加的会话里下标稳定，而 sessionId 防「清空对话」后
+       * 旧下标的展开态套到新对话上）。
        */
       const expandedMsgs = new Set();
 
@@ -683,7 +695,8 @@
         const def = multiTurnDefault(state.selected, dev ? dev.multiTurn : []);
         const value = state.multiTurn ?? def.value;
         // 三条都要满足才显示：多轮开着、会话文件读得到、dev 环在场 —— 不做空壳
-        const show = !!dev && dev.available && value && state.session !== null;
+        // （判定是纯逻辑 chatViewVisible，这里只做取值 → 调它 → 写回）
+        const show = chatViewVisible(dev, value, state.session);
         tabsEl.hidden = !show;
         // 清空对话条与对话视图同生共死（它清的就是这份对话）——
         // **还要跟页签走**：它长在对话视图上，切回 run 列表时不该留在那儿
@@ -704,7 +717,8 @@
           d.textContent = '会话文件还是空的。跑一次多轮 run 就有了。';
           chatEl.appendChild(d);
         }
-        // 下标当折叠态的键：会话只追加 ⇒ 下标跨重画稳定
+        // 下标进折叠态的键时必须混进 sessionId（turnKey）：「清空对话」换 id 后下标
+        // 从 0 重来，不带 id 会把旧会话的展开态套到新对话的第 0/1/… 轮上
         let ti = -1;
         for (const t of turns) {
           ti++;
@@ -726,7 +740,7 @@
             // 助手轮是**模型正文** ⇒ Markdown 渲染 + 长了折叠。
             // 用户轮保持字面（`u.textContent = t.user` 上面那两行没动）—— 那是「我打的字」，
             // 把它按 Markdown 重排会让面板看起来像改过我的输入。
-            renderMessage(a, t.assistant, `turn:${ti}`);
+            renderMessage(a, t.assistant, turnKey(state.sessionId, ti));
             box.append(who2, a);
           } else if (t.failed) {
             // 失败轮**标失败**，不假装那轮没发生（它没回写会话文件，靠 run 列表 join 出来）
@@ -804,11 +818,21 @@
 
       // ---------- 拉数据 ----------
       async function refreshDev() {
+        // ⚠️ 与 refresh() 同一口径：必须查 res.ok。403（token 失效 / cookie 过期）时
+        // 旧实现静默把 dev 置空 ⇒ 输入条无声消失；服务端 403 的 error 文案本来就写清了
+        // 解决办法，把它亮出来，别让用户对着「输入条怎么没了」干瞪眼。
         try {
           const res = await fetch('/api/dev');
-          state.dev = res.ok ? await res.json() : null;
-        } catch {
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            state.dev = null;
+            setNotice(`读 dev 状态失败：${body.error || res.status}（输入条因此先收起来了）`, true);
+          } else {
+            state.dev = await res.json();
+          }
+        } catch (e) {
           state.dev = null;
+          setNotice(`读 dev 状态失败：${e.message}（输入条因此先收起来了）`, true);
         }
         // 会话 id 由 dev 环持有（清空对话会换它）—— 面板不自己造，只跟着走
         state.sessionId = state.dev?.sessionId ?? '';
@@ -822,12 +846,21 @@
 
       async function refreshSession() {
         if (!state.dev?.available) return;
+        // ⚠️ 与 refresh() 同一口径：失败必须亮出来。旧实现静默把 session 置空 ⇒
+        // 对话无声变空（看起来像「对话被清了」，其实只是 403 / 读文件失败）
         try {
           const res = await fetch('/api/session');
-          const body = res.ok ? await res.json() : { session: null };
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            state.session = null;
+            setNotice(`读会话失败：${body.error || res.status}（对话视图因此先收起来了）`, true);
+            return;
+          }
+          const body = await res.json();
           state.session = body.session ?? null;
-        } catch {
+        } catch (e) {
           state.session = null;
+          setNotice(`读会话失败：${e.message}（对话视图因此先收起来了）`, true);
         }
       }
 
@@ -965,6 +998,42 @@
         void openFs(browseTarget(workdirEl.value, state.dev ? state.dev.defaultWorkdir : '.'));
       });
 
+      // ---------- 系统目录选择器（与「浏览…」并列，互为兜底） ----------
+      // 浏览器弹不出系统对话框 ⇒ 由 dev 进程代弹（POST /api/fs/pick；token 走 cookie，
+      // 与其它请求同一条缝）。服务端契约：
+      //   200 {path} 选了 / 200 {path:null} 取消 / 409 已有一个在等 / 501 平台没有可用选择器
+      // 等待期间按钮置灰防重点（第一道闸；服务端那条 409 是第二道）。
+      // 任何一个失败分支都必须有用户可见的提示 —— 不许静默。
+      const pickEl = $('pick');
+      pickEl.addEventListener('click', async () => {
+        pickEl.disabled = true;
+        setNotice('系统选择器已打开…（在你的桌面上，不在浏览器里）', false);
+        try {
+          const res = await fetch('/api/fs/pick', { method: 'POST' });
+          const body = await res.json().catch(() => ({}));
+          if (res.status === 501) {
+            setNotice(`系统选择器不可用：${body.error || '当前平台没有可用的系统选择器'} —— 请改用旁边的「浏览…」`, true);
+            return;
+          }
+          if (!res.ok) {
+            // 409 与其余失败都走这里：服务端的 error 文案说明原因
+            setNotice(`系统选择器打开失败：${body.error || res.status}`, true);
+            return;
+          }
+          if (body.path === null || body.path === undefined) {
+            setNotice('已取消（没选目录）', false);
+            return;
+          }
+          workdirEl.value = body.path;
+          state.workdir = body.path;
+          setNotice(`工作目录：${short(body.path)}`, false);
+        } catch (e) {
+          setNotice(`系统选择器请求失败：${e.message}`, true);
+        } finally {
+          pickEl.disabled = false;
+        }
+      });
+
       // ---------- 控件接线（只做「取值 → 调 panel-logic → 写回」） ----------
       workdirEl.addEventListener('input', () => {
         state.workdir = workdirEl.value;
@@ -1098,7 +1167,7 @@
           // 右栏从这一轮的空树开始（① 实时）：不这么做的话它留着上一轮那棵树
           beginLiveRender();
           setNotice(
-            `运行中：${short(ev.workdir)} · ${ev.toolSources === null ? '全量' : ev.toolSources.join(',')}` +
+            `运行中：${short(ev.workdir)} · ${formatToolSources(ev.toolSources)}` +
               `${ev.multiTurn ? ' · 多轮' : ''}`,
             false,
           );

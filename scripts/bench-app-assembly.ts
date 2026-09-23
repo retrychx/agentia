@@ -34,7 +34,7 @@
  *   node_modules/.bin/tsx scripts/bench-app-assembly.ts
  *   CAPS=40 RUNS=20 node_modules/.bin/tsx scripts/bench-app-assembly.ts
  *   SKIP_MCP=1 RUNS_BOOT=0 ...                      # 只量装配、跳掉 MCP 与整进程启动
- *   BOOT_DIST=../dist/index.js ...                   # 加一档「框架走 dist」的发布形态启动（与 S6 对照）
+ *   BOOT_DIST=dist/index.js ...                    # 加一档「框架走 dist」的发布形态启动（与 S6 对照）
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -377,7 +377,6 @@ async function main(): Promise<void> {
         const xs: number[] = [];
         for (let i = 0; i < RUNS_BOOT; i++) xs.push(runEntry(boot));
         emit('S6c 整进程启动 + 装配（框架走 dist · 发布形态）', fmt(stats(xs)));
-        void distUrl;
       } else if (process.env.BOOT_DIST) {
         console.log(`  ! BOOT_DIST 指向的路径不存在，跳过 S6c：${distEntry}`);
       }

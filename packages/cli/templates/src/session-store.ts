@@ -31,6 +31,9 @@ export class FileSessionStore implements SessionStore {
     mkdirSync(dirname(this.file), { recursive: true });
     // 原子写：先写同目录的临时文件再 rename。直接覆写的话，进程在写一半时被杀
     // 会留下半截 JSON，下一次 load 直接抛 —— 整段历史因为一次崩溃而不可读。
+    // ⚠️ 这只保**单进程**内的写完整：tmp 路径固定是 `${file}.tmp`，两个进程同时
+    // append 会在 rename 上竞态、丢一边。dev 环是单进程 runner，无此问题；要多进程
+    // 共享这份文件，契约要求调用方自行串行化（与 SessionStore 的 append-only 约定一致）。
     const tmp = `${this.file}.tmp`;
     writeFileSync(tmp, JSON.stringify({ sessions: all }, null, 2), 'utf8');
     renameSync(tmp, this.file);
@@ -38,8 +41,14 @@ export class FileSessionStore implements SessionStore {
 
   /**
    * 读整份文件。文件不存在 = 还没有历史（空）。
-   * 解析失败**响亮报错**而不是当作空历史 —— 静默当成空会把「历史读不出来」
-   * 伪装成「这是第一轮」，然后下一轮 append 再把它覆盖掉：整段对话无声消失。
+   *
+   * 解析失败**抛错**而不是当作空历史 —— 静默当成空会把「历史读不出来」伪装成
+   * 「这是第一轮」，然后下一轮 append 再把它覆盖掉：整段对话无声消失。
+   *
+   * ⚠️ 但要如实说清楚这个错误会走到哪：框架在 run 期间会**刻意吞掉**会话侧的异常
+   * （辅助动作不击穿 run），所以这里的抛错不会把 run 打崩、也不会直接可见。
+   * 真正的可见性出口是 dev runner **启动期**的那次探测：它主动 `load()` 一次，
+   * 把原因送上 warning 通道（面板顶部可见）—— 所以别把这里的抛错改成静默。
    */
   private readAll(): Record<string, MessageParam[]> {
     let raw: string;

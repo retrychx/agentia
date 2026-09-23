@@ -36,5 +36,10 @@ export default {
    * 面板上「点一下就跑一次真 agent」，而真 agent 真花钱 —— 一个跑偏的循环就是一张账单。
    * 这里可以按工程调；调小更安全，调大更放得开。
    * 例：budget: { maxCostUsd: 5, maxTotalTokens: 1_000_000 },
+   *
+   * ⚠️ 覆盖关系：runner 把这份预算以 **run 级选项**传给框架，而框架的规则是
+   * run 级**优先于** createApp 应用级 ⇒ 你在 `src/app.ts` 的 createApp 里自配的
+   * `maxCostUsd` / `maxTotalTokens` 在 dev 环会被这里（或缺省值）压回去。
+   * 想改 dev 环的预算就在这里的 `budget` 字段改，别去 app.ts 里找。
    */
 };

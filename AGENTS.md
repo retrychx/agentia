@@ -105,7 +105,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   真变窄 / 改 `.md` 与项目根 `.env` 真触发重启 / 中止在飞 run 且 trace
 │                            #   落盘 / 清空对话换 id 且落盘 / 重启总账无自噬 / 换能力选择的重启
 │                            #   窗口内第二个 POST /run 必须 409 / 坏会话文件必须进 warning 通道 /
-│                            #   `dev -- "问题"` 的 prompt 真到模型手上 / Ctrl+C 后不留孤儿进程。
+│                            #   `dev -- "问题"` 的 prompt 真到模型手上 / 右栏实时（增量帧先于
+│                            #   run-done，折回 == 收尾整棵 trace）/ 工作目录真到工具（假端点驱动
+│                            #   tool_use，A/B 两目录的 marker 各读各的）/ lastError 不跨代复用
+│                            #   （runner 一句话没说就死时，告警条不能挂上一代 run 的旧错误）/
+│                            #   Ctrl+C 后不留孤儿进程。
 │                            #   模型侧是本进程里的假 Anthropic 端点，零网络零 token）
 ├── scripts/e2e-examples.ts  # 示例端到端（npm run e2e 第三步：examples/complete 真构建、真起服务，
 │                            #   按它 README 跑完 /healthz · 鉴权 401 · 同步 /run · SSE · 异步 /tasks ·
@@ -208,7 +212,14 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   `createTokenCounter`、`engine/turn.ts` 的 `replaceMessages`），但**不要**加进 `src/index.ts` ——
   一旦进了公共导出面，`tests/docs/api-page.test.ts` 的反向全覆盖就会要求官网 API 页同步，
   而那些是纯内部实现细节。
-- **零运行时依赖（2026-09-17 达成）**：`@anthropic-ai/sdk` 已退入 devDependencies —— 公共消息类型
+- **零运行时依赖（2026-09-17 达成；`tests/architecture/no-runtime-deps.test.ts` 强制）**：
+  三个包的 `src/**`（`@migor/agentia` / `@migor/cli` / `@migor/trace-view`）运行时只能 import
+  **相对路径**与 **`node:` 内置模块**，且这三个 `package.json` 不得有非空 `dependencies`
+  （依赖只能进 devDependencies）。`packages/website` 是私有 Astro 站点、不进 npm 产物，在该测试里
+  以 EXCLUDED 显式豁免。**开例外要同时改该测试的 ALLOWLIST 与本节** —— 两边不一致会失败。
+  源码层干净即产物层干净，依据是**全仓无打包器**（三个包分别是 `tsc` 1:1 转译 / 纯文件拷贝）；
+  哪天引入打包器，必须补一条扫 `dist/**` 的守卫。
+  `@anthropic-ai/sdk` 已退入 devDependencies —— 公共消息类型
   自有（`src/core/message.ts`，`MessageParam` / `Message` / 块联合 + `{ type: string }` 兜底成员，
   命名避让：`ToolParam` ≠ @Tool 装饰器、`MessageUsage` ≠ trace 的 `Usage`），SDK 只留下做
   类型兼容门禁（`tests/types/message-compat.types.ts` 钉双向/单向 assignability）。

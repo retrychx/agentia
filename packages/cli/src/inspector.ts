@@ -111,6 +111,18 @@ export interface DevHooks {
   /** 清空对话 = 换 sessionId（§6 待定 3）。返回换到的那个 id */
   clearSession(): Promise<{ sessionId: string }>;
   /**
+   * 拉起 OS 原生文件夹选择框（工作目录控件的「用系统选择器…」）。
+   *
+   * 选中回绝对路径、取消回 `null`；平台不支持 / 命令缺失抛 **501**、已有一个在等抛 **409**
+   * （串行化在钩子里做）。没有面板侧超时 —— 用户可能慢慢选；进程退出由 dev.ts 收编子进程。
+   */
+  pickFolder(): Promise<string | null>;
+  /**
+   * 收掉在飞的原生选择框（客户端断开时由 `/api/fs/pick` 路由调用 —— 用户在等待期间
+   * 刷新 / 关了标签页，选择框还挂在桌面上，不收掉的话之后每次点都 409）。
+   */
+  cancelPick?(): void;
+  /**
    * 一条**在飞** run 的增量记账事件（① 实时右栏）：`POST /ingest-event` 收下就转给它。
    *
    * 同步、无返回值：框架派发事件本身就是同步的（不 await 订阅者），这里也只做「广播给 SSE」。
@@ -221,8 +233,8 @@ function isLocalHostHeader(host: string | undefined): boolean {
 /**
  * `Origin` 校验（D0 的第一道）。
  *
- * 缺省 = 放行：同源导航与**非浏览器客户端**（`curl`、preload 的 `fetch`）都不带
- * `Origin`，把它们拦掉等于把 dev 环弄坏。带 `Origin` 的一定是浏览器跨源/同源请求
+ * 缺省 = 放行：同源导航与**非浏览器客户端**（`curl`、runner 里 trace sink 的 `fetch`）
+ * 都不带 `Origin`，把它们拦掉等于把 dev 环弄坏。带 `Origin` 的一定是浏览器跨源/同源请求
  * —— 那时只放行本机 origin。
  *
  * 注意 `Origin: null`（sandboxed iframe / file:// 页面）**不是**「缺省」：它是浏览器
@@ -653,6 +665,40 @@ export function startInspector(
           files: files.sort().slice(0, FILE_LIMIT),
           filesTruncated: files.length > FILE_LIMIT,
         });
+        return;
+      }
+
+      if (req.method === 'POST' && path === '/api/fs/pick') {
+        /**
+         * 原生文件夹选择框：`POST /api/fs/pick` → `{ path }`（取消时 `path: null`）。
+         *
+         * 浏览器拿不到所选文件夹的**绝对路径**，而 CLI 是本机进程 —— 替用户拉起 OS 原生
+         * 选择框就是这条路由存在的理由（`GET /api/fs` 的「浏览…」是它的降级路径）。
+         * 状态码：200 选中/取消；**409** 已有一个选择框在等（串行化在钩子里）；
+         * **501** 平台不支持 / 命令缺失（报错文案指向降级路径）—— 两者都由钩子抛
+         * HttpError，走外层 catch 的统一映射。与 /api/fs 同一条闸：只在 dev 钩子在场时开放。
+         */
+        if (!opts.dev) {
+          json(res, 403, { error: '这个 inspector 不是 agentia dev 起的，不提供目录选择' });
+          return;
+        }
+        // 客户端断开出口：等待选择期间用户刷新 / 关了标签页 ⇒ 桌面上的选择框没人看了，
+        // 通知钩子收掉它（否则钩子里的「在飞」标志永远不落，之后每次点都 409）。
+        // ⚠️ 判据用「是否还在 await」而不是只看 close：409/501 那条路会**立即**抛错走
+        //    外层 catch，那时若再 cancel 会把**别人**的在飞选择框杀掉。
+        let awaiting = false;
+        res.on('close', () => {
+          if (awaiting) opts.dev?.cancelPick?.();
+        });
+        try {
+          awaiting = true;
+          const picked = await opts.dev.pickFolder();
+          awaiting = false;
+          // 断开后的响应写入没有必要（也写不进去）—— 客户端已经走了
+          if (!res.destroyed) json(res, 200, { path: picked });
+        } finally {
+          awaiting = false;
+        }
         return;
       }
 

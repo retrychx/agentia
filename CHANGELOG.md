@@ -5,6 +5,32 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 新增
+
+- **模板 read-file 能力新增 `list_files` 工具**（与 `read_file` 同一个类、同一个 provider）：
+  真用户反馈「面板上换了文件夹，agent 行为好像没变」—— 链路本身是通的（workdir 确实注入），
+  缺口在**模型感知**：run 的 prompt 不变、菜单里没有「列目录」的工具，模型不知道自己在哪个
+  目录、里面有什么，只能瞎猜文件名。`list_files` 输出的**第一行就是工作目录的绝对路径**
+  （模型「知道自己在哪」的通道），目录名带 `/` 后缀，输出有上限（200 条）且截断**明示**；
+  越界判定与 `read_file` 共用同一道闸（`safeResolve`）。零框架改动。
+- **dev 面板新增「系统选择…」原生文件夹选择器**：浏览器拿不到所选目录的绝对路径，
+  所以走 CLI 本机进程拉 OS 原生对话框（契约 `POST /api/fs/pick`），与既有的 `浏览…`
+  文本/列表选择并存。客户端断开（刷新 / 关标签页）会收掉在飞的选择框（不留下
+  「之后每次都 409」的后遗症）；macOS 的取消判定认错误码 `-128`（不随系统语言本地化），
+  不认英文文案。
+
+### 修复
+
+- **复核残留修复一组**（无破坏性变更）：`refreshDev` / `refreshSession` 的失败不再静默
+  （进可见通道）、徽标过滤失效 token、折叠键混入 sessionId 防张冠李戴、import 反向全覆盖
+  扩到 trace-view 产物、`multiTurn` 笔误进 warning 通道、watcher 错误告警、
+  `lastError` 不再被通用文案覆盖、也不再**跨代复用**（spawn 时记基线，只有这一代没写出
+  新原因才用通用文案；run 成功即把旧错误从告警条摘下）、双 WORKDIR（registry.ts 与 app.ts）
+  混用顺序写进注释（同 token 后注册覆盖先注册，拼错顺序会让面板喂的 workdir 被
+  `process.cwd()` 静默顶掉）、模板 `safeResolve` 注明不解 realpath 的已知边界等。
+
 ## [0.9.2] - 2026-09-22
 
 > 本版主题（窗口 `0.9.1 → 0.9.2`）：**dev 面板的可读性** —— 模型正文按 Markdown 渲染、
@@ -288,6 +314,27 @@
 - **模板 subagent 的 `system.md` 补上「你的回复就是报告」约定**：模板这轮把 `system` 改成了**函数形态**
   （改 `.md` 立刻生效），而框架只对**值形态**追加 `REPORT_HINT` ⇒ 函数形态下子代理不知道自己的最终回复
   就是交回主 agent 的交付物，措辞差异没有任何测试看得见。约定现在写在模板自己那份 `system.md` 里。
+
+### 修复（#121 第十一轮复核收口 —— **发布时漏记，2026-09-23 补记**）
+
+- **`GET /tasks/:id/stream` 新增 `stream.closed` 帧（流级收尾，API 面）**：任务在**别的进程**
+  跑、且还**没到终态**时，旧实现发一帧 `stream.unavailable` 之后没人关流 —— 心跳照打、
+  连接永挂。现在紧跟一帧 `stream.closed` 并关闭连接。刻意**不**发 `task.end`：
+  那是「任务终态」的语义，拿来收尾等于伪造终态。
+- **MCP stdio 连接器：请求在途中被中止时 Promise 永不 settle**（旧实现只删簿记不 reject，
+  响应帧按 id 找不到人）⇒ 直接 `await` 连接器 API 的宿主**永久挂起**。现在中止即 reject
+  `AbortError`，与 HTTP 连接器同口径。
+- **`AsyncRunner.streamBufferEvents` / `TaskEventStreams.retainTerminal` 的坏值不再静默**：
+  `0` / 负数 / 小数 / `NaN` / `±Infinity` 一律**构造期抛 `TypeError`**。旧实现里 `NaN`
+  在两条链上失效方向相反且都静默：前者是「每任务内存闸整条不拦」，后者是「无订阅者的
+  终态流全被清空」。`0` 的读法两者刻意不同：`streamBufferEvents` = invalid（配置错误），
+  `retainTerminal` = disabled（「不留终态流」是有意义的设定）。
+- **指标**：同毫秒连按两次 `reset()`，窗口起点也**严格前进**（`windowStart` 收为 `private`，
+  唯一写者是 `reset()`）；`dropped()` / `onDrop` 补了可测面（丢弃计数与回调同口径，
+  错误 run 永不丢且不计）。
+- 内部：e2e 端口 TOCTOU 修根因（删 `freePort`，改 `PORT=0` + 解析就绪日志，顺带拆掉
+  上一轮的 `startExampleRetrying()` 症状补丁）；官网守卫把 `og:url` 纳入 URL 口径、
+  llms.txt 链接从前缀匹配改为链接目标集合精确比对（旧判定下删掉首页链接照样绿）。
 
 ### 文档
 

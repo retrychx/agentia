@@ -467,6 +467,8 @@ try {
         'doc_reviewer',
         'echo_back',
         'hello',
+        // read-file 类带两个工具：list_files（看有什么）+ read_file（读文件）
+        'list_files',
         'note_writer',
         'read_file',
         'style_guide',
@@ -490,7 +492,7 @@ try {
     providers: registryMod.providers,
     system: new SystemPrompt().add('role', '测试装配', true),
   });
-  assert(app2.tools.length === 6, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
+  assert(app2.tools.length === 7, `注册表路线菜单=${app2.tools.map((t) => t.name)}`);
 
   // —— 8) 发布物完整性：CHANGELOG.md 必须在两个 npm 包里（npm 的「总是包含」只覆盖
   // README/LICENSE，CHANGELOG 不在其列 —— 曾因 files 只写 dist 漏发，外部 review 抓出）——

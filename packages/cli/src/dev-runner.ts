@@ -336,8 +336,16 @@ async function build(): Promise<BuildResult> {
     workdir,
   });
   const { names, warning: menuWarning } = listCapabilities(app, mod.CAPABILITY_DIRS);
+  // multiTurn 里写了不存在的能力名 ⇒ 静默落空（该能力永远按单轮跑，用户却以为声明生效了）。
+  // 求差集、走 warning 通道响亮说清。⚠️ 菜单本身没起来（menuWarning 在场）时**不判** ——
+  // 那时 names 是空的，把每个 multiTurn 条目都报成「不认识」是噪声，真原因已在 menuWarning 里。
+  const unknownTurns = (config.multiTurn ?? []).filter((n) => !names.includes(n));
+  const turnWarning =
+    menuWarning === null && unknownTurns.length > 0
+      ? `${DEV_CONFIG_REL} 的 multiTurn 里有不认识的能力：${unknownTurns.join('、')} —— 是不是改名了？`
+      : null;
   const sessionWarning = await probeSessionFile(mod);
-  const warnings = [configWarning, menuWarning, sessionWarning].filter(
+  const warnings = [configWarning, menuWarning, turnWarning, sessionWarning].filter(
     (w): w is string => w !== null,
   );
   return {
