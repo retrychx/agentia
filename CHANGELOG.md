@@ -37,6 +37,66 @@
   混用顺序写进注释（同 token 后注册覆盖先注册，拼错顺序会让面板喂的 workdir 被
   `process.cwd()` 静默顶掉）、模板 `safeResolve` 注明不解 realpath 的已知边界等。
 
+### 重构（纯结构，零行为变化）
+
+- **`packages/cli/src/dev.ts` 1148 → 776 行**：治理前 `devServer()` 是**735 行一个函数、15 个可变
+  `let`、40 处写入点、15 个入口**的**隐式**状态机 —— 本轮四条真缺陷（F1 / F4 / G1 / G2）全是它的
+  直接后果。现在拆成四件，其中 `dev-machine.ts` 是显式状态机：
+  - `dev-logic.ts`（58 行）六个纯判定**单源**（受理闸 / 延后重启 / 退出原因 / 中止幂等 / 能力比较 /
+    选择器串行）。判据不再复制 —— `shouldDeferRestart` 直接委托 `canAcceptRun`，
+    「两处各写一份 `running || launching`」就是 F1 的复现。
+  - `dev-machine.ts`（703 行）`update(state, ev) → { state, effects[] }` **纯函数**（零副作用、
+    零 `node:*`）：**26 个事件 / 17 种效果 / 28 条事件矩阵单测**。`child`（runner 在不在）与
+    `run`（run 在不在飞）建为**两个正交相位**；`run: 'launching'` 进类型 ⇒ 受理闸写成「非 idle 即拒」，
+    F1 那种「漏看一个布尔」**结构上写不出来**；effects 是**判别联合对象**（不是闭包）⇒ F4 那种
+    「同一条错误广播两帧」也写不出来；进程句柄不进状态（不可序列化，由接线层持有）。
+  - `dev-watch.ts`（224 行）/ `dev-child.ts`（82 行）：监视件与子进程无状态原语各归各家；
+    spawn / stop / restart 三个**执行器**留在接线层 —— 它们要读写机器状态、判进程身份归属。
+- **`packages/cli/src/inspector.ts` 818 → 413，路由表切到新增 `inspector-routes.ts`（545 行）**：
+  14 条路由各抽成命名函数。**纯搬移** —— 路由条件与应答状态码分布（`json` 200×8 / 202×3 / 400×8 /
+  403×5 / 404×2 / 503×4、`text` 200×2）与拆前**逐条一致**（机械 diff）。三条边界刻意不动：
+  `HttpError` 留在服务侧（跟着路由走会让两个模块互相 import **值** ⇒ 运行期成环）、三道鉴权闸
+  （Host / Origin / token）留在服务侧（路由只被已放行的请求调用，写进 `RouteCtx` 头注）、
+  `DevHooks` 留在 `inspector.ts`（它的形状被另一条用例当文本断言，路由侧的断言改读新文件）。
+- **清掉 `http.ts` 里一条无用的 `case 'notFound':`**（它与 `default:` 之间没有任何语句 ⇒ 等价于
+  没有这个 case）：全仓 `biome ci` 输出的最后一条 info 归零 —— 留着它，将来新增的 info 就不显眼了。
+
+### 仓库自身（不面向使用者）
+
+- **四条守卫**把三句「策略声明」变成可执行，`docs/guards.md` §2「待守」随之**清空**（最后一行就是它）：
+  - **零运行时依赖**（`tests/architecture/no-runtime-deps.test.ts`）：断言三个面 —— 源码层
+    （三个包的 `src/**` 只 import 相对路径 / `node:` 内置）、元数据层（三个 `package.json` 无非空
+    `dependencies`）、范围层（`packages/` 下每个包必须登记）。扫描器在说明符位置**把字符串读出来**
+    （只遮蔽则说明符自己被吞、只读取则注释与模板里的假阳性全进来），配防真空护栏 + 5 处真实假阳性
+    站点的回归钉。
+  - **CLI 结构**（`packages/cli/test/structure.test.mjs`）：CLI 是扁平结构、`layering.test.ts` 不适用。
+    守 W1 规模棘轮（单文件 / 总量 / 每个文件都登记）、W2 下发浏览器的产物**运行期零 import**、
+    W3 源码侧只许 `import type`。⚠️ 面板白屏有**两类**成因、守的是两处 —— W2/W3 守「多了一条依赖」，
+    `inspector.test.mjs` 的⑦守「页面 import 了产物里**不存在**的名字」（2026-09-23 真发生：
+    `panel-logic.ts` 少四个函数，而 `tsc` 与 `e2e-dev` 全绿 —— 后者走 HTTP API、不加载页面）。
+  - **`docs/**` 引用的提交必须真在主干上**（配 CI `fetch-depth: 0`）：2026-09-23 真踩过 —— 计划文档
+    写了一个**分支提交**的哈希，那批走 squash 合并 ⇒ 它不在 `main` 的祖先链上，在 `main` 的全新克隆里
+    `git show` 直接报未知修订，而这条引用一路合进了 `main`（当时 `docs/**` 的提交引用不受任何守卫）。
+    判据两道、缺一不可：只认**真能解析成 commit 对象**的反引号 token（`deadbeef` 这类十六进制词
+    硬判会误报），再要求它落在主干的祖先链上。
+  - **「0 反射」**（官网首屏 `<b>0</b> 反射` / 特性卡「零反射装饰器」）：拆三面 —— 全仓 12 个
+    `tsconfig*.json` 无一打开 `experimentalDecorators` / `emitDecoratorMetadata`（**根闸**：不开它
+    `tsc` 根本不发射 `design:*`）、四个发布面根不把 `reflect-metadata` 当模块说明符、源码不出现
+    `Reflect.*Metadata` 那 9 个 API；射程 138 个文件（`src/` + `packages/cli/src/` +
+    `packages/cli/templates/` + `packages/trace-view/src/`）。刻意**不禁** `Reflect.ownKeys` /
+    `Reflect.apply`（框架在用）与 `Symbol.metadata`（标准装饰器提案自己发射它）—— §2 原先猜的守卫
+    形状会当场误判 3 处正当用法。
+- **`docs/plans/2026-09-23-cli-structure.md` 订正四处失效陈述**：① 引用分支提交哈希 → 改合入提交
+  （同一条现在由上面的元守卫守着）；② 「本机**只能**报 4/8」+「绕法本次**没有**使用」→
+  「**默认**报 4/8」，绕法写成正面指引（含「别全局设」这条边界）；③ 「在无 shim 的环境跑一次…
+  **预期** 8/8」→ **已实测** 8/8（含第 2 / 5 步真的 `clean-dist` 清空重建）；④ 绕法里的「**唯一**」
+  —— 实测有两条、射程不同（`CODEBUDDY_SAFE_DELETE_ENABLED=0` 只关 safe-delete 这一路 hook、
+  **最窄**；`env -u NODE_OPTIONS` 摘掉整个 composer、更宽）。另：§1 加**快照标记**（那一节是治理
+  开工前的事实，故意不改写，但点名路由表与 `STATIC` 白名单现在住在 `inspector-routes.ts` ——
+  否则读者会去 `inspector.ts` 找一个已经不在那里的东西）。
+- `docs/guards.md`：四条新守卫登记进 §1，文件数 20 → 26（该行是**活的**登记，不是历史记录）；
+  `AGENTS.md` / `docs/spec.md` §10 / `docs/usage-guide.md` 同源面同步。
+
 ## [0.9.2] - 2026-09-22
 
 > 本版主题（窗口 `0.9.1 → 0.9.2`）：**dev 面板的可读性** —— 模型正文按 Markdown 渲染、
