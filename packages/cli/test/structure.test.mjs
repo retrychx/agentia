@@ -18,7 +18,7 @@ import { distReadyOrLoud } from './dist-guard.mjs';
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
 const DIST_URL = new URL('../dist/', import.meta.url);
 
-/** 下发浏览器的 CLI 自有模块（`inspector.ts` 的 STATIC 白名单里、由页面 import 的那批） */
+/** 下发浏览器的 CLI 自有模块（`inspector-routes.ts` 的 STATIC 白名单里、由页面 import 的那批） */
 const BROWSER_MODULES = ['panel-logic', 'markdown'];
 
 describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码只 import type）', () => {
