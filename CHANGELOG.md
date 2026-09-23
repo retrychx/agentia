@@ -23,6 +23,12 @@
 
 ### 修复
 
+- **面板刷新 / 关标签页后，「系统选择…」不再永久 409**：原来只靠连接断开（`res.on('close')`）
+  收掉在飞的原生选择框，而实测（带插桩的产物副本 + 真浏览器）**刷新页面时那条连接还开着**
+  —— 服务端收不到 close ⇒ 选择框留在桌面上没人看、之后每次点都报「已有一个文件夹选择框在等」。
+  现在面板在 `pagehide` 时显式通知服务端（新端点 `POST /api/fs/pick/cancel`，`sendBeacon` 发的
+  **一次新请求**，与服务端看不看得见断开无关），连接断开那条路**保留**作为兜底（进程直接没了 /
+  非浏览器客户端断开仍走它）。两条路互补，各有一条确定性用例守着（`packages/cli/test/inspector.test.mjs`）。
 - **复核残留修复一组**（无破坏性变更）：`refreshDev` / `refreshSession` 的失败不再静默
   （进可见通道）、徽标过滤失效 token、折叠键混入 sessionId 防张冠李戴、import 反向全覆盖
   扩到 trace-view 产物、`multiTurn` 笔误进 warning 通道、watcher 错误告警、
