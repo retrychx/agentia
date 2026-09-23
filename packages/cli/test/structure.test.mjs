@@ -27,7 +27,10 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // 纪律：存量条目只能**往下**调（拆分真做完了才调）；新增文件**必须**在这里登记
   // （不登记 = 「每个文件都在表里」那条断言会红）。棘轮在拆分期间持续偏红是有意的摩擦。
   const LINE_BUDGET = {
-    'inspector-page.html': 1226,
+    // 2026-09-23（面板卸载收口）：1226 → 1241（+15）。`pagehide` 时用 `sendBeacon` 通知
+    // 服务端收掉在飞的原生选择框 —— 只靠连接断开时，**刷新这个形态漏得掉**（浏览器不关
+    // 那条连接，服务端收不到 close）。注释占大头，行为只有 6 行。
+    'inspector-page.html': 1241,
     // 2026-09-23 A 阶段（抽纯判定 → dev-logic.ts）：1148 → 1133
     // 2026-09-23 B 阶段（显式状态机 → dev-machine.ts）：1133 → 1054
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
@@ -41,7 +44,9 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'inspector.ts': 413,
     // 2026-09-23 新增（同上，**纯搬移**）：路由表（14 条路由各抽成命名函数）
     // + `RouteCtx` / `InspectorState` + `handleRoutes` 分发器 + 只被路由用到的件。
-    'inspector-routes.ts': 545,
+    // 2026-09-23 追加（面板卸载收口）：545 → 578（+33）= **15 条**路由 ——
+    // 新增 `POST /api/fs/pick/cancel`（面板 `pagehide` beacon 打它）+ `PICK_CANCEL_PATH`。
+    'inspector-routes.ts': 578,
     'panel-logic.ts': 578,
     'dev-runner.ts': 547,
     'diff.ts': 443,
@@ -98,7 +103,12 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //     +26  inspector.ts 侧：baseCtx 注入面 + state 对象化 + 解释「为什么切」的注释
   //   与 B / C 两次抬价的理由同类：**净增是注释与类型声明本体，不是待搬走的代码**。
   //   再往下降只能删注释或删行为 —— 都不是「纯搬移」该做的事，如实记 8242。
-  const TOTAL_BUDGET = 8242;
+  // 补账（2026-09-23，面板卸载收口 —— **行为变更**，不是搬移）：8242 → 8290（+48）。
+  //   +33  inspector-routes.ts：`PICK_CANCEL_PATH` 常量（含为什么必须有它那条实测记录）
+  //       + `handleFsPickCancel`（403 闸 / 幂等 / 注释）+ 路由表那一行 + 两行顺序说明
+  //   +15  inspector-page.html：`pagehide` → `sendBeacon` 的接线与它为什么不能只靠连接断开
+  //   这一笔与前面几笔不同：**前几笔是「同一批代码换位置」，这一笔是真新增行为**。
+  const TOTAL_BUDGET = 8290;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

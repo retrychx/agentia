@@ -1034,6 +1034,21 @@
         }
       });
 
+      // 页面卸载（刷新 / 关标签页 / 跳走）⇒ **显式**告诉服务端「在飞的选择框没人看了」。
+      // 为什么不能只靠连接断开：实测（2026-09-23，带插桩的产物 + 真浏览器）刷新后那条连接
+      // **还开着** ⇒ 服务端收不到 close ⇒ 选择框留在桌面上、之后每次点都 409。
+      // beacon 是**一次新的请求**，与服务端看不看得见断开无关；token 走 cookie（同一道缝）。
+      // 无条件发：服务端幂等（没有在飞的 pick 就是空操作），省掉一份会漂的页面态。
+      // ⚠️ 路径字面量与 `inspector-routes.ts` 的 PICK_CANCEL_PATH 必须逐字一致 ——
+      //    inspector.test.mjs 有逐字对拍断言钉着（页面不能 import 那个常量）。
+      window.addEventListener('pagehide', () => {
+        try {
+          navigator.sendBeacon('/api/fs/pick/cancel');
+        } catch {
+          /* 老浏览器 / 被策略拦下：还有 res close 那条路兜着，不阻断卸载 */
+        }
+      });
+
       // ---------- 控件接线（只做「取值 → 调 panel-logic → 写回」） ----------
       workdirEl.addEventListener('input', () => {
         state.workdir = workdirEl.value;

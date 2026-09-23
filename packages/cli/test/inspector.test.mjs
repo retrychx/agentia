@@ -12,9 +12,14 @@ import { distReadyOrLoud } from './dist-guard.mjs';
 const DIST = fileURLToPath(new URL('../dist/inspector.js', import.meta.url));
 let startInspector = null;
 let HttpError = null;
+/** 面板 `pagehide` beacon 打的那条路径（从产物取，页面自己写的是同一个字面量） */
+let PICK_CANCEL_PATH = null;
 if (existsSync(DIST)) {
   ({ startInspector, HttpError } = await import(
     new URL('../dist/inspector.js', import.meta.url).href
+  ));
+  ({ PICK_CANCEL_PATH } = await import(
+    new URL('../dist/inspector-routes.js', import.meta.url).href
   ));
 }
 const SKIP = !startInspector ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' : false;
@@ -170,6 +175,37 @@ describe('inspector 服务', () => {
     try {
       const page = await (await fetch(`http://127.0.0.1:${srv.port}/`)).text();
       assert.ok(!page.includes('liveEl.innerHTML'), 'SSE 分支必须走 textContent，不得拼 innerHTML');
+    } finally {
+      await srv.close();
+    }
+  });
+
+  /* 面板卸载时的**显式**收口：`pagehide` + `sendBeacon` 打 `/api/fs/pick/cancel`。
+   *
+   * 为什么必须有这条路：2026-09-23 实测（带插桩的产物副本 + 真浏览器）—— 刷新页面 / 卸载体
+   * 之后那条连接**还开着**（`lsof` 上浏览器侧仍是 ESTABLISHED），服务端**收不到 close**，
+   * 于是「在飞的选择框」没人收、之后每次点「系统选择…」都 409。beacon 是**一次新请求**，
+   * 与服务端看不看得见断开无关 ⇒ 补上这个漏。
+   *
+   * 本条钉的是**接线**（页面真的挂上了 pagehide、路径与服务端常量逐字一致）：单测跑不了
+   * 浏览器，而「抽出来没接上」在浏览器里没人替你发现（与 ⑦、⑩ 同一条纪律）。 */
+  it('面板在 pagehide 时显式通知服务端收掉在飞的选择框（路径与常量逐字对拍）', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const srv = await startInspector();
+    try {
+      const page = await (await fetch(`http://127.0.0.1:${srv.port}/`)).text();
+      assert.match(
+        page,
+        /addEventListener\(\s*'pagehide'/,
+        '必须挂在 pagehide 上 —— 刷新 / 关标签页 / 跳走都会走它（onbeforeunload 未必）',
+      );
+      const hit = page.match(/sendBeacon\(\s*'([^']+)'\s*\)/);
+      assert.ok(hit, '必须用 sendBeacon —— 卸载途中普通 fetch 会被浏览器掐掉');
+      assert.equal(
+        hit[1],
+        PICK_CANCEL_PATH,
+        '页面写的取消路径必须与 PICK_CANCEL_PATH 逐字一致，否则 beacon 静默 404（页面 import 不到那个常量）',
+      );
     } finally {
       await srv.close();
     }
@@ -1061,6 +1097,53 @@ describe('inspector 的 dev 环接口', { skip: SKIP }, () => {
       assert.deepEqual(await again.json(), { path: '/next/dir' });
     } finally {
       await srv.close();
+    }
+  });
+
+  /* 面板卸载的**显式**收口（`pagehide` beacon）。与上一条**互补**，不是重复：
+   *   上一条守「连接真的断了」（浏览器进程没了 / 非浏览器客户端断开）；
+   *   这一条守「连接没断、但页面走了」—— 刷新就是这个形态，而它此前**漏得掉**。 */
+  it('POST /api/fs/pick/cancel：面板卸载的显式通知 ⇒ 钩子被调、幂等、无钩子时 403（不是 404）', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const TOKEN = 'tok-picker-cancel';
+    let cancelled = 0;
+    const { dev } = mkDev({
+      cancelPick: () => {
+        cancelled++;
+      },
+    });
+    const srv = await startInspector({ dev, token: TOKEN });
+    try {
+      const call = (authed) =>
+        post(
+          `http://127.0.0.1:${srv.port}`,
+          `${PICK_CANCEL_PATH}${authed ? `?t=${TOKEN}` : ''}`,
+          {},
+        );
+
+      assert.equal((await call(false)).status, 403, '缺 token → 403（与其它接口同一条缝）');
+
+      const res = await call(true);
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { cancelled: true });
+      assert.equal(cancelled, 1, 'beacon 必须真把钩子叫起来 —— 否则「刷新时收掉」是句空话');
+
+      // 面板**无条件**发它（不在飞时服务端是空操作）⇒ 第二次也必须 200 且再叫一次钩子，
+      // 不许变成 409/500（那会让「刷新」这条路时灵时不灵）
+      assert.equal((await call(true)).status, 200, '幂等：不在飞也该是 200');
+      assert.equal(cancelled, 2, '无条件发送是设计（服务端幂等），第二次同样要叫钩子');
+    } finally {
+      await srv.close();
+    }
+
+    // 没有 dev 钩子（静态起的 inspector）⇒ 必须 **403 而不是 404**：
+    // 403 = 「路由在、被闸挡着」；404 才是「路由没接上」—— 后者正是本条要防的。
+    const srv2 = await startInspector();
+    try {
+      const res = await post(`http://127.0.0.1:${srv2.port}`, PICK_CANCEL_PATH, {});
+      assert.equal(res.status, 403, '没有 dev 钩子必须是 403（路由存在、闸生效）');
+    } finally {
+      await srv2.close();
     }
   });
 });

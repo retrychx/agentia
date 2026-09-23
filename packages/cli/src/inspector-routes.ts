@@ -40,6 +40,21 @@ export const TOKEN_COOKIE = 'agentia_dev_token';
 export const TOKEN_HEADER = 'x-agentia-token';
 
 /**
+ * 「我走了，把在飞的系统选择框收掉」的路径 —— 面板在 `pagehide` 时用 `sendBeacon` 打它。
+ *
+ * 为什么需要它（**不是锦上添花**）：只靠连接断开（`res.on('close')`）**漏得掉一个真实场景**。
+ * 2026-09-23 实测（带插桩的产物副本 + 真浏览器）：刷新页面 / 卸载体之后，那条连接**还开着**
+ * （`lsof` 上浏览器侧仍是 ESTABLISHED），服务端**收不到 close** ⇒ 在飞的选择框没人收、
+ * 之后每次点「系统选择…」都 409。而 beacon 是**一次新的请求**，与服务端看不看得见断开无关。
+ * 两条路互补：beacon 覆盖「页面自己知道要走了」（刷新 / 关标签页 / 跳走），
+ * `res.on('close')` 覆盖「进程直接没了」（浏览器崩溃 / 被 kill / 非浏览器客户端断开）。
+ *
+ * 面板侧写的是**同一个字面量**（页面不能 import 本模块）⇒ `inspector.test.mjs` 有一条
+ * 逐字对拍断言钉住两侧一致（与模板 `.env` 那条同款）。
+ */
+export const PICK_CANCEL_PATH = '/api/fs/pick/cancel';
+
+/**
  * 路由直接读写的共享状态（**引用共享**：路由拿到的是 `inspector.ts` 里那个对象本身）。
  *
  * 为什么不做成模块级单例：一个进程里可能起多个 inspector（`inspector.test.mjs` 就并行起
@@ -440,6 +455,23 @@ async function handleFsPick(ctx: RouteCtx): Promise<void> {
   }
 }
 
+/**
+ * 面板自己说「我要走了」：`pagehide` 时的 beacon（见 `PICK_CANCEL_PATH` 的说明）。
+ *
+ * **幂等且无副作用**：机器侧 `picking=false` 时它就是一个空操作（没有在飞的选择框可收），
+ * 所以在飞／不在飞都安全 —— 面板因此可以**无条件**发它，不必先判断自己有没有在等。
+ * 与其余 fs 路由同一条闸：没有 dev 钩子（statically 起的 inspector）一律 403。
+ */
+async function handleFsPickCancel(ctx: RouteCtx): Promise<void> {
+  if (!ctx.dev) {
+    ctx.json(ctx.res, 403, { error: '这个 inspector 不是 agentia dev 起的，不提供目录选择' });
+    return;
+  }
+  // beacon 是即发即弃的：响应体没人读，但仍然照常回（脚本直连时能看到语义）
+  ctx.dev.cancelPick?.();
+  ctx.json(ctx.res, 200, { cancelled: true });
+}
+
 async function handleRun(ctx: RouteCtx): Promise<void> {
   if (!ctx.dev) {
     ctx.json(ctx.res, 503, {
@@ -532,6 +564,9 @@ export async function handleRoutes(ctx: RouteCtx): Promise<void> {
   if (req.method === 'GET' && path === '/api/dev') return handleDevState(ctx);
   if (req.method === 'GET' && path === '/api/fs') return handleFsList(ctx);
   if (req.method === 'POST' && path === '/api/fs/pick') return handleFsPick(ctx);
+  // 面板卸载时的显式收口（`pagehide` beacon）—— 必须与上一条**并列**存在，不是替代关系：
+  // 断开那条路在浏览器刷新时看不见（见 PICK_CANCEL_PATH 的说明）。
+  if (req.method === 'POST' && path === PICK_CANCEL_PATH) return handleFsPickCancel(ctx);
   if (req.method === 'POST' && path === '/run') return handleRun(ctx);
   if (req.method === 'POST' && path === '/run/abort') return handleAbort(ctx);
   if (req.method === 'POST' && path === '/session/clear') return handleSessionClear(ctx);
