@@ -681,8 +681,8 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
           sendJson(res, 400, { error: 'taskId 不是合法的 URL 编码' });
           return;
 
-        // healthz / metrics 已在上面的免鉴权组里 return 掉
-        case 'notFound':
+        // healthz / metrics 已在上面的免鉴权组里 return 掉；
+        // 'notFound' 与**将来新增的任何 kind** 都落到这里 —— ⚠️ 新增成员会被静默吞成 404，别当成已处理
         default:
           sendJson(res, 404, { error: `路径不存在: ${pathname}` });
           return;
