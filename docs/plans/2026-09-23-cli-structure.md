@@ -9,7 +9,8 @@
 > 第 2 / 5 / 6 / 7 步分别要删 `dist/`（268 文件）、`packages/cli/dist/`（56）、c8 的
 > `coverage/tmp/`（127）、又一轮 `npm run build`，全被 **node 层 safe-delete shim** 拦下
 > （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，阈值 50 个文件）。
-> **绕法：`CODEBUDDY_SAFE_DELETE_ENABLED=0 bash scripts/verify-all.sh` ⇒ 实测 8/8 全绿（exit 0）**
+> **绕法（两条，射程不同，详见 §7）：`CODEBUDDY_SAFE_DELETE_ENABLED=0 bash scripts/verify-all.sh`
+> ⇒ 实测 8/8 全绿（exit 0）**
 > —— 成因表与两轮实跑证据见 §7 末尾「门禁实测」。
 >
 > 本文档只回答一个问题：**`packages/cli` 现在乱在哪、怎么治、先治哪一刀。**
@@ -380,10 +381,31 @@ effects 是**判别联合对象**（不是闭包）⇒ 同一条错误广播两�
 | 7 | `npm run e2e` | ❌ FAIL | 起手就是 `npm run build` ⇒ 同上 |
 | 8 | `build:website && check-website-agent-readiness` | ✅ OK | — |
 
-⚠️ `dangerouslyDisableSandbox` **绕不过它** —— shim 由 `NODE_OPTIONS` 挂进每个 node 进程，
-与 bash 沙箱无关。**唯一有效的绕法是环境变量 `CODEBUDDY_SAFE_DELETE_ENABLED=0`**，
-且只应挂在**单条命令**上（`CODEBUDDY_SAFE_DELETE_ENABLED=0 bash scripts/verify-all.sh`）——
-全局设等于把整机这道保护拆掉。
+⚠️ `dangerouslyDisableSandbox` **绕不过它** —— shim 由 `NODE_OPTIONS` **预加载**进每个 node 进程，
+与 bash 沙箱是**两层**。实测有效的绕法有两条，**射程不同**，且都只应挂在**单条命令**上：
+
+| 绕法 | 关掉什么 | 射程 |
+|---|---|---|
+| `CODEBUDDY_SAFE_DELETE_ENABLED=0 bash scripts/verify-all.sh` | **只关 safe-delete 这一路 hook** | **最窄**（推荐） |
+| `env -u NODE_OPTIONS bash scripts/verify-all.sh` | 摘掉整个 composer，连带关掉 brokered-fs hook | 更宽 |
+
+依据是 composer 本身（见下），不是猜的。**别全局设** —— 全局设等于把整机这道保护拆掉。
+
+⚠️ 还有一处容易找错：shim 的 `NODE_OPTIONS` 入口是**WorkBuddy 应用包内**的
+`<app>/cli/vendor/shim/node-language-shim.cjs`（它再 `require` 同目录的
+`node-safe-delete-shim.cjs`）—— **不在本仓库里**，所以在本仓库里搜它是搜不到的。
+那个 composer 只有 ~30 行，逻辑就是：
+
+```js
+const safeDeleteEnabled = process.env.CODEBUDDY_SAFE_DELETE_ENABLED !== '0';   // 默认开
+const brokeredFsHookEnabled = process.env.CODEBUDDY_BROKERED_FS_HOOK_ENABLED === '1'
+    || process.env.CODEBUDDY_SAFE_DELETE_SANDBOX === '1';
+if (safeDeleteEnabled) require('./node-safe-delete-shim.cjs');
+if (brokeredFsHookEnabled) require('./node-brokered-fs-shim.cjs');
+```
+
+（另注：composer 开头 `if (!SESSION_ID) return;` —— 没有 `CODEBUDDY_SESSION_ID` /
+`CLAUDE_SESSION_ID` 时整个 shim 直接不生效。）
 
 **改成「跳过各步的清空子步骤、直接跑真活」之后，八步的真实工作全部通过**：
 
