@@ -24,6 +24,7 @@
 | `tests/integrations/adapter-parity.test.ts` | **同一契约的两条适配器必须对称**：同一 HTTP 状态在 anthropic / openai 上的 `{classifyError.type, retryable, 尝试次数}` 完全一致；`maxRetries` 的**构造期校验也对称**（坏值矩阵 × 两条适配器成对断言） | 一份场景表（408/409/429/500/503/400 + `retry-after` + `maxRetries:0`）`for (const a of ADAPTERS)` 跑两遍；替换 `globalThis.fetch` 作为两侧统一的注入面；`retry-after: 0` 让退避不真 sleep。坏值矩阵：NaN / ±Infinity / -1 / 1.5 一律构造期抛 `TypeError`，`0` 与缺省放行（`0` = 不重试是**有意义的值**，见 §2「`0` 的双重语义」） | 「同一个 429」在 anthropic 打 3 次网络请求、在 openai 打 1 次 —— 成本/延迟随厂商而异却没人发现（真发生过：openai 曾完全没有内层重试）；`maxRetries: NaN` ⇒ `attempt >= NaN` 恒假 = **无限重试**、`Infinity` 永不达到（真发生过，2026-09-21 外部队列复核） |
 | `tests/architecture/transport-errors.test.ts` | 传输层适配器抛的错误必须带**数值 `status`**（否则被归类为 unknown → 重试层静默失效） | 扫 `src/integrations` 的裸 `throw new Error(...)`：文案带 HTTP 状态痕迹即违规；构造期配置校验按文案豁免 | OpenAI 适配器吃一个 429 就整轮失败、引擎层 3 次重试一次不发生（真发生过）；本守卫上线当天就抓到 `otlp.ts` 的同类漏网 |
 | `tests/architecture/tsconfig-strictness.test.ts` | **承重的 tsconfig 开关不得被关掉**：`exactOptionalPropertyTypes`（显式 undefined ≠ 不传）、`strict`、`types:["node"]` | 读 `tsconfig.json` 断言三个开关。反向验证过：关掉 `exactOptionalPropertyTypes` ⇒ 本测试红，且 `{maxAttempts: undefined}` 赋给 `RetryOptions` 从「编译错」变回「放行」 | 39 处防线无声消失（`retry.ts` 的「显式 undefined 覆盖缺省」重新变成合法代码）；@types/node 缺链导致全仓 Node 类型报错 |
+| `tests/architecture/no-legacy-decorator-metadata.test.ts` | **官网首屏那句「0 反射」不得变假**（= `docs/spec.md`「已定决策」段：标准 Stage 3 装饰器，不用 `experimentalDecorators` / `emitDecoratorMetadata` / `reflect-metadata`，元数据一律显式声明、不依赖 `design:paramtypes`）。拆成三面：① **开关面** —— 全仓 12 个 `tsconfig*.json` 无一打开那两个 legacy 开关（**根闸**：不开它 `tsc` 根本不发射 `design:*`）；② **依赖面** —— 四个发布面根的源码不把 `reflect-metadata` 当模块说明符；③ **源码面** —— 不出现 `Reflect.*Metadata` 那 9 个 API。射程四个根：`src/` · `packages/cli/src/` · `packages/cli/templates/`（生成给用户的脚手架，随 CLI 发布）· `packages/trace-view/src/` | 走查**发现式**（递归找 `tsconfig*.json` 与源码文件，新包 / 新模板自动进射程）+ 复用 `lib/source-scan.ts` 的**遮蔽文本**（注释里写「我们不用 reflect-metadata」是**声明**不是用法 —— `src/container/container.ts` 头注正是如此，裸正则必误报）+ 容忍 JSONC 的 tsconfig 解析器（`packages/cli/tsconfig.templates.json` 真带 6 行注释；**解析失败必须抛**，不许「跳过这个文件」）。防真空 + **阳性对照**：9 条合成违规（含 `Reflect.getMetadata('design:paramtypes', …)` 整形态）必须被看见、`import 'reflect-metadata'` 必须被解析成说明符、开着开关的 JSONC 必须被读到 —— 没有这组，「0 处违规」不可证伪。另 3 条回归钉：5 处正当 `Reflect.*`（3 × `Reflect.apply` + 2 × `Reflect.ownKeys`）判零违规、注释里的声明判零违规、`Symbol.metadata` 不在禁令内。再加一条**射程钉**（按**名字**断言走查结果里必须有 `packages/cli/templates/tsconfig.json` / `packages/trace-view/src/index.js` 等 —— 计数下限只保证「够多」，不保证「够到了该够的那几个」）。**反向验证过 5 个探针**：① `templates/tsconfig.json` 开 `emitDecoratorMetadata` ⇒ ① 号红；② `container.ts` 加 `import 'reflect-metadata'` ⇒ ② 号红；③ `tool.ts` 加 `Reflect.getMetadata` ⇒ ③ 号红（同时点亮回归钉）；④ 同一行放进**注释** ⇒ **仍绿**（证明遮蔽真在生效）；⑤ 加一处 `Reflect.apply` ⇒ **仍绿**（证明不过度收紧）。五个探针 `cp` 还原后 `sha256` 逐字节一致（共 **10 个 test**） | 首屏「0 反射」与特性卡的「零反射装饰器」**无声变假** —— 打开 `emitDecoratorMetadata` 后 `tsc` 会为每个被装饰的声明发射 `design:paramtypes`；`reflect-metadata` 一进来还会**同时**破掉零运行时依赖铁律（两条守卫都该红，别只消掉一条）。⚠️ 本守卫**刻意不**禁 `Reflect.ownKeys` / `Reflect.apply` / `Symbol.metadata`：§2 那行原猜的形状（「除 `Reflect.ownKeys` 外不得使用 `Reflect.*`」）**是错的**，会当场误判 3 处正当的 `Reflect.apply`；`Symbol.metadata` 是标准 Stage 3 提案的一部分（`tsc` 的标准装饰器发射自己就写它）。`design:paramtypes` / `design:returntype` / `design:type` 三个键**刻意不在**清单里（它们永远是**字符串字面量**，而遮蔽器按设计遮蔽字符串 ⇒ 放进去等于三条永远匹配不上的死条目；本文件第一版就是这么写的，被 ④ 号阳性对照当场抓出）—— 覆盖论证与这处**已知缺口**写在文件内 ⑦ 号 test 里 |
 | `tests/types/message-compat.types.ts` | 自有消息类型族 ↔ `@anthropic-ai/sdk` 的结构兼容（双向 assignability） | 针对构建产物 dist 编译的类型断言（`typecheck:types`，node:test 不收） | 使用者手里的 SDK 类型喂不进来；SDK 升级改字段无人发现 |
 | `tests/types/dx.types.ts` | 类型链路（`fromZod<T>` 校验方法签名、`result.typed` 推导） | 同上 | DX 承诺（「编辑器给不给提示」）退化成 `unknown` |
 | `tests/core/trace.test.ts` · `tests/integrations/otlp.test.ts` | **id 的线缆形态只有一份投影**：OTLP 导出的 spanId 与出站 `traceparent` 的 span 位必须**逐字相等**（两处都等于 `core/trace.ts` 的 `wireSpanId(…)`） | 两条断言各自引用单源（不就地写 `replaceAll().slice(0,16)`）⇒ 任何一边换切法立刻红。反向验证过：otlp 侧改成 `slice(8,24)` ⇒ 结构用例真红 | 同一次调用在 collector 里是一个 span id、下游收到的是另一个 —— 跨系统关联断在最不该断的地方 |
@@ -92,7 +93,17 @@
 
 | 待守形状 | 历史事故 | 为什么还没有守卫 | 可能的守卫形状 |
 |---|---|---|---|
-| **首屏 `0 反射` 这类策略声明** | —（尚未漂过） | 页面上写了「0 反射」（= 显式 DI，不用装饰器元数据反射），但源码里本来就有 `Reflect.ownKeys` 这类**正当**用法 ⇒ **无法从源码计数推导**。`api-page.test.ts` 只钉「别被悄悄删掉」 | 若要真守，得先能给出「反射式 DI」的可判定定义（例如「除 `Reflect.ownKeys` 外不得使用 `Reflect.*`，且不得读 `Symbol.metadata`」）—— 那是一条**可写的守卫**，但需要先确认这条口径值不值得当门禁 |
+| *（空 —— 2026-09-23 起）* | — | — | — |
+
+> ⚠️ **「空」不等于「没有已知缺口」**，它只意味着「**已经踩过、且暂时建不了守卫**」的形状目前为零。
+> 最后一次清空：2026-09-23，最后一行「首屏 `0 反射` 这类策略声明」建成守卫并移入 §1
+> （`tests/architecture/no-legacy-decorator-metadata.test.ts`）。
+>
+> ⇒ **下一次 review 的起手动作因此变了**：不再是「从上表挑一行建守卫」，而是
+> ① 去 §1 **逐行问「它退化时真会红吗」**（`guards.md` 自己就记过两次假守卫：
+> 断言是真的、绿的、也是对的，只是它守的是**另一件事**）；
+> ② 拿本轮的改动对照 `.github/PULL_REQUEST_TEMPLATE.md` 的自查问，找**新的**形状。
+> 表空了就把 review 停掉，是这份文档最容易发生的一种退化。
 
 > 已在本轮补上守卫、从本表移入 §1 的：**成对实现对称**（`tests/integrations/adapter-parity.test.ts`）、
 > **浅合并被 `null` 覆盖**（`anthropic.test.ts` 的 usage 用例）、**同步 vs 真实异步 store**
@@ -160,6 +171,16 @@
 > 而它前面已经有一条 `runner-restart`（回到全量菜单）⇒ **立刻拿到旧帧**，报错文案与
 > 「`.env` 根本没触发」一模一样，差点据此下错结论。改成「先数当前帧数 N，再等第 N+1 帧」才分辨得开。
 > ⇒ 断言「某事件发生了」时，**别用与事件总数耦合的绝对序号**：先取基线、再等增量。
+> 2026-09-23（「0 反射」这一行）移入 §1 一条，**本表因此清空**。这一轮值得记的不是「补了守卫」，
+> 而是**守卫自己第一版有三处错，全是防真空 / 阳性对照抓出来的**：
+> ① 块注释里写了 `examples/` 加 `*` 的 glob 字面量 ⇒ `*` 紧跟 `/` **提前闭合注释**，
+> 剩下片段变成代码（`ReferenceError: dist is not defined`）；
+> ② 走查只收 `.ts`，而 `packages/trace-view/src` **是纯 `.js`** ⇒ 整个包被扫成 0 个文件
+> （「0 处违规」的另一种成因）—— 被 `files.length > 0` 那条防真空断言当场抓住；
+> ③ 把 `design:paramtypes` 这类键放进清单，而它们**永远是字符串字面量**、遮蔽器按设计遮蔽字符串
+> ⇒ 三条永远匹配不上的**死条目**（看着像保护、实则空转）—— 被阳性对照当场抓住。
+> ⇒ 可复用的自查问：**写完「0 处违规」这类断言，先造一个违规证明它会红**；若造不出来，
+> 你写的不是守卫，是一段永远为真的文字。以及：**给走查加射程时，先打印它扫到了几个文件**。
 
 > §2 的存在方式很重要：**它是活的**。每轮 review 挖到的形状，若暂时建不了守卫，就登记到这里；
 > 建成了就移到 §1 并注明守卫位置。「未登记的形状」= 下次必然重犯。
