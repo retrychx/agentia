@@ -257,6 +257,24 @@ type DevEffect =
 `handleAbort` / `handleSessionClear` / `handleFsPick` / `handleStream` …），
 **不改行为、不换框架**（零依赖铁律已排除 hono/express）。
 
+> **2026-09-23 补做时的实际切法**（原方案只写了「抽成命名函数」，这里补上落点）：
+> 新建 `packages/cli/src/inspector-routes.ts` —— 14 条路由各抽成命名函数，外加**只被路由
+> 用到**的那几件（`validateTrace` / `validateTraceEvent` / `summarize` /
+> `unavailableDevState` / `isDirLikeEntry` / 静态资源白名单 `STATIC`）。
+> `inspector.ts` 818 → **413**，只剩「服务」：监听 + 三道鉴权闸 + `json`/`text`/`readBody`/
+> `parseRunRequest` + 公开类型 + `HttpError`。全仓总量 8102 → **8242**（+140 全是新文件的
+> 结构开销，账记在 `packages/cli/test/structure.test.mjs`）。
+>
+> 三条边界是这次真正要守住的东西：
+> - **`HttpError` 不能跟着路由走**。它由 `readBody` / `parseRunRequest` 构造，而这两个留在
+>   服务侧（`dev.ts` 也从 `dist/inspector.js` 取 `HttpError`）。搬过去就是两个模块**互相
+>   import 值** ⇒ 运行期成环。所以路由拿到的是一份 `RouteCtx`（`json` / `readBody` / … 注入），
+>   `inspector-routes.ts` 只 `import type` —— 产物里它对 `./inspector.js` **零 import**（已核）。
+> - **鉴权闸留在服务侧**：路由函数假定自己只在「已放行的请求」上被调用，这条边界写进了
+>   `RouteCtx` 的头注，免得后来者以为路由该自己判 token。
+> - **`DevHooks` 留在 `inspector.ts`**：`native-pick.test.mjs` 把它的形状当**文本**断言
+>   （那条守的是「钩子有 `pickFolder`」）。路由断言则跟着路由改读 `inspector-routes.ts`。
+
 ### 横切 W. CLI 结构守卫（**先做，且与 A/B/C 选择无关**）
 
 CLI 是**扁平 20 文件、没有分层**，所以 `layering.test.ts` 那套（允许边 + 无环）**不适用**。
@@ -341,7 +359,9 @@ W3（源码侧，最便宜）→ W2（产物侧）→ A（抽纯判定）→ B�
 | `dev-machine.ts` | ~200 行 | **703 行** | 类型声明（`DevEventIn` **26** 个事件 + `DevEffect` **17** 种）与逐条迁移规则的「为什么」注释是净新增 |
 | `dev-watch.ts` | ~200 行 | **224 行** | ✅ 与预估相符 |
 | `dev-child.ts` | ~250 行 | **82 行** | 只收了 `resolveTsxCli` / `killTree` / `KILL_GRACE_MS` 三个**无状态原语**；spawn / stop / restart 归了 `dev.ts`（同上） |
-| `packages/cli/src` 总量 | 期望压回 7410 | **8102** | 纯搬移的净增是 +28 行；B 抬上来的大头是注释本体，不是待切走的接线件（见 §5 与 `structure.test.mjs` 的账） |
+| `inspector.ts` | （§3 C 没给数字） | **413 行**（818 → 413） | 2026-09-23 补做：路由表切到 `inspector-routes.ts`，本文件只剩服务 / 鉴权 / 公开类型 / `HttpError` |
+| `inspector-routes.ts` | （同上，新增） | **545 行** | 14 条路由（各抽成命名函数）+ `RouteCtx` / `InspectorState` + `handleRoutes` 分发器 + 只被路由用到的件 |
+| `packages/cli/src` 总量 | 期望压回 7410 | **8242**（8102 → 8242） | 路由表拆分净增 +140 行（新文件头注 / import 重分配 / `RouteCtx` / 分发器 / 函数签名）；B 抬上来的大头是注释本体，不是待切走的接线件（见 §5 与 `structure.test.mjs` 的账） |
 
 **建模落点**（§3 B 那张「今天 / 之后」表的实际兑现）：`child` 与 `run` 是两个**独立相位**；
 `run: 'launching'` 进了类型 ⇒ 受理闸写成「非 idle 即拒」，F1 那种「漏看一个布尔」在结构上写不出来；
@@ -356,8 +376,11 @@ effects 是**判别联合对象**（不是闭包）⇒ 同一条错误广播两�
 
 ### 遗留（本方案没覆盖的）
 
-- **`inspector.ts`（818 行）的路由表拆分**（§3 C 末尾提过：把每个 handler 抽成命名函数）**没做**
-  —— 它不在本方案的四刀里；W1 棘轮已把它钉在 818 行不再长。
+- ~~**`inspector.ts`（818 行）的路由表拆分**~~ → **2026-09-23 补做了**，切法见 §3 C 的补注。
+  当时写「它不在本方案的四刀里」是**对的**（A/B/C 切的是 `dev.ts`），但它从来不是「不做」、
+  只是「没排进来」—— W1 棘轮把它钉在 818 行，只保证它**不再长**，不保证它会变小。
+  补做后：`inspector.ts` 818 → **413**、新增 `inspector-routes.ts` **545**、全仓总量
+  8102 → **8242**（抬价理由逐项记在 `structure.test.mjs`）。
 - **§1.4 那个「面板白屏」缺口有第二类成因**：不只是「多了一条依赖」，还有「页面 import 了一个
   产物里**不存在**的名字」。2026-09-23 真的发生了 —— `panel-logic.ts` 少了 4 个函数
   （`filterSelected` / `formatToolSources` / `chatViewVisible` / `turnKey`），而 `tsc` 全绿、

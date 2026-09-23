@@ -34,7 +34,14 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // （watch 件 → dev-watch.ts、子进程原语 → dev-child.ts；spawn/stop/restart 三个
     //   执行器读写机器状态，留在 dev.ts 接线层）
     'dev.ts': 776,
-    'inspector.ts': 818,
+    // 2026-09-23（inspector 路由表拆分）：818 → 413。切走的 431 行去了
+    // inspector-routes.ts；本文件只剩「服务」——监听 / 三道鉴权闸 / 应答原语 /
+    // 公开类型（`DevHooks` 等）/ `HttpError`。那两个导出（`HttpError` / `startInspector`）
+    // 是 `dev.ts` 与 `inspector.test.mjs` 的 dist 出口，不能动。
+    'inspector.ts': 413,
+    // 2026-09-23 新增（同上，**纯搬移**）：路由表（14 条路由各抽成命名函数）
+    // + `RouteCtx` / `InspectorState` + `handleRoutes` 分发器 + 只被路由用到的件。
+    'inspector-routes.ts': 545,
     'panel-logic.ts': 578,
     'dev-runner.ts': 547,
     'diff.ts': 443,
@@ -80,7 +87,18 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //   当时的工作区是**面板白屏**状态（浏览器 import 一个不存在的导出 = 整块模块求值失败）。
   //   这 40 行不是新功能，是把页面与测试**已经欠着**的东西补上；不补则面板起不来。
   //   `panel-logic.ts` 的单文件基线**没有为它抬价**（575 ≤ 578，走原基线）。
-  const TOTAL_BUDGET = 8102;
+  // 补账（2026-09-23，inspector 路由表拆分）：8102 → 8242（+140）。
+  //   搬移本身只带走 431 行，净增的 140 行**全是新文件的结构开销**，逐项：
+  //     +21  inspector-routes.ts 头注（切分口径 / 依赖方向 / 为什么不是换 HTTP 框架）
+  //     +15  import 块（原文件那批 import 要按「谁用谁引」在两个文件间重分）
+  //     +14  InspectorState（4 个集合收成一个对象，好在 ctx 里整体传递）
+  //     +30  RouteCtx（每请求一份的上下文；字段 = 原来闭包捕获的那批）
+  //     +25  handleRoutes 分发器（原来是 handler 里一串 if，现在是「路径 → 命名 handler」）
+  //      +9  14 个 handler 的函数签名与分隔空行
+  //     +26  inspector.ts 侧：baseCtx 注入面 + state 对象化 + 解释「为什么切」的注释
+  //   与 B / C 两次抬价的理由同类：**净增是注释与类型声明本体，不是待搬走的代码**。
+  //   再往下降只能删注释或删行为 —— 都不是「纯搬移」该做的事，如实记 8242。
+  const TOTAL_BUDGET = 8242;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
