@@ -5,9 +5,16 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.9.3] - 2026-09-23
 
-### 新增
+> 本版主题（窗口 `0.9.2 → 0.9.3`）：**dev 面板两个真用户反馈的落地** —— 原生文件夹选择器
+> （浏览器拿不到所选目录的绝对路径 ⇒ 走 CLI 本机进程拉 OS 原生对话框）、模板 `read_file`
+> 能力的 `list_files`（模型终于「知道自己在哪、里面有什么」）；另含 **CLI 内部结构治理**
+> （`dev.ts` 隐式状态机 → 显式状态机、`inspector.ts` 路由表外移）与 **四条仓库守卫**。
+> **无破坏性变更**：框架公共 API 与脚手架模板形态逐字未变 —— 新增的是工具与端点，
+> 既有使用者不需要任何动作（老宿主不认识的响应字段照旧忽略）。
+
+### 新增 · 原生文件夹选择器 + 模板的 `list_files`
 
 - **模板 read-file 能力新增 `list_files` 工具**（与 `read_file` 同一个类、同一个 provider）：
   真用户反馈「面板上换了文件夹，agent 行为好像没变」—— 链路本身是通的（workdir 确实注入），
@@ -1359,7 +1366,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/retrychx/agentia/releases/tag/v0.9.3
 [0.9.2]: https://github.com/retrychx/agentia/releases/tag/v0.9.2
 [0.9.1]: https://github.com/retrychx/agentia/releases/tag/v0.9.1
 [0.9.0]: https://github.com/retrychx/agentia/releases/tag/v0.9.0
