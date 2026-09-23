@@ -116,11 +116,13 @@ describe('native-pick：输出归一化（normalizePickedPath 纯判定）', { s
  * 抽出来不接上等于没接。
  */
 describe('native-pick：接线（源码级）', () => {
-  const devSrc = readFileSync(fileURLToPath(new URL('../src/dev.ts', import.meta.url)), 'utf8');
-  const inspectorSrc = readFileSync(
-    fileURLToPath(new URL('../src/inspector.ts', import.meta.url)),
-    'utf8',
-  );
+  const src = (rel) =>
+    readFileSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url)), 'utf8');
+  const devSrc = src('dev.ts');
+  const inspectorSrc = src('inspector.ts');
+  // 路由表 2026-09-23 自 inspector.ts 切到 inspector-routes.ts（方案 §3 C）。
+  // 这条断言守的是「路由在场」，不是「它写在哪个文件里」⇒ 跟着路由走。
+  const routesSrc = src('inspector-routes.ts');
 
   it('dev.ts：钩子接上 pickFolderNative，且退出路径收编（killActivePickers）', () => {
     assert.match(devSrc, /import \{[^}]*pickFolderNative[^}]*\} from '\.\/native-pick\.js'/);
@@ -128,8 +130,8 @@ describe('native-pick：接线（源码级）', () => {
     assert.match(devSrc, /killActivePickers\(\)/, '退出路径必须收掉在飞的选择框（防孤儿）');
   });
 
-  it('inspector.ts：POST /api/fs/pick 路由在场，且只在 dev 钩子在场时开放', () => {
-    assert.match(inspectorSrc, /path === '\/api\/fs\/pick'/);
+  it('POST /api/fs/pick 路由在场（路由在 inspector-routes.ts、钩子形状在 inspector.ts）', () => {
+    assert.match(routesSrc, /path === '\/api\/fs\/pick'/);
     assert.match(
       inspectorSrc,
       /pickFolder\(\): Promise<string \| null>/,
