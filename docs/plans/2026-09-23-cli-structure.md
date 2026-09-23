@@ -395,6 +395,11 @@ effects 是**判别联合对象**（不是闭包）⇒ 同一条错误广播两�
 
 ### 门禁实测（2026-09-23，合入 `2acd803` 的那棵树）
 
+> ⚠️ **前提先说清**：下面这个 4/8 是**本机**（装了 WorkBuddy ⇒ `NODE_OPTIONS` 预加载了 shim、
+> 且设了 `CODEBUDDY_SESSION_ID`）的现象，**不是这条门禁的性质**。CI 与任何没有这个 shim 的机器上，
+> 同一条 `bash scripts/verify-all.sh` 报 **8/8**（CI 上跑了很久的一直是 8/8）。别把下表读成
+> 「verify-all 现在坏了」。
+
 `bash scripts/verify-all.sh`（**未设下面那条绕法**时）报 **4/8** —— 4 个 FAIL **全部由 node 层 safe-delete shim 造成**
 （它拦 `fs.rmSync` 的批量删除，阈值 50 个文件），**不是真失败**：
 
