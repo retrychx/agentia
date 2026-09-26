@@ -5,7 +5,64 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.9.4] - 2026-09-26
+
+> 本版主题（窗口 `0.9.3 → 0.9.4`）：**成本与限制的账本对齐 + 「能不能发」有了判据**。
+> 四块内容：① 成本口径补齐（缓存读/写单价，含 1h 档 = 2×；图片按**尺寸上界**估）；
+> ② 三个「旋钮设成 0 就静默失效」的洞改成**构造期响亮失败**；③ 大载荷不再灌进摘要器
+> （`tool_result` **内嵌**图片块与 `tool_use` 参数两处，实测一张 200 000 字符 base64 的截图
+> 此前渲染出 200 086 字符、估算 50 022 token ⇒ 修后 32 字符 / 3 139 token）；
+> ④ 评测即发布闸门（配方 + 可拷走的实现 + 守卫）。另含官网的 agent 可读面（每页 `.md` 变体 +
+> `Accept: text/markdown` 内容协商）。
+> **无破坏性变更**：框架公共 API 与脚手架模板形态逐字未变 —— 三个旋钮的 `0` 原本就
+> 「静默不派发 / 拒掉一切 / 流活不过一帧」，现在改成启动期报错，**没有任何本来能工作的配置
+> 会因此变坏**；既有使用者不需要任何动作。
+
+### 修复 · 大载荷不再灌进摘要器
+
+- **`tool_result` **内嵌**图片块按尺寸上界估、只给占位**：工具返回截图是生产里最常见的入图路径，
+  而此前的「渲染 / 摘要侧只给 `[image …]` 占位、不展开 base64」只覆盖**顶层**图片块。
+  实测一张 200 000 字符 base64 的截图：渲染出 200 086 字符（含原始 base64）、估算 **50 022 token**
+  —— 修后 **32 字符 / 3 139 token**，与顶层图片同一条口径（内嵌与顶层的估算差 ≤ 3 token）。
+- **`tool_use` 的参数同样有界**：同一类「大载荷灌进摘要器」的洞，两处各配回归用例
+  （含「小参数不许被截断」的阳性对照），变异验证 4/4 咬人。
+
+### 变更 · 三个旋钮的 `0` 从「静默失效」改成构造期报错
+
+- **`Scheduler.every.maxInFlight: 0`**：闸门判据是 `inFlight.size >= maxInFlight`，`0` / 负数时
+  **恒真** ⇒ 每次 tick 都跳过，周期任务**永不派发且不报错**（实测 60 ms 内派发 0 次、无任何日志）。
+  现在与 `AsyncRunner.concurrency` 同款在构造期抛 `TypeError`；`Infinity`（关闸门）与缺省 `1` 不受影响。
+- **`HttpHandlerOptions.maxBodyBytes: 0`**：实测「每个带 body 的请求都 413」（3 条 POST 全部 413）。
+- **`SseWriterOptions.maxBufferedBytes: 0`**：实测「流活不过一帧」。
+- 三处都判 `invalid` + 构造期抛错，并接上 `limits.ts`（「限制旋钮的 0 是什么」的单一真源）的
+  `zeroClauseOf` 文案单源。⚠️ 还挡一类事故：`Number('') === 0` —— 空的环境变量会静默变成「拒绝一切」。
+
+### 新增 · 成本口径
+
+- **`ModelPricing` 新增 `cacheRead` / `cacheWrite`**（缺省读 0.1×、写 1.25×；**1h 档写 2×** 由
+  `priceOverrides` 表达），非法乘数（负数 / NaN）同样构造期抛错。
+- **未定价模型会「响」**：turn 上记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、
+  可挂 `onUnpricedModel` 回调 —— 此前价格表外的模型成本恒为 0，`maxCostUsd` 这条护栏
+  **静默不触发**（现在失效本身是可观测的）。
+- **图片块的 token 按尺寸上界估**：官方按**尺寸**计费（28×28 像素 = 1 visual token），与文件字节数
+  无关；框架取「长边缩到 1568px」的上界 3136 token/块 —— 宁可高估（`maxTotalTokens` 提前拦）
+  也不低估（护栏迟触发）。
+
+### 新增 · 评测即发布闸门（`docs/eval-gate.md` + `examples/eval-gate/`）
+
+- 把「这一版能不能发」收成一条判据：**回归**（基线通过 → 这次失败）与**删用例**（基线里有 → 这次没跑）
+  判不通过；「基线里本来就失败」**放行**（已知债不拦发布）；退出码 `1`（回归）与 `2`（基线坏了）分两档。
+- 配方文档 + 可直接拷走的实现 + 守卫（9 条纯函数断言 + 文档↔示例导出面双向覆盖 + e2e 真喂三份
+  被改坏的基线）。**`src/` 零改动** —— 框架的职责到「产出结论」为止。
+
+### 新增 · 官网的 agent 可读面（GEO 档 C/D）
+
+- **每页 `.md` 变体**：`packages/website/scripts/build-md-variants.mjs` 在构建末尾从**产物**
+  `dist/*.html`（与打分器同源）生成同名 `.md`，正文一个字不丢、剥壳集合与打分器一致。
+- **`Accept: text/markdown` 内容协商**：`packages/website/public/_worker.js`（Cloudflare Pages
+  advanced mode）只改写带该头的**无扩展名页面路径**，其余（`/llms.txt`、`/robots.txt`、
+  `/sitemap.xml`、`/_astro/*`）原样透传，且**任何异常都退回 `env.ASSETS.fetch(request)`**
+  —— advanced mode 下所有请求都过它，兜底必须是最外层的那一个。
 
 ### 仓库自身（不面向使用者）
 
@@ -19,6 +76,27 @@
   取值（不是镜像 `state`）；② **服务端接线**：把返回值原样喂给 `/run` ⇒ 钩子收到的 `workdir`
   就是它（且不是回落 `defaultWorkdir`）。反向验证三条各自变红（摘页面接线 / 摘
   `parseRunRequest` 的 workdir 转发 / 把 `readControls` 换成镜像 `state`）。
+
+- **`§7 已知边界`（77 行）立守卫**（`tests/docs/boundary-table.test.ts`）：§7 是使用者判断
+  「我能不能用这个框架」的唯一依据，此前**零守卫**且被 `usage-guide.test.ts` 的解析器结构性排除
+  （那条规则只收「首列恰好是一个反引号标识符」的行，§7 首列是散文 ⇒ 整表零采集）。四条判据：
+  标识符不悬空 / 行集合↔登记表双向 / `pin={file,marker}` 可证伪 / 三态（`pin` 38 · `choice` 9 ·
+  `gap` 30）+ 下限。`gap` 的语义是「这句话今天为真、明天可能为假而没人会发现」，**不是功能缺失**。
+  反向验证 8/8 咬人 —— 变异电池当场抓出第一版 A3 是**假守卫**（子串判定，标题加一个字照样绿）。
+- **`killTree` 的平台分派抽成可注入的纯函数**（`packages/cli/src/dev-child.ts` 的 `killPlanFor`）：
+  win32 那条 `taskkill /T /F` 此前**在任何平台都跑不到**（直接读 `process.platform`，而 CI 是
+  ubuntu、macOS 走 POSIX）。行为逐字不变，新增 6 条用例、变异 4/4 咬人。
+- **守卫注册表补登记**：`packages/cli/test/native-pick.test.mjs` 此前没进 `guards.md §1`
+  （守卫在、登记缺），已登记并补两条实测反向验证读数。守卫注册表 §1 逐行审计修掉 3 个「假守卫」。
+- **工具链自我描述 ↔ `ci.yml` 互为真值**（`tests/scripts/verify-all-wiring.test.ts`）：步骤数 ==
+  CI job 名里写死的数字（那是分支保护依赖的必需检查）、每个 job 都被交代、副本不许各说各话。
+- **CI 新增 `docker-image` job（非必需检查）**：`examples/deploy` 的镜像此前**没有任何门禁构建过**
+  （docker 在本仓 CI 出现 0 次、本机无 docker）⇒ 「服务有门禁、镜像只有这一次构建」如实写进
+  `examples/deploy/README.md` 与 `AGENTS.md`。
+- **对外文章** `docs/articles/trace-first.md`：把核心卖点讲成一条可核对的故事（每个数字都是仓库
+  自己能核对的事实：测试全绿数、三个包 dependencies 全空、8 步验证链、镜像只有一次构建）。
+- **推广文案与仓库事实对齐**：修掉 6 类不符（指向别人包的安装命令、会腐烂的时长、硬编码计数、
+  写错 scope 的 npm 链接、连不上的域名、**描述了不存在的功能**）。
 
 ## [0.9.3] - 2026-09-23
 
@@ -1381,7 +1459,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/retrychx/agentia/releases/tag/v0.9.4
 [0.9.3]: https://github.com/retrychx/agentia/releases/tag/v0.9.3
 [0.9.2]: https://github.com/retrychx/agentia/releases/tag/v0.9.2
 [0.9.1]: https://github.com/retrychx/agentia/releases/tag/v0.9.1
