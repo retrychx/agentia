@@ -668,7 +668,7 @@ process.on('SIGTERM', async () => {
 | `compactMessages` | compaction：旧前缀做摘要（摘要器由你注入，框架不替你造 token） |
 | `estimateMessages` | 估算一组消息的 token（预算决策用，不是精确记账）。⚠️ **图片块按上界估**：块里没有宽高，而官方图片计费按**尺寸**（28×28 像素 = 1 token，与文件字节数无关）⇒ 框架按「长边缩到 1568px」的**上界 3136 token/块**计（宁可高估让 `maxTotalTokens` 提前拦，也不要低估让它迟触发）。未知块按**未截断**负载估（同上理由） |
 | `defaultEstimateTokens` | 缺省的单文本估算函数（CJK 感知启发式：CJK ≈ 1.5 字/token、其余 ≈ 4 字符/token） |
-| `renderMessages` | 把 messages 渲染成纯文本 —— 喂给你注入的 compaction 摘要器（`summarize`）用。⚠️ **产物是有界的**：图片块只给 `[image image/png ~150000B]` 这类占位（**含 `tool_result` 正文里嵌套的图片** —— 工具返回截图是常见的入图路径）、未知块截断到 200 字符、**工具参数**截断到 2000 字符，两种截断都**留计数**（不静默丢）—— **绝不展开 base64**（否则等于把整段 payload 当输入 token 发给摘要模型，真金白银 + 摘要质量一起毁）。⚠️ **纯文本**（`text` 块与 `tool_result` 的字符串正文）**刻意不截断**：那是摘要器要读的内容，截掉等于让 compaction 永久丢掉历史 |
+| `renderMessages` | 把 messages 渲染成纯文本 —— 喂给你注入的 compaction 摘要器（`summarize`）用。⚠️ **产物是有界的**：图片块只给 `[image image/png ~150000B]` 这类占位（**含 `tool_result` 正文里嵌套的图片** —— 工具返回截图是常见的入图路径）、未知块截断到 200 字符、**工具参数**截断到 2000 字符，两种截断都**留计数**（不静默丢）—— 这三处**一律不展开 base64**（否则等于把整段 payload 当输入 token 发给摘要模型，真金白银 + 摘要质量一起毁）。⚠️ **纯文本**（`text` 块与 `tool_result` 的字符串正文）**不按长度截断**：那是摘要器要读的内容，截掉等于让 compaction 永久丢掉历史。但**纯载荷长串会被折叠**：字符集落在 base64/hex 内、**连续 ≥ 4000 字符**的串折成 `⟨载荷 N 字符已折叠⟩`（工具把截图 base64 / 大文件当**字符串**返回时，这是唯一的收口 —— 判据是**字符集**而非「无空白」，所以中文与英文散文一字不折）。⚠️ **这不是上界保证**：折行载荷（PEM 式每 76 字符换行）够不着下限，照样整段进摘要器 |
 
 **per-run 隔离（`ContextPolicy.forRun`）**：策略可能被配成应用级单例（`createApp({ contextPolicy })`）
 被所有 run 复用。带状态的实现（滞回计数、token 缓存等）应实现可选的 `forRun(): ContextPolicy` ——
