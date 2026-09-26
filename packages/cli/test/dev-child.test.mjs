@@ -46,7 +46,10 @@ describe('dev-child：杀树计划（killPlanFor 纯判定）', { skip: SKIP }, 
       const plan = D.killPlanFor(platform, 1234, 'SIGTERM');
       assert.equal(plan.kind, 'process-group', `${platform} 应走 POSIX 进程组分支`);
       assert.equal(plan.pid, 1234);
-      assert.ok(plan.pid > 0, '计划里存正 pid —— 取负（负 pid = 进程组）是执行器的事，不是计划的事');
+      assert.ok(
+        plan.pid > 0,
+        '计划里存正 pid —— 取负（负 pid = 进程组）是执行器的事，不是计划的事',
+      );
       assert.equal(plan.signal, 'SIGTERM', '信号原样透传（SIGTERM 优雅退出 / SIGKILL 补刀都用它）');
     }
     assert.equal(D.killPlanFor('linux', 1234, 'SIGKILL').signal, 'SIGKILL');
@@ -67,7 +70,8 @@ describe('dev-child：杀树计划（killPlanFor 纯判定）', { skip: SKIP }, 
  * 加平台分支时又会写出一个测试够不着的分支，正是本轮要修的那个形状）。
  */
 describe('dev-child：分派接线（源码级）', () => {
-  const src = (rel) => readFileSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url)), 'utf8');
+  const src = (rel) =>
+    readFileSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url)), 'utf8');
   const childSrc = src('dev-child.ts');
   const devSrc = src('dev.ts');
 

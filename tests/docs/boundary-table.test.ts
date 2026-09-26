@@ -64,11 +64,7 @@ const CORPUS_DIRS: ReadonlyArray<[string, string[]]> = [
 
 /** 归一化首列 → 登记表的 key（去 markdown 记号、压空白；行文改动会让对应登记项找不到） */
 function rowKey(firstCell: string): string {
-  return firstCell
-    .replace(/\\\|/g, '|')
-    .replace(/[*`]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return firstCell.replace(/\\\|/g, '|').replace(/[*`]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 interface Row {
@@ -135,83 +131,443 @@ type Entry =
  * A3 会逐条断言它在场 —— 引用一条其实不相关的用例会当场红。
  */
 const REGISTRY: ReadonlyArray<Entry> = [
-  { key: '方法入参要自己标注', choice: 'TS 语言事实：不从 JSON Schema 反推形参类型；strict 下不标注即隐式 any' },
-  { key: '裸 schema 不校验签名', gap: '裸 schema 时方法签名与 schema 互不关联这件事，没有用例钉住', candidate: 'tests/toolkit/zod.test.ts' },
+  {
+    key: '方法入参要自己标注',
+    choice: 'TS 语言事实：不从 JSON Schema 反推形参类型；strict 下不标注即隐式 any',
+  },
+  {
+    key: '裸 schema 不校验签名',
+    gap: '裸 schema 时方法签名与 schema 互不关联这件事，没有用例钉住',
+    candidate: 'tests/toolkit/zod.test.ts',
+  },
   { key: '黑板键默认无类型', choice: '类型层取舍：不合并 Blackboard 就是裸 string + unknown' },
   { key: '没有「能力清单」类型', choice: 'API 形状决策：能力由装饰器注册表在运行时收集' },
-  { key: 'strict 只是透传', pin: { file: 'tests/toolkit/collect.test.ts', marker: '@Tool：收集方法、绑定 this、schema/strict 透传' } },
-  { key: 'schema 校验是子集', pin: { file: 'tests/core/schema.test.ts', marker: '未覆盖的关键字放行（护栏不是完整校验器）' } },
-  { key: '历史畸形就放弃裁剪', pin: { file: 'tests/engine/trimming.test.ts', marker: 'trimToolPairs：非严格交替（连续两条 assistant 带 tool_use）→ 放弃裁剪，不切出孤立块' } },
-  { key: '同键去重的能力边界', pin: { file: 'tests/transport/async.test.ts', marker: '幂等键去重（异步 store）：同键在飞时并发提交只执行一次' } },
-  { key: '增量出口与 sink 是两条缝', gap: '「onTraceEvent 不保证送达」这半句没有用例钉住（sink 那半有）', candidate: 'tests/engine/trace-events.test.ts' },
-  { key: '任务进度流的边界（内存 / 跨进程）', pin: { file: 'tests/transport/taskStream.test.ts', marker: '跨进程（同一 store、另一 runner）：stream.unavailable + task.end，不假装实时' } },
-  { key: 'traceLimits 与 maxEventChars 各管一头', pin: { file: 'tests/engine/trace-limits.test.ts', marker: '超限即停止记账，并写一笔带计数的 trace.truncated（不静默）' } },
-  { key: '采样是导出决策，不是记账决策', choice: '采样刻意不内建（配方见 observability.md 2.3）；被采样掉的 trace 在框架内仍完整记账' },
-  { key: '缺省内存 store 不淘汰', gap: '「不淘汰」与 maxRecords 的对照没有用例钉住', candidate: 'tests/store/memoryStore.test.ts' },
-  { key: '能力引用两种粒度', gap: 'provider token 与 <token>/<能力名> 两种粒度的差别没有用例钉住', candidate: 'tests/toolkit/module.test.ts' },
-  { key: '能力名有格式校验', pin: { file: 'tests/toolkit/module.test.ts', marker: '非法装饰器能力名在 createApp 即抛可读错误（不延迟到首次模型调用 400）' } },
-  { key: 'discover 入口会回落', pin: { file: 'tests/toolkit/discover.test.ts', marker: '.ts 与编译产物并存：首选失败时回落下一候选并留告警' } },
-  { key: 'asset() 的 rel 必须是相对路径', pin: { file: 'tests/toolkit/discover.test.ts', marker: '带 scheme 的 rel 显式拒绝（new URL 会整个忽略 base，静默读到别处）' } },
-  { key: '取消要传进客户端才有效', gap: '自定义 ModelClient 不转发 signal 时只能「放弃等待」这半句没有用例钉住', candidate: 'tests/integrations/anthropic.test.ts' },
-  { key: '默认 client 的真端点验证范围', gap: '「mock 全绿发现不了厂商真实行为」是这条边界本身，没有东西能证伪它', candidate: 'scripts/e2e-live.ts' },
-  { key: 'thinking 块「能收、不主动请求」', pin: { file: 'tests/integrations/anthropic.test.ts', marker: 'thinking 块：thinking_delta 收拼、signature_delta 累积进 signature' } },
-  { key: '工具阶段的 abort 有盲区', gap: '挂死工具在 abort 之后仍不返回这个盲区没有用例钉住', candidate: 'tests/engine/tool-context.test.ts' },
-  { key: '观测失败被吞', pin: { file: 'tests/runtime/sinks.test.ts', marker: 'sink 抛错：run 结果不受影响，且不阻断后续 sink（吞错）' } },
-  { key: '框架不自动读 .env', gap: '「除 AGENTIA_MODEL / OPENAI_API_KEY 外不翻环境变量」没有用例钉住', candidate: 'packages/cli/test/templates.test.mjs' },
+  {
+    key: 'strict 只是透传',
+    pin: {
+      file: 'tests/toolkit/collect.test.ts',
+      marker: '@Tool：收集方法、绑定 this、schema/strict 透传',
+    },
+  },
+  {
+    key: 'schema 校验是子集',
+    pin: { file: 'tests/core/schema.test.ts', marker: '未覆盖的关键字放行（护栏不是完整校验器）' },
+  },
+  {
+    key: '历史畸形就放弃裁剪',
+    pin: {
+      file: 'tests/engine/trimming.test.ts',
+      marker: 'trimToolPairs：非严格交替（连续两条 assistant 带 tool_use）→ 放弃裁剪，不切出孤立块',
+    },
+  },
+  {
+    key: '同键去重的能力边界',
+    pin: {
+      file: 'tests/transport/async.test.ts',
+      marker: '幂等键去重（异步 store）：同键在飞时并发提交只执行一次',
+    },
+  },
+  {
+    key: '增量出口与 sink 是两条缝',
+    gap: '「onTraceEvent 不保证送达」这半句没有用例钉住（sink 那半有）',
+    candidate: 'tests/engine/trace-events.test.ts',
+  },
+  {
+    key: '任务进度流的边界（内存 / 跨进程）',
+    pin: {
+      file: 'tests/transport/taskStream.test.ts',
+      marker: '跨进程（同一 store、另一 runner）：stream.unavailable + task.end，不假装实时',
+    },
+  },
+  {
+    key: 'traceLimits 与 maxEventChars 各管一头',
+    pin: {
+      file: 'tests/engine/trace-limits.test.ts',
+      marker: '超限即停止记账，并写一笔带计数的 trace.truncated（不静默）',
+    },
+  },
+  {
+    key: '采样是导出决策，不是记账决策',
+    choice: '采样刻意不内建（配方见 observability.md 2.3）；被采样掉的 trace 在框架内仍完整记账',
+  },
+  {
+    key: '缺省内存 store 不淘汰',
+    gap: '「不淘汰」与 maxRecords 的对照没有用例钉住',
+    candidate: 'tests/store/memoryStore.test.ts',
+  },
+  {
+    key: '能力引用两种粒度',
+    gap: 'provider token 与 <token>/<能力名> 两种粒度的差别没有用例钉住',
+    candidate: 'tests/toolkit/module.test.ts',
+  },
+  {
+    key: '能力名有格式校验',
+    pin: {
+      file: 'tests/toolkit/module.test.ts',
+      marker: '非法装饰器能力名在 createApp 即抛可读错误（不延迟到首次模型调用 400）',
+    },
+  },
+  {
+    key: 'discover 入口会回落',
+    pin: {
+      file: 'tests/toolkit/discover.test.ts',
+      marker: '.ts 与编译产物并存：首选失败时回落下一候选并留告警',
+    },
+  },
+  {
+    key: 'asset() 的 rel 必须是相对路径',
+    pin: {
+      file: 'tests/toolkit/discover.test.ts',
+      marker: '带 scheme 的 rel 显式拒绝（new URL 会整个忽略 base，静默读到别处）',
+    },
+  },
+  {
+    key: '取消要传进客户端才有效',
+    gap: '自定义 ModelClient 不转发 signal 时只能「放弃等待」这半句没有用例钉住',
+    candidate: 'tests/integrations/anthropic.test.ts',
+  },
+  {
+    key: '默认 client 的真端点验证范围',
+    gap: '「mock 全绿发现不了厂商真实行为」是这条边界本身，没有东西能证伪它',
+    candidate: 'scripts/e2e-live.ts',
+  },
+  {
+    key: 'thinking 块「能收、不主动请求」',
+    pin: {
+      file: 'tests/integrations/anthropic.test.ts',
+      marker: 'thinking 块：thinking_delta 收拼、signature_delta 累积进 signature',
+    },
+  },
+  {
+    key: '工具阶段的 abort 有盲区',
+    gap: '挂死工具在 abort 之后仍不返回这个盲区没有用例钉住',
+    candidate: 'tests/engine/tool-context.test.ts',
+  },
+  {
+    key: '观测失败被吞',
+    pin: {
+      file: 'tests/runtime/sinks.test.ts',
+      marker: 'sink 抛错：run 结果不受影响，且不阻断后续 sink（吞错）',
+    },
+  },
+  {
+    key: '框架不自动读 .env',
+    gap: '「除 AGENTIA_MODEL / OPENAI_API_KEY 外不翻环境变量」没有用例钉住',
+    candidate: 'packages/cli/test/templates.test.mjs',
+  },
   { key: '鉴权只是缝', choice: '策略是宿主 / 反代的事：框架只承诺「拦在入口、读 body 之前」' },
-  { key: '运行时是 Node', pin: { file: 'scripts/check-import-floor.mjs', marker: '需要 Node ≥ 22' } },
-  { key: '停机不由框架触发', gap: '「框架不订阅 SIGTERM / SIGINT」没有用例钉住（`drain()` 那半有）', candidate: 'tests/transport/host-hardening.test.ts' },
-  { key: '停机可能切断 SSE', pin: { file: 'tests/transport/host-hardening.test.ts', marker: '收口长连 SSE：drain 会关掉仍挂着的流，并中止对应 run（不再后台空烧 token）' } },
-  { key: '鉴权失败即断连', gap: '未通过鉴权时 connection: close 这条没有用例钉住', candidate: 'tests/transport/httpApproval.test.ts' },
-  { key: '预算护栏不是硬实时', gap: '「一回合记账完才判」「每个在飞分支各一个回合」的粒度没有用例钉住', candidate: 'tests/engine/budget.test.ts' },
-  { key: 'maxCostUsd 依赖价格表', pin: { file: 'tests/integrations/metrics.test.ts', marker: '未定价 turn 计入 unpricedTurns（成本护栏失效的显式信号）' } },
-  { key: '价格表按模型名精确匹配', pin: { file: 'tests/engine/pricing.test.ts', marker: '模型名是精确匹配：带日期后缀的 id 与不带日期的别名互不相通' } },
-  { key: '缓存写的缺省乘数只对 5 分钟 档正确', pin: { file: 'tests/engine/pricing.test.ts', marker: '乘数可逐模型覆盖：ttl 1h 的写 2× / Opus 5.5 的读 0.05×' } },
-  { key: '图片块的 token 只能估、且按上界估', pin: { file: 'tests/engine/trimming.test.ts', marker: '估算不随 base64 长度增长（图片按尺寸上界，不按文件字节数）' } },
-  { key: '工具超时不强制取消工具', pin: { file: 'tests/engine/tool-context.test.ts', marker: '必填四项原样在场（client / recorder / parentSpanId / abandoned）' } },
-  { key: '会话只存对话轮次', pin: { file: 'tests/transport/async.test.ts', marker: '带 session 的任务挂起 → 批准 → 成功：恢复段 messages 无重复历史；会话只多一轮对话' } },
-  { key: '同 session 并发 run 要自行串行化', gap: '并发写同一 sessionId 撞角色交替校验（400）没有用例钉住', candidate: 'tests/runtime/session.test.ts' },
-  { key: 'OpenAI 适配器听端点的话', gap: '「端点回 JSON 就退回一次性」没有用例钉住（流式那半有）', candidate: 'tests/integrations/openaiStream.test.ts' },
-  { key: 'OpenAI 流式的上游故障按失败处理', pin: { file: 'tests/integrations/openaiStream.test.ts', marker: '流被提前截断（已吐出半句、无 [DONE]、无 finish_reason）→ 抛错，不得报成 end_turn 成功' } },
-  { key: 'OpenAI 兼容端点回 legacy function_call 形态时**不支持**', pin: { file: 'tests/integrations/openai.test.ts', marker: 'legacy function_call 形态：响亮失败，不得报成 end_turn 把工具调用丢掉' } },
+  {
+    key: '运行时是 Node',
+    pin: { file: 'scripts/check-import-floor.mjs', marker: '需要 Node ≥ 22' },
+  },
+  {
+    key: '停机不由框架触发',
+    gap: '「框架不订阅 SIGTERM / SIGINT」没有用例钉住（`drain()` 那半有）',
+    candidate: 'tests/transport/host-hardening.test.ts',
+  },
+  {
+    key: '停机可能切断 SSE',
+    pin: {
+      file: 'tests/transport/host-hardening.test.ts',
+      marker: '收口长连 SSE：drain 会关掉仍挂着的流，并中止对应 run（不再后台空烧 token）',
+    },
+  },
+  {
+    key: '鉴权失败即断连',
+    gap: '未通过鉴权时 connection: close 这条没有用例钉住',
+    candidate: 'tests/transport/httpApproval.test.ts',
+  },
+  {
+    key: '预算护栏不是硬实时',
+    gap: '「一回合记账完才判」「每个在飞分支各一个回合」的粒度没有用例钉住',
+    candidate: 'tests/engine/budget.test.ts',
+  },
+  {
+    key: 'maxCostUsd 依赖价格表',
+    pin: {
+      file: 'tests/integrations/metrics.test.ts',
+      marker: '未定价 turn 计入 unpricedTurns（成本护栏失效的显式信号）',
+    },
+  },
+  {
+    key: '价格表按模型名精确匹配',
+    pin: {
+      file: 'tests/engine/pricing.test.ts',
+      marker: '模型名是精确匹配：带日期后缀的 id 与不带日期的别名互不相通',
+    },
+  },
+  {
+    key: '缓存写的缺省乘数只对 5 分钟 档正确',
+    pin: {
+      file: 'tests/engine/pricing.test.ts',
+      marker: '乘数可逐模型覆盖：ttl 1h 的写 2× / Opus 5.5 的读 0.05×',
+    },
+  },
+  {
+    key: '图片块的 token 只能估、且按上界估',
+    pin: {
+      file: 'tests/engine/trimming.test.ts',
+      marker: '估算不随 base64 长度增长（图片按尺寸上界，不按文件字节数）',
+    },
+  },
+  {
+    key: '工具超时不强制取消工具',
+    pin: {
+      file: 'tests/engine/tool-context.test.ts',
+      marker: '必填四项原样在场（client / recorder / parentSpanId / abandoned）',
+    },
+  },
+  {
+    key: '会话只存对话轮次',
+    pin: {
+      file: 'tests/transport/async.test.ts',
+      marker: '带 session 的任务挂起 → 批准 → 成功：恢复段 messages 无重复历史；会话只多一轮对话',
+    },
+  },
+  {
+    key: '同 session 并发 run 要自行串行化',
+    gap: '并发写同一 sessionId 撞角色交替校验（400）没有用例钉住',
+    candidate: 'tests/runtime/session.test.ts',
+  },
+  {
+    key: 'OpenAI 适配器听端点的话',
+    gap: '「端点回 JSON 就退回一次性」没有用例钉住（流式那半有）',
+    candidate: 'tests/integrations/openaiStream.test.ts',
+  },
+  {
+    key: 'OpenAI 流式的上游故障按失败处理',
+    pin: {
+      file: 'tests/integrations/openaiStream.test.ts',
+      marker:
+        '流被提前截断（已吐出半句、无 [DONE]、无 finish_reason）→ 抛错，不得报成 end_turn 成功',
+    },
+  },
+  {
+    key: 'OpenAI 兼容端点回 legacy function_call 形态时**不支持**',
+    pin: {
+      file: 'tests/integrations/openai.test.ts',
+      marker: 'legacy function_call 形态：响亮失败，不得报成 end_turn 把工具调用丢掉',
+    },
+  },
   { key: 'MCP 只做 tools', choice: 'YAGNI（spec §10）：sampling / resources / prompts 原语不做' },
-  { key: 'MCP 的协议层错误框架看不见', pin: { file: 'tests/integrations/mcpConnector.test.ts', marker: '协议层 isError 转成抛错 —— 否则模型与 trace 都会以为这调用成功了' } },
-  { key: 'MCP 超时同样是「不等了」', pin: { file: 'tests/integrations/mcp.test.ts', marker: '单一裁判：引擎设了 toolTimeoutMs ⇒ 桥的 timeoutMs 不参与判定（更短也不抢）' } },
-  { key: '已中止的 MCP 调用不发请求', pin: { file: 'tests/integrations/mcpConnector.test.ts', marker: '信号已中止：不发送、立即 AbortError 收场，且连接器仍可用' } },
-  { key: 'MCP 连接器的超时只管装配期', gap: '连接器自带 timeoutMs 只作用于握手 + tools/list 这半句没有用例钉住', candidate: 'tests/integrations/mcpConnector.test.ts' },
-  { key: 'MCP 连接的 close() 保证子进程已终止', pin: { file: 'tests/integrations/mcpConnector.test.ts', marker: 'close() 返回时子进程**已被回收**（连忽略 SIGTERM 的 server 也照杀）' } },
-  { key: 'StreamableHTTP 会话过期自愈', pin: { file: 'tests/integrations/mcpConnector.test.ts', marker: '会话过期（404）→ 自动重握手并把**这一次**重试一次（自愈成功）' } },
-  { key: 'MCP 名字可能被归一化', pin: { file: 'tests/integrations/mcp.test.ts', marker: '模型调归一化名 → 桥回调用**原名** → 结果回模型，且原名落进 turn attribute' } },
-  { key: 'MCP 工具不能进 DI 容器', gap: '「没有 provider token、不能被别的能力引用」没有用例钉住', candidate: 'tests/integrations/mcp.test.ts' },
-  { key: '指标分位是窗口内精确值', pin: { file: 'tests/integrations/metrics.test.ts', marker: '分位是窗口内精确值（最近 rank 法），根未收尾的 run 不进延迟样本' } },
-  { key: '指标是进程内累加', gap: '「不做分布式聚合、重启即清零」没有用例钉住', candidate: 'src/integrations/metrics-state.ts' },
-  { key: 'OTLP metrics 只推当前累计', gap: 'CUMULATIVE 与 startTime 前移的语义没有用例钉住（reset() 有）', candidate: 'src/integrations/metrics-otlp.ts' },
-  { key: 'GET /metrics 不鉴权', pin: { file: 'tests/transport/metricsRoute.test.ts', marker: '与 /healthz 同档：**不鉴权**（鉴权钩子不会被调用）' } },
-  { key: '工具没有 token/成本指标', gap: '「工具只产出调用数/失败数/耗时」没有用例钉住', candidate: 'tests/integrations/report.test.ts' },
-  { key: '@Prompt 没有能力指标', gap: '「资产类能力不建 span、不进能力排行」没有用例钉住', candidate: 'tests/integrations/metrics.test.ts' },
-  { key: '能力标签有基数上限', pin: { file: 'tests/integrations/metrics.test.ts', marker: 'maxCapabilities 上限：新能力归 __other__，droppedCapabilities 记被归并的不同能力数' } },
-  { key: '模型 / 评分维度也有基数上限', pin: { file: 'tests/integrations/metrics.test.ts', marker: 'maxModels=1 + 3 个模型 → 三个 *_dropped_keys gauge，且折叠数对得上 snapshot' } },
-  { key: '提示词版本只是标记', pin: { file: 'tests/runtime/systemPrompt.test.ts', marker: 'SystemPrompt({ version }) 暴露只读 version；不传则 undefined，add 不改它' } },
-  { key: 'agentia harvest 的产物是轨迹骨架', gap: '「用例脚本里的 text 块是占位」没有用例钉住（移植对拍有）', candidate: 'packages/cli/test/harvest.test.mjs' },
-  { key: '分叉重放不是续跑', gap: '「起的是新 run，不是接着原 run 的循环位置」没有用例钉住', candidate: 'tests/engine/fork.test.ts' },
-  { key: '评分来自 run 之外', gap: '「attachScore 找不到根 span 时静默忽略」没有用例钉住', candidate: 'tests/integrations/metrics.test.ts' },
-  { key: '链路关联：入站自动、**出站只给读取器**', pin: { file: 'tests/engine/traceLink.test.ts', marker: '不给 traceContext：run 根**没有** links 字段（不是空数组）' } },
-  { key: '配额不是框架子系统', choice: '只给缝（middleware + TraceSink + BudgetGuard）：计数放哪与超限怎么办都是宿主的策略' },
-  { key: '人工审批两种形态', pin: { file: 'tests/transport/approval.test.ts', marker: 'approve → 恢复 → 成功：框架回填 decidedAt/requestedAt；恢复段 trace 经 link 挂到上一段' } },
-  { key: '审批超时是**惰性**判定', pin: { file: 'tests/transport/approval.test.ts', marker: 'approvalTimeoutMs：惰性判定 —— 读到一个已超时的挂起任务 ⇒ 自动全拒并重派' } },
-  { key: '挂起段与恢复段是两棵 trace', pin: { file: 'tests/transport/approval.test.ts', marker: 'approve → 恢复 → 成功：框架回填 decidedAt/requestedAt；恢复段 trace 经 link 挂到上一段' } },
-  { key: '审批是 at-least-once', gap: '「批准后恢复执行中崩溃 ⇒ 副作用工具会重执行」没有用例钉住', candidate: 'tests/transport/approval.test.ts' },
-  { key: '挂起/恢复间预算重新起算', gap: '「恢复段从 0 重新计」没有用例钉住', candidate: 'tests/transport/async.test.ts' },
-  { key: '恢复段的会话回写是进程内快照', gap: '「崩在挂起与 approve 之间会丢一次会话回写」没有用例钉住', candidate: 'tests/transport/async.test.ts' },
-  { key: '嵌套能力内的审批不支持挂起', gap: '「子循环里的 approval 无法挂起整个 run」没有用例钉住', candidate: 'tests/transport/httpApproval.test.ts' },
-  { key: '同步 /run 撞上审批没人可批', gap: '「响应体不含 suspendedMessages」没有用例钉住', candidate: 'tests/transport/http-shapes.test.ts' },
-  { key: 'Scheduler 调度表不落库', gap: '「未来某刻再触发」的调度在重启后不存在，没有用例钉住', candidate: 'tests/transport/scheduler.test.ts' },
-  { key: 'file store 的撕裂写只在启动时自愈', pin: { file: 'tests/store/fsStore.test.ts', marker: '尾部残行自愈：半截 JSON 截掉后，新记录不会与残行粘成一行' } },
-  { key: '终态落库失败 ⇒ 重启会重跑', pin: { file: 'tests/transport/async.test.ts', marker: '终态落库失败：onPersistError 必须收到（不再静默），且库里确实停在 running' } },
-  { key: 'contextPolicy 不进子循环', gap: '「应用级 contextPolicy 只对主循环生效」没有用例钉住', candidate: 'tests/engine/run-config.test.ts' },
-  { key: '记忆没有删除语义', gap: '「ctx.delete 掉的键下一轮水合会复活」没有用例钉住', candidate: 'tests/runtime/memory.test.ts' },
-  { key: '内容护栏不给实现', choice: '只给缝（入参包 app.run / 工具前 middleware / 出参包返回值或 sinks）：策略是宿主的' },
-  { key: '框架不执行模型生成的代码', choice: '定位决定：模型输出只成文本 / tool_result；代码执行工具的隔离是工具实现内部的事' },
+  {
+    key: 'MCP 的协议层错误框架看不见',
+    pin: {
+      file: 'tests/integrations/mcpConnector.test.ts',
+      marker: '协议层 isError 转成抛错 —— 否则模型与 trace 都会以为这调用成功了',
+    },
+  },
+  {
+    key: 'MCP 超时同样是「不等了」',
+    pin: {
+      file: 'tests/integrations/mcp.test.ts',
+      marker: '单一裁判：引擎设了 toolTimeoutMs ⇒ 桥的 timeoutMs 不参与判定（更短也不抢）',
+    },
+  },
+  {
+    key: '已中止的 MCP 调用不发请求',
+    pin: {
+      file: 'tests/integrations/mcpConnector.test.ts',
+      marker: '信号已中止：不发送、立即 AbortError 收场，且连接器仍可用',
+    },
+  },
+  {
+    key: 'MCP 连接器的超时只管装配期',
+    gap: '连接器自带 timeoutMs 只作用于握手 + tools/list 这半句没有用例钉住',
+    candidate: 'tests/integrations/mcpConnector.test.ts',
+  },
+  {
+    key: 'MCP 连接的 close() 保证子进程已终止',
+    pin: {
+      file: 'tests/integrations/mcpConnector.test.ts',
+      marker: 'close() 返回时子进程**已被回收**（连忽略 SIGTERM 的 server 也照杀）',
+    },
+  },
+  {
+    key: 'StreamableHTTP 会话过期自愈',
+    pin: {
+      file: 'tests/integrations/mcpConnector.test.ts',
+      marker: '会话过期（404）→ 自动重握手并把**这一次**重试一次（自愈成功）',
+    },
+  },
+  {
+    key: 'MCP 名字可能被归一化',
+    pin: {
+      file: 'tests/integrations/mcp.test.ts',
+      marker: '模型调归一化名 → 桥回调用**原名** → 结果回模型，且原名落进 turn attribute',
+    },
+  },
+  {
+    key: 'MCP 工具不能进 DI 容器',
+    gap: '「没有 provider token、不能被别的能力引用」没有用例钉住',
+    candidate: 'tests/integrations/mcp.test.ts',
+  },
+  {
+    key: '指标分位是窗口内精确值',
+    pin: {
+      file: 'tests/integrations/metrics.test.ts',
+      marker: '分位是窗口内精确值（最近 rank 法），根未收尾的 run 不进延迟样本',
+    },
+  },
+  {
+    key: '指标是进程内累加',
+    gap: '「不做分布式聚合、重启即清零」没有用例钉住',
+    candidate: 'src/integrations/metrics-state.ts',
+  },
+  {
+    key: 'OTLP metrics 只推当前累计',
+    gap: 'CUMULATIVE 与 startTime 前移的语义没有用例钉住（reset() 有）',
+    candidate: 'src/integrations/metrics-otlp.ts',
+  },
+  {
+    key: 'GET /metrics 不鉴权',
+    pin: {
+      file: 'tests/transport/metricsRoute.test.ts',
+      marker: '与 /healthz 同档：**不鉴权**（鉴权钩子不会被调用）',
+    },
+  },
+  {
+    key: '工具没有 token/成本指标',
+    gap: '「工具只产出调用数/失败数/耗时」没有用例钉住',
+    candidate: 'tests/integrations/report.test.ts',
+  },
+  {
+    key: '@Prompt 没有能力指标',
+    gap: '「资产类能力不建 span、不进能力排行」没有用例钉住',
+    candidate: 'tests/integrations/metrics.test.ts',
+  },
+  {
+    key: '能力标签有基数上限',
+    pin: {
+      file: 'tests/integrations/metrics.test.ts',
+      marker: 'maxCapabilities 上限：新能力归 __other__，droppedCapabilities 记被归并的不同能力数',
+    },
+  },
+  {
+    key: '模型 / 评分维度也有基数上限',
+    pin: {
+      file: 'tests/integrations/metrics.test.ts',
+      marker: 'maxModels=1 + 3 个模型 → 三个 *_dropped_keys gauge，且折叠数对得上 snapshot',
+    },
+  },
+  {
+    key: '提示词版本只是标记',
+    pin: {
+      file: 'tests/runtime/systemPrompt.test.ts',
+      marker: 'SystemPrompt({ version }) 暴露只读 version；不传则 undefined，add 不改它',
+    },
+  },
+  {
+    key: 'agentia harvest 的产物是轨迹骨架',
+    gap: '「用例脚本里的 text 块是占位」没有用例钉住（移植对拍有）',
+    candidate: 'packages/cli/test/harvest.test.mjs',
+  },
+  {
+    key: '分叉重放不是续跑',
+    gap: '「起的是新 run，不是接着原 run 的循环位置」没有用例钉住',
+    candidate: 'tests/engine/fork.test.ts',
+  },
+  {
+    key: '评分来自 run 之外',
+    gap: '「attachScore 找不到根 span 时静默忽略」没有用例钉住',
+    candidate: 'tests/integrations/metrics.test.ts',
+  },
+  {
+    key: '链路关联：入站自动、**出站只给读取器**',
+    pin: {
+      file: 'tests/engine/traceLink.test.ts',
+      marker: '不给 traceContext：run 根**没有** links 字段（不是空数组）',
+    },
+  },
+  {
+    key: '配额不是框架子系统',
+    choice: '只给缝（middleware + TraceSink + BudgetGuard）：计数放哪与超限怎么办都是宿主的策略',
+  },
+  {
+    key: '人工审批两种形态',
+    pin: {
+      file: 'tests/transport/approval.test.ts',
+      marker:
+        'approve → 恢复 → 成功：框架回填 decidedAt/requestedAt；恢复段 trace 经 link 挂到上一段',
+    },
+  },
+  {
+    key: '审批超时是**惰性**判定',
+    pin: {
+      file: 'tests/transport/approval.test.ts',
+      marker: 'approvalTimeoutMs：惰性判定 —— 读到一个已超时的挂起任务 ⇒ 自动全拒并重派',
+    },
+  },
+  {
+    key: '挂起段与恢复段是两棵 trace',
+    pin: {
+      file: 'tests/transport/approval.test.ts',
+      marker:
+        'approve → 恢复 → 成功：框架回填 decidedAt/requestedAt；恢复段 trace 经 link 挂到上一段',
+    },
+  },
+  {
+    key: '审批是 at-least-once',
+    gap: '「批准后恢复执行中崩溃 ⇒ 副作用工具会重执行」没有用例钉住',
+    candidate: 'tests/transport/approval.test.ts',
+  },
+  {
+    key: '挂起/恢复间预算重新起算',
+    gap: '「恢复段从 0 重新计」没有用例钉住',
+    candidate: 'tests/transport/async.test.ts',
+  },
+  {
+    key: '恢复段的会话回写是进程内快照',
+    gap: '「崩在挂起与 approve 之间会丢一次会话回写」没有用例钉住',
+    candidate: 'tests/transport/async.test.ts',
+  },
+  {
+    key: '嵌套能力内的审批不支持挂起',
+    gap: '「子循环里的 approval 无法挂起整个 run」没有用例钉住',
+    candidate: 'tests/transport/httpApproval.test.ts',
+  },
+  {
+    key: '同步 /run 撞上审批没人可批',
+    gap: '「响应体不含 suspendedMessages」没有用例钉住',
+    candidate: 'tests/transport/http-shapes.test.ts',
+  },
+  {
+    key: 'Scheduler 调度表不落库',
+    gap: '「未来某刻再触发」的调度在重启后不存在，没有用例钉住',
+    candidate: 'tests/transport/scheduler.test.ts',
+  },
+  {
+    key: 'file store 的撕裂写只在启动时自愈',
+    pin: {
+      file: 'tests/store/fsStore.test.ts',
+      marker: '尾部残行自愈：半截 JSON 截掉后，新记录不会与残行粘成一行',
+    },
+  },
+  {
+    key: '终态落库失败 ⇒ 重启会重跑',
+    pin: {
+      file: 'tests/transport/async.test.ts',
+      marker: '终态落库失败：onPersistError 必须收到（不再静默），且库里确实停在 running',
+    },
+  },
+  {
+    key: 'contextPolicy 不进子循环',
+    gap: '「应用级 contextPolicy 只对主循环生效」没有用例钉住',
+    candidate: 'tests/engine/run-config.test.ts',
+  },
+  {
+    key: '记忆没有删除语义',
+    gap: '「ctx.delete 掉的键下一轮水合会复活」没有用例钉住',
+    candidate: 'tests/runtime/memory.test.ts',
+  },
+  {
+    key: '内容护栏不给实现',
+    choice: '只给缝（入参包 app.run / 工具前 middleware / 出参包返回值或 sinks）：策略是宿主的',
+  },
+  {
+    key: '框架不执行模型生成的代码',
+    choice: '定位决定：模型输出只成文本 / tool_result；代码执行工具的隔离是工具实现内部的事',
+  },
 ];
 
 const rows = parseBoundaryRows();
@@ -230,17 +586,16 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
     // key 一律过与文档侧同一个归一化（去 markdown 记号 / 压空白）—— 登记表里留 `**` 这类
     // 标记不该造成落差（第一版本就是这么红的，守卫咬到了它自己的作者）。
     const registryKeys = new Set(REGISTRY.map((e) => rowKey(e.key)));
-    const missing = rows.filter((r) => !registryKeys.has(r.key)).map((r) => `第 ${r.line} 行「${r.key}」`);
+    const missing = rows
+      .filter((r) => !registryKeys.has(r.key))
+      .map((r) => `第 ${r.line} 行「${r.key}」`);
     const stale = [...registryKeys].filter((k) => !byKey.has(k));
     assert.deepEqual(
       { 文档有边界但没登记: missing, 登记了但文档里没有: stale },
       { 文档有边界但没登记: [], 登记了但文档里没有: [] },
       '新写一条边界必须登记（pin / choice / gap 三选一）；删掉边界要把登记项一起删',
     );
-    assert.ok(
-      REGISTRY.length === registryKeys.size,
-      '登记表里有重复 key（归一化后撞车）',
-    );
+    assert.ok(REGISTRY.length === registryKeys.size, '登记表里有重复 key（归一化后撞车）');
   });
 
   // ---------- A3：pin 可证伪 ----------
@@ -269,16 +624,23 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
       } else if (!text.includes(pin.marker) || pin.marker.length < 12) {
         // 非用例文件（脚本 / 源码）：没有「用例标题」这个概念，退回「逐字在场 + 长度下限」。
         // 这条不对称是**有意的**，写在这里以免下一轮误以为漏了。
-        problems.push(`「${key}」的 marker 在 ${pin.file} 里不逐字在场（或短于 12 字符）：${pin.marker}`);
+        problems.push(
+          `「${key}」的 marker 在 ${pin.file} 里不逐字在场（或短于 12 字符）：${pin.marker}`,
+        );
       }
     }
     assert.deepEqual(problems, [], problems.join('\n'));
-    assert.ok(pins.length >= 30, `pin 只有 ${pins.length} 条（下限 30）—— 被批量降级成 choice/gap 了？`);
+    assert.ok(
+      pins.length >= 30,
+      `pin 只有 ${pins.length} 条（下限 30）—— 被批量降级成 choice/gap 了？`,
+    );
   });
 
   it('A3b 每条 gap 都指了一条真实存在的候选（否则清单不可行动）', () => {
     const gaps = REGISTRY.filter((e): e is Extract<Entry, { gap: unknown }> => 'gap' in e);
-    const bad = gaps.filter((g) => !existsSync(join(ROOT, g.candidate))).map((g) => `「${g.key}」→ ${g.candidate}`);
+    const bad = gaps
+      .filter((g) => !existsSync(join(ROOT, g.candidate)))
+      .map((g) => `「${g.key}」→ ${g.candidate}`);
     assert.deepEqual(bad, [], `gap 的候选文件不存在：\n${bad.join('\n')}`);
     for (const g of gaps) {
       assert.ok(g.gap.length >= 8, `「${g.key}」的 gap 理由太短（写清「哪半句没人钉」）`);
