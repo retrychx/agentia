@@ -288,7 +288,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `onTraceEvent` | **增量记账出口的缺省值**：run **进行中**逐笔回调（`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`），给等不了收尾的消费者（面板 / SSE / 任务流）。与 `sinks` 是**两条缝**、可同时配；单次 run 给了自己的那个是**叠加**（应用级在前）而非覆盖。⚠️ **不保证送达**（宿主自己的流断了就断了），也不替代 `sinks` |
 | `maxTotalTokens` | 缺省成本硬管控：整条 run（**含子 agent / skill 子循环**，上限经 `ToolRunContext` 透传）累计 token 上限（可被单次 run 覆盖） |
 | `maxCostUsd` | 缺省成本硬管控：累计成本（美元）上限（**依赖模型在价格表内**，见 `priceOverrides`；未定价模型会留 `usage.unpriced` 事件，所以「护栏有没有真的生效」看得见） |
-| `priceOverrides` | 价格表覆盖/追加（`$/1M tokens`）：覆盖内置同名项，或给非 Anthropic 模型定价（如 `{ 'deepseek-chat': { in: 0.27, out: 1.10 } }`）。**透传给子 agent/skill 的子循环** —— 不会「主 agent 有成本、子 agent 恒 0」。非法单价在 run 开始即抛错 |
+| `priceOverrides` | 价格表覆盖/追加（`$/1M tokens`）：覆盖内置同名项，或给非 Anthropic 模型定价（如 `{ 'deepseek-chat': { in: 0.27, out: 1.10 } }`）。⚠️ **模型名是精确匹配**：Anthropic 每个型号都发两个 id（不带日期的别名 + 带日期的快照，如 `claude-haiku-4-5` / `claude-haiku-4-5-20251001`），**互不相通** —— 用哪个 id 就得按哪个 id 定价，否则 `maxCostUsd` 不触发（会留 `usage.unpriced`，见下）。条目还可带**缓存乘数** `cacheRead` / `cacheWrite`（缺省 `0.1` / `1.25`，相对 `in`；写 `0` 就是**乘数为零** = 该模型的缓存读 / 写不花钱，**不是**「未设」—— 实现用 `??` 而非 `||`）：缓存写缺省只对 **5 分钟** 档正确，用了 `cache_control: { ttl: '1h' }` 就写 `cacheWrite: 2`；缓存读的逐模型例外（Opus 5.5 = `0.05`、Fable 5.1 / Mythos 5.1 = `0.025`）同理。**透传给子 agent/skill 的子循环** —— 不会「主 agent 有成本、子 agent 恒 0」。非法单价与非法乘数都在**第一次 llm 调用之前**就失败：run 以 `status: error` 收口（错误记在 run 根 span 上、`totalUsage` 全 0、client 一次都不被调用）—— ⚠️ **不是抛异常给调用方**（`buildPricing` 的错被 `runAgent` 收成 result，别写成 `try/catch` 等它抛） |
 | `onUnpricedModel` | 遇到价格表外的模型时回调（`{ model, spanId }`，每个循环作用域内每模型一次）；抛错被吞，**不改变 run 结局**（定价缺失是宿主配置问题）。用它接告警 |
 | `toolTimeoutMs` | 缺省单工具超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run |
 | `maxToolConcurrency` | 缺省同回合并行工具上限；不设 = 不限（全并行） |
@@ -602,9 +602,9 @@ const handler = createHttpHandler(callable, { runner });
 |---|---|
 | `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
 | `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404。⚠️ 这只管**渲染** —— 数字要真的累计，必须把**同一个** sink 注册进 `createApp({ sinks: [metrics] })`（它靠 run 收尾投递，不自己埋点），否则 `/metrics` 恒为 0 **且不报错** |
-| `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB |
+| `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB。构造期校验：必须 > 0 或 `Infinity` —— 0 会让**每个带 body 的请求**都 413（`POST /run` / `POST /tasks` / 审批全废），故直接抛错。⚠️ 还挡 `Number('') === 0`：从**空的环境变量**读出来的配置会静默变成「拒绝一切」 |
 | `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限）。构造期校验：必须 > 0 或 Infinity —— NaN 会让闸门静默失效、0/负数会全部 503，故直接抛错 |
-| `sseMaxBufferedBytes` | SSE 下游积压上限（字节，`res.writableLength` 超过即收口该 SSE 流并 **abort 对应 run** —— 客户端已经不消费了，继续逐 token 生成只是白烧 token）；缺省 8 MiB |
+| `sseMaxBufferedBytes` | SSE 下游积压上限（字节，`res.writableLength` 超过即收口该 SSE 流并 **abort 对应 run** —— 客户端已经不消费了，继续逐 token 生成只是白烧 token）；缺省 8 MiB。构造期校验：必须 > 0 或 `Infinity` —— 判据是**写入前**的 `pending > 上限`，0 时第 1 帧照写、**第 2 帧必收口**（流活不过一帧），故直接抛错 |
 | `exposeErrors` | 是否把内部异常原文回给调用方；缺省 `false`（细节只进服务端日志） |
 | `runner` | 注入 `AsyncRunner`（共用 store / 并发上限 / `resumePending`）；缺省内部 `new AsyncRunner(app)` |
 
@@ -666,9 +666,9 @@ process.on('SIGTERM', async () => {
 | `createBudgetPolicy` | 预算策略：超预算先 `trimToolPairs` 编辑，再 `compactMessages` 压缩（带滞回） |
 | `trimToolPairs` | context editing：丢旧 tool 对（按**对数**，`keepToolPairs`） |
 | `compactMessages` | compaction：旧前缀做摘要（摘要器由你注入，框架不替你造 token） |
-| `estimateMessages` | 估算一组消息的 token（预算决策用，不是精确记账） |
+| `estimateMessages` | 估算一组消息的 token（预算决策用，不是精确记账）。⚠️ **图片块按上界估**：块里没有宽高，而官方图片计费按**尺寸**（28×28 像素 = 1 token，与文件字节数无关）⇒ 框架按「长边缩到 1568px」的**上界 3136 token/块**计（宁可高估让 `maxTotalTokens` 提前拦，也不要低估让它迟触发）。未知块按**未截断**负载估（同上理由） |
 | `defaultEstimateTokens` | 缺省的单文本估算函数（CJK 感知启发式：CJK ≈ 1.5 字/token、其余 ≈ 4 字符/token） |
-| `renderMessages` | 把 messages 渲染成纯文本 —— 喂给你注入的 compaction 摘要器（`summarize`）用 |
+| `renderMessages` | 把 messages 渲染成纯文本 —— 喂给你注入的 compaction 摘要器（`summarize`）用。⚠️ **产物是有界的**：图片块只给 `[image image/png ~150000B]` 这类占位（**含 `tool_result` 正文里嵌套的图片** —— 工具返回截图是常见的入图路径）、未知块截断到 200 字符、**工具参数**截断到 2000 字符，两种截断都**留计数**（不静默丢）—— **绝不展开 base64**（否则等于把整段 payload 当输入 token 发给摘要模型，真金白银 + 摘要质量一起毁）。⚠️ **纯文本**（`text` 块与 `tool_result` 的字符串正文）**刻意不截断**：那是摘要器要读的内容，截掉等于让 compaction 永久丢掉历史 |
 
 **per-run 隔离（`ContextPolicy.forRun`）**：策略可能被配成应用级单例（`createApp({ contextPolicy })`）
 被所有 run 复用。带状态的实现（滞回计数、token 缓存等）应实现可选的 `forRun(): ContextPolicy` ——
@@ -1419,6 +1419,9 @@ const callable = {
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
 | 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；并行子循环（一回合多个子 agent）各自过闸，超支上限是「**每个在飞分支**各一个回合」而非「总共一个回合」；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |
 | `maxCostUsd` 依赖价格表 | 模型不在价格表内（且未用 `priceOverrides` 覆盖）时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens`。**失效会响**：turn 上会记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、可回调 `onUnpricedModel` |
+| 价格表按模型名**精确匹配** | 别名与带日期快照是两个不同的键：内置表收了 `claude-haiku-4-5`，那么 `claude-haiku-4-5-20251001` 就是**未定价**（成本算不出、`maxCostUsd` 不触发，会留 `usage.unpriced`）。照抄官方文档里的带日期 id 最容易踩这一条 —— 要么改用不带日期的别名，要么 `priceOverrides` 里按**你实际传的那个 id** 补一条 |
+| 缓存写的缺省乘数只对 **5 分钟** 档正确 | 官方是 5m 写 1.25×、**1h 写 2×**、读 0.1×。而 `Usage` 是四项**聚合**的，分不出这一回合的缓存写走的是哪个 TTL（SDK 的 `Usage.cache_creation` 有拆分，框架没把它带上）⇒ 你在块上用了 `cache_control: { ttl: '1h' }` 就必须在 `priceOverrides` 里写 `cacheWrite: 2`，否则成本**低估 37.5%**、`maxCostUsd` 会迟触发。框架自己的调用点都不设 ttl，所以不改也对 |
+| 图片块的 token 只能估、且按**上界**估 | 块里没有宽高（`source` 只有 base64 的 `data` 或 `url`），而官方图片计费按**尺寸**（28×28 像素 = 1 visual token），与文件字节数**无关** —— 一张 200KB 纯色 PNG 和一张 200KB 细节图的成本能差两个数量级。框架取「长边缩到 1568px」的**上界 3136 token/块**：宁可高估（`maxTotalTokens` 提前拦）也不低估（护栏迟触发）。渲染 / 摘要侧则只给 `[image …]` 占位，**不展开 base64** |
 | 工具超时**不强制取消**工具 | `AgentTool.run` 没有 signal 参数，超时首先是「不等了」；副作用可能已发生。想真停：监听 `ToolRunContext.abandoned`（引擎放弃等待时 abort 它）自行收尾。框架自带的 @SubAgent / @Skill 已这么做 —— 超时即中止子循环（在飞请求被掐、不再后台烧 token），capability span 立刻以 error 收尾 |
 | 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
 | 同 session 并发 run 要自行串行化 | `SessionStore` 是 **append-only**：并发写不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 共用同一 sessionId 时，各自追加的轮次可能交错成「连续两条 user」，下一轮 load 出来撞角色交替校验（400）。同一 session 的并发 run 请调用方自行串行化（每 session 一把锁 / 一条队列） |

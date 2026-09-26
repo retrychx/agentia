@@ -1,8 +1,11 @@
 import type {
+  ContentBlockParam,
+  ImageBlockParam,
   MessageParam,
   TextBlockParam,
   ToolResultBlockParam,
   ToolUseBlockParam,
+  UnknownContentBlockParam,
 } from '../core/message.js';
 
 /**
@@ -65,23 +68,136 @@ function hasToolUse(msg: MessageParam): boolean {
 
 function contentToText(content: MessageParam['content']): string {
   if (typeof content === 'string') return content;
-  return content
-    .map((b) => {
-      // 联合含兜底成员（type: string），按字面量收窄后仍需断言到具体块型
-      switch (b.type) {
-        case 'text':
-          return (b as TextBlockParam).text;
-        case 'tool_use': {
-          const tu = b as ToolUseBlockParam;
-          return `${tu.name}(${JSON.stringify(tu.input)})`;
-        }
-        case 'tool_result':
-          return JSON.stringify((b as ToolResultBlockParam).content);
-        default:
-          return JSON.stringify(b);
+  return content.map(blockToText).join('\n');
+}
+
+/**
+ * 图片块的估算 token **上界**。
+ *
+ * 为什么给上界而不是真实值：块里**没有宽高**（`source` 只有 base64 的 `data` 或 `url`），
+ * 而 Anthropic 的图片计费是**按尺寸**的（28×28 像素 = 1 visual token），与文件字节数无关 ——
+ * 一张 200KB 的纯色 PNG 与一张 200KB 的细节图，token 成本能差两个数量级。
+ * 官方会把图片缩到长边 ≤1568px ⇒ 单块最多 ceil(1568/28)² = 3136 token。
+ * 取上界：宁可高估（`maxTotalTokens` 提前拦）也不要低估（护栏迟触发）。
+ */
+const IMAGE_TOKENS_UPPER_BOUND = 3136;
+
+/** 未知块**渲染**时的字符上限（厂商新块型可能带大负载，原样展开会把摘要灌爆） */
+const UNKNOWN_BLOCK_CHARS = 200;
+
+/**
+ * `tool_use` **渲染**时的参数上限。
+ *
+ * 为什么需要一个（而它比未知块宽松一个数量级）：工具参数天然可能带大载荷 —— `write_file` 的
+ * 正文、`screenshot` 的 base64、大 JSON 参数 —— 原样展开同样会灌进 `compactMessages` 交给
+ * 宿主的摘要模型（真金白银 + 摘要质量一起毁）。而参数又不像未知块那样「多数情况下整块是噪声」：
+ * 前若干字符通常是调用意图与头几个参数（`{"path":"src/x.ts","content":"…`），摘要需要它。
+ * 2000 字符 ≈ 500 token：够看清「调了谁、带了什么」，够不着任何 base64 级载荷。
+ */
+const TOOL_INPUT_CHARS = 2000;
+
+/** 有界渲染：超上限则截断并**留计数**（静默丢内容会让摘要读起来像参数本来就那么短）。 */
+function boundedText(json: string, cap: number): string {
+  return json.length <= cap ? json : `${json.slice(0, cap)}…（共 ${json.length} 字符）`;
+}
+
+/**
+ * `tool_result` 正文的渲染。
+ *
+ * ⚠️ 正文可能是**嵌套块数组**（`[text, image]`）—— 工具返回截图是生产里最常见的入图路径
+ * （浏览 / 截图 / 渲染类工具都这么回），而 `JSON.stringify` 会把整段 base64 原样展开进
+ * `compactMessages` 交给宿主摘要模型的正文里（2026-09-26 实测：一张 200 000 字符 base64 的
+ * 截图 ⇒ 渲染出 200 086 字符、里面就是原始 base64）。所以嵌套数组要**逐块走 `blockToText`**
+ * —— 图片给占位、未知块有界截断，与顶层图片块同一条口径。
+ * 字符串形态保持原样（`JSON.stringify`，既有渲染口径不动）；正文缺席时返回 `undefined`，
+ * 交由调用方按「未知形态」处理（有界 JSON 回退）。
+ */
+function toolResultText(
+  content: string | Array<TextBlockParam | ImageBlockParam | UnknownContentBlockParam> | undefined,
+): string | undefined {
+  if (content === undefined) return undefined;
+  if (typeof content === 'string') return JSON.stringify(content);
+  return content.map(blockToText).join('\n');
+}
+
+/**
+ * 已知块的文本形态；未知块（含图片）返回 `undefined` 交由调用方按自己的方向处理。
+ *
+ * ⚠️ **纯文本**（`text` 块与 `tool_result` 的字符串正文）刻意**不截断**：它们是摘要器真正要读的
+ * 内容，截断等于让 compaction **永久丢掉**历史信息（而压缩本身就是不可逆的那一步）。有界化的
+ * 对象是**载荷型**结构 —— 图片、未知块、工具参数（后三者的正文多数情况下不是「话」而是 blob）。
+ */
+function knownBlockText(b: ContentBlockParam): string | undefined {
+  switch (b.type) {
+    case 'text':
+      return (b as TextBlockParam).text;
+    case 'tool_use': {
+      const tu = b as ToolUseBlockParam;
+      // 参数有界（`TOOL_INPUT_CHARS`）—— 见那个常量的理由：`write_file` 正文 / 截图 base64
+      // 都会从这里进摘要器。⚠️ 只是**渲染**有界，估算走 `blockTokens` 的未截断值。
+      return `${tu.name}(${boundedText(JSON.stringify(tu.input) ?? 'null', TOOL_INPUT_CHARS)})`;
+    }
+    case 'tool_result':
+      return toolResultText((b as ToolResultBlockParam).content);
+    default:
+      return undefined;
+  }
+}
+
+/** 图片块 → 有界占位（**只报大小，不报内容**）。 */
+function imagePlaceholder(b: ImageBlockParam): string {
+  const src = b.source as { type?: string; media_type?: string; data?: string; url?: string };
+  if (src.type === 'base64') {
+    const bytes = Math.ceil(((src.data ?? '').length * 3) / 4); // base64：4 字符 = 3 字节
+    return `[image ${src.media_type ?? 'unknown'} ~${bytes}B]`;
+  }
+  if (src.type === 'url') return `[image url ${src.url ?? ''}]`;
+  return `[image ${src.type ?? 'unknown'}]`;
+}
+
+/**
+ * 块 → **有界**文本（供渲染 / 摘要阅读）。
+ *
+ * ⚠️ 刻意**不展开原始负载**：图片块与未知块都可能带 base64 级的大 payload，而本函数的
+ * 产物会被 `compactMessages` 交给宿主的摘要模型 —— 原样展开等于把整段 base64 当输入
+ * token 发出去（真金白银），并把摘要质量一起毁掉。
+ */
+function blockToText(b: ContentBlockParam): string {
+  const known = knownBlockText(b);
+  if (known !== undefined) return known;
+  if (b.type === 'image') return imagePlaceholder(b as ImageBlockParam);
+  const json = JSON.stringify(b) ?? 'null';
+  return boundedText(json, UNKNOWN_BLOCK_CHARS);
+}
+
+/**
+ * 块 → 估算 token。**刻意与 `blockToText` 分开**：渲染要「别把 payload 灌进摘要」，
+ * 估算要「别低估成本」—— 一个函数满足不了这两个方向（图片按上界、未知块按**不截断**的
+ * 原始负载估，两者都与渲染取的值不同）。
+ */
+function blockTokens(b: ContentBlockParam, estimate: (text: string) => number): number {
+  if (b.type === 'image') return IMAGE_TOKENS_UPPER_BOUND;
+  if (b.type === 'tool_use') {
+    // ⚠️ 估算走**未截断**的参数 JSON：渲染那个 2000 字符上限的方向是「别把 payload 灌进摘要」，
+    // 而这里的方向相反（低估 ⇒ `maxTotalTokens` 迟触发）—— 两边刻意取不同的值，别「顺手统一」。
+    const tu = b as ToolUseBlockParam;
+    return estimate(JSON.stringify(tu.input) ?? 'null');
+  }
+  if (b.type === 'tool_result') {
+    const content = (b as ToolResultBlockParam).content;
+    // 嵌套块数组要**逐块**估：内嵌图片与顶层图片同一条口径（按尺寸上界），而不是按 base64
+    // 字节数 —— 后者会把一张截图算成 5 万 token（与顶层差 16 倍），预算行为就随消息的
+    // 嵌套形状漂移。字符串形态照旧走下面的 `estimate(JSON.stringify(...))`。
+    if (content !== undefined && typeof content !== 'string') {
+      let n = 0;
+      for (const inner of content) {
+        n += 1; // 内层块自身开销，与 `contentTokens` 的顶层口径一致
+        n += blockTokens(inner, estimate);
       }
-    })
-    .join('\n');
+      return n;
+    }
+  }
+  return estimate(knownBlockText(b) ?? JSON.stringify(b) ?? 'null');
 }
 
 function contentTokens(
@@ -92,7 +208,7 @@ function contentTokens(
   let n = 0;
   for (const b of content) {
     n += 1; // block 自身开销
-    n += estimate(contentToText([b] as MessageParam['content']));
+    n += blockTokens(b, estimate);
   }
   return n;
 }

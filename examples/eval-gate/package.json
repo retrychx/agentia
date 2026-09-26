@@ -1,0 +1,25 @@
+{
+  "name": "@migor/agentia-eval-gate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agentia 评测即发布闸门（示例）：把 defineEval 的结论对基线收成「能不能发」的判据",
+  "main": "dist/gate.js",
+  "types": "dist/gate.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "node dist/main.js",
+    "update": "node dist/main.js --update",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
+  }
+}

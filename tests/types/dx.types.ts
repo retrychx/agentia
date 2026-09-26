@@ -1,9 +1,17 @@
 /*
  * DX 类型测试（**只做类型检查，不运行** —— 文件名不是 *.test.ts，node:test 不会收）。
  *
- * 由 `npm run typecheck:tests` 校验。断言方式：`@ts-expect-error` 标在「应当报错」的
- * 下一行 —— 若哪天不再报错，tsc 会以 2578（未使用的 @ts-expect-error）把测试判失败。
- * 这样「补全/校验生效」与「将来不静默失效」两头都被钉住。
+ * ⚠️ **由 `npm run typecheck:types` 校验**（`tsconfig.types.json` 的 `include: ["tests/types"]`）。
+ * 2026-09-26 §1 审计订正：这里原本写的是 `npm run typecheck:tests` —— **那是错的**，
+ * `tsconfig.tests.json` 明确 `exclude: ["tests/types"]`。照错的命令跑，本文件里的
+ * `@ts-expect-error` 与全部正向断言**一个都不会被检查**，改完还以为通过了。
+ * 同目录的 `message-compat.types.ts` 头注写的才是对的（`typecheck:types`）。
+ *
+ * 断言方式：`@ts-expect-error` 标在「应当报错」的下一行 —— 若哪天不再报错，tsc 会以 2578
+ * （未使用的 @ts-expect-error）把测试判失败。这样「补全/校验生效」与「将来不静默失效」
+ * 两头都被钉住。**反向验证过（2026-09-26）**：① 删掉一条 `@ts-expect-error` ⇒
+ * `TS2345: Argument of type '"profil"' is not assignable to parameter of type 'keyof Blackboard'`；
+ * ② 把 `RunContext.get` 的返回类型退化成 `unknown` ⇒ 两处 `TS2322`。
  */
 import {
   createApp,

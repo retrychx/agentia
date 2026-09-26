@@ -6,6 +6,7 @@ import { parseApproveBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js
 import { isPreAuthRoute, routeRequest } from './http-route.js';
 import { sseWriter } from './sse.js';
 import { TaskInputError, normalizeMessages } from '../engine/spec.js';
+import { zeroClauseOf } from '../core/limits.js';
 import type { TaskRecord } from '../store/store.js';
 
 /**
@@ -288,6 +289,21 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
 export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {}): HttpHandler {
   const runner = opts.runner ?? new AsyncRunner(app);
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  if (!(maxBodyBytes > 0)) {
+    // 判据是 `size > maxBytes` ⇒ 0 时**任何字节**都超限 ⇒ 所有带 body 的请求 413。
+    // 与同一接口里的 maxConcurrentRuns（0 ⇒ 全部 503）同款：配置错误，构造期响亮失败。
+    // ⚠️ 还挡 `Number('') === 0`（空的环境变量）这类静默事故。要「不限」用 Infinity。
+    throw new Error(
+      `maxBodyBytes 必须为正数（${zeroClauseOf('HttpHandlerOptions.maxBodyBytes')}），收到 ${String(opts.maxBodyBytes)}`,
+    );
+  }
+  if (opts.sseMaxBufferedBytes !== undefined && !(opts.sseMaxBufferedBytes > 0)) {
+    // 透传给 `sseWriter`（它自己也会拦），这里拦是为了**构造期**就响亮失败，
+    // 而不是等到第一个 SSE 请求才炸（那时响应头可能已写出，只能回 200 再断流）。
+    throw new Error(
+      `sseMaxBufferedBytes 必须为正数（${zeroClauseOf('SseWriterOptions.maxBufferedBytes')}），收到 ${String(opts.sseMaxBufferedBytes)}`,
+    );
+  }
   const maxConcurrentRuns = opts.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
   if (!(maxConcurrentRuns > 0)) {
     // NaN 会让 `inFlightRuns >= maxConcurrentRuns` 恒 false（闸门静默失效）；
@@ -652,6 +668,12 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
                 sse.event('task.end', frame.record);
                 closeStream();
                 return;
+              default: {
+                // 编译期穷尽性断言：`TaskStreamFrame` 新增成员时这里会编译失败，
+                // 而不是被静默丢掉 —— 静默丢帧的客户端只会对着流干等，最后靠超时猜。
+                const _never: never = frame;
+                void _never;
+              }
             }
           };
           try {
@@ -681,11 +703,14 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
           sendJson(res, 400, { error: 'taskId 不是合法的 URL 编码' });
           return;
 
-        // healthz / metrics 已在上面的免鉴权组里 return 掉；
-        // 'notFound' 与**将来新增的任何 kind** 都落到这里 —— ⚠️ 新增成员会被静默吞成 404，别当成已处理
-        default:
+        // healthz / metrics 已在上面的免鉴权组里 return 掉，落到这里的只剩 'notFound'。
+        // 编译期穷尽性断言：`HttpRoute` 新增 kind 时这里会编译失败 —— 而不是被静默吞成 404。
+        default: {
+          const residual: 'healthz' | 'metrics' | 'notFound' = route.kind;
+          void residual;
           sendJson(res, 404, { error: `路径不存在: ${pathname}` });
           return;
+        }
       }
     } catch (e) {
       sendInternalError(res, e);

@@ -189,8 +189,10 @@ describe('成本硬管控接进主循环（C1）', () => {
               usage: {
                 inputTokens: 60,
                 outputTokens: 40,
-                cacheReadTokens: 0,
-                cacheCreationTokens: 0,
+                // 缓存两项刻意非零：护栏的 token 求和与 trace 的求和是**两份实现**，
+                // 全 0 的话「谁漏加了哪个字段」两边都看不出来（见下面的对账断言）。
+                cacheReadTokens: 5,
+                cacheCreationTokens: 7,
               },
             });
             return 'spent';
@@ -202,6 +204,29 @@ describe('成本硬管控接进主循环（C1）', () => {
     assert.equal(result.error?.type, 'budget_exceeded');
     assert.equal(run.status, 'failed');
     assert.equal(seen.length, 1, '超支后不得再发模型请求');
+
+    // ── 「护栏读到的数 = trace 交付的数」的真断言 ────────────────────────────
+    // tracer.test.ts 那条 deepEqual 是**自我比较**（snapshot 的 totalUsage 就是 usage()），
+    // 永远绿。这个不变量今天靠「三处调用点都写 args.recorder.usage()」保证，
+    // 所以真正会被改坏的是**调用点**：谁换成增量 / 旧拷贝 / 手写的和，护栏就会拿错数
+    // 而 trace 交付另一个数 —— 成本护栏按错的数判，没有任何报错。
+    // 从产物侧对账：run 根 budget.exceeded 事件里的数 vs trace.totalUsage。
+    const root = result.trace.spans.find((s) => s.kind === 'run')!;
+    const ev = root.events.find((e) => e.name === 'budget.exceeded');
+    assert.ok(ev, 'run 根应记 budget.exceeded（护栏触发时读到的数就在这里）');
+    const snap = ev.body as BudgetSnapshot;
+    const u = result.trace.totalUsage;
+    assert.equal(
+      snap.totalTokens,
+      u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens,
+      `护栏读到的累计 token 必须等于 trace 交付的 totalUsage（护栏 ${snap.totalTokens} vs trace ${u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens}）`,
+    );
+    assert.equal(
+      snap.costUsd,
+      u.costEstimate ?? 0,
+      '成本同理：护栏判超限用的那个数必须就是 trace 交付的那个数',
+    );
+    assert.equal(snap.totalTokens, 127, '15（回合 1）+ 112（工具内嵌套记账）');
   });
 
   it('超预算的同回合：submit_result 仍被处理（纯内部提交不丢），其余工具跳过', async () => {

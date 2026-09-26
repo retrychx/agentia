@@ -16,7 +16,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -78,4 +78,57 @@ test('docs/guards.md 必须保留「待守缺口」一节（缺口可见是它�
   assert.match(md, /## 2\. 待守/, '缺少 §2 待守缺口 —— 只剩「已挂守卫」的清单会假装覆盖完整');
   assert.match(md, /## 1\. 已挂守卫/, '缺少 §1 已挂守卫');
   assert.match(md, /## 3\. 守卫的写法/, '缺少 §3 写法纪律');
+});
+
+// 「守卫货架」上的文件必须都登记 —— 这是上面那条断言的反向。
+//
+// 上面只查「清单里写的路径存在」（清单 → 盘），查不出「盘上有守卫却没登记」。反向才是更常见
+// 的那一种：新写一个守卫文件、忘了加行。本仓 2026-09-26 实测到过 5 个（见 §1.4 的 5 行新条目）。
+//
+// 为什么只限这两个目录：注册表的通用完整性没法机器判。实测 tests/** +
+// packages/*/test 共 124 个 *.test.ts，只有 47 个在表里 —— 绝大多数是普通行为测试，
+// 而且行的归属是按「不变量的家」而不是按测试文件（例：tests/transport/scheduler.test.ts
+// 里那条 maxInFlight 构造期校验，登记在 src/core/limits.ts 那一行）。硬要求「每个测试文件
+// 都有一行」会造出 77 条豁免 —— 那是噪音，不是守卫。
+// 这两个目录不同：它们按构造就是横切守卫货架（架构不变量 / 文档↔代码），
+// 货架上出现一个没登记的文件，就是真的缺口。
+const SHELVES = ['tests/architecture', 'tests/docs'];
+
+// 货架上故意不登记的文件。豁免不是免检：每条都要给出「它不是守卫」的理由。
+// （当前为空 —— 这正是这条守卫想保持的状态；要往这里加东西，先确认它真的不守任何不变量。）
+const SHELF_EXEMPT: Array<{ file: string; why: string }> = [];
+
+test('守卫货架（tests/architecture · tests/docs）上的每个 *.test.ts 都必须在注册表里有一行', () => {
+  const md = readFileSync(REGISTRY, 'utf8');
+  const rows = md.split('\n').filter((l) => l.startsWith('|'));
+  const files = SHELVES.flatMap((dir) =>
+    readdirSync(join(repoRoot, dir))
+      .filter((f) => f.endsWith('.test.ts'))
+      .map((f) => `${dir}/${f}`),
+  );
+  assert.ok(
+    files.length >= 10,
+    `只扫到 ${files.length} 个货架文件 —— 目录读错了或货架被搬走了（本守卫在空转）`,
+  );
+  const exempt = new Set(SHELF_EXEMPT.map((e) => e.file));
+  for (const e of SHELF_EXEMPT) {
+    assert.ok(
+      files.includes(e.file),
+      `SHELF_EXEMPT 里的 '${e.file}' 不在货架上 —— 幽灵豁免，请删掉`,
+    );
+    assert.ok(e.why.length > 10, `'${e.file}' 的豁免理由太短，等于没写`);
+  }
+  const unlisted = files.filter(
+    (f) => !exempt.has(f) && !rows.some((r) => r.includes(f.split('/').pop()!)),
+  );
+  assert.deepEqual(
+    unlisted,
+    [],
+    '这些守卫文件在货架上，却不在 docs/guards.md 的任何表格行里：\n' +
+      unlisted.join('\n') +
+      '\n  ⇒ 二选一：① 在 §1 里补一行（含「保护的不变量 / 机制 / 退化了会怎样」，' +
+      '并做一次反向验证把证据写进去）；\n' +
+      '     ② 加进本文件的 SHELF_EXEMPT 并写清「它为什么不守任何不变量」。\n' +
+      '  ⚠️ 射程：只认「表格行里点名了文件名」—— 行文里顺带提到也算数，本守卫不区分。',
+  );
 });

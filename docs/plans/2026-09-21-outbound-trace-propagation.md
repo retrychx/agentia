@@ -171,6 +171,8 @@ export function currentTraceparent(): string | undefined;
 | `otlp.ts` 的 span 投影换成不等价切法（`slice(8,24)`） | `tests/integrations/otlp.test.ts` 的结构用例**真红**（1/8 fail）—— 单源守卫咬住了 |
 | `span-scope.ts` 退化成 run 级单值存储（`let globalScope`，不进 ALS） | `tests/engine/spanScope.test.ts` **5 条里红 3 条**（含「并行链互不干扰」那条）—— §9.2 的核心理由被机器守住 |
 
+> ⚠️ **2026-09-26 重测订正**：上表第二行的「红 3 条」**实测不成立**。按同一变异形态（`let globalScope`、不进 ALS）重跑，是 **5 条里红 2 条**（「并行链互不干扰」+「run 结束后不残留」）；换一种单值实现（run 级单值 + 同步清除）只红**「并行链互不干扰」1 条**。结论「§9.2 的核心理由被机器守住」**不变** —— 那条在**任何**单值实现下都必红；但条数应订正为 2，且「粒度 / capability」两条在单值实现下仍绿（写入顺序恰好让它们读到正确值），不能当独立哨兵数。`docs/guards.md` §1.2 已同步订正。
+
 两条都已记入 `docs/guards.md` §1（投影单源 → §1.1；调用期作用域 → §1.2）。
 
 ## 6. 分叉表

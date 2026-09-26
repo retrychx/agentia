@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { TraceRecorder } from '../../src/index.js';
+import type { Usage } from '../../src/index.js';
 
 describe('TraceRecorder', () => {
   it('begin/end/属性/事件 全链路', () => {
@@ -87,6 +88,14 @@ describe('TraceRecorder', () => {
     // 为什么单拎一条：`snapshot()` 会**拷**全部 span 的 attributes/events/links，而预算护栏
     // 每回合要判两次 ⇒ 引擎侧改走 `usage()`（不拷）。两条路一旦漂移，护栏就会拿错数——
     // 所以这里钉「deepEqual」而不是各字段分别断言。
+    //
+    // ⚠️ **2026-09-26 §1 逐行审计订正：本用例最后那句 deepEqual 是「潜在守卫」，今天咬不动任何东西。**
+    // `snapshot()` 的实现就是 `totalUsage: this.usage()`（`src/engine/tracer.ts:339`）——
+    // 同一对象同一个值，**恒等，永远绿**。实测：把 `usage()` 改成双算 capability 的聚合
+    // （值错成 2 倍）⇒ 变红的是下面 `inputTokens === 100` 那条（`200 !== 100`），
+    // **deepEqual 照旧绿**。所以「两条路同口径」今天是**结构保证（委托）**，
+    // 不是被这句断言出来的；它真正长出牙齿的时刻是「有人把 snapshot 改成自己另算一遍」。
+    // ⇒ 那件事改由下面那条「委托本身要被钉住」的用例守（不靠时机的巧合）。
     const r = new TraceRecorder();
     const root = r.begin('run', 'app', null);
     const capability = r.begin('capability', 'subagent:reviewer', root);
@@ -118,6 +127,38 @@ describe('TraceRecorder', () => {
     assert.equal(r.usage().inputTokens, 100);
     assert.equal(r.usage().outputTokens, 40);
     assert.equal(r.usage().costEstimate, 0.3, '取整口径也要一致（0.1 + 0.2 → 0.3）');
+  });
+
+  it('snapshot().totalUsage 必须**真的**来自 usage()（委托本身要被钉住）', () => {
+    // 上一条的 deepEqual 之所以永远绿，是因为 `snapshot()` 委托给了 `usage()`。
+    // 那么真正该守的就是**委托**：谁把 `snapshot()` 改成自己另扫一遍 spans，
+    // 两条路就从「同一份真源」变成「两份实现」，而那时 deepEqual 恰好又变成潜在守卫
+    // —— 这个交接点必须有人盯着，否则「不得漂移」只是一句注释。
+    // 手法：子类数 `usage()` 的调用次数（父类方法可覆写）。故意不依赖返回值 ——
+    // 返回值相等是结构保证的，**调用次数**才证明委托还在。
+    class SpyRecorder extends TraceRecorder {
+      usageCalls = 0;
+      override usage(): Usage {
+        this.usageCalls++;
+        return super.usage();
+      }
+    }
+    const r = new SpyRecorder();
+    const root = r.begin('run', 'app', null);
+    const turn = r.begin('llm.turn', 'model-x', root);
+    r.end(turn, {
+      usage: { inputTokens: 7, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    });
+    r.end(root, { status: 'ok' });
+
+    const before = r.usageCalls; // 建 span 期间不得顺手调它（否则计数失去意义）
+    const snap = r.snapshot('ok');
+    assert.equal(
+      r.usageCalls,
+      before + 1,
+      `snapshot() 必须恰好调一次 usage() —— 委托没了，两条路就会各算一遍（实测 ${before} → ${r.usageCalls}）`,
+    );
+    assert.equal(snap.totalUsage.inputTokens, 7, '顺带钉住交付值本身');
   });
 
   it('snapshot 的 events/attributes 是拷贝：交付后迟到的记账不变异已交付的 trace', () => {

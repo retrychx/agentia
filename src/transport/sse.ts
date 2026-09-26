@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import { zeroClauseOf } from '../core/limits.js';
 
 /**
  * Agentia —— SSE（Server-Sent Events）写出器（零依赖）。
@@ -47,6 +48,15 @@ export const SSE_DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 export function sseWriter(res: ServerResponse, opts: SseWriterOptions = {}): SseWriter {
   const limitBytes = opts.maxBufferedBytes ?? SSE_DEFAULT_MAX_BUFFERED_BYTES;
+  // 0 = 流活不过一帧（判据是写入前的 `pending > limitBytes`：第 1 帧放行、第 2 帧必收口），
+  // 没有任何正当用法 —— 这个旋钮的定位是「只拦连上但不读的病态消费者」，0 会把**每个**
+  // 消费者都判成病态。与 `maxConcurrentRuns` / `maxBodyBytes` 同款：构造期响亮失败。
+  // 要「不限」用 `Infinity`（`pending > Infinity` 恒假），别用 0。
+  if (!(limitBytes > 0)) {
+    throw new TypeError(
+      `maxBufferedBytes 必须为正数（${zeroClauseOf('SseWriterOptions.maxBufferedBytes')}），收到 ${String(opts.maxBufferedBytes)}`,
+    );
+  }
   let closed = false;
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',

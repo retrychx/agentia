@@ -38,6 +38,17 @@ docker compose up --build
 >
 > 想要**更完整**的示例（四类能力 + 三种触发 + 鉴权 + 全观测栈）见 [`../complete/`](../complete/)。
 
+### 镜像的验证状态（如实标注）
+
+**服务本身**由门禁真跑守着：`scripts/e2e-deploy.ts` 起真进程、跑三种触发、`SIGKILL` 后同库重启
+续跑（`resumePending`）、断言终态 —— 它在 `npm run e2e`（= 本地全链第 7 步）里。
+
+**镜像这一层**只有一次构建证据：CI 的 `docker-image` job 真跑
+`docker build -f examples/deploy/Dockerfile .`（构建上下文是仓库根，理由见 Dockerfile 头部）。
+⚠️ 两点如实说清：① 本机没有 docker、**本地链跑不了它**，所以它**不是**必需状态检查
+（首次绿就是它的验证，红了就是红的）；② 在此之前这个 Dockerfile **没有任何门禁构建过** ——
+`docker` 在本仓 CI 配置里出现 0 次，镜像能不能建起来只活在文档的示例命令里。
+
 ## 端点
 
 | 端点 | 说明 |

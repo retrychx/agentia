@@ -18,7 +18,8 @@
     "examples/complete/src",
     "examples/deploy/src",
     "examples/code-review/src",
-    "examples/grpc-host/src"
+    "examples/grpc-host/src",
+    "examples/eval-gate/src"
   ],
   "exclude": ["node_modules", "dist", "tests/fixtures/capabilities-loadfail", "tests/types"]
 }

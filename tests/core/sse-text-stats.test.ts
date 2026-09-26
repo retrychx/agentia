@@ -120,9 +120,19 @@ describe('core 单源原语', () => {
     // 对照组：同信号上再挂一个常驻监听，证明计数真的在数这条信号
     ac.signal.addEventListener('abort', () => {});
     const baseline = count();
+    // ⚠️ 2026-09-26 §1 逐行审计订正：**光挂对照监听是不够的**，必须断言它出现在计数里。
+    // 此前只把 baseline 当比较基准、从不检查它非零 —— 实测把 `getEventListeners` 打瞎
+    // （恒返回 `[]`）后，baseline=0、after=0、ac2=0，三条断言全过，**用例照样绿**。
+    // 也就是说「带一个常驻监听做对照，防「计数函数恒 0」的假绿」这句话**当时是假的**。
+    // 现在这条断言把「测量工具还活着」变成红/绿的判据。
+    assert.equal(
+      baseline,
+      1,
+      `对照监听必须出现在计数里（实测 ${baseline}）—— 计数恒 0 时下面那条会假绿`,
+    );
     await interruptibleSleep(1, ac.signal);
     assert.equal(count(), baseline, '到点后必须摘除自己那个监听器');
-    // 另一个信号上从未挂过 —— 防「计数函数本身写错成恒 0」的假绿
+    // 另一个信号上从未挂过 —— 顺带钉住「摘的是自己那条信号上的」
     assert.equal(getEventListeners(ac2.signal, 'abort').length, 0);
   });
 });

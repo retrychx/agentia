@@ -71,11 +71,27 @@ if [ $fail -eq 0 ]; then
   # 计数**算出来**而不是写死：写死的那个数字在加步骤后会变成假话（而这个数字与 CI 的 job 名
   # 是同一个约定，尤其不能各说各话）。
   echo "${#steps[@]}/${#steps[@]} 全绿"
-  # 本地绿 ≠ CI 绿。这三个必需检查只跑在 CI，且**本地无法等价复现**（理由见 CONTRIBUTING 的坑表）：
-  # e2e:mcp 优先接真第三方 server（需要网络/uv），导入下限只能跑在 Node 18/20 上 ——
-  # scripts/check-import-floor.mjs 按运行中的 Node 分支，本地跑它验不到 18/20 那条路。
-  # 不静默：全绿时明确说清「还有三个没在这里跑」。
-  echo "ℹ 另有 3 个 CI 独有必需检查不在本链：e2e:mcp · 导入下限（Node 18 / 20）"
+  # 本地绿 ≠ CI 绿。下面这几个必需检查不由本链把关 —— 但**本地跑得动**，只是没人替你跑
+  # （跑法见 CONTRIBUTING 的坑表）。这里曾写「本地无法等价复现」，而**那句话本身没验过**：
+  # 2026-09-26 实测两条都能在本机复现 ——
+  #   · 导入下限：`npx node@18 scripts/check-import-floor.mjs` ⇒ 真走到 Node 18.20.8 那条分支
+  #     （`node@20` ⇒ 20.20.2），不必改 PATH；本机 Node 是 22，跑它才会看到 22 那条分支。
+  #   · e2e:mcp：本机有 uvx ⇒ 走的是**真**第三方 server（`uvx mcp-server-time`，2 个工具）。
+  # ⚠️ 注意方向是反的：CI 的 `e2e-mcp` job **必定走回落夹具**（runner 上没有 uvx，见 ci.yml 注释），
+  #    所以这里不是「本地弱、CI 强」—— 本机覆盖更强，CI 覆盖的恰好是回落分支。
+  # 计数从清单长度算出来，理由同上：写死的数字（这里曾写「3」而清单只列了 2 个）迟早各说各话。
+  # 每条形如 `<ci.yml 里的 job id>|<给人看的说明>`：**id 那半截是给机器看的** ——
+  # `tests/scripts/verify-all-wiring.test.ts` 拿它核两件事：① 这里不能有**幽灵 id**（ci.yml 里
+  # 没有的 job）；② ci.yml 里的 job 不能**漏登**（新加一个必需检查却没人在这里说一声就红）。
+  # 所以改 job id / 增删 job 时，这里必须跟着改，而改错会当场红 —— 不用靠人记得。
+  ci_only=(
+    'lint|lint（Biome）—— 命令与第 1 步相同，本地全绿即已覆盖'
+    'e2e-mcp|e2e:mcp —— 本机跑：npm run e2e:mcp'
+    'import-floor|导入下限（Node 18 / 20）—— 本机跑：npx node@18 scripts/check-import-floor.mjs'
+  )
+  echo "ℹ 分支保护共 $(( ${#ci_only[@]} + 1 )) 个必需检查 —— 本链 = verify，另有 ${#ci_only[@]} 个："
+  # `${arr[@]#*|}` = 逐元素去掉 `|` 之前的那半截（id），只打印给人看的部分。
+  printf '   · %s\n' "${ci_only[@]#*|}"
 else
   echo "有步骤失败"
 fi

@@ -114,6 +114,20 @@ export interface ModelClient {
 export interface ModelPricing {
   in: number;
   out: number;
+  /**
+   * 缓存**读**乘数（相对 `in`）；缺省 `0.1`（官方标准档）。
+   * 官方有逐模型例外：Opus 5.5 是 `0.05`、Fable 5.1 / Mythos 5.1 是 `0.025` ——
+   * 这些型号不在内置表里，用 `priceOverrides` 追加时把准数写在这里，成本才不偏。
+   */
+  cacheRead?: number;
+  /**
+   * 缓存**写**乘数（相对 `in`）；缺省 `1.25`（官方 **5 分钟** 档）。
+   * ⚠️ 官方 **1 小时** 档是 `2`。而框架的 `Usage` 是四项**聚合**的，分不出这一回合的
+   * 缓存写是 5m 还是 1h（SDK 的 `Usage.cache_creation` 有拆分，但本框架没把它带上）——
+   * 所以宿主若在自己的块上用了 `cache_control: { ttl: '1h' }`，就在这里显式写 `2`，
+   * 否则成本会被低估、`maxCostUsd` 会迟触发。
+   */
+  cacheWrite?: number;
 }
 
 /**

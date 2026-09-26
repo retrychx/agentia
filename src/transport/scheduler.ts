@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AsyncRunner } from './async.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import { isThenable } from '../store/store.js';
+import { zeroClauseOf } from '../core/limits.js';
 
 /**
  * Agentia —— 定时触发（spec §6.3 定时事件）。
@@ -67,7 +68,10 @@ export class Scheduler {
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
       // setInterval(0) 会退化成「尽快重复」的空转循环，把事件循环打满（Node 会把
       // 0 钳到 1ms 但仍是每毫秒一次的忙轮询）。这是配置错误，直接报错。
-      throw new Error(`Scheduler.every 的 intervalMs 必须为正有限数，收到 ${intervalMs}`);
+      // 文案里那句「0 = …」取自 limits 表（单一真源），不在这里各写一份。
+      throw new Error(
+        `Scheduler.every 的 intervalMs 必须为正有限数（${zeroClauseOf('Scheduler.every.intervalMs')}），收到 ${intervalMs}`,
+      );
     }
     if (intervalMs > MAX_TIMER_DELAY_MS) {
       // Node 的定时器延迟是 32 位有符号整数：超过 2^31-1ms（约 24.86 天）会被**静默**
@@ -76,6 +80,19 @@ export class Scheduler {
       throw new Error(
         `Scheduler.every 的 intervalMs 超过定时器上限（约 24.86 天），收到 ${intervalMs}`,
       );
+    }
+    if (opts.maxInFlight !== undefined) {
+      const m = opts.maxInFlight;
+      // 闸门判据是 `inFlight.size >= maxInFlight`（dispatch 里），0 / 负数会让它**恒真**
+      // ⇒ 每次 tick 都跳过，周期任务**既不跑也不失败**（实测 60ms 内派发 0 次、无任何
+      // 报错/日志）。与 `AsyncRunner.concurrency` 同族，同款在构造期响亮失败。
+      // ⚠️ 也**不能**在这里把它抬成 1：那等于替使用者改配置（旧 `Math.max(1, …)` 的教训）。
+      // Infinity 合法（`Infinity > 0`）：闸门关闭（旧行为），见 ScheduleEveryOptions。
+      if (typeof m !== 'number' || Number.isNaN(m) || m <= 0) {
+        throw new TypeError(
+          `maxInFlight 必须为正数（${zeroClauseOf('Scheduler.every.maxInFlight')}），收到 ${String(m)}`,
+        );
+      }
     }
     const id = randomUUID();
     const timer = setInterval(() => {

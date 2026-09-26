@@ -9,9 +9,19 @@
 // code-review 的 demo 模式根本不需要模型端点（scriptedClient）。只走 127.0.0.1。
 //
 // 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,6 +33,7 @@ const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const exampleDir = join(repoRoot, 'examples', 'complete');
 const obsPkgDir = join(repoRoot, 'examples', 'observability');
 const codeReviewDir = join(repoRoot, 'examples', 'code-review');
+const evalGateDir = join(repoRoot, 'examples', 'eval-gate');
 
 /** 假 OpenAI 兼容端点的记录（断言「能力真的被执行」靠它，而不是靠自己读响应文本） */
 interface FakeProviderObserved {
@@ -159,6 +170,7 @@ function ensureLinks(): void {
     [join(exampleDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     [join(exampleDir, 'node_modules', '@migor', 'agentia-observability'), obsPkgDir],
     [join(codeReviewDir, 'node_modules', '@migor', 'agentia'), repoRoot],
+    [join(evalGateDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     // 本地小包**自己也要能构建** —— CI 上没有它的 node_modules，不建的话 `tsc -p` 会
     // 报「Cannot find module '@migor/agentia'」+「Cannot find name 'process'」
     // （@types/node 沿目录树上溯到仓库根即可解析，只有 @migor 需要这一步）
@@ -394,6 +406,107 @@ function verifyCodeReview(): Record<string, unknown> {
   };
 }
 
+/**
+ * `examples/eval-gate` 的验证（`docs/eval-gate.md` 与它的 README 的可执行版本）。
+ *
+ * 三件事：真构建 → 对**仓库里那份基线**跑（应通过）→ 再喂三份**被改坏的**基线，
+ * 断言闸门按语义分别给出 `1 / 1 / 2`。
+ *
+ * 为什么值得进 e2e：这套判据的失败方式是**静默泄成 `EvalReport.ok` 的转发**
+ * （「用例都过就通过」）—— 那样它就不再防「删掉失败用例」与「撒谎的基线」，而两条都不报错。
+ * 单测覆盖了纯函数那一层（`tests/docs/eval-gate.test.ts`），这里覆盖**产物那一层**：
+ * `npm run build` 出来的 `dist/main.js` + 真的读文件 + 真的以退出码收场。
+ */
+function verifyEvalGate(): Record<string, unknown> {
+  execFileSync(join(repoRoot, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'], {
+    cwd: evalGateDir,
+    stdio: 'inherit',
+  });
+
+  /** 跑一次闸门（`--baseline` 指到临时文件上，仓库里那份基线全程只读） */
+  const run = (baseline?: string): { code: number; out: string } => {
+    const r = spawnSync(
+      process.execPath,
+      baseline === undefined ? ['dist/main.js'] : ['dist/main.js', '--baseline', baseline],
+      { cwd: evalGateDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+    );
+    return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+
+  const clean = run();
+  assert(
+    clean.code === 0,
+    `对仓库基线应通过（exit 0），实际 ${String(clean.code)}：\n${clean.out}`,
+  );
+  assert(
+    clean.out.includes('⇒ 通过：没有回归、没有删用例'),
+    `应打印通过的结论，实际：\n${clean.out}`,
+  );
+  assert(
+    clean.out.includes('通过 3 / 失败 1'),
+    `示例刻意留着一条已知失败（基线记 false）—— 它不该拦住发布，实际：\n${clean.out}`,
+  );
+
+  const dir = mkdtempSync(join(tmpdir(), 'agentia-eval-gate-'));
+  try {
+    const base = JSON.parse(readFileSync(join(evalGateDir, 'baseline.json'), 'utf8')) as {
+      cases: Record<string, boolean>;
+    };
+    const knownFailure = Object.keys(base.cases).find((k) => k.startsWith('demo-known-failure::'));
+    assert(knownFailure !== undefined, '基线里应有那条已知失败的用例键');
+
+    // ① 撒谎：把「已知失败」记成「曾经通过」⇒ 基线说过通过、这次失败 ⇒ 回归
+    const lie = join(dir, 'lie.json');
+    writeFileSync(
+      lie,
+      JSON.stringify({ ...base, cases: { ...base.cases, [knownFailure!]: true } }),
+    );
+    const lied = run(lie);
+    assert(
+      lied.code === 1,
+      `撒谎的基线应判成回归（exit 1），实际 ${String(lied.code)}：\n${lied.out}`,
+    );
+    assert(
+      lied.out.includes('✗ 回归 1 条') && lied.out.includes(knownFailure!),
+      `应点名那条回归，实际：\n${lied.out}`,
+    );
+
+    // ② 删用例：基线里多一条「这次不存在」的键 ⇒ 不通过（删掉失败用例不是通过的方式）
+    const ghost = join(dir, 'ghost.json');
+    writeFileSync(
+      ghost,
+      JSON.stringify({ ...base, cases: { ...base.cases, 'demo-ghost::被删掉的用例': true } }),
+    );
+    const ghosted = run(ghost);
+    assert(
+      ghosted.code === 1,
+      `基线里有、这次没跑应判不通过（exit 1），实际 ${String(ghosted.code)}：\n${ghosted.out}`,
+    );
+    assert(
+      ghosted.out.includes('删用例不是通过的方式'),
+      `应说清为什么不过，实际：\n${ghosted.out}`,
+    );
+
+    // ③ 坏基线 ⇒ exit 2：**「基线文件坏了」不该被读成「我的 agent 退化了」**
+    const empty = join(dir, 'empty.json');
+    writeFileSync(empty, JSON.stringify({ name: 'broken', generatedAt: '', cases: {} }));
+    const broken = run(empty);
+    assert(
+      broken.code === 2,
+      `空基线应 exit 2（环境错误），实际 ${String(broken.code)}：\n${broken.out}`,
+    );
+
+    return {
+      cleanExit: clean.code,
+      lieExit: lied.code,
+      ghostExit: ghosted.code,
+      emptyBaselineExit: broken.code,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const fake = await startFakeProvider();
 let example: Awaited<ReturnType<typeof startExample>> | undefined;
 try {
@@ -512,6 +625,9 @@ try {
   // —— 8) code-review 示例：离线 demo 真跑 + 产物断言（见 verifyCodeReview）——
   const codeReview = verifyCodeReview();
 
+  // —— 9) eval-gate 示例：闸门真跑 + 三份被改坏的基线（见 verifyEvalGate）——
+  const evalGate = verifyEvalGate();
+
   console.log('E2E-EXAMPLES PASS');
   console.log(
     JSON.stringify(
@@ -526,6 +642,7 @@ try {
         metricsHasCapabilitySamples: true,
         shutdownExitCode: code,
         codeReview,
+        evalGate,
       },
       null,
       2,

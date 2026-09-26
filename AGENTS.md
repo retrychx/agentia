@@ -301,11 +301,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     **不并入**上面 8 步（它是「跑多久」而不是「对不对」的验证）。默认 60s×16 并发；
     排「内存/句柄随时间泄漏」或「高并发下重试与背压行为」这类**时间维度**的疑点时跑它
     （`SOAK_DURATION_MS=7200000` 即真两小时）。
-  - **CI**：`.github/workflows/ci.yml` —— 五个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
+  - **CI**：`.github/workflows/ci.yml` —— 六个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
     不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
     守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，
     同时当回落守卫）；⑤ `deploy-website`（**发布**，只在 `main` 上跑：`needs: [verify, lint]` + `npm run deploy:website`
-    推 Cloudflare Pages。PR 上 skip。**它不是必需状态检查，不要加进分支保护** —— 同下面 `verify` 的坑）。
+    推 Cloudflare Pages。PR 上 skip。**它不是必需状态检查，不要加进分支保护** —— 同下面 `verify` 的坑）；
+    ⑥ `docker-image`（**构建 `examples/deploy` 的镜像**：本机没有 docker、本地链跑不了它，于是「镜像建不建得起来」
+    此前只活在文档的示例命令里。**同样不是必需状态检查**，但它把那一跳变成 CI 侧的真实构建 —— 首次绿就是它的验证）。
     **`verify` 的 job name 是分支保护的必需状态检查，改名 = PR 永远等不到该检查 → 卡死**；
     同理**不要给 `verify` 加 matrix**（matrix 会给检查名加后缀）。要挡更低 Node 版本请另开 job。
     发布 job 需要仓库 secret `CLOUDFLARE_API_TOKEN`（Account → Cloudflare Pages → Edit）与

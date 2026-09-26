@@ -267,6 +267,41 @@ describe('Scheduler', () => {
     assert.equal(scheduler.active, 0, '抛错前不得留下 job');
   });
 
+  it('maxInFlight 为 0 / 负数：闸门恒自闭 = 周期任务永不派发（静默）—— 构造期抛错', async () => {
+    // 2026-09-26 起手动作② 扫「`0` 的语义」这一族时抓到：闸门判据是
+    // `inFlight.size >= maxInFlight`，0 时**恒真** ⇒ 每次 tick 都跳过，周期任务
+    // 「既不跑也不失败」（探针实测 60ms 内派发 0 次、无任何报错/日志）。
+    // 与 `AsyncRunner.concurrency`（limits 表里 zero: 'invalid'）**同族**，同款响亮失败。
+    // ⚠️ 也**不能**像旧实现那样静默抬成 1（`Math.max(1, …)` 的反模式）—— 那是在替使用者改配置。
+    const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
+    assert.throws(() => scheduler.every(10, 'x', { maxInFlight: 0 }), /必须为正数/);
+    assert.throws(() => scheduler.every(10, 'x', { maxInFlight: -1 }), /必须为正数/);
+    assert.throws(() => scheduler.every(10, 'x', { maxInFlight: Number.NaN }), /必须为正数/);
+    assert.equal(scheduler.active, 0, '抛错前不得留下 job');
+
+    // 阳性对照：Infinity（闸门关闭）与缺省都必须**仍然合法** —— 否则这条可以靠
+    // 「一律抛错」蒙过；同时确认缺省 1 的闸门真的会占满（任务停在 running 时不再派发）。
+    const calls: number[] = [];
+    const stub = {
+      submit: () => ({ taskId: `t${calls.push(calls.length)}`, status: 'running' as const }),
+      poll: (taskId: string) => ({ taskId, status: 'running' as const }),
+    };
+    const open = new Scheduler(stub as never);
+    const hOpen = open.every(5, 'x', { maxInFlight: Number.POSITIVE_INFINITY });
+    await new Promise((r) => setTimeout(r, 40));
+    hOpen.cancel();
+    open.stop();
+    assert.ok(calls.length > 1, `Infinity = 关闸门：每个 tick 都派发（实测 ${calls.length} 次）`);
+
+    const dflt = new Scheduler(stub as never);
+    const before = calls.length;
+    const hDflt = dflt.every(5, 'x');
+    await new Promise((r) => setTimeout(r, 40));
+    hDflt.cancel();
+    dflt.stop();
+    assert.equal(calls.length - before, 1, '缺省 1：首个任务占满闸门后不再派发');
+  });
+
   it('every / at：超过 2^31-1ms 的延迟会被 Node 静默钳到 1ms —— 构造期抛错', () => {
     const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
     // 约 34 天：不挡的话 setInterval 退化成每 1ms 空转
