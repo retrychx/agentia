@@ -53,25 +53,55 @@ export function resolveTsxCli(root: string, fromCli: string): string | null {
 export const KILL_GRACE_MS = 3_000;
 
 /**
- * 杀掉**整棵树**。
+ * 「怎么杀这棵进程树」的**纯判定**（**导出为单测用** —— `platform` 可注入）。
+ *
+ * 为什么要有它：`killTree` 原本直接读 `process.platform`，于是 win32 那条 `taskkill /T /F`
+ * 分支**在任何平台上都跑不到**（CI 是 ubuntu、macOS 走 POSIX 分支，win32 只在用户真跑时
+ * 才第一次执行）。同一个包里 `native-pick.ts` 的分派收平台参数、因此有十几条平台用例 ——
+ * 差别不在勤奋，在**接口形状**。
+ *
+ * ⚠️ 计划里存**正 pid**，取负是执行器（`killTree`）的事：这样「计划」是纯数据，
+ * 而「负 pid = 进程组」这条 POSIX 语义只在一个地方出现。
+ */
+export type KillPlan =
+  | { kind: 'none' }
+  | { kind: 'taskkill'; args: string[] }
+  | { kind: 'process-group'; pid: number; signal: NodeJS.Signals };
+
+/** 平台 → 杀树计划（缺省平台由调用方给进程平台） */
+export function killPlanFor(
+  platform: NodeJS.Platform,
+  pid: number | undefined,
+  signal: NodeJS.Signals,
+): KillPlan {
+  if (pid === undefined) return { kind: 'none' };
+  if (platform === 'win32') {
+    // 不带 /T 就只杀直接子进程，`npx tsx` 的孙进程会留下孤儿 —— 「整棵树」全落在这个开关上
+    return { kind: 'taskkill', args: ['/pid', String(pid), '/T', '/F'] };
+  }
+  return { kind: 'process-group', pid, signal };
+}
+
+/**
+ * 杀掉**整棵**树（执行器；分派在 `killPlanFor`，行为与抽取前**逐字一致**）。
  *
  * `npx tsx` 自己还会 spawn 子进程，只 kill 直接子进程会留下孤儿（照搬 v0.7.0
  * 「`close()` 保证子进程已终止」的纪律）。POSIX 下靠 `detached: true` 把子进程
  * 变成进程组组长，再对**负 pid** 发信号；win32 没有进程组，用 `taskkill /T`。
  */
 export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  const pid = child.pid;
-  if (pid === undefined) return;
-  if (process.platform === 'win32') {
+  const plan = killPlanFor(process.platform, child.pid, signal);
+  if (plan.kind === 'none') return;
+  if (plan.kind === 'taskkill') {
     try {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      spawn('taskkill', plan.args, { stdio: 'ignore' });
     } catch {
       /* 已经退出了 */
     }
     return;
   }
   try {
-    process.kill(-pid, signal); // 负 pid = 整个进程组
+    process.kill(-plan.pid, signal); // 负 pid = 整个进程组
   } catch {
     try {
       child.kill(signal);
