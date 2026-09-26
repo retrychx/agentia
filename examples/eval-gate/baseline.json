@@ -1,0 +1,10 @@
+{
+  "name": "demo-tool-order + demo-cost + demo-tool-failure + demo-known-failure",
+  "generatedAt": "2026-09-26T13:32:44.225Z",
+  "cases": {
+    "demo-cost::一次 run 的成本（含缓存乘数）": true,
+    "demo-known-failure::已知失败：回答里必须出现检索结果（当前实现不做）": false,
+    "demo-tool-failure::工具抛错后 run 仍正常收尾": true,
+    "demo-tool-order::先检索再回答": true
+  }
+}

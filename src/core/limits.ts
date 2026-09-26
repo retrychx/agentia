@@ -27,14 +27,14 @@
  * 面向使用者的口径在 `docs/usage-guide.md` 的「边界」一节。
  *
  * ⚠️ 表里的 `zeroClause` 是**报错文案的一部分**：有构造期校验的旋钮由实现代码直接把它插进
- * 错误消息里（`runTimeoutMs` / `approvalTimeoutMs` / `traceLimits.maxEvents` / `maxRetries` /
- * `streamBufferEvents` / `retainTerminal`）
- * （`…（0 = 不重试），收到 -1 —— …`）。所以「文案里怎么解释 0」与「代码里怎么实现 0」
+ * 错误消息里（`…（0 = 不重试），收到 -1 —— …`）。所以「文案里怎么解释 0」与「代码里怎么实现 0」
  * 是同一个值，改一处等于同时改另一处 —— 这正是先前缺的那条单源。
  *
- * ⚠️ **别在这里写死「几处」**：计数会随旋钮增减立刻过期 —— 本行曾写「五处」并列举五个，
- * 而漏掉的正是**同一次改动里新增**的 `retainTerminal`（实为六处）。要核对当前全集：
- * `grep -rn 'zeroClauseOf' src/`。清单本身有价值，计数没有。
+ * ⚠️ **别在这里写死「几处」，也别在这里列举是哪些**：计数会随旋钮增减立刻过期 —— 本行曾写
+ * 「五处」并列举五个，而漏掉的正是**同一次改动里新增**的 `retainTerminal`；2026-09-26 又发现
+ * `Scheduler.every` 的两条**表里有 `zeroClause`、代码里却手写文案**（`intervalMs` 是漂了很久的
+ * 一条，`maxInFlight` 是当天新加的）。要核对当前全集：`grep -rn 'zeroClauseOf' src/`。
+ * 清单本身有价值，计数没有 —— 而且**列举出来的清单会和计数一样过期**。
  */
 
 /**
@@ -68,7 +68,7 @@ export interface LimitSemantic {
   readonly knob: string;
   /** 实现位置（文件名:符号），改代码时的入口 */
   readonly where: string;
-  readonly unit: 'ms' | 'count' | 'chars' | 'n/a';
+  readonly unit: 'ms' | 'count' | 'chars' | 'bytes' | 'n/a';
   readonly zero: ZeroMeaning;
   /**
    * 报错文案里那句「0 = 什么」（无报错的旋钮也写上 —— 文档与用例都读它）。
@@ -208,6 +208,34 @@ export const LIMIT_SEMANTICS = [
     zeroClause: '必须为正数（0 = 没有 worker）',
     badValue: 'throws',
     note: '0 个 worker 的池子会让每个任务永远排在队列里（既不跑也不失败）。',
+  },
+  {
+    knob: 'Scheduler.every.maxInFlight',
+    where: 'transport/scheduler.ts',
+    unit: 'count',
+    zero: 'invalid',
+    zeroClause: '必须为正数（Infinity = 关闸门；0 = 没有在飞名额，周期任务永不派发）',
+    badValue: 'throws',
+    note: '与 `AsyncRunner.concurrency` **同族**（「在飞名额」数量旋钮）：闸门判据是 `inFlight.size >= maxInFlight`，0 时恒真 ⇒ 每次 tick 都跳过，周期任务**既不跑也不失败**（探针实测 60ms 内派发 0 次、无任何报错/日志；负数同理）。⚠️ 旧实现 `opts.maxInFlight ?? 1` 把 0 静默留下，而写成 `||` 又会把它静默抬成 1 —— **两个方向都在替使用者改配置**（与 `streamBufferEvents` 记的旧 `Math.max(1, …)` 是同一个反模式）。',
+  },
+  {
+    knob: 'HttpHandlerOptions.maxBodyBytes',
+    where: 'transport/http.ts（createHttpHandler）',
+    unit: 'bytes',
+    zero: 'invalid',
+    zeroClause: '必须为正数（0 = 每个带 body 的请求都 413）',
+    badValue: 'throws',
+    note: "与**同一个选项接口里**的 `maxConcurrentRuns` 同款 —— 那条写着「0 / 负数则全部 503 —— 都是配置错误，宁可在构造期响亮失败」，这条是同一形状：`readBody` 的判据是 `size > maxBytes`，0 时**任何字节**都超限 ⇒ `POST /run` / `POST /tasks` / 审批全部 413（实测 3 条 POST 全 413），服务器看着在跑却收不了任何输入。⚠️ 还挡一类事故：`Number('') === 0` —— 从**空的环境变量**读出来的配置会静默变成「拒绝一切」。要「不限」用 `Infinity`（`size > Infinity` 恒假），**别用 0**。",
+  },
+  {
+    knob: 'SseWriterOptions.maxBufferedBytes',
+    where:
+      'transport/sse.ts（sseWriter）+ transport/http.ts（createHttpHandler 的 sseMaxBufferedBytes 透传）',
+    unit: 'bytes',
+    zero: 'invalid',
+    zeroClause: '必须为正数（0 = 流活不过一帧；Infinity = 不限）',
+    badValue: 'throws',
+    note: '判据是**写入前**的 `pending > limitBytes` ⇒ 0 时第 1 帧照写（pending 还是 0），**第 2 帧必收口**（实测：`closed=true` / `ended=true` / `onBackpressure` 回调 1 次）—— 流活不过一帧，没有任何正当用法：这个旋钮的定位是「只拦连上但不读的病态消费者」，而 0 会让**每个**消费者都被判成病态。要「关掉」用 `Infinity`。',
   },
   {
     knob: 'AsyncRunner.streamBufferEvents',

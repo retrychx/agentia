@@ -1,0 +1,490 @@
+/**
+ * 元守卫 —— **工具链对自己说的话**必须与 `ci.yml` 一致。
+ *
+ * 为什么需要它：`scripts/verify-all.sh` 顶部那条规矩（「本脚本的**步骤数**写在 CI 的 job 名里，
+ * 加/减一步都得同时改 workflow 的 job name **和** 分支保护，否则 PR 会卡死等一个永不出现的
+ * 检查」）此前**只有人记得，没有任何门禁**。而这条约定一旦漂移，症状是**所有 PR 永久卡住**
+ * —— 不是某个测试红了，而是没人能合并。
+ *
+ * 起因是 2026-09-26 收尾时抓到的一处同类缺陷：脚本收尾注释里那句「另有 3 个 CI 独有必需检查」
+ * 与紧随其后的清单（只列了 2 个）自相矛盾，而**上一行**的注释恰好还在讲「计数**算出来**而不是
+ * 写死」。⇒ 本仓已重复五次的教训（「计数只能靠数」）之所以重复，是因为它只活在文档里。
+ * 这个文件把它变成判据。
+ *
+ * 与本仓既有两条元守卫的分工：
+ *   - `tests/docs/guards-registry.test.ts`：`docs/guards.md` 里列出的路径**存在**（清单 → 盘）；
+ *   - `tests/docs/commit-refs.test.ts`：`docs/**` 引用的提交**在主干祖先链上**；
+ *   - 本文件：**工具链的自我描述与 `ci.yml` 互为真值**（谁都不能各说各话）。
+ *
+ * ## 判据
+ *
+ * **第一组：工具链的内部一致（`verify-all.sh` ↔ `ci.yml`）**
+ *
+ * 1. `verify-all.sh` 的 `steps` 条数 **==** `ci.yml` 的 `verify` job 名里写死的那个数字；
+ * 2. `ci.yml` 的每个 job 都要被交代：要么是跑本脚本的那个、要么在脚本的 `ci_only` 清单里、
+ *    要么在下面的 `EXEMPT` 表里**带理由**豁免（且豁免理由本身要被核对）；
+ * 3. `ci_only` 里不能有**幽灵 id**（`ci.yml` 里不存在的 job）；
+ * 4. `ci_only` 的每条都要是 `<job id>|<说明>` 形状（否则第 2/3 条无从核对）；
+ * 5. 脚本收尾消息**不得写死计数**（必须从清单长度算出来）。
+ *
+ * **第二组：同一句话在别处的抄写（见文件下半部分）**
+ *
+ * 6. 「本链一共几步」的**每一处抄写**（`CONTRIBUTING.md` ×2 · `AGENTS.md` ×5 · PR 模板 ×2）
+ *    都必须等于真值 —— 这句话此前只有 CI job 名那一份被机器核过；
+ * 7. `CONTRIBUTING.md` 的「# N 步：…」枚举要与脚本的步骤**一一对应**（第三份步骤清单）；
+ * 8. `CONTRIBUTING.md` 的「CI 必须全绿才能合并」括号列表 == 真实必需检查集合；
+ * 9. `CONTRIBUTING.md` 坑表那行要点名**每一个** CI 独有检查；
+ * 10. `AGENTS.md` 的 CI 段落要点名每一个 job，且**圈码数 == job 数**；
+ * 11. **兜底扫描**：任何同时点名 3 个以上 CI job 的 markdown 都必须登记（或带理由豁免）。
+ *
+ * ⚠️ 第 6–11 条的共同前提是「**抄写会过期**」：本仓的规矩是「加检查一律折进已有步骤」，
+ * 所以步数本该恒定；但正因为它恒定，一旦有人真加了第 9 步，这 9 处抄写会**同时**变成假话。
+ *
+ * ## 为什么解析是手写的
+ *
+ * 本仓**零运行时依赖**，测试侧也没有 YAML 解析器（`npm ls yaml` 为空）。所以这里用**窄正则**
+ * 解析 `ci.yml` 与 `verify-all.sh` —— 代价是解析锚点本身可能失效，故每条断言都带**防真空**
+ * 下限（解析出 0 个 job / 0 个步骤时红，而不是空转绿）。改 `ci.yml` 的缩进风格前先看这里。
+ *
+ * ## 反向验证
+ *
+ * 21 条变异（M54–M74）各**恰好**点名对应断言；其中 **2 条第一次跑是绿的**（M57 幽灵条目被
+ * 解析器吃掉、M73 新文档不在 `git ls-files` 里）—— 两处都改的是**量具**，不是断言。
+ */
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, it } from 'node:test';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const script = readFileSync(join(repoRoot, 'scripts', 'verify-all.sh'), 'utf8');
+const workflow = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+
+const readRel = (rel: string): string => readFileSync(join(repoRoot, rel), 'utf8');
+
+/** `AGENTS.md` 把 job 写成 npm script 的拼法（`e2e:mcp`），核之前统一成 id 拼法。 */
+const norm = (s: string): string => s.replace(/e2e:mcp/g, 'e2e-mcp');
+
+/**
+ * 仓库里的 markdown：**已入库的 ∪ 未入库但未被 `.gitignore` 的**。
+ *
+ * ⚠️ 为什么不是只取 `git ls-files`（第一版就是那样，被变异电池当场证伪）：新写的文档在 `git add`
+ * 之前**不在索引里** ⇒ 兜底扫描看不见它 ⇒ 本地绿、提交后 CI 才红。取并集后本地与 CI 同口径。
+ * `.workbuddy-ai/` 这类被 ignore 的路径由 `--exclude-standard` 挡掉。
+ */
+function markdownInTree(): string[] {
+  return execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '*.md'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  })
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+}
+
+/** 从 `NAME=(` 到独立的 `)` 行之间，抽出所有**整行就是一个双引号字符串**的条目。 */
+function bashArray(src: string, name: string): string[] {
+  const lines = src.split('\n');
+  const at = lines.findIndex((l) => l.includes(`${name}=(`));
+  assert.notEqual(
+    at,
+    -1,
+    `verify-all.sh 里找不到 \`${name}=(\` —— 解析锚点没了，先改这里的解析再跑`,
+  );
+  const out: string[] = [];
+  let closed = false;
+  for (const l of lines.slice(at + 1)) {
+    if (/^\s*\)\s*$/.test(l)) {
+      closed = true;
+      break;
+    }
+    const t = l.trim();
+    if (t === '' || t.startsWith('#')) continue;
+    // ⚠️ 认不出的写法**必须响亮失败，不能跳过**。这条是变异电池逼出来的：第一版只认
+    //    「整行就是引号字符串」，于是往里加一条 `'ghost|…',`（**多了个尾逗号** —— bash 完全
+    //    合法、且真的会成为一个条目）会被**静默忽略**，幽灵条目整条隐形、断言照样绿。
+    //    ⇒ 解析器有盲区时，「漏掉一条」与「本来就没那条」不可区分；这正是本文件要防的漂移。
+    const m = /^(?:"([^"]+)"|'([^']+)')\s*,?$/.exec(t);
+    assert.ok(
+      m,
+      `\`${name}=(\` 里这行看不懂，而它**不能被静默跳过**：「${t}」\n` +
+        '  ⇒ 数组条目只认整行的 `"…"` / `\'…\'`（尾逗号可选，行内注释不支持）。\n' +
+        '     放宽解析前先想清楚：跳过的条目 = 清单里悄悄少一条。',
+    );
+    out.push(m[1] ?? m[2]);
+  }
+  assert.ok(closed, `\`${name}=(\` 之后找不到独立的 \`)\` 行 —— 数组收尾锚点没了`);
+  return out;
+}
+
+/**
+ * `ci.yml` 的 job：`jobs:` 之下**恰好两空格缩进**的 `id:` 行。
+ * ⚠️ 两空格缩进的注释（`  # …`）不在字符类里，不会被误当成 job。
+ */
+function workflowJobs(src: string): Array<{ id: string; name: string; body: string }> {
+  const lines = src.split('\n');
+  const jobsAt = lines.findIndex((l) => /^jobs:\s*$/.test(l));
+  assert.notEqual(jobsAt, -1, 'ci.yml 里找不到顶层的 `jobs:` —— 解析锚点没了');
+  const raw: Array<{ id: string; lines: string[] }> = [];
+  for (const l of lines.slice(jobsAt + 1)) {
+    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(l);
+    if (m) {
+      raw.push({ id: m[1], lines: [l] });
+      continue;
+    }
+    if (raw.length > 0) raw[raw.length - 1].lines.push(l);
+  }
+  return raw.map((j) => {
+    const body = j.lines.join('\n');
+    const n = /^ {4}name:\s*(.+?)\s*$/m.exec(body);
+    return { id: j.id, name: n ? n[1] : '', body };
+  });
+}
+
+const steps = bashArray(script, 'steps');
+const ciOnly = bashArray(script, 'ci_only');
+const jobs = workflowJobs(workflow);
+
+const verifyJob = jobs.find((j) => j.body.includes('scripts/verify-all.sh'));
+assert.ok(
+  verifyJob,
+  'ci.yml 里没有任何 job 跑 `scripts/verify-all.sh` —— 本守卫靠这一句定位「本链 = 哪个 job」，' +
+    '找不到就说明 CI 与本地链的接线断了（或那句话被改写了）',
+);
+
+/**
+ * 故意**不**列进 `ci_only` 的 job。豁免不是免检：`mustMatch` 是「豁免理由本身」的可执行形式，
+ * 理由不成立了就得重新决定（而不是继续豁免下去）。
+ */
+const EXEMPT: Array<{ id: string; mustMatch: RegExp; why: string }> = [
+  {
+    id: 'deploy-website',
+    mustMatch: /if:\s*github\.ref == 'refs\/heads\/main'/,
+    why:
+      '只在 main 上跑（PR 上 skip）⇒ **不是**必需状态检查，故意不列进任何清单：' +
+      'ci.yml 自己的注释写着「加进分支保护会让 PR 永远等一个不会跑的检查 → 卡死」',
+  },
+  {
+    id: 'docker-image',
+    mustMatch: /docker build/,
+    why:
+      '**非必需检查**：本机没有 docker、本地链无法等价复现 ⇒ 它只作 CI 侧的构建证据，' +
+      '不阻塞合并（首次绿就是它的验证）。⚠️ 若将来本地能等价复现（或补了替代验证），' +
+      '应把它挪进 `ci_only` —— 这条豁免理由到那时就不成立了。',
+  },
+];
+
+describe('verify-all.sh ↔ ci.yml：工具链的自我描述必须互为真值', () => {
+  it('解析锚点还活着（防真空：解析出 0 个 job / 0 个步骤时不能空转绿）', () => {
+    assert.ok(jobs.length >= 4, `从 ci.yml 只解析出 ${jobs.length} 个 job —— 解析锚点大概率失效了`);
+    assert.ok(
+      steps.length >= 5,
+      `从 verify-all.sh 只解析出 ${steps.length} 个步骤 —— 解析锚点失效了`,
+    );
+    assert.ok(ciOnly.length >= 1, '`ci_only` 解析出 0 条 —— 要么清单被删空了，要么解析失效');
+  });
+
+  it('步骤数 == CI 的 verify job 名里写死的那个数字', () => {
+    const m = /verify-all\s*(\d+)\s*步/.exec(verifyJob?.name ?? '');
+    assert.ok(
+      m,
+      `从 verify job 的 name 里读不出步数（实际是「${verifyJob?.name}」）。` +
+        '这个数字是分支保护依赖的必需检查名的一部分，格式别改；要改步数就两处一起改。',
+    );
+    assert.equal(
+      steps.length,
+      Number(m[1]),
+      `verify-all.sh 有 ${steps.length} 步，而 CI 的 job 名写着 ${m[1]} 步。\n` +
+        '  二者是**同一个约定**：名字里的数字就是分支保护里那条必需检查。\n' +
+        '  ⇒ 本仓的规矩是**加检查一律折进已有步骤**（见脚本顶部注释）；真要加第 9 步，\n' +
+        '     必须同时改 ci.yml 的 job name **和** 分支保护配置，否则所有 PR 会永久卡死。',
+    );
+  });
+
+  it('ci.yml 里那条「逐步枚举」注释与脚本的步骤一一对应', () => {
+    const arrows = (verifyJob?.body ?? '')
+      .split('\n')
+      .filter((l) => /^\s*#/.test(l) && l.includes('→'));
+    assert.equal(
+      arrows.length,
+      1,
+      `verify job 里应当恰好有一条用 \`→\` 逐步枚举本链的注释（它是对外说明的单源），实际 ${arrows.length} 条`,
+    );
+    const named = arrows[0]
+      .replace(/^\s*#\s*/, '')
+      .split('→')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    assert.equal(
+      named.length,
+      steps.length,
+      `注释枚举了 ${named.length} 项（${named.join(' → ')}），而脚本有 ${steps.length} 步 —— ` +
+        '注释里的清单与计数一样会过期，改步骤时一起改',
+    );
+    named.forEach((token, i) => {
+      assert.ok(
+        steps[i].includes(token),
+        `注释说第 ${i + 1} 步是「${token}」，而脚本那一步是「${steps[i]}」—— 顺序或名字对不上`,
+      );
+    });
+  });
+
+  it('ci.yml 的每个 job 都被交代过（本链 / ci_only / 带理由豁免）', () => {
+    const covered = new Set<string>([verifyJob?.id ?? '', ...ciOnly.map((e) => e.split('|')[0])]);
+    const exemptIds = new Set(EXEMPT.map((e) => e.id));
+    const unexplained = jobs
+      .filter((j) => !covered.has(j.id) && !exemptIds.has(j.id))
+      .map((j) => j.id);
+    assert.deepEqual(
+      unexplained,
+      [],
+      `这些 CI job 没人交代：${unexplained.join(' · ')}。\n` +
+        '  ⇒ 新加一个 CI job 时**必须做一次判断**，别让它默默存在：\n' +
+        '     · 它是必需检查 ⇒ 加进 verify-all.sh 的 `ci_only`（带 `<job id>|说明`，并写清本机怎么跑）；\n' +
+        '     · 它不是必需检查 ⇒ 加进本文件的 `EXEMPT` 表，**并给出可执行的理由**（见下一条用例）。',
+    );
+  });
+
+  it('豁免理由本身也要成立（豁免不是免检）', () => {
+    for (const e of EXEMPT) {
+      const job = jobs.find((j) => j.id === e.id);
+      assert.ok(job, `EXEMPT 里的 \`${e.id}\` 在 ci.yml 里不存在 —— 幽灵豁免，请删掉`);
+      assert.match(
+        job.body,
+        e.mustMatch,
+        `\`${e.id}\` 的豁免理由已不成立：${e.why}\n` +
+          '  ⇒ 它不再是原来那个形状了（比如不再只在 main 上跑），请重新决定它该不该进 `ci_only`。',
+      );
+    }
+  });
+
+  it('ci_only 里不能有幽灵 id，且每条都要带 job id', () => {
+    const ids = new Set(jobs.map((j) => j.id));
+    for (const entry of ciOnly) {
+      assert.match(
+        entry,
+        /^[A-Za-z0-9_-]+\|.+/,
+        `ci_only 的这条不是 \`<job id>|<说明>\` 形状：「${entry}」—— 前两半截是给机器核对用的`,
+      );
+      const id = entry.split('|')[0];
+      assert.ok(
+        ids.has(id),
+        `ci_only 里的 \`${id}\` 在 ci.yml 里不存在 —— 幽灵条目（job 被改名或删掉了？）：「${entry}」`,
+      );
+    }
+  });
+
+  it('收尾消息不得写死计数（必须从清单长度算出来）', () => {
+    assert.ok(
+      !/另有\s*[0-9]+\s*个/.test(script),
+      'verify-all.sh 的收尾消息里出现了写死的计数（`另有 N 个`）。\n' +
+        '  ⇒ 这里曾写「3 个」而清单只列了 2 个 —— 计数与清单分居两处就迟早各说各话。\n' +
+        '     用数组长度展开（见脚本上一行注释）算出来 —— 数字和清单分居两处就迟早各说各话。',
+    );
+  });
+});
+
+// ── 同一句话的其它副本 ────────────────────────────────────────────────────────
+//
+// 「本链一共几步」「必需检查是哪些」这两句话在本仓被**抄写**到了 9 处（`CONTRIBUTING.md` ×2 ·
+// `AGENTS.md` ×5 · PR 模板 ×2），而此前**只有 CI 的 job 名那一份**是被机器核过的。
+// 抄写就会过期 —— 本轮刚在 `verify-all.sh` 自己身上踩过（注释说「3 个」而清单只列了 2 个）。
+// 这里把每一份都钉住；**范围如实标注**：新写一份抄写不会被自动发现（最后一条用例是兜底扫描，
+// 阈值只能挡住「同时点名 3 个以上 job」的那种，更含蓄的抄写仍要人来登记）。
+
+/** 「本链一共几步」在仓库里的**每一种写法**。全是抄写 ⇒ 每一处都必须等于真值。 */
+const STEP_COUNT_SHAPES: Array<{ re: RegExp; what: string }> = [
+  { re: /(\d+)\s*\/\s*(\d+)\s*全绿/g, what: '「N/N 全绿」' },
+  { re: /上面\s*(\d+)\s*步/g, what: '「不并入上面 N 步」' },
+  { re: /verify-all\s*(\d+)\s*步/g, what: '「verify-all N 步」（= CI job 名里的数字）' },
+  { re: /(\d+)\s*步验证链/g, what: '「N 步验证链」' },
+  { re: /#\s*(\d+)\s*步[：:]/g, what: '代码块注释里的「# N 步：…」' },
+  { re: /[，,]\s*(\d+)\s*步\s*——/g, what: '「，N 步 ——」' },
+];
+
+/**
+ * 参与「步数」核对的文档，以及**每份至少要有几处**（防真空：解析锚点坏了不能空转绿）。
+ * `atLeast` 是 1 而不是「精确条数」—— 允许有人把三处「上面 8 步」并成一处（那是好事），
+ * 但不允许**整份文档不再说链有多长**。
+ */
+const STEP_COUNT_DOCS: Array<{ file: string; atLeast: number }> = [
+  { file: 'CONTRIBUTING.md', atLeast: 2 },
+  { file: 'AGENTS.md', atLeast: 3 },
+  { file: '.github/PULL_REQUEST_TEMPLATE.md', atLeast: 2 },
+];
+
+/** 已登记的「必需检查清单」副本。新写一份抄写要加到这里（或被下面的 `EXEMPT` 挡掉）。 */
+const REQUIRED_LIST_FILES = ['CONTRIBUTING.md', 'AGENTS.md', '.github/PULL_REQUEST_TEMPLATE.md'];
+
+/** `ci_only` 里的 job id（= 本链不覆盖的必需检查）。 */
+const ciOnlyIds = ciOnly.map((e) => e.split('|')[0]);
+
+/** 分支保护里的必需检查全集 = 跑本链的那个 + `ci_only` 里的那些。 */
+const requiredIds = new Set<string>([verifyJob?.id ?? '', ...ciOnlyIds]);
+
+describe('「本链几步 / 必需检查是哪些」的每一处抄写都要与真值一致', () => {
+  it('步数的每一处抄写都必须等于真值', () => {
+    const bad: string[] = [];
+    for (const { file, atLeast } of STEP_COUNT_DOCS) {
+      const lines = readRel(file).split('\n');
+      let seen = 0;
+      for (const { re, what } of STEP_COUNT_SHAPES) {
+        lines.forEach((line, i) => {
+          for (const m of line.matchAll(new RegExp(re.source, 'g'))) {
+            seen++;
+            for (const g of m.slice(1)) {
+              if (g !== undefined && Number(g) !== steps.length) {
+                bad.push(
+                  `${file}:${i + 1} 的${what}写着「${m[0].trim()}」，而真实步数是 ${steps.length}`,
+                );
+              }
+            }
+          }
+        });
+      }
+      assert.ok(
+        seen >= atLeast,
+        `${file} 里只核到 ${seen} 处步数（预期 ≥${atLeast}）—— 要么文档不再说链有多长，` +
+          '要么这些形状的锚点坏了。**别直接调低这个下限**：先确认是哪一种。',
+      );
+    }
+    assert.deepEqual(
+      bad,
+      [],
+      `这些抄写与真实步数（${steps.length}）不一致：\n  ${bad.join('\n  ')}\n` +
+        '  ⇒ 本仓的规矩是「加检查一律折进已有步骤」（步数不变）；真要改步数，' +
+        'CI job 名 / 分支保护 / 这几处抄写必须一起改。',
+    );
+  });
+
+  it('CONTRIBUTING 的「# N 步：…」枚举必须与脚本的步骤一一对应', () => {
+    const lines = readRel('CONTRIBUTING.md').split('\n');
+    const at = lines.findIndex((l) => /#\s*\d+\s*步[：:]/.test(l));
+    assert.notEqual(
+      at,
+      -1,
+      'CONTRIBUTING.md 里找不到「# N 步：…」那条枚举 —— 它是给人看的步骤清单（第三份抄写）',
+    );
+    const block = [lines[at]];
+    for (let i = at + 1; i < lines.length && /^\s*#\s*→/.test(lines[i]); i++) block.push(lines[i]);
+    const named = block
+      .map((l) =>
+        l
+          .replace(/^\s*#\s*/, '')
+          .replace(/^.*?步[：:]\s*/, '')
+          .trim(),
+      )
+      .join(' ')
+      .split('→')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    assert.equal(
+      named.length,
+      steps.length,
+      `CONTRIBUTING 枚举了 ${named.length} 项（${named.join(' → ')}），而脚本有 ${steps.length} 步`,
+    );
+    named.forEach((item, i) => {
+      // ⚠️ 这里比的是**给人看的描述**，不是命令原文：第 1 步写作 `typecheck + lint`，而那条命令
+      //    是 `npm run typecheck && npx biome ci .`（**没有 `lint` 这个词**）。所以判据放宽到
+      //    「该步的任一词命中」—— 能抓的是**顺序错 / 漏项**，抓不到措辞漂移。射程如实标注。
+      const tokens = item
+        .split('+')
+        .map((t) => t.trim())
+        .filter(Boolean);
+      assert.ok(
+        tokens.some((t) => steps[i].includes(t)),
+        `CONTRIBUTING 说第 ${i + 1} 步是「${item}」，而脚本那一步是「${steps[i]}」—— ` +
+          '这一项的词一个都没命中（多半是顺序被换过或漏了一项）',
+      );
+    });
+  });
+
+  it('CONTRIBUTING 的「CI 必须全绿才能合并」列表 == 真实必需检查集合', () => {
+    const line = readRel('CONTRIBUTING.md')
+      .split('\n')
+      .find((l) => l.includes('必须全绿才能合并'));
+    assert.ok(line, 'CONTRIBUTING.md 里找不到「CI 必须全绿才能合并」那句（它是合并契约）');
+    const paren = /（([^）]*)）/.exec(line);
+    assert.ok(paren, `那句里读不到括号列表：${line}`);
+    const named = new Set(paren[1].replace(/[`\s]/g, '').split('·').filter(Boolean).map(norm));
+    assert.deepEqual(
+      [...named].sort(),
+      [...requiredIds].sort(),
+      'CONTRIBUTING 列的必需检查与 ci.yml 的真实集合不一致（多了幽灵 / 少了新 job）',
+    );
+  });
+
+  it('CONTRIBUTING 的「本地过了但 CI 挂了」那行必须点名每一个 CI 独有检查', () => {
+    const row = readRel('CONTRIBUTING.md')
+      .split('\n')
+      .find((l) => l.includes('本地过了') && l.includes('CI 挂了'));
+    assert.ok(row, 'CONTRIBUTING.md 里找不到「本地过了但 CI 挂了」那行（坑表的第一道分流）');
+    const t = norm(row);
+    const missing = [...ciOnlyIds].filter((id) => !new RegExp(`\\b${id}\\b`).test(t));
+    assert.deepEqual(
+      missing,
+      [],
+      `这行没点名这些 CI 独有检查：${missing.join(' · ')} —— ` +
+        '新加一个 CI 独有检查时，这行是「本地全绿为什么还会挂」的第一处提示。\n' +
+        '  ⚠️ 本断言只查「有没有漏」这一个方向：反向（这行点名了不存在的 job）**没有**机器判据 —— ' +
+        '因为同一行里还有 `verify-all.sh` 这类文件名，抠反引号会误报。',
+    );
+  });
+
+  it('AGENTS.md 的 CI 段落必须点名每一个 job，且圈码数与 job 数一致', () => {
+    const lines = readRel('AGENTS.md').split('\n');
+    const at = lines.findIndex((l) => l.includes('.github/workflows/ci.yml') && l.includes('job'));
+    assert.notEqual(
+      at,
+      -1,
+      'AGENTS.md 里找不到 CI 段落锚点（含 `.github/workflows/ci.yml` 且含 `job` 的那行）',
+    );
+    let end = lines.length;
+    for (let i = at + 1; i < lines.length; i++) {
+      if (/^ {2}- /.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+    const para = norm(lines.slice(at, end).join('\n'));
+    const marks = [...para.matchAll(/[①②③④⑤⑥⑦⑧⑨]/g)].length;
+    assert.ok(marks >= 2, `CI 段落里只数到 ${marks} 个圈码 —— 解析锚点坏了`);
+    assert.equal(
+      marks,
+      jobs.length,
+      `AGENTS.md 的 CI 段落列了 ${marks} 项，而 ci.yml 有 ${jobs.length} 个 job —— ` +
+        'AGENTS.md 是 agent 读的那份说明，数字过期会直接误导自动读者',
+    );
+    const missing = jobs.map((j) => j.id).filter((id) => !new RegExp(`\\b${id}\\b`).test(para));
+    assert.deepEqual(missing, [], `AGENTS.md 的 CI 段落没点名这些 job：${missing.join(' · ')}`);
+  });
+
+  it('新文档一旦同时点名 3 个以上 CI job，就必须登记（兜底扫描）', () => {
+    const EXEMPT: Array<{ re: RegExp; why: string }> = [
+      { re: /^CHANGELOG\.md$/, why: '发版历史，只增不改' },
+      { re: /^docs\/spec\.md$/, why: '决策日志（§10），只增不改' },
+      {
+        re: /^docs\/guards\.md$/,
+        why: '注册表本身：行文必须点名 job；它的完整性由自己的元守卫管',
+      },
+      { re: /^docs\/plans\//, why: '带日期的计划存档，只增不改' },
+    ];
+    const registered = new Set(REQUIRED_LIST_FILES);
+    const suspects = markdownInTree().filter((f) => {
+      if (registered.has(f) || EXEMPT.some((e) => e.re.test(f))) return false;
+      const t = norm(readRel(f));
+      return jobs.filter((j) => new RegExp(`\\b${j.id}\\b`).test(t)).length >= 3;
+    });
+    assert.deepEqual(
+      suspects,
+      [],
+      `这些文档同时点名了 3 个以上 CI job，但没人核过它们的抄写：${suspects.join(' · ')}\n` +
+        '  ⇒ 二选一：① 加进本文件的 `REQUIRED_LIST_FILES` 并补一条断言；\n' +
+        '     ② 加进上面的 `EXEMPT` 并给出理由（例如「只增不改的历史记录」）。\n' +
+        '  ⚠️ 阈值是 3：只点名一两个 job 的文档扫不出来；`.gitignore` 里的路径也不在射程内 ——\n' +
+        '     这是本兜底扫描的**已知射程**。',
+    );
+  });
+});

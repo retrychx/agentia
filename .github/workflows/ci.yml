@@ -117,6 +117,27 @@ jobs:
       - name: e2e:mcp
         run: npm run e2e:mcp
 
+  # ── deploy 示例的镜像：**在 CI 里真构建一次** ────────────────────────────────────
+  # 为什么要有它：`examples/deploy` 是定位里「交付可上线的服务」那一脚的参考实现，
+  # 而它的 Dockerfile 此前**没有任何门禁构建过** —— 本机没有 docker、本地链跑不了它，
+  # 于是「镜像到底建不建得起来」只活在文档的一条示例命令里
+  # （`docker compose up --build`；`docker` 在仓库其余 CI 配置里出现 0 次）。
+  # 本 job 把那一跳变成 CI 侧的一次真实构建（ubuntu runner 自带 docker）。
+  #
+  # ⚠️ **它不是必需状态检查，不要加进分支保护**：本机无法等价复现 ⇒ 它给的是
+  #    「CI 侧构建证据」，不是「本地绿即绿」。首次运行就是它的验证；红了就是红的，
+  #    不静默。豁免登记在 `tests/scripts/verify-all-wiring.test.ts` 的 `EXEMPT`（理由可执行）。
+  docker-image:
+    name: 构建 deploy 示例镜像（非必需检查）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # 构建上下文 = **仓库根**（Dockerfile 头部说明：镜像里先从源码构建框架，
+      # 所以 examples/deploy 的 `file:../..` 依赖才解析得到）
+      - name: docker build
+        run: docker build -f examples/deploy/Dockerfile -t agentia-deploy-example .
+
   # ── 发布：官网自动上线 ──────────────────────────────────────────────────────────
   # 为什么有这个 job：官网部署此前**纯手动**（`npm run deploy:website`，见根 package.json）。
   # 2026-09-13 实际翻车了一次：PR #16 合并进 main、CI 全绿、仓库「看起来完事了」，

@@ -338,6 +338,24 @@ describe('createHttpHandler', () => {
     assert.ok(createHttpHandler(app, { maxConcurrentRuns: Number.POSITIVE_INFINITY }));
   });
 
+  it('maxBodyBytes / sseMaxBufferedBytes 校验：0 是「什么都收不了」的配置错误，构造期抛错', () => {
+    // 2026-09-26 顺着「`0` 的语义」这一族扫出来的两处：两处判据分别是
+    // `size > maxBytes` 与写入前的 `pending > limitBytes` ⇒ 0 时**每个**请求都 413 /
+    // **每个**流活不过一帧（实测）。与上面 maxConcurrentRuns（0 ⇒ 全部 503）**同一个选项
+    // 接口、同一个形状**，同款在构造期响亮失败。
+    const app = fakeApp();
+    assert.throws(() => createHttpHandler(app, { maxBodyBytes: 0 }), /maxBodyBytes/);
+    assert.throws(() => createHttpHandler(app, { maxBodyBytes: -1 }), /maxBodyBytes/);
+    assert.throws(() => createHttpHandler(app, { maxBodyBytes: Number.NaN }), /maxBodyBytes/);
+    // 透传那条也要在**构造期**拦：不然要等第一个 SSE 请求才炸，那时响应头已写出（只能回 200 再断流）
+    assert.throws(() => createHttpHandler(app, { sseMaxBufferedBytes: 0 }), /sseMaxBufferedBytes/);
+    assert.throws(() => createHttpHandler(app, { sseMaxBufferedBytes: -1 }), /sseMaxBufferedBytes/);
+    // 阳性对照：缺省与 Infinity（不限）都必须仍构造成功 —— 防「一律抛错」蒙过这条
+    assert.ok(createHttpHandler(app));
+    assert.ok(createHttpHandler(app, { maxBodyBytes: Number.POSITIVE_INFINITY }));
+    assert.ok(createHttpHandler(app, { sseMaxBufferedBytes: Number.POSITIVE_INFINITY }));
+  });
+
   it('exposeErrors 缺省 false：500 只回通用文案，内部细节走 console.error', async () => {
     const app = fakeApp({
       run: async () => {

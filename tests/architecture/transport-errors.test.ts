@@ -190,12 +190,25 @@ test('解析器真的吃到了足够多的裸抛错（防真空变绿护栏）',
  */
 test('注释剥离不被打断：字符串里的 // 之后仍要扫得到（回归）', () => {
   const S = '${';
+  // ⚠️ 2026-09-26 §1 逐行审计订正：**样本必须把 `//` 与 throw 放在同一行**。
+  // 原来写的是「URL 单独一行 + throw 另一行」—— 退回旧实现（截到 `//` 为止）后，
+  // URL 那行只是变成无害的 `const url = 'http:`（括号本来就没开），**用例照样绿**，
+  // 也就是说那条回归钉当时守不住它声称要守的 bug。
+  // 真实病灶是 `src/integrations/metrics.ts` 里这一形态：
+  //   `throw new Error(\`metricsSink: export:'otlp' 必须给 endpoint（如 http://localhost:4318）\`)`
+  // `//` 与 throw **同一行** ⇒ 截断会连闭合反引号与 `)` 一起切掉 ⇒ 括号配平一路吃到文件
+  // 末尾 ⇒ **那一行之后的每一处抛错都再也扫不到，且不报错**。所以样本必须是这个形状。
   const src = [
-    "  const url = 'http://localhost:4318';",
+    '  throw new Error(`必须给 endpoint（如 http://localhost:4318）`);',
     '  throw new Error(`OTLP metrics 导出失败: HTTP ' + S + 'res.status}`);',
   ].join('\n');
 
   const found = bareErrorThrows(stripCommentLines(src));
-  assert.equal(found.length, 1, 'URL 行之后的抛错必须仍被扫到（旧实现在这里会漏）');
-  assert.equal(isTransportViolation(found[0]), true, '而且要被判为违规');
+  assert.equal(
+    found.length,
+    2,
+    `URL 那一行之后的那处抛错必须仍被扫到（旧实现会把它整段吞掉、只剩 1 处）—— 实测 ${found.length} 处`,
+  );
+  assert.equal(isTransportViolation(found[0]), false, '第一处是配置校验（含「必须」）→ 豁免');
+  assert.equal(isTransportViolation(found[1]), true, '第二处带 HTTP 状态 → 必须判违规');
 });

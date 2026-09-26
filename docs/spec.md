@@ -3087,6 +3087,314 @@ Node **两种形态都会触发** ⇒ 差别在**浏览器把那条连接留着*
 `pagehide`、路径与服务端 `PICK_CANCEL_PATH` **逐字一致**」由一条对拍断言钉住 ——
 页面 import 不到那个常量，不钉就是「页面发了、服务端 404」的静默漏。**框架侧零改动**，只在 CLI。
 
+### 2026-09-26：成本口径三处收口 + **守卫注册表 §1 首次逐行审计**（3 个假守卫）+ PR 模板自查抓出文档漂移
+
+这一轮由 `docs/guards.md §2` 自己写下的**起手动作**驱动（表空了之后，缺口只能靠主动问找回来）。
+
+**起手动作①：把 §1 逐行问一遍「它退化时真会红吗」**（54 行，逐行用变异电池：改实现 → 跑 →
+确认**恰好**点名那条红 → 复原，复原后 `git diff --stat src/` 逐字节一致）。净结果：
+
+- **假守卫 3 处**（断言是真的、绿的、也是对的，只是守的是**另一件事**）：
+  - `tests/engine/tracer.test.ts` —— `snapshot()` 的实现就是 `totalUsage: this.usage()`，那句
+    `deepEqual(r.usage(), r.snapshot('ok').totalUsage)` 是**自我比较、恒绿**。修法：钉**委托本身**
+    （子类数 `usage()` 调用次数，必须恰好 1 次），真正的对账搬到调用点
+    （`tests/engine/budget.test.ts`，护栏读到的数 vs trace 交付的数）。
+  - `tests/core/sse-text-stats.test.ts` —— 「带常驻监听做对照」的 `baseline` **从未被断言非零**。
+    实测把 `getEventListeners` 打瞎（恒返回 `[]`）后三条断言全过、用例照样绿。已补
+    `assert.equal(baseline, 1)`，把「测量工具还活着」变成判据。
+  - `tests/architecture/transport-errors.test.ts` —— 回归钉的**合成样本没复现它声称要守的 bug**
+    （URL 与 `throw` 不在同一行 ⇒ 退回旧实现照样绿）。样本改成真实形态后，退回旧实现才真的红。
+- **归属漂移 1 处**：`sse-text-stats.test.ts` 那行把 `withTimeout(p, 0)` 的断言算在自己头上，
+  实际它在 `tests/core/timeout.test.ts`。元守卫只查「路径存在」，查不出「守卫在不在那个文件里」。
+- **命令指错 1 处**：`tests/types/dx.types.ts` 头注写「由 `npm run typecheck:tests` 校验」，而
+  `tsconfig.tests.json` 明确 `exclude: ["tests/types"]` —— 它归 `typecheck:types`（对 `dist/`）。
+  照错的命令跑，整份文件的断言（含全部 `@ts-expect-error`）一个都不会被检查。
+- **未登记的守卫 1 个**：`scripts/check-website-agent-readiness.mjs` 的「`llms-full.txt` 必须与
+  单源 `docs/usage-guide.md` **逐字节相等**」此前不在 §1 —— 而它正是 PR 模板「改了 usage-guide
+  时已重建派生物」那句承诺的**唯一机器依据**。已登记（含反向验证：只改单源不重建 ⇒ 恰好那条红、
+  exit 1）。⇒ 教训：`guards-registry.test.ts` 只查「列出的路径在不在盘上」，**查不出「盘上有守卫
+  却没列」**，清单的**完整性**没有任何机器保证。
+- **计数订正**：§1 是 **54 行**（中途靠印象报过 53）。「清单有多长」也要靠数。
+- 其余 40+ 行逐条变异验过、都是真守卫。⇒ 结论是**假守卫不是普遍现象**，问题集中在
+  「机制被写下了、但**没有一条断言能让机制本身失效**变红」那几处。
+
+**起手动作②：拿本轮 diff 对 `.github/PULL_REQUEST_TEMPLATE.md` 的自查问**，当场抓到文档漂移：
+
+- `packages/website/src/fragments/api.html` 的 `ModelPricing` 行写的是 `{ in: number; out: number }`，
+  而源码已加 `cacheRead?` / `cacheWrite?`；同一页**三处**写「非法单价（构造期 / run 开始）抛错」，
+  而实测是**被 `runAgent` 收成 `status: error` 的 result、不抛给调用方** —— 同一个口径在
+  `docs/usage-guide.md` 里已订正过，**漏了 api.html**。三处均已修。
+- 为什么没被守卫拦住：`tests/docs/api-page.test.ts` 只守「导出的反向全覆盖」与「页面上手写的数字
+  对源码核」，**不看**表格里的类型形状、也不看散文口径。当时登记进 `docs/guards.md §2`
+  （§2 自 2026-09-23 清空后**重新长出两行**）。
+- **当天两条都建成守卫并移回 §1**（`§2 → 守卫 → §1` 的标准闭环）：给 `tests/docs/api-page.test.ts`
+  补了两条 —— ① **第二列类型形状**对源码成员集核（「没有 `…` 的行 = 自陈穷尽 ⇒ 必须相等」），
+  它**一次查出 7 行漏写字段**（`ModelPricing` / `Span` / `AppOptions` / `RunInvocationOptions` /
+  `ToolRunContext` / `MetricsSinkOptions` / `ModelReport` / `SubAgentSpec`），全部补齐；
+  ② **非法单价的散文口径钉**（只在踩过的那两处钉：必须说清「不抛给调用方」、不得归因到「构造期」）。
+  两条各 3 条反向验证，散文钉还带**防真空**断言（触发面归零时钉子自己喊）。
+  ⚠️ 射程如实标注：类型形状那条只管**表格第二列**；散文钉只管**踩过的那两处**、触发词是「非法」
+  —— 它防的是**回归**，防不了新写错的散文。
+- **同一次自查问还问出一条 §2 表里没有的缺口**（关键差别：拿**最终** diff 问的是**代码**，不只是
+  文档）：`costEstimate` 用的是 `p.cacheRead ?? CACHE_READ_MULTIPLIER`，而 `??` 与 `||` 的差别
+  **只**落在 `0` 上。把两个 `??` 改成 `||`，`tests/engine/pricing.test.ts` **19/19 全绿** ——
+  因为没有任何一条用例把乘数设成 `0`。而 `0` 是**合法**值（`buildPricing` 的校验是
+  `finite && >= 0`），含义是「这个模型的缓存读 / 写不要钱」；被读成「未设」就回落到
+  0.1 / 1.25 ⇒ 成本虚高、`maxCostUsd` **提前**触发（账不对，方向上是误伤）。
+  已补一条守卫（`cacheRead: 0` / `cacheWrite: 0` / 两者同时为 0 三条精确值断言 + 一条「不写
+  乘数仍走缺省」的对照），反向验证：`?? → ||` ⇒ **恰好那条红**（`expected: 0, actual: 6.75`）。
+  同一条纪律此前已在 `src/core/limits.ts`（「限制旋钮的 0 是什么」的单一真源）与
+  `exactOptionalPropertyTypes` 迁移里各出现过一次 ——「显式给的 `0`」与「没给」必须分开；
+  已知类**不等于**已覆盖，每一处新的 `0` 都得各自钉。
+- **顺着这条缺口做同类扫描，又清掉三处**（可复用的动作：一条缺口修好之后，问「同一个形状还有几处」）：
+  - **`Scheduler.every.maxInFlight`**：闸门判据是 `inFlight.size >= maxInFlight`，`0` / 负数时
+    **恒真** ⇒ 每次 tick 都跳过，周期任务**永不派发且不报错**（探针实测 60ms 内派发 0 次、
+    无任何日志）。与 `AsyncRunner.concurrency`（`limits.ts` 表里 `zero: 'invalid'`）**同族**，
+    现在同款在构造期抛 `TypeError`；`Infinity`（关闸门）与缺省 `1` 不受影响。
+    已登记进 `limits.ts` 表并补探针。⚠️ 旧读法**两个方向都在替使用者改配置**：
+    `?? 1` 把 `0` 静默留下，而写成 `|| 1` 又会把它静默抬成 1（与 `streamBufferEvents` 记的
+    旧 `Math.max(1, …)` 同一个反模式）。**这是一处行为变更**：`maxInFlight: 0` 从「静默不派发」
+    变成「构造期响亮失败」—— 没有任何**本来能工作**的配置会因此变坏。
+  - **`Scheduler.every.intervalMs` 的报错文案**此前是**手写**的，而 `limits.ts` 表里那条
+    `zeroClause` 没有任何调用点 —— 表自己写着「有构造期校验的旋钮由实现代码直接插进错误消息里」，
+    对它不成立（**单源断了一头**）。现已接 `zeroClauseOf`，并加了一条文案用例钉住。
+  - 顺带把 `limits.ts` 文件头里那张**已经过期的 `zeroClauseOf` 用户清单**删掉（只留 grep 指针）：
+    它自己就警告过「别在这里写死几处」，而这次的经验是**「列举出来的清单会和计数一样过期」**。
+  - ⚠️ 同一次复核发现 `docs/guards.md` §1 那一行把旋钮数写成 **15**，而表里实际是 **17**
+    （加完新的 18），且同一行的「其余 14 条」与 15 **自相矛盾**。⇒ **计数只能靠数** ——
+    这条教训本仓已重复四次（53→54→55、15→18）。
+  - 剩 **2 处读法定不下来**（`SseWriterOptions.maxBufferedBytes` / `HttpHandlerOptions.maxBodyBytes`
+    的 `0`：两处都无校验、`0` 合法，而把 `??` 改成 `||` 后相关测试 **84/84 全绿**）⇒
+    不硬判，如实登记进 `docs/guards.md §2`（含变异证据与两条候选处置）。
+  - **同一天这 2 处也判定并闭环了** —— 判定用的**不是新造的标准**，而是本仓已经写在**同一个
+    选项接口里**的那条：`maxConcurrentRuns` 的「0 / 负数则全部 503 —— **都是配置错误**，
+    宁可在构造期响亮失败」。实测两处是同一形状：`maxBodyBytes: 0` ⇒ **每个带 body 的请求都
+    413**（3 条 POST 全 413）；`maxBufferedBytes: 0` ⇒ **流活不过一帧**（判据是写入前的
+    `pending > limitBytes`：第 1 帧照写、第 2 帧必收口，`closed=true` / `ended=true` /
+    `onBackpressure` 回调 1 次）。⇒ 两处都判 `invalid` + **构造期抛错**（`sseWriter` 与
+    `createHttpHandler` 各拦一道，后者保证透传的 `sseMaxBufferedBytes` 也在构造期响亮失败，
+    而不是等第一个 SSE 请求才炸 —— 那时响应头已写出，只能回 200 再断流）。
+    **这是两处行为变更**：`maxBodyBytes: 0` 从「每个请求 413」、`maxBufferedBytes: 0` 从
+    「流活不过一帧」变成构造期 `Error` —— 同样，没有任何**本来能工作**的配置会因此变坏。
+    ⚠️ 顺带挡掉一类事故：`Number('') === 0`，从**空的环境变量**读出来的配置会静默变成「拒绝一切」。
+    三条反向验证（`maxBodyBytes` 放行 0 / `sseWriter` 放行 0 / 去掉透传那道构造期校验）
+    ⇒ 各**恰好 3 / 3 / 2 条红**，不误伤。
+
+**同轮的语义变更（`src/`，四处）** —— 都是「护栏拿到的数不对，而没有任何报错」这一类：
+
+- **`ModelPricing` 新增 `cacheRead?` / `cacheWrite?`**（逐模型缓存乘数，相对 `in`；缺省 `0.1` / `1.25`）。
+  动因：官方缓存写有 **5 分钟 1.25×** 与 **1 小时 2×** 两档，而 `Usage` 是四项**聚合**的、
+  分不出 TTL（SDK 的 `Usage.cache_creation` 有拆分，本框架没把它带上）⇒ 用了
+  `cache_control: { ttl: '1h' }` 的宿主成本会被低估 **37.5%**、`maxCostUsd` 迟触发。
+  缓存读另有逐模型例外（Opus 5.5 = 0.05×、Fable 5.1 / Mythos 5.1 = 0.025×）。
+  ⇒ **这是公开面变更**（新增两个可选字段），非破坏性。
+- **`estimateMessages`：图片块按上界估**。此前 `contentToText` 只认 text / tool_use / tool_result，
+  `image` 落进 `default: JSON.stringify(b)` ⇒ 一张 200KB base64 截图被估成 **50054** token
+  （官方图片计费按**尺寸**：28×28 像素 = 1 visual token，与文件字节数无关）。现在按「长边缩到
+  1568px」的**上界 3136 token/块**计 —— 宁可高估（`maxTotalTokens` 提前拦）也不低估（护栏迟触发）。
+  未知块仍按**未截断**负载估（同向理由）。
+- **`renderMessages` / 摘要路径：绝不展开 base64**。图片块只给 `[image image/png ~150000B]` 这类
+  占位、未知块截断到 200 字符并留计数 —— 否则等于把整段图片 payload 当输入 token 发给宿主注入的
+  compaction 摘要模型（真金白银 + 摘要质量一起毁）。
+- **`buildPricing`：非法乘数也校验**（**只校验一半等于没校验** —— 乘数写错照样出 NaN 成本、
+  照样让 `maxCostUsd` 变摆设）；错误文案改用 `showValue` / `showObject`，把 `NaN` 印成 `NaN`
+  而不是 `JSON.stringify(NaN)` 的 `null`（宿主传的确实是 `NaN`，印成 `null` 会让人去找一个
+  不存在的 `null`）。口径订正：这个错**不抛给调用方**，它发生在**第一次 llm 调用之前**
+  （client 一次都不被调用）。
+- **`src/transport/http.ts` 两处编译期穷尽性断言**（`TaskStreamFrame` 与 `HttpRoute`）：新增成员
+  时**编译失败**，而不是被静默丢帧 / 静默吞成 404。
+- 文档口径同步：`priceOverrides` 的「模型名**精确匹配**」（不带日期的别名与带日期的快照是两个键，
+  照抄官方文档的带日期 id 最容易踩）；`cacheRead: 0` 的语义是「**乘数为零**」而不是「未设」
+  （实现用 `??` 而非 `||`，已钉）。以上均记入 `docs/usage-guide.md` 与 §1 的守卫行。
+
+**收尾：两条 CI 独有必需检查在冻结树上真跑了一遍 —— 顺手清掉一处「写下来的做不到」**
+
+- `npm run e2e:mcp` ⇒ `✅ D1/D2/D3/D4 真端到端证明全绿`。本机有 `uvx` ⇒ 走的是**真**第三方
+  server（`uvx mcp-server-time`，2 个工具）。⚠️ 方向与直觉**相反**：CI 的 `e2e-mcp` job
+  **必定走回落夹具**（runner 上没有 uvx，见 `ci.yml` 注释）⇒ 这条是**本机覆盖更强**，
+  不是「只有 CI 算数」。
+- 导入下限：`npx node@18 scripts/check-import-floor.mjs` ⇒ `OK Node 18.20.8：包可导入（79 导出）`；
+  `node@20` ⇒ 20.20.2 同款；本机 Node 22 ⇒ `SqliteTaskStore 可用`。三条都 exit 0（§1.4 已记）。
+- 由此发现 `scripts/verify-all.sh` 的收尾注释仍在说这两个检查「**本地无法等价复现**」——
+  **那句话本身没验过**；且同一段里写死的计数（「另有 3 个」）与紧随其后的清单（只列了 2 个）
+  **自相矛盾**。已改成：清单 + **从清单长度算出的计数**（与同文件上一行「计数**算出来**而不是
+  写死」的纪律对齐），并把两个检查的**本机跑法**直接写进输出，省得下次再有人把它读成「做不到」。
+- 同类扫描（那句话还活着几处）：`scripts/verify-all.sh` 与
+  `.workbuddy-ai/skills/agentia-verify/SKILL.md` 各一处，均已改。⚠️ 后者**不被 git 跟踪**、
+  **没有任何守卫**。⇒ 教训补进 `docs/guards.md §2`：**把一条教训写进文档时，顺手 grep 一遍
+  那句话本身** —— 文档写了 ≠ 代码改了。
+- 冻结树上的门禁读数：`verify-all.sh` **8/8 全绿**、`npm test` 三套件全绿、
+  `tests/limits.test.ts` **22/22**、`limits.ts` 表 **20 个旋钮**、§2 **活行 0 / 划线 3**；
+  `src/` 净改动 **7 文件 / +233 −35**。
+  ⚠️ §1 行数在登记完本轮那条元守卫后是 **56 行**（11+18+6+21）—— 而**第一次重数时报出 63**，
+  因为那个计数脚本只按 `### ` 分组、把 `## 附：` 与 `## 2.` 的表格算进了上一个 `###`。
+  ⇒ **「靠数」还要加一步：数之前先钉口径** —— 口径不同的两个脚本能在同一天给出 55 / 56 / 63
+  三个都自称「算出来的」数字。
+
+**同一轮还长出一个元守卫：工具链对自己说的话，此前没有任何东西核对**
+
+改上面那句「本地无法等价复现」时发现一个**同族但更贵**的缺口：`scripts/verify-all.sh` 顶部
+自己写着「本脚本的**步骤数**写在 CI 的 job 名里 —— 加/减一步都得同时改 workflow 的 job name
+**和**分支保护，否则 PR 会卡死等一个永不出现的检查」，而这条约定**只有人记得、没有任何门禁**
+（`rg` 过：`tests/` 里没有任何文件读 `verify-all.sh` 或 `ci.yml` 的 job 名）。它退化时的症状不是
+「某个测试红」，而是**所有 PR 永久卡死**。
+
+新增 `tests/scripts/verify-all-wiring.test.ts`（7 条用例）把四件事变成判据：
+
+1. **步骤数 == CI `verify` job 名里写死的那个数字**（名字即必需检查）；
+2. **`ci.yml` 的每个 job 都被交代** —— 跑本链的那个 / 脚本 `ci_only` 清单 / `EXEMPT` 表里带理由豁免，
+   三者之外出现新 job 即红（新加必需检查却不登记 ⇒ 本地全绿而 CI 挂）；
+3. **`ci_only` 没有幽灵 id**，且每条都是 `<job id>|说明`（`verify-all.sh` 的清单为此改成这个形状，
+   打印时用 `${arr[@]#*|}` 剥掉 id 那半截，读者看到的东西不变）；
+4. **收尾消息不得写死计数**（`/另有\s*\d+\s*个/` ⇒ 红）。
+
+⚠️ 豁免不是免检：`deploy-website` 的豁免理由（「只在 main 上跑 ⇒ 不是必需检查」）本身被写成
+可执行形式（`if: github.ref == 'refs/heads/main'`），理由不成立就红 —— 否则「豁免」会变成
+一个越用越宽的筐。
+
+**反向验证 11 条（M54–M64，各恰好点名那条红）**：加第 9 步 / job 名 `8`→`9` / `ci.yml` 新增 job /
+幽灵 id（含**尾逗号**写法）/ 去掉 id 前缀 / `deploy-website` 去掉 `if:` / 收尾写死「另有 3 个」/
+枚举注释换顺序 / 解析锚点改名 / 删掉 `lint` job / 豁免的 job 被改名。
+
+⚠️ **第一版里有一条假守卫（M57 第一次跑是 exit 0）**：解析器只认「整行就是引号字符串」，
+于是把幽灵条目写成 `'no-such-job|…',`（**尾逗号** —— bash 合法、且真的会成为数组的一个条目）
+会被**静默跳过**，幽灵整条隐形而断言照样绿。⇒ 修法不是补一条特例，而是把**解析器的盲区本身**
+变成判据：数组内任何非注释行只要认不出就**响亮失败**，绝不跳过（跳过的条目 = 清单里悄悄少一条）。
+这条与 §2 记的三种假守卫同族，但形状是新的：**不是断言写错，是样本被解析器吃掉了**。
+
+**同一轮里顺着「同一句话还有几处」把副本也扫了**：`verify-all.sh` 收尾那处刚修好，
+「本链一共几步 / 必需检查是哪些」这句话在仓库里还有 **9 处抄写** —— `CONTRIBUTING.md` ×2
+（`# 8 步验证链` / `# 8 步：typecheck + lint → …` 的**步骤枚举**）、`AGENTS.md` ×5
+（`上面 8 步` ×3 + 引用的 job 名 + `，8 步 ——`）、PR 模板 ×2（`8/8 全绿` ×2），
+而此前**只有 CI job 名那一份**被机器核过。全仓 `rg` 之后确认没有别的落点（`ARTICLE-*.md` /
+`CODE-REVIEW-*.md` 是未入库草稿；`docs/spec.md` / `CHANGELOG` 是只增不改的记录）。
+
+同一个文件因此扩到 **13 条用例**，新增 6 条：
+
+- **步数的每一处抄写 == 真值**（6 种写法：`N/N 全绿` / `上面 N 步` / `verify-all N 步` /
+  `N 步验证链` / `# N 步：` / `，N 步 ——`），每份文档还带**防真空**下限；
+- `CONTRIBUTING.md` 的「`# N 步：…`」**步骤枚举**与脚本步骤一一对应（第三份步骤清单，
+  与 `ci.yml` 那条 `→` 注释同款；⚠️ 它是**给人看的描述**，第 1 步写作 `typecheck + lint`
+  而命令里没有 `lint` 这个词 ⇒ 判据放宽到「该步任一词命中」，**射程如实标注**：抓顺序错/漏项，
+  抓不到措辞漂移）；
+- `CONTRIBUTING.md` 的「CI 必须全绿才能合并（`verify` · `lint` · `import-floor` · `e2e:mcp`）」
+  == 真实必需检查集合（**集合相等**，多一个幽灵或少一个新 job 都红）；
+- 坑表那行「本地过了但 CI 挂了」要点名每一个 CI 独有检查；
+- `AGENTS.md` 的 CI 段落要点名每一个 job、且**圈码数 == job 数**（这份是 agent 读的说明，
+  数字过期会直接误导自动读者）；
+- **兜底扫描**：任何同时点名 ≥3 个 CI job 的 markdown 必须登记进 `REQUIRED_LIST_FILES`，
+  或被 `EXEMPT` 表**带理由**挡掉（`CHANGELOG` / `docs/spec.md` / `docs/guards.md` / `docs/plans/**`
+  —— 全是「只增不改的记录」）。
+
+⚠️ **第二处假守卫（M73 第一次跑也是 exit 0）**：兜底扫描第一版用 `git ls-files` 取文档，
+而**新写的文档在 `git add` 之前不在索引里** ⇒ 扫不到它 ⇒ 本地绿、提交后 CI 才红。
+已改成 `git ls-files --cached --others --exclude-standard`（已入库 ∪ 未入库但未被 ignore）。
+⇒ 两条合起来是同一个教训：**修的是量具，不是断言**。
+
+新增反向验证 **10 条（M65–M74）**，各恰好点名对应断言：PR 模板 `8/8`→`9/8` /
+`AGENTS.md`「上面 8 步」→7 步 / `CONTRIBUTING` 步骤枚举换顺序 / `# 8 步`→`9 步` /
+必需检查列表删一项 / 加一个幽灵 / 坑表那行删掉 `import-floor` / `AGENTS.md` 段落里 job 改名 /
+**新建一份点名 5 个 job 的文档** / `AGENTS.md` 的 CI 段落锚点改坏。
+⚠️ 第 8 条（「`# 8 步`→`9 步`」）只咬「步数」那条、**不咬**枚举那条 —— 两条断言确实独立。
+
+**同日第四批：注册表自己的完整性 —— 「盘上有守卫却没列」**
+
+`guards-registry.test.ts` 一直只查「清单里写的路径在不在盘上」（清单 → 盘），
+查不出**反向**：盘上有守卫、清单里没登记。实测 `tests/**` + `packages/*/test` 共 124 个
+`*.test.ts`，只有 47 个在表里 —— 但其余 77 个绝大多数是普通行为测试，按文件登记会造出 77 条豁免
+（噪音）。精确版：**两个横切守卫货架**（`tests/architecture/` · `tests/docs/`）上的文件
+必须全在表里 —— 它们按构造就是守卫，漏登记就是真缺口。2026-09-26 实测到 **5 个**：
+`tests/docs/observability.test.ts` / `trace-view-readme.test.ts` / `website-css.test.ts` /
+`website-playground-expand.test.ts` / `website-scrollspy.test.ts`。
+
+同时发现两个已有守卫的**子串匹配漏洞**：`observability.test.ts` 用 `doc.includes(f)`（子串）、
+`trace-view-readme.test.ts` 也用 `readme.includes(n)`（子串）。后者把 `rawArg` 改写成
+`rawArgument` 时**照样绿**（M76 exit 0）—— 不是断言写错，是判据太弱。都改成
+**集合相等**（源码导出名集合 vs 文档表格第一列集合，双向求差），并补了反向方向
+（文档里加一个源码没有的导出 ⇒ 红）。**反向验证过 5 条**：`observability` 文档里工厂名改成超串
+（`sqliteTraceSinkV2`）⇒ 红；`trace-view-readme` 改名（`rawArg`→`rawArgument`）⇒ 红、
+整词删掉 `rawArg` ⇒ 红、表里加 `ghostExport` ⇒ 红；`website-css` 改回 `overflow-wrap: anywhere`
+⇒ 红；`playground-expand` 游标里 `rawArg` 换 `fmtArg` ⇒ 红；`scrollspy` 底部判定改成永不成立
+⇒ 红。
+
+`guards-registry.test.ts` 新增第 3 条用例（货架完整性），3/3 绿。
+`docs/guards.md` §1.4 因此加 **2 行**（文档导出表 / 官网渲染细节），§1 从 56 → **58 行**。
+
+**复审补（同日，另一路独立复审）：`renderMessages` 的「不展开 base64」只兑现了一半**
+
+上面那条「**`renderMessages` / 摘要路径：绝不展开 base64**」写的是「图片块只给
+`[image …]` 占位」。而 `ToolResultBlockParam.content` 的联合本身给了**嵌套块数组**形态
+（`string | Array<TextBlockParam | ImageBlockParam | UnknownContentBlockParam>`）——
+**工具返回截图正是生产里最常见的入图路径**（浏览 / 截图 / 渲染类工具都这么回）。
+那一支当时仍走 `JSON.stringify(content)`，实测：一张 200 000 字符 base64 的截图 ⇒
+渲染出 **200 086 字符**（正文里就是原始 base64）、估算 **50 022 token**，与顶层图片块
+（3 138）差 **16 倍**。⇒ 承诺与真路径之间只剩这一个洞，而上面四个方向的用例**全都只喂顶层
+图片块**，所以全绿。（这也解释了为什么 `openaiStream.test.ts` 那两条同类分析同样没照出它：
+两处分析都在看**顶层**块的走向。）
+
+修法：`tool_result` 的正文**逐块递归** —— 渲染走 `blockToText`（图片给占位、未知块有界截断），
+估算走 `blockTokens`（内嵌图片同按尺寸上界 3 136）；字符串形态与「正文缺席」的既有口径不动
+（缺席仍返回 `undefined`，由调用方走有界 JSON 回退）。
+
+新用例两个方向各一条断言（渲染 < 400 字符且不含 base64；估算 ≥ 3 136 且与顶层形状差 ≤ 3），
+**两条都做过变异**：退回 `JSON.stringify` ⇒ 渲染那条红；关掉内嵌估算分支 ⇒ 估算那条红。
+⚠️ **该估算断言第一版是不咬人的**：只写「< 4000」的**单边**判据，而退回实现后值回落成占位
+文本的十几个 token，同样满足它 —— 「别高估」与「别低估」是两个方向，断言必须两边都写。
+（与 §8.9 的「把这条修复改坏，我这条断言里哪一个字会先变？」同一条纪律。）
+
+**同一族里还有第二个入口：`tool_use` 的**参数**（同上，已修）**
+
+「载荷型结构」在渲染路径上一共三处：图片块（原有）、`tool_result` 的嵌套正文（上一条）、
+以及**工具参数**。最后一处此前是裸 `JSON.stringify(tu.input)` —— `write_file` 的正文、
+`screenshot` 的 base64、大 JSON 参数都从这里进摘要器。修法：
+`TOOL_INPUT_CHARS = 2000`（比未知块的 200 宽松一个数量级，理由写在常量上：参数的前若干字符
+是**调用意图**，摘要需要它；2000 字符 ≈ 500 token 够不着任何 base64 级载荷），超限截断**并留
+计数**；`blockTokens` 那一侧仍按**未截断**参数估（低估 ⇒ `maxTotalTokens` 迟触发，方向相反，
+两边刻意不统一）。新用例：渲染有界 + 不含 base64 + 估算 > 10 000 + **小参数原样不被截断**
+（阳性对照的另一半 —— 否则「一律截断」也能满足前三条，而截掉正常调用的参数会实打实毁掉摘要）。
+两条变异（渲染退回无界 / 估算改用渲染后的有界值）各恰好点名那 1 条红。
+
+⚠️ **刻意**保留的不截断项（写进代码注释，避免下一个人把它当成漏网）：`text` 块与
+`tool_result` 的**字符串正文**不封顶 —— 它们是摘要器真正要读的「话」，截断等于让 compaction
+**永久丢掉**历史信息（而压缩本身不可逆）。有界化的对象是**载荷型**结构。
+
+⇒ 本轮复审在这一族里净得 **2 个 MAJOR**（都属「承诺与真路径的缝」：承诺「绝不展开 base64 /
+产物有界」，而真入口只覆盖了一个），共 4 处变异全部咬人。
+
+**同日两件交付（同一轮复审的后续）：把「能不能发」收成一条判据（A）+ 把 deploy 镜像纳入 CI 构建（B）**
+
+**A · 评测即发布闸门（配方 + 示例 + 守卫，`src/` 零改动）** —— 定位句里唯一**没有产物回答**的动词：
+「trace 决定你敢不敢上线」目前有「看」（trace / `report` / `diff` / `harvest`），没有「判」。
+`EvalReport.ok` 只回答「本次用例全过」，回答不了「比上一版好还是坏」，更防不住「把失败用例删掉」。
+
+- 判据在 `examples/eval-gate/src/gate.ts`（**只消费公共类型面**）：**回归**（基线通过 → 这次失败）与
+  **删用例**（基线里有 → 这次没跑）判不通过；**新增用例 / 修好**放行但记账；
+  **基线里本来就失败 ⇒ 放行** —— 闸门拦的是**新的**坏消息，不替你把历史债一次清完。
+  退出码三档：`0` 通过 / `1` 有回归或删用例 / `2` 基线坏了 —— **环境错误不该被读成「agent 退化了」**。
+- 配套四件：`docs/eval-gate.md`（规则 / CI 接线 / 边界，并**如实标注它不是 roadmap 候选、是审阅读出的缺口**）、
+  `examples/eval-gate/`（四套件：工具顺序 / 成本精确值 / 工具失败 / **刻意留一条已知失败**；
+  全部 `scriptedClient` ⇒ 离线、确定、不烧 token —— 要花钱会抖的闸门没人敢当发布判据）、
+  `tests/docs/eval-gate.test.ts`（9 条纯函数断言 + 文档 ↔ 示例导出面双向覆盖）、
+  `scripts/e2e-examples.ts` 第 9 步（真构建 + 喂三份**被改坏的**基线）。
+- **反向验证 3 条**：判据泄成 `EvalReport.ok` 的转发 ⇒ **3 条红**；`ok` 去掉 `removed` 条件 ⇒ 恰好 1 条；
+  空基线改为静默返回 ⇒ 恰好 1 条；产物层三份坏基线的退出码实测 `1 / 1 / 2`。
+  ⇒ 这条守卫守的是「**判据本身不许退化**」，而不是「用例跑没跑过」。
+
+**B · `examples/deploy` 的镜像进 CI（非必需检查）+ 如实标注**
+
+- 事实：`docker` 在本仓 CI 配置里**出现 0 次**，本机也没有 docker ⇒ 定位里「交付可上线的服务」那一脚的
+  参考实现，**镜像从来没被任何门禁构建过**（服务本身由 `scripts/e2e-deploy.ts` 真跑守着：三种触发 +
+  `SIGKILL` 后续跑；缺的只有**打包这一跳**）。
+- 处置：新增 CI job `docker-image`（`docker build -f examples/deploy/Dockerfile .`，上下文 = 仓库根）。
+  它**不是**必需状态检查（本机无法等价复现 ⇒ **首次绿就是它的验证**），豁免登记在
+  `tests/scripts/verify-all-wiring.test.ts` 的 `EXEMPT`，且**理由写成可执行形式**
+  （`mustMatch: /docker build/` + 「将来本地能等价复现就该挪进 `ci_only`」）。
+- 观测口径同步三处：`AGENTS.md` 的 CI 段落（六个 job、圈码数 == job 数）、
+  `examples/deploy/README.md` 新增「镜像的验证状态（如实标注）」（**服务有门禁、镜像只有这一次构建**）、
+  `ci.yml` 的 job 注释（为什么不是必需检查）。
+- 如实标注的未验证面：**本机跑不了这个 job**，所以「镜像能不能建起来」在本会话里**没有**本地证据 ——
+  它由 CI 首次运行给出结论。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

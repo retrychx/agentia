@@ -36,6 +36,9 @@ import { metricsSink } from '../src/integrations/metrics.js';
 import { DrainGate } from '../src/transport/drain-gate.js';
 import { Scheduler } from '../src/transport/scheduler.js';
 import { TaskEventStreams } from '../src/transport/task-events.js';
+import { createHttpHandler } from '../src/transport/http.js';
+import { sseWriter } from '../src/transport/sse.js';
+import type { ServerResponse } from 'node:http';
 import { endTurnMsg, mockClient, toolUseMsg } from './helpers.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -52,6 +55,27 @@ function slowApp(ms: number): AppCallable {
       } as never;
     },
   };
+}
+
+/** 模拟背压的假 res：write() 恒回报「没消费完」，writableLength 随写入增长 */
+function stalledRes(): ServerResponse & { out: string; ended: boolean; writableLength: number } {
+  const rec = {
+    out: '',
+    ended: false,
+    writableLength: 0,
+    writeHead() {
+      return rec as unknown as ServerResponse;
+    },
+    write(chunk: string) {
+      rec.out += chunk;
+      rec.writableLength += chunk.length;
+      return false;
+    },
+    end() {
+      rec.ended = true;
+    },
+  };
+  return rec as unknown as ServerResponse & typeof rec;
 }
 
 const OBJ = { type: 'object', properties: {} } as const;
@@ -285,6 +309,72 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     return 'invalid';
   },
 
+  async 'Scheduler.every.maxInFlight'() {
+    // 0 / 负数：闸门判据是 `inFlight.size >= maxInFlight` ⇒ 0 时**恒真**，每次 tick 都跳过，
+    // 周期任务「既不跑也不失败」。与 `AsyncRunner.concurrency` 同族，同款构造期响亮失败。
+    const scheduler = new Scheduler(new AsyncRunner(slowApp(1)));
+    assert.throws(() => scheduler.every(10, 'x', { maxInFlight: 0 }), /必须为正数/);
+    assert.throws(() => scheduler.every(10, 'x', { maxInFlight: -1 }), /必须为正数/);
+
+    // 证据（不是「我知道」）：用一个只记派发次数的 runner 真跑一段。
+    // 任务停在 running ⇒ 缺省 1 会在首次派发后把闸门占满，而 Infinity = 关闸门、每 tick 都派发。
+    const dispatch = async (maxInFlight?: number): Promise<number> => {
+      const calls: number[] = [];
+      const stub = {
+        submit: () => ({ taskId: `t${calls.push(calls.length)}`, status: 'running' as const }),
+        poll: (taskId: string) => ({ taskId, status: 'running' as const }),
+      };
+      const s = new Scheduler(stub as never);
+      const h = s.every(5, 'x', maxInFlight === undefined ? {} : { maxInFlight });
+      await sleep(40);
+      h.cancel();
+      s.stop();
+      return calls.length;
+    };
+    assert.equal(await dispatch(), 1, '缺省 1：首个任务占满闸门后不再派发');
+    assert.ok(
+      (await dispatch(Number.POSITIVE_INFINITY)) > 1,
+      'Infinity = 关闸门（合法）：每个 tick 都派发 —— 阳性对照，防「一律抛错」蒙过这条',
+    );
+    return 'invalid';
+  },
+
+  async 'HttpHandlerOptions.maxBodyBytes'() {
+    // 判据是 `size > maxBytes` ⇒ 0 时任何字节都超限 ⇒ 所有带 body 的请求 413
+    // （实测 POST /run 带 {} / {"a":1} 都是 413）。与同一接口里的 maxConcurrentRuns
+    // （0 ⇒ 全部 503）同款：配置错误，构造期响亮失败。
+    assert.throws(() => createHttpHandler(slowApp(1), { maxBodyBytes: 0 }), /必须为正数/);
+    assert.throws(() => createHttpHandler(slowApp(1), { maxBodyBytes: -1 }), /必须为正数/);
+    assert.throws(() => createHttpHandler(slowApp(1), { maxBodyBytes: Number.NaN }), /必须为正数/);
+    // 阳性对照：缺省（1 MiB）与 Infinity（不限）都必须仍构造成功
+    assert.equal(typeof createHttpHandler(slowApp(1)), 'function', '缺省必须构造成功');
+    assert.equal(
+      typeof createHttpHandler(slowApp(1), { maxBodyBytes: Number.POSITIVE_INFINITY }),
+      'function',
+      'Infinity = 不限，必须构造成功',
+    );
+    return 'invalid';
+  },
+
+  async 'SseWriterOptions.maxBufferedBytes'() {
+    // 判据是**写入前**的 `pending > limitBytes` ⇒ 0 时第 1 帧照写、**第 2 帧必收口**
+    // （实测：closed=true / ended=true / onBackpressure 回调 1 次）—— 流活不过一帧。
+    assert.throws(() => sseWriter(stalledRes(), { maxBufferedBytes: 0 }), /必须为正数/);
+    assert.throws(() => sseWriter(stalledRes(), { maxBufferedBytes: -1 }), /必须为正数/);
+    // 透传那条也要在**构造期**拦（不然要等第一个 SSE 请求才炸，那时响应头已写出）
+    assert.throws(
+      () => createHttpHandler(slowApp(1), { sseMaxBufferedBytes: 0 }),
+      /必须为正数/,
+      'createHttpHandler 的 sseMaxBufferedBytes 透传也必须在构造期拦',
+    );
+    // 阳性对照：Infinity = 不限 —— 必须构造成功，且连写两帧都**不因积压收口**
+    const w = sseWriter(stalledRes(), { maxBufferedBytes: Number.POSITIVE_INFINITY });
+    w.event('a', 1);
+    w.event('b', 2);
+    assert.equal(w.closed, false, 'Infinity = 不限：连写两帧都不该收口');
+    return 'invalid';
+  },
+
   async 'createAnthropicClient.timeout'() {
     assert.throws(() => createAnthropicClient({ timeout: 0 }), /正的有限毫秒数/);
     assert.throws(() => createAnthropicClient({ timeout: -1 }), /正的有限毫秒数/);
@@ -388,6 +478,29 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
         'AsyncRunner.streamBufferEvents',
         () => new AsyncRunner(slowApp(1), { streamBufferEvents: 0 }),
         /0 没有「缓冲几条」的读法/,
+      ],
+      // 下面两条是 2026-09-26 补的：`Scheduler.every` 的校验此前**手写**文案，
+      // 表里那两句 `zeroClause` 没有任何调用点 ⇒ 表说「有构造期校验的旋钮由实现代码
+      // 直接插进错误消息里」，对它两条都不成立（单源断了一头）。
+      [
+        'Scheduler.every.intervalMs',
+        () => new Scheduler(new AsyncRunner(slowApp(1))).every(0, 'x'),
+        /0 会空转/,
+      ],
+      [
+        'Scheduler.every.maxInFlight',
+        () => new Scheduler(new AsyncRunner(slowApp(1))).every(10, 'x', { maxInFlight: 0 }),
+        /0 = 没有在飞名额/,
+      ],
+      [
+        'HttpHandlerOptions.maxBodyBytes',
+        () => createHttpHandler(slowApp(1), { maxBodyBytes: 0 }),
+        /0 = 每个带 body 的请求都 413/,
+      ],
+      [
+        'SseWriterOptions.maxBufferedBytes',
+        () => sseWriter(stalledRes(), { maxBufferedBytes: 0 }),
+        /0 = 流活不过一帧/,
       ],
     ];
     for (const [knob, run, expected] of cases) {

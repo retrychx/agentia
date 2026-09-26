@@ -92,6 +92,26 @@ function stalledRes(): ServerResponse & {
 }
 
 describe('sseWriter 背压（下游连得上但不读）', () => {
+  it('maxBufferedBytes 校验：0 = 流活不过一帧（配置错误）⇒ 构造期抛错；Infinity 合法', () => {
+    // 2026-09-26 顺着「`0` 的语义」这一族扫出来的：判据是**写入前**的 `pending > limitBytes`，
+    // 0 时第 1 帧照写（pending 还是 0）、**第 2 帧必收口** —— 流活不过一帧，没有正当用法。
+    // 这个旋钮的定位是「只拦连上但不读的病态消费者」，0 会把**每个**消费者都判成病态。
+    assert.throws(() => sseWriter(stalledRes(), { maxBufferedBytes: 0 }), /maxBufferedBytes/);
+    assert.throws(() => sseWriter(stalledRes(), { maxBufferedBytes: -1 }), /maxBufferedBytes/);
+    assert.throws(
+      () => sseWriter(stalledRes(), { maxBufferedBytes: Number.NaN }),
+      /maxBufferedBytes/,
+    );
+    // 阳性对照：缺省（8 MiB）与 Infinity（不限）都必须仍可用，且连写两帧都不收口
+    for (const opts of [{}, { maxBufferedBytes: Number.POSITIVE_INFINITY }]) {
+      const res = stalledRes();
+      const w = sseWriter(res, opts);
+      w.event('a', 1);
+      w.event('b', 2);
+      assert.equal(w.closed, false, `${JSON.stringify(opts)} 不该因积压收口`);
+    }
+  });
+
   it('积压超过上限即收口：不再无限缓冲，并回调 onBackpressure', () => {
     const res = stalledRes();
     const seen: Array<{ bufferedBytes: number; limitBytes: number }> = [];

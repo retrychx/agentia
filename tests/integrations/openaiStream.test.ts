@@ -390,6 +390,86 @@ describe('OpenAI 适配器：多模态块（C3）', () => {
       .finalMessage();
     assert.equal(requests[0].json.messages[0].content, '只有文本');
   });
+
+  /**
+   * Q1（PR 自检第 1 题：成对实现）的反向验证落点。
+   *
+   * 全仓有两处 `JSON.stringify(b)` 兜底：`engine/trimming.ts` 与这里。**两处不是同一个东西**：
+   *   - trimming 是**决策路径**（估算/预算），兜底必须**有界** —— 否则一张 base64 截图
+   *     会把预算算爆、把摘要 prompt 撑成 20 万字符（已修，见 trimming.test.ts）；
+   *   - 这里是**转发路径**：内容真的交给厂商，厂商自己的 tokenizer 与上限说了算。
+   *     注释写的是「宁可把原文交给模型，也不静默丢内容」，所以**刻意不截断**。
+   *
+   * 那么「转发路径不截断」为什么仍然不是缺陷？**因为大载荷根本走不到兜底** ——
+   * 图片块被 `imageUrlOf` 接走了。下面两条把这两件事各自钉死：谁改坏了都当场红。
+   */
+  it('未知块：原样 JSON 携带，不静默丢内容（转发路径刻意不截断）', async () => {
+    const { fetchImpl, requests } = sseFetch(
+      sseBody([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']),
+    );
+    // 模拟厂商新块型：`UnknownContentBlockParam` 只有 `type`，多出来的字段靠断言读
+    const vendorBlock = { type: 'vendor_future_block', payload: 'x'.repeat(200) };
+    await createOpenAIClient({ fetchImpl })
+      .messages.stream({
+        model: 'gpt-x',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: [vendorBlock] } as unknown as MessageParam],
+      })
+      .finalMessage();
+    const content = requests[0].json.messages[0].content;
+    assert.equal(typeof content, 'string', '无图片 → 回落字符串，未知块是其中一段');
+    assert.ok(
+      content.includes('vendor_future_block') && content.includes('x'.repeat(200)),
+      `未知块要原样进请求体（不丢内容），实际收到: ${String(content).slice(0, 120)}`,
+    );
+  });
+
+  it('base64 大图只以 data URL 出现一次 —— 走不到 JSON 兜底，不会把载荷复制进文本件', async () => {
+    const B64 = 'A'.repeat(20_000);
+    const { fetchImpl, requests } = sseFetch(
+      sseBody([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']),
+    );
+    await createOpenAIClient({ fetchImpl })
+      .messages.stream({
+        model: 'gpt-x',
+        max_tokens: 8,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '看图' },
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: B64 },
+              } as ImageBlockParam,
+            ],
+          } as MessageParam,
+        ],
+      })
+      .finalMessage();
+
+    const parts = requests[0].json.messages[0].content as Array<{
+      type: string;
+      text?: string;
+      image_url?: { url: string };
+    }>;
+    assert.deepEqual(
+      parts.map((p) => p.type),
+      ['text', 'image_url'],
+      '大图必须落在 image_url 件上',
+    );
+    assert.equal(parts[1].image_url?.url, `data:image/png;base64,${B64}`);
+    assert.ok(
+      !parts.some((p) => p.type === 'text' && (p.text ?? '').includes(B64)),
+      '文本件里不该出现 base64 —— 出现即说明它又被 JSON 兜底复制了一份',
+    );
+    // 最强的一条：整份请求体里载荷**只出现一次**（兜底若同时命中，这里会变成 2）
+    assert.equal(
+      JSON.stringify(requests[0].json).split(B64).length - 1,
+      1,
+      'base64 在整份请求体里只应出现一次（data URL）',
+    );
+  });
 });
 
 /**

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   defaultEstimateTokens,
   estimateMessages,
+  renderMessages,
   trimToolPairs,
   compactMessages,
   createBudgetPolicy,
@@ -336,5 +337,171 @@ describe('增量 token 计数（createTokenCounter，预算策略的快路径）
     count(sample());
     const other = [{ role: 'user', content: '完全不同的历史' }] as MessageParam[];
     assert.equal(count(other), estimateMessages(other));
+  });
+});
+
+/**
+ * 图片块 / 未知块：**渲染要有界、估算要不低估**（两个方向刻意分开算）。
+ *
+ * 此前 `contentToText` 只认 text / tool_use / tool_result，`image` 块落进
+ * `default: JSON.stringify(b)` —— 一张 200KB base64 截图被估成 5 万 token，且**整段原样**
+ * 交给 `compactMessages` 的摘要模型（真金白银的输入 token + 被噪声毁掉的摘要）。
+ * `docs/usage-guide.md` 把 `image` 列为 `ContentBlockParam` 的一等成员，所以这不是边角输入。
+ */
+describe('图片块 / 未知块：渲染有界、估算不低估', () => {
+  const B64 = 'iVBORw0KGgoAAAANSUhEUg'.padEnd(200_000, 'A');
+  const imageMsg = (b64: string): MessageParam => ({
+    role: 'user',
+    content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } },
+      { type: 'text', text: '（截图）' },
+    ] as never,
+  });
+
+  it('估算不随 base64 长度增长（图片按尺寸上界，不按文件字节数）', () => {
+    const one = estimateMessages([imageMsg(B64)]);
+    const four = estimateMessages([imageMsg(B64.repeat(4))]); // 体积 ×4
+    assert.equal(four, one, '文件大 4 倍，估算必须一样 —— 图片计费按尺寸、与字节数无关');
+    assert.ok(one < 4000, `图片按上界估算（实测 ${one}），不该被 base64 拉成 5 万`);
+    assert.ok(one >= 3136, '上界至少覆盖官方「长边缩到 1568px」的单图上界');
+  });
+
+  it('渲染只给占位，绝不把 base64 交给摘要模型', async () => {
+    const rendered = renderMessages([imageMsg(B64)]);
+    assert.ok(!rendered.includes(B64), '渲染文本里不得出现原始 base64');
+    // 200000 个 base64 字符 = 150000 字节（4 字符 = 3 字节）—— 占位只报大小，不报内容
+    assert.match(rendered, /\[image image\/png ~150000B\]/);
+    assert.ok(rendered.length < 200, `渲染必须是有界的（实测 ${rendered.length} 字符）`);
+
+    let seen = '';
+    await compactMessages([imageMsg(B64), { role: 'assistant', content: 'x' }], {
+      keepRecent: 1,
+      summarize: (h) => {
+        seen = h;
+        return 'S';
+      },
+    });
+    assert.ok(!seen.includes(B64), 'summarize 收到的文本里不得出现原始 base64');
+  });
+
+  it('未知块：渲染截断、但估算按**未截断**负载算（低估是危险方向）', () => {
+    const msg: MessageParam = {
+      role: 'user',
+      content: [{ type: 'vendor_future_block', payload: 'x'.repeat(50_000) }] as never,
+    };
+    const rendered = renderMessages([msg]);
+    assert.ok(rendered.length < 400, `渲染要有界（实测 ${rendered.length}）`);
+    assert.match(rendered, /共 \d+ 字符/, '截断要留计数，不能静默丢');
+    assert.ok(
+      estimateMessages([msg]) > 10_000,
+      '估算按未截断负载 —— 未知块可能带大 payload，低估会让 maxTotalTokens 迟触发',
+    );
+  });
+
+  it('URL 图与厂商新源型也有占位（不落到 JSON.stringify）', () => {
+    const url = renderMessages([
+      {
+        role: 'user',
+        content: [{ type: 'image', source: { type: 'url', url: 'https://x.test/a.png' } }] as never,
+      },
+    ]);
+    assert.match(url, /\[image url https:\/\/x\.test\/a\.png\]/);
+    const other = renderMessages([
+      { role: 'user', content: [{ type: 'image', source: { type: 'file_id' } }] as never },
+    ]);
+    assert.match(other, /\[image file_id\]/);
+  });
+
+  it('tool_result **内嵌**图片块：同一条口径（渲染有界、估算按尺寸上界）', async () => {
+    // 2026-09-26 复审补。为什么单拎一条：这是**生产里最常见的入图路径** —— 工具返回截图时
+    // 正文是 `[image]` 块数组（`ToolResultBlockParam.content` 的联合就给了这个形态），
+    // 而不是消息顶层的图片块。此前 `tool_result` 走 `JSON.stringify(content)` ⇒ 实测渲染出
+    // **200 086 字符、含原始 base64**、估算 **50 022 token**（与顶层图片块的 3 138 差 16 倍），
+    // 而 `docs/usage-guide.md` / `api.html` 已写下「渲染 / 摘要侧只给 `[image …]` 占位、
+    // **不展开 base64**」⇒ 承诺与真路径之间只剩这一个洞（顶层图片有守卫、内嵌没有）。
+    const nested: MessageParam = {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 't1',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: B64 } },
+          ],
+        },
+      ],
+    } as never;
+
+    const rendered = renderMessages([nested]);
+    assert.ok(!rendered.includes(B64), '渲染文本里不得出现内嵌图片的原始 base64');
+    assert.ok(rendered.length < 400, `渲染必须有界（实测 ${rendered.length} 字符）`);
+    assert.match(rendered, /\[image image\/png ~150000B\]/, '内嵌图片也要给占位');
+    const tokens = estimateMessages([nested]);
+    assert.ok(
+      tokens >= 3136,
+      `内嵌图片必须按尺寸**上界**估（实测 ${tokens}）—— 退回「按占位文本估」只有十几个 token，会低估成本`,
+    );
+    assert.ok(tokens < 4000, `内嵌图片按尺寸上界估（实测 ${tokens}，旧实现是 5 万）`);
+    // 与顶层图片块**同一条口径**：两种形状的估算差只该是块自身的开销。
+    // 旧实现差 16 倍（50 022 vs 3 138）—— 那意味着预算行为随「图片挂在哪里」漂移。
+    const topTokens = estimateMessages([imageMsg(B64)]);
+    assert.ok(
+      Math.abs(tokens - topTokens) <= 3,
+      `内嵌与顶层两种形状的估算必须同口径（实测 ${tokens} vs ${topTokens}）`,
+    );
+
+    // 真路径：摘要器收到的正文同样不得含 base64（`compactMessages` 把 `renderMessages`
+    // 的产物整段交给 summarize —— 这就是「真金白银」那一跳）
+    let seen = '';
+    await compactMessages([nested, { role: 'assistant', content: 'x' }], {
+      keepRecent: 1,
+      summarize: (h) => {
+        seen = h;
+        return 'S';
+      },
+    });
+    assert.ok(!seen.includes(B64), 'summarize 收到的文本里不得出现内嵌图片的原始 base64');
+
+    // 副作用对照：**纯文本**正文的渲染口径不许被改写（既有形态仍是 JSON 字符串化）
+    const plain = renderMessages([
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r' }],
+      } as never,
+    ]);
+    assert.match(plain, /"r"/, '文本正文照旧 —— 这条用来防「顺手把老口径也改了」');
+  });
+
+  it('tool_use 的参数：渲染有界（blob 型参数不许灌进摘要器）、估算仍按未截断负载', () => {
+    // 2026-09-26 复审再补 —— 同一个「载荷型结构」家族里还剩这一处：**工具参数**。
+    // `write_file` 的正文、`screenshot` 的 base64、大 JSON 参数都从这里进渲染，
+    // 而它此前是裸 `JSON.stringify(tu.input)`（无上界），与上面两个洞同一类。
+    const B64ARG = 'iVBORw0KGgo'.padEnd(200_000, 'A');
+    const big: MessageParam = {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 't1', name: 'screenshot', input: { data: B64ARG } }],
+    } as never;
+
+    const rendered = renderMessages([big]);
+    assert.ok(!rendered.includes(B64ARG), '参数里的 base64 不得原样进渲染');
+    assert.ok(rendered.length < 2200, `渲染必须有界（实测 ${rendered.length} 字符）`);
+    assert.match(
+      rendered,
+      /…（共 \d+ 字符）/,
+      '截断要留计数 —— 静默丢会让摘要以为参数本来就这么短',
+    );
+    // ⚠️ **估算方向相反**：按未截断的参数算（低估 ⇒ `maxTotalTokens` 迟触发）。
+    const tokens = estimateMessages([big]);
+    assert.ok(tokens > 10_000, `估算按未截断参数（实测 ${tokens}）—— 渲染有界 ≠ 估算有界`);
+
+    // 阳性对照的另一半：**小参数不许被截断**（否则「一律截断」也能满足上面几条，
+    // 而把正常调用的参数也截掉会实打实地毁掉摘要质量）
+    const small = renderMessages([
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 't2', name: 'read_file', input: { path: 'src/x.ts' } }],
+      },
+    ] as never);
+    assert.match(small, /read_file\(\{"path":"src\/x\.ts"\}\)/, '小参数原样渲染，无截断、无计数');
   });
 });

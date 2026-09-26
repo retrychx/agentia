@@ -26,6 +26,19 @@ const repoRoot = join(here, '..', '..');
 const DOC = join(repoRoot, 'docs', 'observability.md');
 const SINKS = join(repoRoot, 'examples', 'observability', 'src', 'index.ts');
 
+/**
+ * 名字是否作为**整个标识符**出现在文本里（前后都不能再接 `[\w$]`）。
+ *
+ * ⚠️ 为什么不用 `text.includes(name)`：那是**子串**匹配 —— 文档里把 `sqliteTraceSink` 写成
+ * `sqliteTraceSinkV2`（旧名是新名的前缀）时 `includes` 依旧为真，而文档里其实已经**没有**那个
+ * 导出了。2026-09-26 用变异电池实测到这一处漏网（见本文件那条断言的注释）。
+ */
+function identifierIn(text: string, name: string): boolean {
+  return new RegExp(`(?<![\\w$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`).test(
+    text,
+  );
+}
+
 /** 造一条含根 span + 两次 llm.turn + 一个错误 span 的 trace */
 function makeTrace(opts: { traceId?: string; status?: 'ok' | 'error' } = {}): Trace {
   const traceId = opts.traceId ?? 'run-1';
@@ -131,7 +144,12 @@ describe('可观测配方：文档与示例互相覆盖', () => {
       ['jsonLogSink', 'redactSink', 'sampleSink', 'sqliteTraceSink'],
       `意外的导出面: ${factories}`,
     );
-    for (const f of factories) assert.ok(doc.includes(f), `导出 ${f} 未在文档中说明`);
+    for (const f of factories) {
+      // ⚠️ **词边界，不是子串**（2026-09-26 实测的漏网）：`doc.includes(f)` 会把「把文档里的
+      //    工厂名改成**超串**」判成绿 —— `sqliteTraceSink` → `sqliteTraceSinkV2`，旧名是新名的
+      //    前缀，`includes` 照样为真。那时文档里已经**没有**这个名字了，守卫却报「都在」。
+      assert.ok(identifierIn(doc, f), `导出 ${f} 未在文档中说明`);
+    }
   });
 
   it('spec §9.3 不再把「同库存储」说成内建', () => {
