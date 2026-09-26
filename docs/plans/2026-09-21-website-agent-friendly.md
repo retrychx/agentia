@@ -1,7 +1,8 @@
 # 官网 agent 可读性（GEO）加固
 
-> **状态：已落地（2026-09-21）。** 档 A（外围件）+ 档 B（llms 指引）已实现；档 C（每页 `.md`）
-> 与档 D（`Accept: text/markdown` 内容协商）**有意未做**，理由与触发条件见 §6。
+> **状态：四档全部落地。** 档 A（外围件）+ 档 B（llms 指引）实现于 2026-09-21；
+> **档 C（每页 `.md` 变体）+ 档 D（`Accept: text/markdown` 内容协商）实现于 2026-09-26**
+> —— 做法、取舍与实测见 §6（原先那节写的是「有意未做」的理由，现改为落地记录并保留原判断）。
 >
 > **第二轮（同日，修正自己的错）**：第一轮把 URL 口径定成 `.html` 并让守卫锁了绿灯，
 > 线上回读发现 `.html` 恰是 Cloudflare Pages 会 **308** 的形态（§3.2）。已把 `og:url`、
@@ -85,6 +86,36 @@ else if (link.url.startsWith('/')) {
 所以净变化是 **−2 修复 +1 暴露**，不是「−1」。这个 FAIL 属档 C（每页 `.md` 未做），
 **不是新引入的缺陷，是原本看不见的缺陷**。
 
+### 2.4 第三轮实测（2026-09-26，档 C / 档 D 落地）
+
+⚠️ **读数必须带出处** —— 同一份产地在不同环境会给出不同分数（打分器自己也这么说）：
+
+```
+线上（C/D 之前）          https://agentia-web.pages.dev      pass 16 · warn 1 · fail 4 · skip 2
+本地 wrangler pages dev   把 _worker.js 从产物里拿掉（对照）    pass 20 · warn 2 · fail 1
+本地 wrangler pages dev   装 _worker.js（档 C + 档 D）        pass 22 · warn 1 · fail 0
+```
+
+中间那条是**档 D 的 kill 判据**：装 `_worker.js` 前后 `http-status-codes` / `redirect-behavior` /
+`cache-header-hygiene` **一条都没回退** —— advanced mode 下 worker 接管**所有**请求，最怕的就是
+整站路由（干净路径 / `.html` 的 308 / 硬 404 / 缓存头）被它带歪。三条都不动才算通过。
+
+逐项（本地，档 C → 档 C+D）：
+
+| 项 | 前 → 后 | 靠什么 |
+|---|---|---|
+| `markdown-url-support` | FAIL → **PASS**（4/4） | 每页 `<page>.md`（首页落 `index.md` —— 打分器给根路径的候选是 `/.md` 与 `/index.md`） |
+| `llms-txt-directive-md` | FAIL → **PASS** | `.md` 首行的 llms 指引（单行 + **链接**形态） |
+| `markdown-content-parity` | SKIP → **PASS**（avg **0%** missing） | 转换器「正文一个字不丢」+ 表格不做管道符转义 |
+| `page-size-markdown` | SKIP → **PASS**（median 24K） | 同上（HTML 那侧 64% 是外壳样板） |
+| `llms-txt-links-markdown` | FAIL → WARN → **PASS** | 先靠 `.md` 变体升到 WARN，再由 D 升到 PASS（HEAD + `Accept: text/markdown` 现在返回 `text/markdown`） |
+| `content-negotiation` | FAIL → **PASS** | `_worker.js` 的 `Accept: text/markdown` 改写 |
+
+残留 1 条 WARN 是 `auth-gate-detection`（**已知误报**：`/playground` 的 API-key 输入框被认成登录框，
+§2 已记）。**另外一处不是缺陷、但要说清**：线上总分会显示 `(Capped: single-page-sample)` —— 站上
+只有 4 个页面，而打分器要求 ≥5 个才给页面级类别计分、才不算「单页样本」。那是**测量口径**，
+不是站点缺陷；要解开它得给站点加第五个**真页面**（内容决策，不在本方案射程内）。
+
 ## 3. 决策
 
 按**依赖关系**排，而不是按文件大小：
@@ -93,8 +124,8 @@ else if (link.url.startsWith('/')) {
 |---|---|---|---|
 | **A** | `404.html` · `robots.txt` · `sitemap.xml` · `llms.txt` 链接绝对化 | 无 | ✅ 做 |
 | **B** | 每页 `<body>` 最前的 llms 指引块 | 无（但它是档 C/D 被发现的**前提**） | ✅ 做 |
-| C | 每页 `.md` 产物 | 需先解决「没有 markdown 单源」 | ❌ 缓 |
-| D | `Accept: text/markdown` 内容协商（Pages Function / `_worker.js`） | **依赖 C**（没有 `.md` 可指向） | ❌ 缓 |
+| C | 每页 `.md` 产物 | 需先解决「没有 markdown 单源」 | ✅ 做（2026-09-26，见 §6） |
+| D | `Accept: text/markdown` 内容协商（Pages Function / `_worker.js`） | **依赖 C**（没有 `.md` 可指向） | ✅ 做（2026-09-26，见 §6） |
 
 **为什么切在这里**：A + B 全是**外围件**，一碰页面正文都不碰、不引入任何运行期，
 却关掉「现在就在骗 agent」的那条（soft 404）+ 让已有 `/llms-full.txt`（117 KB 全文，
@@ -185,26 +216,82 @@ URL 形态由平台的重写规则决定。当时那句「afdocs 会归一化两
 > 「是否相对」，不查「是否 `.html`」，而站内 `.html` 链接正是这轮要消灭的东西。
 > **是反向验证把它抓出来的**（不是设计时想明白的），已补上并重跑 5/5。
 
-## 6. 未做：档 C 与档 D
+## 6. 档 C 与档 D（2026-09-26 落地）
 
-它们是一对**有依赖关系的**工作（协商要先有 `.md` 可指向），合起来单独立项。缓的理由不是难，是**代价结构**：
+### 6.1 档 C：选了 C1（构建期 HTML→MD），不选 C2
 
-- **Rspress 的做法是从源 AST 渲染 Markdown**，而本站 `docs.html`(58 KB) / `api.html`(68 KB) 是
-  **手写 HTML**，且与 `usage-guide.md` **不是同一份**（实测：`docs.html` 有 18 个 `<h2>`，
-  `usage-guide.md` 只有 9 个 `##`；`mapWithConcurrency` 只在 `api.html` 出现）。所以只有两条路：
-  - **C1 构建期 HTML→MD**（剥 `<aside>`/`<nav>`/`<script>`，只转 `<main>`）—— 便宜、可测，
-    但**正是 Rspress 那篇明确否掉的路**（*「将 HTML 转为 Markdown 往往效果不佳」*）。
-    对本站风险可控（HTML 自己写的、结构稳定），但需要先确认 `markdown-content-parity` 过得去。
-  - **C2 给 docs/api 立 markdown 单源**，页面由它渲染 —— 质量最高，代价大一个量级（重写两个页面）。
-- **档 D 最便宜的实现本站够不着**：Cloudflare 有平台级 *Markdown for Agents*（自动 HTML→MD，
-  带 `x-markdown-tokens` / `content-signal`），但它**是 zone 级功能、要自持域名 + Pro 起**；
-  本站 canonical 是 `agentia-web.pages.dev`（README / `package.json` / `astro.config.mjs` / `Base.astro`
-  全用这个），**不是自持 zone**。⇒ 只能自建 `_worker.js` / Pages Function，那会给一个纯静态站
-  **引入运行期**，且需要另立一条 `wrangler pages dev` 下的测试路径。
+原先写在这里的**代价结构判断保留**（它是对的）：`docs.html`(58 KB) / `api.html`(68 KB) 是
+**手写 HTML**，与 `usage-guide.md` **不是同一份**（实测：`docs.html` 有 18 个 `<h2>`，
+`usage-guide.md` 只有 9 个 `##`；`mapWithConcurrency` 只在 `api.html` 出现）。所以只有两条路：
 
-**触发条件**：真出现「agent 反复抓 52 KB HTML 才能拿一次 API 清单」的迹象，或档 D 的平台前提
-（自持域名 + Pro）发生变化时再做。当下的替代品已经够用：`/llms-full.txt` 是全文单源，
-档 B 的指引让它**可被发现**。
+- **C1 构建期 HTML→MD**（剥 `<aside>`/`<nav>`/`<script>`）—— 便宜、可测，但**正是 Rspress 那篇
+  明确否掉的路**（*「将 HTML 转为 Markdown 往往效果不佳」*）。前提是「HTML 自己写的、结构稳定」，
+  且**必须先确认 `markdown-content-parity` 过得去**。
+- **C2 给 docs/api 立 markdown 单源**，页面由它渲染 —— 质量最高，代价大一个量级（重写两个页面，
+  即动官网视觉层，而那层另有守卫）。
+
+**选 C1，判据是实测而不是偏好**：parity 的 PASS 线是「缺失 < 5%」、FAIL 线是「≥ 20%」，本站产物
+跑出来是 **avg 0% missing（4 页全 pass）** —— 那句「往往效果不佳」的风险在本站**没有兑现**，
+因为转换器是**按打分器的口径写的**（而不是通用转换器）。落点
+`packages/website/scripts/build-md-variants.mjs`，构建末尾跑（已串进 `npm run build:website`）。
+
+三条关键实现决定，每条都有实测后果：
+
+1. **输入取产物、剥壳集合与打分器一致**：打分器比的是「线上 HTML 正文 ↔ markdown」，所以读
+   `dist/*.html`；正文容器取 **`body`**（不是 `<main>`）—— 首页压根没有 `<main>`，playground 的
+   页面标题与「key 不出本机」那段也在 `<main>` 之外，只取 `<main>` 会让这两页变成残页
+   （实测第一版 `playground.md` 只剩 335 字符）。剥掉的元素（`nav`/`footer`/`aside`/`script`/
+   `style`/表单控件/sr-only 指引块）**全是打分器也会剥的** ⇒ 多出来的内容只可能「更全」，
+   不会让 parity 失分。
+2. **表格转「一行一条」，不转 GFM 表格**：`api.html` 的 10 张表里有 **28 个单元格正文含 `|`**
+   （`string | ContentBlockParam[]` 这类联合类型）。GFM 表格里那个 `|` 必须转义成 `\|`，而 parity 判的是
+   「HTML 正文片段**是否作为子串**出现在 markdown 里」—— 转义符会让片段整条对不上。列表形态
+   零转义、零丢失，agent 读起来也更好扫。
+3. **`.md` 首行的 llms 指引：单行 + 链接形态**。单行是因为打分器按「整段是否以 `for ai agents:` 开头」
+   过滤噪声，拆行会留下没被过滤的残句；链接形态是因为它判「这段像不像 markdown」只认标题/链接/围栏
+   三者之一，而 `playground.md` 正文极短，没有链接会被**整份**判为「不是 markdown」
+   （实测：第一版用纯文本，该页在 `llms-txt-directive-md` 里被判「没有 markdown 版本」）。
+   ⚠️ HTML 侧（`Base.astro` 的指引块）的约束**相反** —— 那里必须写纯文本，因为 HTML→MD 的
+   转换器会丢锚标签。
+
+### 6.2 档 D：`_worker.js`（Pages advanced mode）
+
+**平台功能仍然够不着**（此判断不变）：Cloudflare 有平台级 *Markdown for Agents*（自动 HTML→MD，
+带 `x-markdown-tokens` / `content-signal`），但它是 **zone 级功能、要自持域名 + Pro 起**；本站
+canonical 是 `agentia-web.pages.dev`（README / `package.json` / `astro.config.mjs` / `Base.astro`
+全用这个），**不是自持 zone**。所以只能自建 —— 落点 `packages/website/public/_worker.js`，
+构建时进 `dist/_worker.js`：
+
+- **为什么是 advanced mode**：`wrangler pages deploy <dir>` 只认**产物目录里**的 `_worker.js`
+  （没有 `functions` 目录参数），而部署命令正是 `pages deploy packages/website/dist`。
+- **兜底必须是总的**：advanced mode 下**所有**请求都过它，一旦抛错整站（含 robots / sitemap / 首页）
+  都会 500。所以任何异常一律退回 `env.ASSETS.fetch(request)` —— 「给 agent 补个 markdown 变体」
+  这级改动不该有把官网打挂的威力。
+- **只改「无扩展名的页面路径」**：`/llms.txt`、`/robots.txt`、`/sitemap.xml`、`/favicon.svg`、
+  `/_astro/*` 一律不碰；`.md` 拿不到 200 就打回原样，让硬 404 继续生效
+  （**绝不把「没有变体」变成「这个页面不存在」**）。
+- **缓存不会串**：改写指向**另一个 URL**（`/docs` → `/docs.md`），边缘缓存天然按路径分开，
+  浏览器不会拿到 markdown；`vary: Accept` 仍写上，把「同一 URL 两种表示」说清楚。
+
+### 6.3 验证（三层）
+
+- **单测（真跑，不看源码文本）**：`tests/docs/website-md-variants.test.ts`（转换器 9 条）、
+  `tests/docs/website-markdown-negotiation.test.ts`（worker 喂**假 `env.ASSETS`** 真调 `fetch` 9 条）。
+- **产物守卫**：`scripts/check-website-agent-readiness.mjs` 新增第 ⑩–⑬ 类，折在 verify-all **第 8 步**
+  —— **不加第 9 步**（步骤数写在 CI 必需检查名里）。
+- **部署前实测**：本地 `wrangler pages dev` 起**同一份产物**测两遍（拿掉 / 装上 `_worker.js`），
+  再对着真打分器量，即 §2.4 那三行读数。装 worker 那遍同时就是档 D 的 **kill 判据**。
+
+### 6.4 留下的（如实）
+
+- **线上总分仍显示 `(Capped: single-page-sample)`**：站上只有 4 个页面，打分器要求 ≥5 个才给页面级
+  类别计分。那是**测量口径**、不是站点缺陷；要解开得给站点加第五个**真页面**（内容决策，本方案不做）。
+- **`auth-gate-detection` 那条 WARN 是误报**（playground 的 API-key 输入框被认成登录框），见 §2。
+- **`llms.txt` 的「文档」链接仍指向干净 HTML 页**（不改指 `.md`）：那是站点 canonical、与 sitemap 一致，
+  markdown 由档 D 的协商提供。副产物是 `llms-txt-links-markdown` 这一项**依赖档 D**（只有 C 时是 WARN，
+  C+D 才 PASS）—— 这是**刻意**的耦合，不是遗漏。
+- **`/playground.md` 的内容天然很短**（那一页的正文大半在交互控件里，而控件是壳）。它够用
+  （打分器要的是「存在且是 markdown」），但对 agent 的价值远不如 `/docs.md`、`/api.md`。
 
 ## 7. 为什么不换 Rspress
 

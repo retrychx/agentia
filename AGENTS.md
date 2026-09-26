@@ -379,10 +379,28 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     浏览器按 `/foo/bar/` 解析 `./docs` ⇒ 又落回 404。favicon 同理（走绝对路径）。
     ⚠️ **别把「产物文件名」当「站点 URL 的真值」**：文件名是构建产物，URL 形态由平台重写规则决定
     —— 这里判反过一次（第一版守卫拿 `readdirSync` 的文件名比对声明，把 `.html` 口径锁成了绿灯）。
+  - **每页都有 markdown 变体 + 内容协商（GEO 档 C/D，2026-09-26 落地）**：编码 agent 默认带
+    `Accept: text/markdown`，而纯静态托管只认路径 —— 所以两层各自成件：
+    ① **构建末尾**跑 `packages/website/scripts/build-md-variants.mjs`（已串进 `npm run build:website`），
+       把 `dist/<page>.html` 转出 `dist/<page>.md`（首页落 `index.md` —— 打分器给根路径的候选是
+       `/.md` 与 `/index.md`）。转换器**输入是产物**（与打分器同源）、**剥壳集合与打分器一致**、
+       **正文一个字不许丢**：打分器的 parity 判定按「HTML 正文片段是否出现在 markdown 里」逐段算，
+       缺失 ≥5% 就降级。两条刻意选择写进了脚本注释 —— 表格转「一行一条」而非 GFM 表格（api 页有
+       28 个单元格含 `|`，转义成 `\|` 会让 parity 的片段判定整条对不上）；`.md` 首行的 llms 指引
+       用**链接**形态（HTML 侧相反：那里必须纯文本，HTML→MD 的转换器会丢锚标签）。
+    ② `packages/website/public/_worker.js` → `dist/_worker.js`，Cloudflare Pages **advanced mode**：
+       带 `Accept: text/markdown` 的请求改写到 `.md`，其余**原样透传**。⚠️ advanced mode 下**所有**
+       请求都过它 ⇒ **兜底必须是总的**（任何异常都退回 `env.ASSETS.fetch(request)`），否则一个转换
+       瑕疵能把整站打成 500。平台自带的「Markdown for Agents」用不了（zone 级 + Pro 起，本站
+       canonical 是 `agentia-web.pages.dev`，属 Cloudflare 自己的 zone）。
+    守卫：`scripts/check-website-agent-readiness.mjs` 的第 ⑩–⑬ 类（`.md` 齐备 / 首行指引 /
+    与页面结构对账 / `_worker.js` 在场）；行为由 `tests/docs/website-md-variants.test.ts` 与
+    `tests/docs/website-markdown-negotiation.test.ts` **真跑**守住（后者喂假 `env.ASSETS`）。
   - **新增页面时**：`sitemap.xml.ts` 的清单要加、`llms.txt` 的「文档」节要加。守卫会交叉核对 ——
     sitemap 的 `<loc>` 集合必须**等于** dist 里实际的 `*.html` 集合（排除 404）**映射到干净路径后**，
     且每条都出现在 llms.txt 里，两处任缺其一即红。脚本里**刻意不另抄一份页面清单**：
-    那样加页面时守卫会跟着一起漏。
+    那样加页面时守卫会跟着一起漏。`.md` 变体**不需要手工登记**（构建末尾从产物自动生成，
+    守卫按 dist 的页面集合自动核对）。
   - **`src/fragments/api.html` 是手写的导出速查**（不像 `llms.txt` 从 usage-guide 派生）：新增 / 改名
     导出必须同步补进它 —— `tests/docs/api-page.test.ts` 做反向全覆盖校验，漏写即失败。`docs.html` /
     `index.html` 的正文与统计数字同样要跟着改，它们没有自动校验。
