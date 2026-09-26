@@ -94,6 +94,24 @@ else if (link.url.startsWith('/')) {
 线上（C/D 之前）          https://agentia-web.pages.dev      pass 16 · warn 1 · fail 4 · skip 2
 本地 wrangler pages dev   把 _worker.js 从产物里拿掉（对照）    pass 20 · warn 2 · fail 1
 本地 wrangler pages dev   装 _worker.js（档 C + 档 D）        pass 22 · warn 1 · fail 0
+线上（#142 合并后）        https://agentia-web.pages.dev      pass 22 · warn 1 · fail 0 · skip 0
+```
+
+⚠️ **线上那两行是同一把打分器量同一个站，但总分数字都是 `59 / 100 (F)`** —— 因为总分别被
+`(Capped: single-page-sample)` 封顶了（见 §6.4）。动的是**逐项**：FAIL **4 → 0**、SKIP **2 → 0**、
+Content Discoverability **84 → 100**、Markdown Availability 从「依赖未满足 ⇒ 整格 N/A」变成 4/4 全 PASS
+（`markdown-url-support` / `content-negotiation`）。看这个分数排行的读者请注意：**别拿总分当进展读数**，
+它被样本量锁住了。
+
+**独立回读**（不看部署 job 的 success 行，逐条 curl 回来）：
+
+```
+curl -H 'Accept: text/markdown' /docs        → 200 text/markdown  34572 B（与 /docs.md 逐字节相同）
+curl -H 'Accept: text/markdown' /            → 200 text/markdown   4089 B
+curl（不带该头）/docs                        → 200 text/html      64270 B（浏览器拿到的一字未变）
+curl -H 'Accept: text/markdown' /llms.txt    → 200 text/plain      28258 B（有扩展名 ⇒ 永不改写）
+/nope（带该头）                              → 404 text/html（**没**被协商成 200）
+/docs.html                                   → 308 → /docs（advanced mode 下路由原样保留）
 ```
 
 中间那条是**档 D 的 kill 判据**：装 `_worker.js` 前后 `http-status-codes` / `redirect-behavior` /
