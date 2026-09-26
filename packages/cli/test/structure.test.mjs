@@ -64,7 +64,9 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'dev-machine.ts': 703,
     // 2026-09-23 C 阶段新增（自 dev.ts 纯搬移；dev.ts 保留 re-export 守住 dist/dev.js 出口）
     'dev-watch.ts': 224,
-    'dev-child.ts': 82,
+    // 2026-09-26：82 → 112（+30）—— `killPlanFor` + `KillPlan` 判别联合 + 「为什么必须抽」的注释，
+    // 见下方总量补账。
+    'dev-child.ts': 112,
     'registry.ts': 93,
     'generate.ts': 82,
     'inspector-sink.ts': 75,
@@ -108,7 +110,13 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //       + `handleFsPickCancel`（403 闸 / 幂等 / 注释）+ 路由表那一行 + 两行顺序说明
   //   +15  inspector-page.html：`pagehide` → `sendBeacon` 的接线与它为什么不能只靠连接断开
   //   这一笔与前面几笔不同：**前几笔是「同一批代码换位置」，这一笔是真新增行为**。
-  const TOTAL_BUDGET = 8290;
+  // 补账（2026-09-26，`killTree` 的平台分派可测化）：8290 → 8320（+30，全在 dev-child.ts）。
+  //   这一笔与前几笔类别不同：**不是搬移、也不是新功能**，是把一条**测试够不着的平台分支**
+  //   （win32 的 `taskkill /T /F` —— 它直接读 `process.platform`，于是 CI（ubuntu）与
+  //   macOS 的 POSIX 分支都走不到它）变成可注入的纯函数 `killPlanFor(platform, pid, signal)`。
+  //   净增 = 判别联合的类型声明 + 计划函数本体 + 「为什么必须抽」的注释；
+  //   换来的是三平台分支各有用例（`packages/cli/test/dev-child.test.mjs`）。
+  const TOTAL_BUDGET = 8320;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
