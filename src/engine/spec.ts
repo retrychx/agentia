@@ -2,7 +2,7 @@ import type { MessageParam } from '../core/message.js';
 import type { AgentTool, ApprovalDecision, ModelClient, ModelPricing } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
 import type { TraceContext, TraceRecordEvent } from '../core/trace.js';
-import type { ContextPolicy } from './types.js';
+import type { ContextPolicy, ModelFallbackLink } from './types.js';
 import type { RetryOptions } from './retry.js';
 import type { TraceLimits } from './tracer.js';
 
@@ -74,6 +74,13 @@ export interface RunInvocationOptions {
   maxTotalTokens?: number;
   /** 成本硬管控：累计成本（美元）上限；依赖模型在价格表内，见 createBudgetGuard */
   maxCostUsd?: number;
+  /**
+   * 模型 fallback 链（R8-P2；语义见 `RunAgentOptions.fallbacks`）。
+   * ⚠️ 序列化边界：链环里的 `client` 是进程内对象，随 `TaskRecord` 落库会丢 ——
+   * 崩溃续跑读回的是空壳，run 入口会响亮抛 TypeError（鸭子类型校验）。要跨重启仍成立
+   * 的链只写 `model`（client 由 runner/应用级配置兜住），或干脆只在应用/run 级配置。
+   */
+  fallbacks?: ModelFallbackLink[];
   /** 价格表覆盖/追加（$/1M tokens）；见 RunAgentOptions.priceOverrides */
   priceOverrides?: Record<string, ModelPricing>;
   /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */

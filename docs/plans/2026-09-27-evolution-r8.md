@@ -203,3 +203,13 @@ agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。
   顶部不内建表**原样不动**（脱敏仍是 ❌ → 配方 2.4）。`src/` 零改动。
   反向验证读数：摘掉 phone-cn 预设 ⇒ 恰好「预设缺省全开」用例红；presets 缺省改全关 ⇒
   同一条红；其余 32 条不动。偏差：无（与设计一致）。
+- **P2 已落地（2026-09-27）**：引擎级 fallback 链（`fallbacks: [{ model, client? }]`，
+  RunAgentOptions / AppOptions / RunInvocationOptions 三层同语义）。每环独立 llm.turn +
+  `llm.fallback` 事件 + `TurnOutcome.model` 供 `recordTurnUsage` 按实际成功模型算账；
+  换环判定复用 `classifyError` 的 retryable 位（没另写类清单）；`resolveModelChain`
+  在 runAgent 的 try **之外**（配置错抛 TypeError，不被收成失败的 run）；
+  快照 `config.fallbacks` 只记模型名。runAgentScoped 不传链（子循环不继承，代码里留了
+  注释说明这是有意边界）。门禁 `tests/engine/fallback.test.ts` 12 条；反向验证 4 变异
+  （摘 `!emitted` / abort 分支失效 / retryable→true / 成本按 args.model）各恰好咬死
+  对应用例。偏差：设计稿说「`shouldFallback` 覆盖判定」—— 落地时**砍掉了**（复用
+  retryable 位已够，少一个公共面少一份漂移；真有人要自定义判定再加）。

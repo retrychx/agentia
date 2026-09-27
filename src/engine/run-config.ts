@@ -1,6 +1,6 @@
-import type { JsonSchema } from '../core/tool.js';
+import type { JsonSchema, ModelClient } from '../core/tool.js';
 import { resolveRetry } from './retry.js';
-import type { ContextPolicy, RunAgentOptions } from './types.js';
+import type { ContextPolicy, ModelFallbackLink, RunAgentOptions } from './types.js';
 import type { TraceLimits } from './tracer.js';
 
 /**
@@ -28,6 +28,49 @@ export function resolveDefaultModel(over?: string): string {
 /** 缺省单次 maxTokens / 循环上限：runAgent 与 runAgentScoped 共用，避免两处各写一遍漂移。 */
 export const DEFAULT_MAX_TOKENS = 64_000;
 export const DEFAULT_MAX_ITERATIONS = 40;
+
+/** fallback 链的已解析形态（每环的 client 已就位） */
+export interface ResolvedModelLink {
+  model: string;
+  client: ModelClient;
+}
+
+/**
+ * 解析本 run 的模型链（R8-P2）：主环 + `fallbacks` 逐环（环的 client 缺省复用主环的）。
+ *
+ * 校验在**这里**（run 入口，每次 run 都过 —— 含崩溃续跑读回的那份 options）：
+ * - 环必须是对象、`model` 必须是非空字符串 —— 否则 TypeError（响亮失败，不静默跳过坏环）；
+ * - 环的 `client`（若给）必须鸭子类型满足 `messages.stream` 是函数 —— 持久化 store
+ *   反序列化回来的空壳（`{}`）在这里变成可读报错，而不是发请求时才爆。
+ */
+export function resolveModelChain(args: {
+  model: string;
+  client: ModelClient;
+  fallbacks?: ModelFallbackLink[] | undefined;
+}): ResolvedModelLink[] {
+  const chain: ResolvedModelLink[] = [{ model: args.model, client: args.client }];
+  for (const [i, link] of (args.fallbacks ?? []).entries()) {
+    const where = `fallbacks[${i}]`;
+    if (typeof link !== 'object' || link === null) {
+      throw new TypeError(`${where} 必须是 { model, client? } 对象，收到 ${String(link)}`);
+    }
+    if (typeof link.model !== 'string' || link.model.trim() === '') {
+      throw new TypeError(`${where}.model 必须是非空字符串，收到 ${JSON.stringify(link.model)}`);
+    }
+    const client = link.client ?? args.client;
+    const stream = (client as { messages?: { stream?: unknown } } | undefined)?.messages?.stream;
+    if (typeof stream !== 'function') {
+      throw new TypeError(
+        `${where}.client 不满足 ModelClient 契约（messages.stream 不是函数）—— ` +
+          '常见原因：异步任务的 options 经持久化 store  JSON 往返后 client 变成空壳；' +
+          '跨重启仍成立的链请只写 model（client 由 runner/应用级配置兜住）',
+      );
+    }
+    chain.push({ model: link.model, client });
+  }
+  return chain;
+}
+
 
 /**
  * 生效配置快照（G3）：把本 run 实际生效的旋钮整理成 run 根的 `config.*` attributes。
@@ -81,6 +124,10 @@ export function runConfigSnapshot(
   // 价格覆盖：只记覆盖了哪几个模型（不记单价 —— 单价在价格表里，重复记会漂移）
   const overridden = options.priceOverrides ? Object.keys(options.priceOverrides) : [];
   if (overridden.length > 0) out['config.priceOverrides'] = overridden.sort().join(',');
+  // fallback 链（R8-P2）：只记备用模型名（client 是对象，不可序列化；主模型在 config.model）
+  if (options.fallbacks && options.fallbacks.length > 0) {
+    out['config.fallbacks'] = options.fallbacks.map((l) => l.model).join(',');
+  }
   if (options.resultSchema) out['config.resultSchema'] = true;
   return out;
 }

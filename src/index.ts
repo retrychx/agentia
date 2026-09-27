@@ -65,6 +65,7 @@ export type {
   AgentRunResult,
   AgentStopReason,
   ContextPolicy,
+  ModelFallbackLink,
   RunAgentOptions,
   SystemParam,
   SystemTextBlock,

@@ -16,6 +16,25 @@ import type { RetryOptions } from './retry.js';
  */
 export type { ModelClient } from '../core/tool.js';
 
+/**
+ * 模型 fallback 链的一环（R8-P2）：主环节失败且可换时，按数组序落下一环。
+ *
+ * - `client` 缺省 = 本次 run 的 client（**同端点换模型**是主用例：主模型 429/超时 →
+ *   备用模型）；要给别的厂商才显式传另一个 `ModelClient`。
+ * - 换环判定与重试判定共用 `classifyError` 的 `retryable` 位（rate_limit / server /
+ *   timeout / connection 才换；api/unknown 是请求本身有病，换了也没用；aborted 永不换）。
+ * - ⚠️ `client` 是进程内对象：走持久化 store 的异步任务在崩溃续跑后读回的是
+ *   反序列化空壳 —— run 入口会响亮抛 TypeError（鸭子类型校验），不静默拿死 client 发请求。
+ *   要跨重启仍成立的链请只写 `model`（client 由宿主/runner 级配置兜住）。
+ */
+export interface ModelFallbackLink {
+  /** 备用模型 id（必填，空字符串在 run 入口抛 TypeError） */
+  model: string;
+  /** 该环用的 client；缺省复用本次 run 的 client */
+  client?: ModelClient;
+}
+
+
 export type AgentStopReason =
   /** 模型自然结束（含 stop_sequence：命中 stop 序列同样是正常收尾） */
   | 'end_turn'
@@ -102,6 +121,17 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   maxIterations?: number;
   /** 注入 client（缺省经 createAnthropicClient() 创建，读 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL env）；多模型见 ModelClient */
   client?: ModelClient;
+  /**
+   * 模型 fallback 链（R8-P2）：主模型本回合**最终**失败（含其 maxRetries 用尽）且错误
+   * 可换（`classifyError` 的 retryable 类：rate_limit / server / timeout / connection）时，
+   * 按数组序换下一环重试本回合。每一环开自己的 llm.turn span（model 名正确 ⇒ 成本归因
+   * 与 `usage.unpriced` 探测天然对），切换在新 span 上记 `llm.fallback` 事件
+   * `{ from, to, errorType }`。三条护栏：`aborted` 永不换（用户取消不是故障）；
+   * 本回合**吐过字不换**（与 retry 的「吐过字不重试」同一护栏，否则会拼出两段回答）；
+   * **每回合从主环重新起**（fallback 是单回合韧性，不把后续回合钉在备用模型上）。
+   * 子 agent / skill 子循环**不继承**本链（它们的 model/client 由能力层显式给）。
+   */
+  fallbacks?: ModelFallbackLink[];
   /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
   recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */

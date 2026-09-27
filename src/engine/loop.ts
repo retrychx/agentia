@@ -17,6 +17,7 @@ import {
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_MAX_TOKENS,
   resolveDefaultModel,
+  resolveModelChain,
   runConfigSnapshot,
 } from './run-config.js';
 import type { RetryOptions } from './retry.js';
@@ -130,7 +131,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       break;
     }
 
-    const { turnId, message, aborted } = await streamTurn(ctx);
+    const { turnId, message, aborted, model: modelUsed } = await streamTurn(ctx);
     if (aborted || !message) {
       stopReason = 'aborted';
       error = abortedError();
@@ -139,7 +140,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     }
     ctx.progress.iterations++;
 
-    recordTurnUsage(ctx, turnId, message);
+    recordTurnUsage(ctx, turnId, message, modelUsed);
 
     // 成本硬管控（C1）：本回合 usage 已落账 → 立刻判一次（超限会触发 onExceed 记事件）。
     // 结果**留到「循环是否还要继续」确定后再用**：
@@ -243,14 +244,21 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     recorder.setAttribute(rootId, k, v);
 
   const progress = { iterations: 0 };
+  // fallback 链（R8-P2）在 **try 之外**解析 + 校验：坏环 / 死 client（持久化反序列化的
+  // 空壳）是调用方的配置错，必须在 run 入口响亮抛 TypeError —— 放进 try 会被
+  // failedResult 收成「一条失败的 run」，配置错就这样被记成了运行失败（静默降级的一种）。
+  const client = options.client ?? createAnthropicClient();
+  const model = resolveDefaultModel(options.model);
+  const modelChain = resolveModelChain({ model, client, fallbacks: options.fallbacks });
   let result: AgentLoopResult<SchemaType<S>>;
   try {
     // run 根作用域（spec §9.2 出站传播）：循环内任何地方（工具 / 子能力 / 中间件）都读得到
     // 「我正处在哪个 span」—— 更内层的作用域由 turn / skill / subagent 逐层收窄。
     result = await withCurrentSpan({ traceId: recorder.traceId, spanId: rootId }, () =>
       agentLoop<S>({
-        client: options.client ?? createAnthropicClient(),
-        model: resolveDefaultModel(options.model),
+        client,
+        model,
+        modelChain,
         maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
         maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
         system: options.system,
@@ -347,6 +355,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   return agentLoop<S>({
     client: opts.client ?? createAnthropicClient(),
     model: resolveDefaultModel(opts.model),
+    // 不传 modelChain：子 agent 子循环**不继承**主 run 的 fallback 链（R8-P2 的有意边界 ——
+    // 子循环的 model/client 由能力层显式给，跨厂商的链继承下来会让子 agent 悄悄换厂商）
     maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
     maxIterations: opts.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     system: opts.system,

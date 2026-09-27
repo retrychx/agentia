@@ -3523,6 +3523,36 @@ sha256 逐字节一致。
 （由 ① 的告警兜底接住）。落 integrations 层（只依赖 core + `node:fs`，零新增依赖），
 与 `createOtlpExporter` 同组登记进公共面。
 
+### 2026-09-27 ③：**模型 fallback 链落在引擎层**（不在 client 层组合）—— 换环 = 新 llm.turn，成本归因天然正确（R8-P2）
+
+起因是规划评审（docs/plans/2026-09-27-evolution-r8.md 修订记录②）：初稿把 fallback 设计成
+`ModelClient` 组合器（包装 client、静默换厂商、不记账）——两条硬伤：① span 的 model 与成本
+都取自 run spec 的 `args.model`（`turn.ts` 的 begin / `costEstimate`），组合器静默换 client
+后**记错账**（归错模型、按错价目表、`usage.unpriced` 不响）；② `classifyError` 实为 7 类，
+初稿漏了 `timeout`（retryable: true，恰恰是最该换的那类）与 `aborted`（用户取消可能被打到
+第二个厂商）。
+
+⇒ 落地为**引擎级**链路：`fallbacks: [{ model, client? }]`（RunAgentOptions / AppOptions /
+RunInvocationOptions 三层同语义，app 级缺省 + run 级覆盖）。要点：
+
+1. **每环独立 llm.turn span**（model 名正确 ⇒ 成本/未定价探测天然归对）；切换在新 span 记
+   `llm.fallback { from, to, errorType }` 事件（与既有 `llm.retry` 同级同形）；`TurnOutcome`
+   带出**实际成功**的 model，`recordTurnUsage` 按它算账。
+2. **换环判定与重试共用 `retryable` 位**（不是另写一份类清单）：rate_limit / server /
+   timeout / connection 才换；api / unknown 是请求本身有病，原样失败收尾；
+   `aborted` **永不换**。重试先于换环（同环内 maxRetries 用尽才落下一环）。
+3. **「吐过字不换」**与 retryAllowed 的 `!emitted` 是同一护栏（换环重跑会让用户看到
+   两段拼起来的回答）；**每回合从主环重新起**（fallback 是单回合韧性，不把后续回合
+   钉在备用模型上）；子 agent / skill 子循环**不继承**主 run 的链（能力层显式给模型，
+   继承会让子 agent 悄悄换厂商）。
+4. 链环 `client` 缺省复用本次 run 的 client；run **入口**校验（`resolveModelChain` 在
+   runAgent 的 try 之外 —— 配置错响亮抛 TypeError，不被收成「一条失败的 run」）：
+   空 model / 死 client（持久化 store JSON 往返后的空壳）都在发请求前报出来。
+   快照记 `config.fallbacks`（只记备用模型名，client 是对象不序列化）。
+
+门禁 `tests/engine/fallback.test.ts`（12 条）；反向验证 4 变异各恰好咬死对应用例
+（摘 `!emitted` / abort 分支失效 / retryable→true / 成本按 args.model 算）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

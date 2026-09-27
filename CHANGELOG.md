@@ -9,6 +9,16 @@
 
 ### 新增
 
+- **模型 fallback 链（引擎级，`fallbacks: [{ model, client? }]`）**：`createApp` 缺省 +
+  `app.run` 单次覆盖 + `runAgent` 直连三层同语义。主模型本回合最终失败（含其
+  `maxRetries` 用尽）且错误可换（`classifyError` 的 retryable 类：rate_limit / server /
+  timeout / connection）时按序换环重试本回合 —— **每一环开自己的 llm.turn span**
+  （model 名正确 ⇒ 成本归因与 `usage.unpriced` 探测天然对），切换在新 span 记
+  `llm.fallback { from, to, errorType }` 事件，run 根快照记 `config.fallbacks`。
+  护栏：`aborted` 永不换（用户取消不是故障）、本回合吐过字不换（与 retry 的
+  `!emitted` 同一护栏）、每回合从主环重新起；子 agent / skill 子循环不继承。
+  链环 `client` 缺省复用本次 run 的 client（同端点换模型是主用例）；run 入口校验
+  坏环/死 client（持久化反序列化空壳）响亮抛 TypeError。决策见 spec §10 2026-09-27 ③。
 - **`jsonlTraceSink({ path })`：JSONL 文件 sink 进框架** —— CLI 三件套（`agentia report` /
   `diff` / `harvest`）消费 `trace.jsonl`，而产出侧此前要用户手写 `appendFileSync`（usage-guide
   曾这么教）。现在一行接入：`createApp({ sinks: [jsonlTraceSink({ path: 'trace.jsonl' })] })`。

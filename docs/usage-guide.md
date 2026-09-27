@@ -277,6 +277,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `modules` | 能力包（`defineModule({ providers, middleware })`），模块级先注册、应用级可覆盖同 token |
 | `discover` | 能力目录路径：**一个目录或一组目录**（数组顺序即装配顺序，典型是四分类目录）。给出后 `createApp` 返回 `Promise<AgentApp>`；数组里任一目录不存在会**报错**（显式给出的搜索路径不该静默落空） |
 | `model` | 缺省模型；不给则 `AGENTIA_MODEL` env，再回落 `claude-opus-5` |
+| `fallbacks` | 缺省模型 fallback 链（可被单次 run 覆盖）：`[{ model, client? }]`，主模型本回合最终失败且错误可换（rate_limit / server / timeout / connection）时按序换环；每环独立 llm.turn span（成本归对模型），切换记 `llm.fallback` 事件。护栏：aborted 永不换、吐过字不换、每回合从主环重新起；子 agent / skill 子循环不继承。⚠️ 链环的 `client` 是进程内对象：持久化异步任务崩溃续跑后读回的是空壳（run 入口响亮抛 TypeError），跨重启仍成立的链只写 `model` |
 | `maxTokens` | 缺省 `max_tokens` |
 | `maxIterations` | 缺省循环上限 |
 | `retry` | 缺省模型请求重试策略（可被单次 run 覆盖）：缺省**开启**（`DEFAULT_RETRY`：maxAttempts=3、指数退避 + 抖动）；`false` 关闭 |
@@ -301,6 +302,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 |---|---|
 | `system` | 单次覆盖 system（volatile 段建议每 run 重建） |
 | `model` | 单次覆盖模型 |
+| `fallbacks` | 单次覆盖模型 fallback 链（`[{ model, client? }]`）；语义同 `createApp` 的 `fallbacks` |
 | `maxTokens` | 单次覆盖 |
 | `maxIterations` | 单次覆盖 |
 | `client` | 注入 `ModelClient`（换 OpenAI 兼容端点等） |

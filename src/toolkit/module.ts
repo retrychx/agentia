@@ -1,6 +1,6 @@
 import type { MessageParam } from '../core/message.js';
 import type { AgentTool, JsonSchema, ModelPricing, SchemaType } from '../core/tool.js';
-import type { SystemParam } from '../engine/types.js';
+import type { ModelFallbackLink, SystemParam } from '../engine/types.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 import { executeRun } from '../runtime/run.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
@@ -69,6 +69,8 @@ export interface AppOptions {
   system: SystemPrompt | SystemParam;
   /** 缺省模型；不给则走 engine 默认（claude-opus-5） */
   model?: string;
+  /** 缺省模型 fallback 链（可被单次 run 覆盖）；见 `RunAgentOptions.fallbacks`（R8-P2） */
+  fallbacks?: ModelFallbackLink[];
   /** 缺省 maxTokens（流式给足避免中途截断） */
   maxTokens?: number;
   /** 缺省循环上限 */
@@ -203,6 +205,7 @@ export class AgentApp {
   private readonly system: SystemPrompt | SystemParam;
   private readonly base: {
     model?: string | undefined;
+    fallbacks?: ModelFallbackLink[] | undefined;
     maxTokens?: number | undefined;
     maxIterations?: number | undefined;
     contextPolicy?: ContextPolicy | undefined;
@@ -255,6 +258,7 @@ export class AgentApp {
     this.onTraceEvent = opts.onTraceEvent;
     this.base = {
       model: opts.model,
+      fallbacks: opts.fallbacks,
       maxTokens: opts.maxTokens,
       maxIterations: opts.maxIterations,
       contextPolicy: opts.contextPolicy,
@@ -468,6 +472,7 @@ export class AgentApp {
       // 一律 `?? 缺省` 取值。
       ...omitUndefined({
         model: opts.model ?? this.base.model,
+        fallbacks: opts.fallbacks ?? this.base.fallbacks,
         maxTokens: opts.maxTokens ?? this.base.maxTokens,
         maxIterations: opts.maxIterations ?? this.base.maxIterations,
         client: opts.client,
