@@ -608,6 +608,9 @@ export function devServer(argv: string[] = []): number {
    * 没有面板侧超时（用户可能慢慢选）；进程退出时由 `killActivePickers()` 收编。
    */
   const pickFolder = async (): Promise<string | null> => {
+    // ui-pick-requested 发出的 pick-folder 效果是**纯标记**：它没有任何执行器，
+    // SPECIAL_ONLY 的作用只是让它万一走到通用执行器时响亮失败 —— 真 spawn 就是下面
+    // 这行 pickFolderNative()。机器只负责把 picking 相位立起来（串行化闸），不碰进程。
     const r = update(state, { type: 'ui-pick-requested' });
     state = r.state;
     throwIfRejected(r.effects);

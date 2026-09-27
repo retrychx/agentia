@@ -36,7 +36,9 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
     // （watch 件 → dev-watch.ts、子进程原语 → dev-child.ts；spawn/stop/restart 三个
     //   执行器读写机器状态，留在 dev.ts 接线层）
-    'dev.ts': 776,
+    // 2026-09-27 复核尾巴：776 → 779（+3，纯注释 —— pickFolder 的 pick-folder
+    //   「纯标记效果」谜面注，见下方总量补账）
+    'dev.ts': 779,
     // 2026-09-23（inspector 路由表拆分）：818 → 413。切走的 431 行去了
     // inspector-routes.ts；本文件只剩「服务」——监听 / 三道鉴权闸 / 应答原语 /
     // 公开类型（`DevHooks` 等）/ `HttpError`。那两个导出（`HttpError` / `startInspector`）
@@ -61,7 +63,8 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'create.ts': 140,
     'dev-logic.ts': 58, // 2026-09-23 A 阶段新增（server 侧纯判定，单源化后注释只留一份）
     // 2026-09-23 B 阶段新增（显式状态机：类型 + update 纯函数；零副作用零 node:* import）
-    'dev-machine.ts': 703,
+    // 2026-09-27 复核尾巴：703 → 708（+5，纯注释 —— abort-grace-expired 的相位弱化边界注）
+    'dev-machine.ts': 708,
     // 2026-09-23 C 阶段新增（自 dev.ts 纯搬移；dev.ts 保留 re-export 守住 dist/dev.js 出口）
     'dev-watch.ts': 224,
     // 2026-09-26：82 → 112（+30）—— `killPlanFor` + `KillPlan` 判别联合 + 「为什么必须抽」的注释，
@@ -116,7 +119,11 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //   macOS 的 POSIX 分支都走不到它）变成可注入的纯函数 `killPlanFor(platform, pid, signal)`。
   //   净增 = 判别联合的类型声明 + 计划函数本体 + 「为什么必须抽」的注释；
   //   换来的是三平台分支各有用例（`packages/cli/test/dev-child.test.mjs`）。
-  const TOTAL_BUDGET = 8320;
+  // 补账（2026-09-27，复核尾巴 —— **纯注释**，零行为变更）：8320 → 8328（+8）。
+  //   +5  dev-machine.ts：abort-grace-expired 的相位弱化边界（相位随 restart 效果发出
+  //       就落 idle、不等 stopChild 真停，以及为什么当前不可达）—— 评审建议级
+  //   +3  dev.ts：pickFolder 的「pick-folder 是纯标记效果」谜面注 —— 评审建议级
+  const TOTAL_BUDGET = 8328;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

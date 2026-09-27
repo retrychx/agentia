@@ -83,6 +83,15 @@ describe('官网内容协商：_worker.js', () => {
     );
   });
 
+  it('媒体类型大小写不敏感（RFC 9110）：Text/Markdown 同样命中', async () => {
+    const { env, calls } = fakeEnv(() => ok('text/markdown'));
+    await worker.fetch(get('/docs', 'Text/Markdown, text/html;q=0.9'), env);
+    assert.deepEqual(
+      calls.map((c) => c.url),
+      ['/docs.md'],
+    );
+  });
+
   it('改写字面量协商的请求头带过去（HEAD 只判类型，必须照旧是 HEAD）', async () => {
     const { env, calls } = fakeEnv(() => ok('text/markdown'));
     const req = new Request('https://agentia-web.pages.dev/docs', {
