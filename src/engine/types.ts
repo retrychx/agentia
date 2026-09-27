@@ -132,6 +132,18 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 子 agent / skill 子循环**不继承**本链（它们的 model/client 由能力层显式给）。
    */
   fallbacks?: ModelFallbackLink[];
+  /**
+   * 记录 assistant 文本进 trace（R8-P3a）：`'full'` = 每回合的模型文本落 llm.turn span 的
+   * `output.text` 属性（引擎文本口径：多块 `\n` 连接；过 `maxEventChars` 同一道截断闸 ——
+   * 那个管「多长」，这个管「记不记」）。缺省不记（现状逐字不变：llm.turn 只记
+   * usage/事件，见 `engine/replay.ts` 的有损边界声明）。纯 tool_use 回合不记（无文本块）。
+   *
+   * ⚠️ 两个代价，开了就要认：① trace 体积显著增大（模型正文进树）；
+   * ② 模型输出从此进入「要脱敏的面」—— 出库前走脱敏配方（`docs/observability.md` §2.4）。
+   * 主要消费者：trace → 训练数据导出与逐字复盘。透传给子 agent / skill 子循环
+   * （与 `maxEventChars` 同一条转发纪律：同一棵调用树上口径一致）。
+   */
+  traceContent?: 'full';
   /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
   recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */

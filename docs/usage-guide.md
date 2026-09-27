@@ -278,6 +278,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `discover` | 能力目录路径：**一个目录或一组目录**（数组顺序即装配顺序，典型是四分类目录）。给出后 `createApp` 返回 `Promise<AgentApp>`；数组里任一目录不存在会**报错**（显式给出的搜索路径不该静默落空） |
 | `model` | 缺省模型；不给则 `AGENTIA_MODEL` env，再回落 `claude-opus-5` |
 | `fallbacks` | 缺省模型 fallback 链（可被单次 run 覆盖）：`[{ model, client? }]`，主模型本回合最终失败且错误可换（rate_limit / server / timeout / connection）时按序换环；每环独立 llm.turn span（成本归对模型），切换记 `llm.fallback` 事件。护栏：aborted 永不换、吐过字不换、每回合从主环重新起；子 agent / skill 子循环不继承。⚠️ 链环的 `client` 是进程内对象：持久化异步任务崩溃续跑后读回的是空壳（run 入口响亮抛 TypeError），跨重启仍成立的链只写 `model` |
+| `traceContent` | `'full'` = 每回合的 assistant 文本落 llm.turn span 的 `output.text` 属性（过 `maxEventChars` 同一道截断闸 —— 它管「多长」，这个管「记不记」）；缺省不记。⚠️ 体积显著增大，且模型输出从此进入要脱敏的面（出库前走 `docs/observability.md` 配方 2.4）。可被单次 run 覆盖 |
 | `maxTokens` | 缺省 `max_tokens` |
 | `maxIterations` | 缺省循环上限 |
 | `retry` | 缺省模型请求重试策略（可被单次 run 覆盖）：缺省**开启**（`DEFAULT_RETRY`：maxAttempts=3、指数退避 + 抖动）；`false` 关闭 |
@@ -303,6 +304,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `system` | 单次覆盖 system（volatile 段建议每 run 重建） |
 | `model` | 单次覆盖模型 |
 | `fallbacks` | 单次覆盖模型 fallback 链（`[{ model, client? }]`）；语义同 `createApp` 的 `fallbacks` |
+| `traceContent` | 单次覆盖 assistant 文本记录开关（`'full'`）；语义同 `createApp` 的 `traceContent` |
 | `maxTokens` | 单次覆盖 |
 | `maxIterations` | 单次覆盖 |
 | `client` | 注入 `ModelClient`（换 OpenAI 兼容端点等） |
@@ -1454,7 +1456,7 @@ const callable = {
 | 模型 / 评分维度也有基数上限 | `maxModels`（缺省 50）/ `maxScores`（缺省 200）：`model` 与评分键（`name@source`）都可能是无界键（上游把版本号拼进模型 id、eval 名带时间戳），而每个模型键都持一份时长窗口 —— 光是能力封顶不够。折叠只丢标签粒度，`__other__` 桶照常累加，总数仍对得上；被折叠的不同键数见 `droppedModels` / `droppedScores` |
 | 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
 | `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
-| 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace 不记 assistant 文本与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
+| 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace **缺省**不记 assistant 文本（opt-in 例外：`traceContent: 'full'`，见 §4）与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
 | 链路关联：入站自动、**出站只给读取器** | `traceContext` / `traceparent` 头把**上游**接进来（run 根的 `links`）；出站方向给 `currentTraceparent()`（当前 span 的 W3C 串，回合 / 能力调用粒度），但框架**不替你做注入** —— 它不创建出站请求，那一行由宿主的 `fetch` / metadata 自己写。两个边界：① `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined`（那时确实没有 span）；② flags 恒 `00`（本框架不采样）。id 宽度经**同一份投影**压到 16 位（与 OTLP 导出共用，单一真源）—— 故下游收到的 span id 与 collector 里的是同一个数。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |

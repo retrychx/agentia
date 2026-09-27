@@ -81,6 +81,12 @@ export interface RunInvocationOptions {
    * 的链只写 `model`（client 由 runner/应用级配置兜住），或干脆只在应用/run 级配置。
    */
   fallbacks?: ModelFallbackLink[];
+  /**
+   * opt-in 记录 assistant 文本进 llm.turn span 的 `output.text`（R8-P3a；
+   * 语义与代价见 `RunAgentOptions.traceContent`）。可序列化（字符串枚举），异步任务
+   * 随 TaskRecord 落库、续跑不丢 —— 与 fallbacks 环里的 client 不同。
+   */
+  traceContent?: 'full';
   /** 价格表覆盖/追加（$/1M tokens）；见 RunAgentOptions.priceOverrides */
   priceOverrides?: Record<string, ModelPricing>;
   /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */

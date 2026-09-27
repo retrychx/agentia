@@ -8,8 +8,9 @@
  *
  * 判定用哪一种是**语义**，不是风格，单测逐项钉住：
  * - `signal` / `priceOverrides` / `onUnpricedModel` 用**真值**判定；
- * - `maxEventChars` / `maxTotalTokens` / `maxCostUsd` / `toolTimeoutMs` 用**非空**判定 ——
- *   因为 `false`（不截断）与 `0`（不限/不超时）都是**有意义的值**，真值判定会把它们吃掉；
+ * - `maxEventChars` / `traceContent` / `maxTotalTokens` / `maxCostUsd` / `toolTimeoutMs`
+ *   用**非空**判定 —— 因为 `false`（不截断）与 `0`（不限/不超时）都是**有意义的值**，
+ *   真值判定会把它们吃掉；
  * - `approval` 用 `!== undefined`：批/拒的决定要原样带给工具体（审计与分级授权用）。
  *
  * 纯的边界：只做取值搬运，不读 ctx、不碰 recorder、不执行工具。
@@ -26,6 +27,7 @@ export function buildToolRunContext(opts: {
   priceOverrides?: ToolRunContext['priceOverrides'];
   onUnpricedModel?: ToolRunContext['onUnpricedModel'];
   maxEventChars?: ToolRunContext['maxEventChars'];
+  traceContent?: ToolRunContext['traceContent'];
   maxTotalTokens?: ToolRunContext['maxTotalTokens'];
   maxCostUsd?: ToolRunContext['maxCostUsd'];
   toolTimeoutMs?: ToolRunContext['toolTimeoutMs'];
@@ -40,6 +42,7 @@ export function buildToolRunContext(opts: {
     priceOverrides,
     onUnpricedModel,
     maxEventChars,
+    traceContent,
     maxTotalTokens,
     maxCostUsd,
     toolTimeoutMs,
@@ -54,6 +57,7 @@ export function buildToolRunContext(opts: {
     ...(priceOverrides ? { priceOverrides } : {}),
     ...(onUnpricedModel ? { onUnpricedModel } : {}),
     ...(maxEventChars != null ? { maxEventChars } : {}),
+    ...(traceContent != null ? { traceContent } : {}),
     ...(maxTotalTokens != null ? { maxTotalTokens } : {}),
     ...(maxCostUsd != null ? { maxCostUsd } : {}),
     ...(toolTimeoutMs != null ? { toolTimeoutMs } : {}),

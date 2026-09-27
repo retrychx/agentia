@@ -41,8 +41,15 @@ import { buildTurnRequest } from './turn-request.js';
 import type { ResolvedModelLink } from './run-config.js';
 import { buildToolRunContext } from './tool-context.js';
 import { withCurrentSpan } from './span-scope.js';
-import { toolInputPayload, toolOutputPayload, toolResultBlock } from './tool-events.js';
+import {
+  DEFAULT_EVENT_CHARS,
+  toolInputPayload,
+  toolOutputPayload,
+  toolResultBlock,
+} from './tool-events.js';
 import type { ToolErrorKind } from './tool-events.js';
+import { textOf } from './text.js';
+import { truncateWithMark } from '../core/json.js';
 import type { ResolvedRetry, RetryOptions } from './retry.js';
 import type { AgentStopReason, ContextPolicy, SystemParam } from './types.js';
 import { buildPricing, costEstimate, usageFromAnthropic } from './usage.js';
@@ -107,6 +114,12 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars（三类事件共用同一个值） */
   maxEventChars?: number | false | undefined;
+  /**
+   * opt-in 记录 assistant 文本（R8-P3a）：'full' = 每回合模型文本落 llm.turn span 的
+   * `output.text` 属性（过 maxEventChars 同一道截断闸）。缺省不记（现状逐字不变）。
+   * 嵌套能力经 forwarded.ts 透传 —— 同一棵调用树上口径一致。
+   */
+  traceContent?: 'full' | undefined;
   /** 价格表覆盖（F1）：覆盖内置单价或给其他 provider 的模型定价 */
   priceOverrides?: Record<string, ModelPricing> | undefined;
   /** 未定价模型回调（F2）：本循环作用域内每模型一次 */
@@ -425,6 +438,20 @@ export function recordTurnUsage<S extends JsonSchema>(
   args.recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
   args.recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
   args.recorder.setAttribute(turnId, 'cache_creation_tokens', usage?.cacheCreationTokens ?? 0);
+  // R8-P3a：opt-in 记录 assistant 文本。截断过 `maxEventChars` 同一道闸（它管「多长」，
+  // traceContent 管「记不记」，缺省走成功出参档 DEFAULT_EVENT_CHARS）；纯 tool_use 回合
+  // 没有文本块，不记（空字符串属性只会制造「这回合说了什么」的假信号）。
+  if (args.traceContent === 'full') {
+    const text = textOf(message);
+    if (text !== '') {
+      const cap = args.maxEventChars ?? DEFAULT_EVENT_CHARS;
+      args.recorder.setAttribute(
+        turnId,
+        'output.text',
+        cap === false ? text : truncateWithMark(text, cap),
+      );
+    }
+  }
 }
 
 /** 回合收尾分流：finish = 终止/边界分支（带 stopReason 与收尾文本）；tools = 还有工具要执行 */
@@ -541,6 +568,7 @@ async function executeOneTool<S extends JsonSchema>(
     priceOverrides: args.priceOverrides,
     onUnpricedModel: args.onUnpricedModel,
     maxEventChars: args.maxEventChars,
+    traceContent: args.traceContent,
     maxTotalTokens: args.maxTotalTokens,
     maxCostUsd: args.maxCostUsd,
     toolTimeoutMs: args.toolTimeoutMs,

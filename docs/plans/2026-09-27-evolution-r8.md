@@ -213,3 +213,10 @@ agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。
   （摘 `!emitted` / abort 分支失效 / retryable→true / 成本按 args.model）各恰好咬死
   对应用例。偏差：设计稿说「`shouldFallback` 覆盖判定」—— 落地时**砍掉了**（复用
   retryable 位已够，少一个公共面少一份漂移；真有人要自定义判定再加）。
+- **P3a 已落地（2026-09-27）**：`traceContent: 'full'`（RunAgentOptions /
+  RunInvocationOptions / AppOptions 三层同语义）。记进 llm.turn 的 `output.text`
+  （引擎文本口径多块 `\n` 连接；过 `maxEventChars` 同一道闸）；透传走 forwarded.ts
+  真源（ToolRunContext 新键被类型守卫逼着归类 —— 实施时它真咬了一次：调用点漏传
+  当场编译红）。偏差：无。实测体积数（3 回合 × ~1600 字符 ⇒ 5 564 → 11 010 字节）
+  进了 spec §10 ④ 与 CHANGELOG。门禁 `tests/engine/trace-content.test.ts` 7 条 +
+  反向验证 3 变异。

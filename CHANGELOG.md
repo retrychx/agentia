@@ -9,6 +9,14 @@
 
 ### 新增
 
+- **opt-in 记录 assistant 文本进 trace（`traceContent: 'full'`）**：每回合的模型文本落
+  该 llm.turn span 的 `output.text` 属性（多块 `\n` 连接；过 `maxEventChars` 同一道
+  截断闸 —— 它管「多长」，`traceContent` 管「记不记」）。缺省不记，现状逐字不变；
+  纯 tool_use 回合不记。透传子 agent / skill 子循环（`forwarded.ts` 同树同口径）。
+  run 根快照记 `config.traceContent`。⚠️ 实测代价：3 回合、每回合约 1600 字符输出的
+  run，trace 体积 5 564 → 11 010 字节（约 2×）；且模型输出从此进入要脱敏的面 ——
+  出库前走 `docs/observability.md` 配方 2.4。这是「trace → 训练数据导出」（R8-P3b）
+  的引擎侧前提。决策见 spec §10 2026-09-27 ④。
 - **模型 fallback 链（引擎级，`fallbacks: [{ model, client? }]`）**：`createApp` 缺省 +
   `app.run` 单次覆盖 + `runAgent` 直连三层同语义。主模型本回合最终失败（含其
   `maxRetries` 用尽）且错误可换（`classifyError` 的 retryable 类：rate_limit / server /

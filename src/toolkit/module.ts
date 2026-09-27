@@ -71,6 +71,8 @@ export interface AppOptions {
   model?: string;
   /** 缺省模型 fallback 链（可被单次 run 覆盖）；见 `RunAgentOptions.fallbacks`（R8-P2） */
   fallbacks?: ModelFallbackLink[];
+  /** 缺省记录 assistant 文本进 trace（`'full'`；可被单次 run 覆盖）；见 `RunAgentOptions.traceContent`（R8-P3a） */
+  traceContent?: 'full';
   /** 缺省 maxTokens（流式给足避免中途截断） */
   maxTokens?: number;
   /** 缺省循环上限 */
@@ -206,6 +208,7 @@ export class AgentApp {
   private readonly base: {
     model?: string | undefined;
     fallbacks?: ModelFallbackLink[] | undefined;
+    traceContent?: 'full' | undefined;
     maxTokens?: number | undefined;
     maxIterations?: number | undefined;
     contextPolicy?: ContextPolicy | undefined;
@@ -259,6 +262,7 @@ export class AgentApp {
     this.base = {
       model: opts.model,
       fallbacks: opts.fallbacks,
+      traceContent: opts.traceContent,
       maxTokens: opts.maxTokens,
       maxIterations: opts.maxIterations,
       contextPolicy: opts.contextPolicy,
@@ -473,6 +477,7 @@ export class AgentApp {
       ...omitUndefined({
         model: opts.model ?? this.base.model,
         fallbacks: opts.fallbacks ?? this.base.fallbacks,
+        traceContent: opts.traceContent ?? this.base.traceContent,
         maxTokens: opts.maxTokens ?? this.base.maxTokens,
         maxIterations: opts.maxIterations ?? this.base.maxIterations,
         client: opts.client,

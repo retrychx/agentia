@@ -128,6 +128,8 @@ export function runConfigSnapshot(
   if (options.fallbacks && options.fallbacks.length > 0) {
     out['config.fallbacks'] = options.fallbacks.map((l) => l.model).join(',');
   }
+  // assistant 文本记录（R8-P3a）：只在显式开启时记（缺省不记 = 没有这个键）
+  if (options.traceContent === 'full') out['config.traceContent'] = 'full';
   if (options.resultSchema) out['config.resultSchema'] = true;
   return out;
 }

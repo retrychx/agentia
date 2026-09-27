@@ -278,6 +278,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
         toolTimeoutMs: options.toolTimeoutMs,
         maxToolConcurrency: options.maxToolConcurrency,
         maxEventChars: options.maxEventChars,
+        traceContent: options.traceContent,
         priceOverrides: options.priceOverrides,
         onUnpricedModel: options.onUnpricedModel,
         approvals: options.approvals,
@@ -338,6 +339,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars */
   maxEventChars?: number | false | undefined;
+  /** opt-in 记录 assistant 文本（R8-P3a）；同 RunAgentOptions.traceContent（由转发机制透传下来） */
+  traceContent?: 'full' | undefined;
   /** 价格表覆盖（F1）：由发起它的能力从 ToolRunContext.priceOverrides 透传 */
   priceOverrides?: Record<string, ModelPricing> | undefined;
   /** 未定价模型回调（F2）：由发起它的能力透传 */
@@ -372,6 +375,7 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     toolTimeoutMs: opts.toolTimeoutMs,
     maxToolConcurrency: opts.maxToolConcurrency,
     maxEventChars: opts.maxEventChars,
+    traceContent: opts.traceContent,
     priceOverrides: opts.priceOverrides,
     onUnpricedModel: opts.onUnpricedModel,
     maxTotalTokens: opts.maxTotalTokens,

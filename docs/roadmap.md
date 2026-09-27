@@ -323,7 +323,8 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   带类别标签的替换文案），**src/ 零改动**（不内建是已锁定决策，spec §9.3 / §10 2026-09-14 ⑥）
 - P2 模型 fallback —— ✅ 已落地（2026-09-27）：引擎级 fallback 链，每环独立 llm.turn
   （成本归因正确）+ `llm.fallback` 事件 + run 入口校验；决策见 spec §10 2026-09-27 ③
-- P3 trace → SFT 导出（拆 P3a 引擎可选记 assistant 文本 + P3b CLI 导出）—— 待做
+- P3 trace → SFT 导出 —— P3a ✅（2026-09-27：`traceContent: 'full'` 可选记录 assistant
+  文本，spec §10 当日 ④）；P3b（CLI `agentia export`）待做
 - P4 租户归因 labels（含 metrics 侧 `maxLabelValues` 基数上限 —— 光 opt-in 封不住内存不变量）—— 待做
 - P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— 待做
 - P6 durable 长时程 —— 只立项调研（Temporal/Restate 对照 + 差距清单），本轮不写实现

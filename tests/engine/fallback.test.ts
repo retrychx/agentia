@@ -222,10 +222,10 @@ describe('模型 fallback 链（R8-P2）', () => {
     // 回合 1：主环 429 → 备用环成功（tool_use）⇒ 工具执行 ⇒ 回合 2：主环成功收尾
     const primary = flakyClient(1, rateLimit(), endTurnMsg('主模型收尾'));
     const backup = mockClient([toolUseMsg('noop', {}, 'tu1')]);
-    const tool = {
+    const tool: AgentTool = {
       name: 'noop',
       description: 'no-op',
-      input_schema: { type: 'object', properties: {} },
+      inputSchema: { type: 'object', properties: {} },
       run: async () => 'done',
     };
     const r = await runAgent({
@@ -234,7 +234,7 @@ describe('模型 fallback 链（R8-P2）', () => {
       client: primary.client,
       retry: false,
       fallbacks: [{ model: 'backup-m', client: backup.client }],
-      tools: [tool as never],
+      tools: [tool],
     });
     assert.equal(r.stopReason, 'end_turn');
     assert.equal(r.finalText, '主模型收尾');

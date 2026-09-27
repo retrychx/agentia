@@ -14,7 +14,7 @@
  * 本文件的机制有两半，缺一不可：
  *
  * 1. **取值收一处**：`forwardToolContext(ctx)` 是唯一的取值点，映射类型写成
- *    `{ [K in Key]-?: … }` —— 七个键**全必填**（值可以是 `undefined`）。少写一行 = 编译错误，
+ *    `{ [K in Key]-?: … }` —— 全部键**必填**（值可以是 `undefined`）。少写一行 = 编译错误，
  *    而不是静默漏。调用点播 `...forwardToolContext(ctx)` 即可，**没有**可漏的地方。
  * 2. **归类要穷尽**：`ToolRunContext` 的每个键必须在「转发」或「引擎自装配」里各就各位。
  *    新增一个可选字段而两边都没归类 ⇒ `UnclassifiedToolContextKey` 不再是 `never`
@@ -23,7 +23,7 @@
  * ⚠️ 唯一需要**覆盖**而不是直取的是 `signal`：两个调用点交下去的是
  * `combineSignals(ctx.signal, ctx.abandoned)`（子循环还要能被「放弃等待」打断），
  * 所以那里写成 `{ ...forwardToolContext(ctx), signal: combined }` —— 覆盖是显式的，
- * 其余六个键仍然不可能漏。
+ * 其余键仍然不可能漏。
  *
  * ⚠️ 本模块不是公共 API（不进 `src/index.ts`）：它是内部纪律的落点。
  */
@@ -43,6 +43,8 @@ export const FORWARDED_TOOL_CONTEXT_KEYS = [
   'onUnpricedModel',
   /** 正文截断口径（漏了 ⇒ 同一棵树上主/子 agent 的可见性不一致） */
   'maxEventChars',
+  /** assistant 文本记录口径（漏了 ⇒ 同一棵树上主 agent 有 output.text、子 agent 没有） */
+  'traceContent',
   /** 成本护栏（漏了 ⇒ 护栏在子循环期间离线） */
   'maxTotalTokens',
   'maxCostUsd',
@@ -53,7 +55,7 @@ export const FORWARDED_TOOL_CONTEXT_KEYS = [
 export type ForwardedToolContextKey = (typeof FORWARDED_TOOL_CONTEXT_KEYS)[number];
 
 /**
- * 交给子循环的那一组值：**七个键全必填**（值可以是 `undefined` —— 那表示「本 run 没设」，
+ * 交给子循环的那一组值：**全部键必填**（值可以是 `undefined` —— 那表示「本 run 没设」，
  * 与「忘了转发」是两件事，后者在类型上写不出来）。
  */
 export type ForwardedToolContext = {
@@ -86,7 +88,7 @@ export type UnclassifiedToolContextKey = Exclude<
 >;
 
 /**
- * 取值：把 `ctx` 上该转发的七个键原样取出（**不判空** —— `undefined` 是有信息的值，
+ * 取值：把 `ctx` 上该转发的键原样取出（**不判空** —— `undefined` 是有信息的值，
  * 表示「本 run 没设这个旋钮」，子循环该用它自己的缺省；判空会把它吃成「没转发」）。
  *
  * ⚠️ 不做真值判定：`maxEventChars: false`（不截断）与 `maxTotalTokens: 0` 都是有意义的值，
@@ -98,6 +100,7 @@ export function forwardToolContext(ctx: ToolRunContext): ForwardedToolContext {
     priceOverrides: ctx.priceOverrides,
     onUnpricedModel: ctx.onUnpricedModel,
     maxEventChars: ctx.maxEventChars,
+    traceContent: ctx.traceContent,
     maxTotalTokens: ctx.maxTotalTokens,
     maxCostUsd: ctx.maxCostUsd,
     toolTimeoutMs: ctx.toolTimeoutMs,

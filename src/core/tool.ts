@@ -180,6 +180,14 @@ export interface ToolRunContext {
    */
   maxEventChars?: number | false;
   /**
+   * 本 run 是否记录 assistant 文本进 llm.turn span（`RunAgentOptions.traceContent`，R8-P3a）。
+   * 嵌套能力（@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去 —— 否则同一棵
+   * 调用树上主 agent 的回合有 `output.text`、子 agent 的没有（与 maxEventChars 同理由）。
+   *
+   * 不设（undefined）= 子循环不记录（缺省行为）。
+   */
+  traceContent?: 'full';
+  /**
    * 成本硬管控（C1）透传：整条 run 累计 token 上限（见 `RunAgentOptions.maxTotalTokens`）。
    * 嵌套能力（@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去 —— 预算是
    * **整条 run（含各级子 agent）** 的口径，子循环不拿到它就等于护栏在子循环期间离线

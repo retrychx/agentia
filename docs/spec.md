@@ -209,7 +209,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 > 「trace 作重放基底」已落地，不再是开放问题：`traceToMessages` 把 trace 线性化为 messages
 > （R6 / v0.2.0，见 §10 2026-09-11），`forkMessages(trace, { atTurn, append? })` 支持在主循环
 > 第 N 回合截断分叉、拼新消息喂回 `app.run`（2026-09-16，见 §10）。两者同源有损
-> （trace 不记 assistant 原文）：产物跑的是**新 run**，不是接着原 run 续跑。
+> （trace **缺省**不记 assistant 原文 —— opt-in 例外见 §10 2026-09-27 ④ `traceContent`）：
+> 产物跑的是**新 run**，不是接着原 run 续跑。
 
 ## 10. 决策记录
 
@@ -3552,6 +3553,27 @@ RunInvocationOptions 三层同语义，app 级缺省 + run 级覆盖）。要点
 
 门禁 `tests/engine/fallback.test.ts`（12 条）；反向验证 4 变异各恰好咬死对应用例
 （摘 `!emitted` / abort 分支失效 / retryable→true / 成本按 args.model 算）。
+
+### 2026-09-27 ④：**opt-in 记录 assistant 文本**（`traceContent: 'full'`）—— 「trace 不记 assistant 文本」这条有损边界从「恒真」改成「缺省真」（R8-P3a）
+
+动机：trace → 训练数据导出（P3b）需要模型正文，而 trace 历来不记（llm.turn 只有
+usage/事件，replay/fork 的有损边界声明在 `engine/replay.ts`）。要点：
+
+1. **缺省不记，现状逐字不变** —— 旋钮是 `'full'` 单值枚举（不留布尔将来加档的坑），
+   只开在需要导出的 run 上。
+2. **旋钮分工**：裸 `maxEventChars`（`tool-events.ts`）管「单段负载多长」—— `output.text`
+   过同一道截断闸（缺省走成功出参档 2000）；`traceContent` 管「记不记」。`traceLimits`
+   下只有 `maxEvents`（管「多少条」），与两者正交。不进 `limits.ts` 真源表：它是字符串
+   枚举不是数值旋钮，「0 是什么」不适用。
+3. **纯 tool_use 回合不记**（无文本块）—— 空串属性是「这回合说了什么」的假信号。
+4. **透传子循环**：走 `forwarded.ts` 真源（ToolRunContext 新键被迫归类的机制咬住），
+   同一棵调用树同口径 —— 否则导出物里子 agent 的回合全是缺口。
+5. **代价写进文档**：实测 3 回合 × 约 1600 字符输出的 run，trace 5 564 → 11 010 字节
+   （约 2×）；模型输出进入脱敏面，与配方 2.4（observability.md）互相指。
+   §9.4 与 replay.ts 的「不记 assistant 文本」声明同步改为「缺省不记」。
+
+门禁 `tests/engine/trace-content.test.ts`（7 条）；反向验证 3 变异（记录闸摘掉 /
+不透传子循环 / 恒记）各恰好咬死对应用例。
 
 ## 11. 开放项
 
