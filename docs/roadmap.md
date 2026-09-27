@@ -313,6 +313,20 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   `runTimeoutMs` 那处如实标为未覆盖（`awaitTask` 的兜底轮询掩盖了活性差异）。
   顺带把 verify-all 的失败抽取补上 cancel 类标记行（原因行此前一条都没抓）。
 
+## R8（演化候选，2026-09-27 立项）
+
+> 来源：同日三视角分析（业界成熟产品对照 / AI 演化方向 / 产品化路径），用户授权逐项实施。
+> **设计稿与逐项验收口径在 `docs/plans/2026-09-27-evolution-r8.md`**（单一真源，含定位筛子
+> 与实施纪律），这里只登记清单与状态。
+
+- P1 trace 脱敏钩（redacting sink）—— 进行中
+- P2 模型 fallback client —— 待做
+- P3 trace → SFT 导出（拆 P3a 引擎可选记 assistant 文本 + P3b CLI 导出）—— 待做
+- P4 租户归因 labels —— 待做
+- P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— 待做
+- P6 durable 长时程 —— 只立项调研（Temporal/Restate 对照 + 差距清单），本轮不写实现
+- 缓：A2A 协议适配（协议漂移中）；拒：后端看板 / DAG 编辑器 / swarm 编排（定位）
+
 ## 原则（约束所有 R）
 
 1. 运行时核心（core/engine/run）语义稳定，新能力走 toolkit/新层接入；
