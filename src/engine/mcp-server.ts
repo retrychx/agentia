@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { stringifySafe } from '../core/json.js';
+import { validateJsonSchema } from '../core/schema.js';
 import { TIMED_OUT, isTimeoutError, withTimeout } from '../core/timeout.js';
 import type { AgentTool, ModelClient, ToolRunContext } from '../core/tool.js';
 import type { SpanError, TraceSink } from '../core/trace.js';
@@ -302,6 +303,15 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
         if (!tool) {
           return rpcError(id, -32602, `未知工具: ${name}`);
         }
+        // 入参契约与引擎**同一份校验器**（core/schema.ts，与 turn.ts 进方法体之前那次同源）：
+        // 反向桥若跳过它，同一份 @Tool 就会有两条契约 —— 引擎那边缺必填项记 errorKind
+        // 'invalid_input' 且不进方法体，这边却把畸形入参一路带进副作用。MCP 规范把
+        // 「未知工具 / 入参不合法」都归为协议错误（Invalid params），故回 -32602 而非
+        // result.isError（后者留给「工具真执行了但失败了」）。
+        const badInput = validateJsonSchema(tool.inputSchema, rawArgs ?? {});
+        if (badInput !== null) {
+          return rpcError(id, -32602, `工具 ${name} 的入参不满足 inputSchema：${badInput}`);
+        }
         return rpcResult(
           id,
           await callTool(tool, (rawArgs ?? {}) as Record<string, unknown>, signal),
@@ -327,6 +337,15 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
 
   if (opts.transport === 'stdio') {
     // stdio：换行分隔 JSON-RPC（每行一个完整报文）；日志只能去 stderr（stdout 是协议面）
+    //
+    // stdout 的 error **必须吞**：宿主先关读端、stdin 仍开着时，下一次应答写入就是异步
+    // `write EPIPE` —— 未捕获会把 server 打成栈回溯 + exit 1（2026-09-27 ⑩），而它只是
+    // 「对端没了」的次生现象，不是根因。正向连接器对子进程 stdin 是同一处置
+    // （`integrations/mcp-stdio.ts` 的 `p.stdin?.on('error', () => {})`），方向对称。
+    // 吞掉 ≠ 静默：真该知道的人（宿主）已经从自己的管道拿到 EOF 了。
+    process.stdout.on('error', () => {
+      /* EPIPE：对端已走 */
+    });
     let buf = '';
     let closed = false;
     const onData = (chunk: string): void => {
@@ -425,6 +444,25 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
       return;
     }
     const method = req.method ?? 'GET';
+
+    // 鉴权缝：与 HTTP 宿主同纪律，**两点都同** ——
+    // ① 在读 body 之前（body 一个字节都不收）；
+    // ② 在**方法 / 路径判定之前**：未鉴权一律 401，不泄露 endpoint 存在性。
+    //    宿主的分支顺序是「免鉴权组的 405 先于鉴权，其余先鉴权再判方法与路径」
+    //    （`transport/http-route.ts`），此前这里把 DELETE/405 摆在鉴权前面，
+    //    于是未鉴权能拿到 `405 allow: POST, DELETE` 与 `DELETE → 200`（2026-09-27 ⑨）。
+    //    自己这条 path 的判定不在此列：它只是「这个请求是不是我的」，别的路径原样交回宿主。
+    if (opts.auth) {
+      try {
+        await opts.auth(req);
+      } catch (e) {
+        console.error('[agentia:mcp-server] 鉴权钩子异常:', e);
+        if (!req.complete) res.setHeader('connection', 'close'); // body 未消费 ⇒ 连接不可复用
+        sendJson(res, 401, { error: '未通过鉴权' });
+        return;
+      }
+    }
+
     if (method === 'DELETE') {
       // 尽力终止会话（MCP 约定）：无状态 server 没有可终止的会话，200 收口
       res.writeHead(200);
@@ -436,18 +474,6 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
       res.setHeader('allow', 'POST, DELETE');
       sendJson(res, 405, { error: `方法 ${method} 不被允许，请用 POST` });
       return;
-    }
-
-    // 鉴权缝：与 HTTP 宿主同纪律 —— 在读 body 之前，抛错即 401，原文只进服务端日志
-    if (opts.auth) {
-      try {
-        await opts.auth(req);
-      } catch (e) {
-        console.error('[agentia:mcp-server] 鉴权钩子异常:', e);
-        if (!req.complete) res.setHeader('connection', 'close'); // body 未消费 ⇒ 连接不可复用
-        sendJson(res, 401, { error: '未通过鉴权' });
-        return;
-      }
     }
 
     const raw = await readBody(req);

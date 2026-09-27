@@ -254,6 +254,44 @@ describe('createMcpServer —— StreamableHTTP 协议面', () => {
     assert.match(err.message, /未知工具/);
   });
 
+  it('入参不满足 inputSchema → -32602 且方法体零调用（与引擎同一份校验器）', async () => {
+    // 反向验证：摘掉 dispatch 里那两行 validateJsonSchema ⇒ 本用例红两处 ——
+    // 「缺必填项却回了 result」与「方法体被调了」（实测修前返回 `你好，undefined`）。
+    let called = 0;
+    const strict: AgentTool = {
+      name: 'say_hello',
+      description: '需要 name',
+      inputSchema: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+      run: (input) => {
+        called += 1;
+        return `你好，${(input as { name: string }).name}`;
+      },
+    };
+    const s = await startHttp([strict]);
+    const missing = await post(
+      s.url as string,
+      rpc(1, 'tools/call', { name: 'say_hello', arguments: {} }),
+    );
+    const err = missing.body!.error as { code: number; message: string };
+    assert.equal(err.code, -32602, '入参不合法是协议错误（Invalid params）');
+    assert.match(err.message, /inputSchema/);
+    assert.equal(missing.body!.result, undefined, '不许既报错又给 result');
+    assert.equal(called, 0, '入参不合法时方法体一次都不许进（同引擎的 invalid_input）');
+
+    // 口径与引擎一致：多余字段不拦（子集校验器只查声明的部分）
+    const extra = await post(
+      s.url as string,
+      rpc(2, 'tools/call', { name: 'say_hello', arguments: { name: 'x', extra: 1 } }),
+    );
+    const result = extra.body!.result as { content: Array<{ text: string }> };
+    assert.equal(result.content[0]!.text, '你好，x');
+    assert.equal(called, 1);
+  });
+
   it('notifications/initialized → 202 空体；ping → 空 result', async () => {
     const s = await startHttp([hello]);
     const n = await post(s.url as string, {
@@ -282,6 +320,31 @@ describe('createMcpServer —— StreamableHTTP 协议面', () => {
     const badJson = await fetch(url, { method: 'POST', body: '{ 不是 json' });
     assert.equal(badJson.status, 400);
     await badJson.text();
+  });
+
+  it('未鉴权先于方法判定：GET/DELETE 一律 401（不泄露 endpoint 存在性）', async () => {
+    // 宿主纪律（transport/http-route.ts）：其余一律先鉴权再判方法/路径；此前这里把
+    // DELETE/405 摆在鉴权前面 ⇒ 未鉴权能拿到 `405 allow` 与 `DELETE → 200`。
+    const s = await startHttp([hello], {
+      auth: (req) => {
+        if (req.headers['x-key'] !== 'ok') throw new Error('denied');
+      },
+    });
+    const url = s.url as string;
+    const get = await fetch(url);
+    assert.equal(get.status, 401, '未鉴权 GET 不得回 405（那是泄露 endpoint 存在）');
+    await get.text();
+    const del = await fetch(url, { method: 'DELETE' });
+    assert.equal(del.status, 401, '未鉴权 DELETE 不得回 200');
+    await del.text();
+
+    // 通过鉴权后语义一字不变：GET → 405、DELETE → 200
+    const okGet = await fetch(url, { headers: { 'x-key': 'ok' } });
+    assert.equal(okGet.status, 405);
+    await okGet.text();
+    const okDel = await fetch(url, { method: 'DELETE', headers: { 'x-key': 'ok' } });
+    assert.equal(okDel.status, 200);
+    await okDel.text();
   });
 
   it('鉴权钩子抛错 → 401（原文不进响应）；通过则正常服务', async () => {
@@ -507,5 +570,47 @@ describe('createMcpServer —— stdio（真子进程，夹具走 createApp + @T
         ?.error?.message.includes('夹具工具炸了'),
       true,
     );
+  });
+
+  it('宿主先关读端（EPIPE）不打崩 server：stdout 的 error 被吞，子进程存活', async () => {
+    // 反向验证：摘掉 mcp-server.ts 里 `process.stdout.on('error', …)` 那两行 ⇒ 本用例红在
+    // 「exitCode 变 1」。实测修前：栈顶 `write EPIPE` at mcp-server.ts 的应答写入，exit 1。
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, ['--import', 'tsx', FIXTURE], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    child.stderr.resume(); // 夹具的日志别把管道堵住
+    // 子进程崩掉后再写 stdin 会在**本进程**报 EPIPE —— 那是被测对象的症状，测试自己别跟着炸
+    child.stdin.on('error', () => {
+      /* 子进程已死：断言那边会看到 exitCode */
+    });
+    try {
+      // 先正常握一次手：确认它已经在读 stdin（不靠 sleep 猜就绪）
+      const firstLine = new Promise<void>((resolve) => {
+        child.stdout.setEncoding('utf8');
+        let buf = '';
+        child.stdout.on('data', (c: string) => {
+          buf += c;
+          if (buf.includes('\n')) resolve();
+        });
+      });
+      child.stdin.write(`${JSON.stringify(rpc(1, 'initialize', {}))}\n`);
+      await firstLine;
+
+      child.stdout.destroy(); // 宿主关读端，stdin 仍开着 ⇒ 下一次应答必然 EPIPE
+      child.stdin.write(`${JSON.stringify(rpc(2, 'ping'))}\n`);
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        assert.equal(child.exitCode, null, `关读端后 server 崩了（exit ${String(child.exitCode)}）`);
+      }
+    } finally {
+      child.kill('SIGKILL');
+      // ⚠️ 不能直接 await 'close'：子进程若已死（正是变异时的形态）该事件早已发过，
+      // 再等就是永久挂起 —— 测试会从「红」变成「挂住」，那是最难查的一种假信号。
+      await new Promise((r) => {
+        if (child.exitCode !== null || child.signalCode !== null) r(undefined);
+        else child.once('close', r);
+      });
+    }
   });
 });
