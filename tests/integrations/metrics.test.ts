@@ -1041,3 +1041,214 @@ describe('D：基数折叠在 render() / Prometheus 面可见', () => {
     }
   });
 });
+
+/**
+ * exemplars（指标 ↔ trace 互跳）：失败 counter 挂「最近一次失败 run」、
+ * run 时长 histogram 挂「迄今最慢的一次 run」。
+ * 出口三路各验一遍：snapshot() / OpenMetrics 文本 / OTLP 数据点；
+ * 外加一条回归护栏 —— 缺省 prometheus 输出必须**逐字节不变**（exemplar 不可泄漏进 0.0.4 文本）。
+ */
+describe('exemplars：指标尖峰 → 那条 trace', () => {
+  const A = 'a'.repeat(32); // 已是 32-hex，wireTraceId 投影后是恒等
+  const B = 'b'.repeat(32);
+
+  /** traceOf 的可换 id 版：exemplar 断言要按 traceId 区分是哪条 run */
+  function tracedRun(traceId: string, opts: Parameters<typeof traceOf>[0]): Trace {
+    const t = traceOf(opts);
+    t.traceId = traceId;
+    t.spans[0]!.traceId = traceId;
+    return t;
+  }
+
+  it('失败 run 之后：snapshot 的 failed exemplar 指向它的 traceId（覆盖式，取最近一次）', () => {
+    const m = metricsSink();
+    m.export(tracedRun(A, { durationMs: 10 }));
+    assert.equal(m.snapshot().exemplars.failed, undefined, '尚无失败时不得有 exemplar');
+
+    m.export(tracedRun(B, { status: 'error', durationMs: 5 }));
+    assert.equal(m.snapshot().exemplars.failed?.traceId, B);
+
+    m.export(tracedRun(A, { status: 'error', durationMs: 5 }));
+    assert.equal(m.snapshot().exemplars.failed?.traceId, A, '后到的失败覆盖前一个');
+  });
+
+  it('更慢的 run 取代旧的 slowest exemplar；等值不替换（「最慢」是稳定锚点）', () => {
+    const m = metricsSink();
+    m.export(tracedRun(A, { durationMs: 50 }));
+    m.export(tracedRun(B, { durationMs: 20 }));
+    assert.equal(m.snapshot().exemplars.slowest?.traceId, A, '更慢的 B（20ms）没有取代 A');
+    assert.equal(m.snapshot().exemplars.slowest?.durationMs, 50);
+
+    m.export(tracedRun(B, { durationMs: 50 }));
+    assert.equal(m.snapshot().exemplars.slowest?.traceId, A, '等值（50ms）不替换');
+
+    m.export(tracedRun(B, { durationMs: 80 }));
+    assert.equal(m.snapshot().exemplars.slowest?.traceId, B, '破纪录（80ms）才换');
+    assert.equal(m.snapshot().exemplars.slowest?.durationMs, 80);
+  });
+
+  it('根未收尾（无时长）的 run 不进 slowest exemplar；reset 清空两个槽位', () => {
+    const m = metricsSink();
+    m.export(tracedRun(A, {})); // 根没收尾
+    assert.equal(m.snapshot().exemplars.slowest, undefined);
+
+    m.export(tracedRun(A, { status: 'error', durationMs: 5 }));
+    m.reset();
+    assert.deepEqual(m.snapshot().exemplars, { failed: undefined, slowest: undefined });
+  });
+
+  /*
+   * 回归护栏：缺省 prometheus 输出**逐字节**不含 exemplar（0.0.4 文本没有 exemplar 语法，
+   * 泄漏进去会让 expfmt 解析整页失败）。期望值抄自引入 exemplars 之前的渲染结果；
+   * 场景里**刻意带**一条失败 run 与一个时长样本（两个 exemplar 槽位都已记账），
+   * 它们一个字符都不许出现在输出里。
+   */
+  it('缺省 prometheus 输出与改动前逐字节一致（exemplar 已记账但不出现在 0.0.4 文本里）', () => {
+    const m = metricsSink({ buckets: [100] });
+    m.export(
+      traceOf({
+        status: 'error',
+        durationMs: 50,
+        input: 3,
+        output: 4,
+        cacheRead: 5,
+        cacheCreation: 6,
+        costEstimate: 0.25,
+      }),
+    );
+    assert.equal(m.snapshot().exemplars.failed?.traceId, 't-1', 'exemplar 确实记了账');
+    assert.equal(m.snapshot().exemplars.slowest?.traceId, 't-1');
+    const expected = [
+      '# HELP agentia_runs_total run 总数（成功 + 失败）',
+      '# TYPE agentia_runs_total counter',
+      'agentia_runs_total 1',
+      '# HELP agentia_runs_failed_total 失败的 run 数（trace.status=error）',
+      '# TYPE agentia_runs_failed_total counter',
+      'agentia_runs_failed_total 1',
+      '# HELP agentia_tokens_total token 累计（kind 分项：input / output / cache_read / cache_creation）',
+      '# TYPE agentia_tokens_total counter',
+      'agentia_tokens_total{kind="input"} 3',
+      'agentia_tokens_total{kind="output"} 4',
+      'agentia_tokens_total{kind="cache_read"} 5',
+      'agentia_tokens_total{kind="cache_creation"} 6',
+      '# HELP agentia_cost_usd_total 累计成本估算（美元）',
+      '# TYPE agentia_cost_usd_total counter',
+      'agentia_cost_usd_total 0.25',
+      '# HELP agentia_dropped_keys 因基数上限被折叠的不同键数（kind 分项）',
+      '# TYPE agentia_dropped_keys gauge',
+      'agentia_dropped_keys{kind="capability"} 0',
+      'agentia_dropped_keys{kind="model"} 0',
+      'agentia_dropped_keys{kind="score"} 0',
+      '# HELP agentia_run_duration_ms run 时长（毫秒）',
+      '# TYPE agentia_run_duration_ms histogram',
+      'agentia_run_duration_ms_bucket{le="100"} 1',
+      'agentia_run_duration_ms_bucket{le="+Inf"} 1',
+      'agentia_run_duration_ms_sum 50',
+      'agentia_run_duration_ms_count 1',
+      '# HELP agentia_run_duration_ms_last run 时长分位（毫秒，滑动窗口内精确值）',
+      '# TYPE agentia_run_duration_ms_last gauge',
+      'agentia_run_duration_ms_last{quantile="0.5"} 50',
+      'agentia_run_duration_ms_last{quantile="0.95"} 50',
+      '',
+    ].join('\n');
+    assert.equal(m.render(), expected);
+  });
+
+  it('openmetrics：样本行尾挂 # {trace_id=…}，histogram exemplar 落在它所属 bucket，# EOF 收尾', () => {
+    const m = metricsSink({ export: 'openmetrics', buckets: [100] });
+    m.export(tracedRun(A, { durationMs: 50 }));
+    m.export(tracedRun(B, { status: 'error', durationMs: 10 }));
+    const txt = m.render();
+
+    assert.ok(txt.endsWith('# EOF\n'), 'OpenMetrics 必须以 # EOF 收尾');
+    // counter：exemplar 值 = 该次增量 1，行尾带时间戳（秒）
+    assert.match(
+      txt,
+      new RegExp(`^agentia_runs_failed_total 1 # \\{trace_id="${B}"\\} 1 \\d+(\\.\\d+)?$`, 'm'),
+    );
+    // histogram：最慢那次是 A 的 50ms，落在 le="100" 桶；exemplar 值 = 观测时长
+    assert.match(
+      txt,
+      new RegExp(
+        `^agentia_run_duration_ms_bucket\\{le="100"\\} 2 # \\{trace_id="${A}"\\} 50 \\d+(\\.\\d+)?$`,
+        'm',
+      ),
+    );
+    // 其余样本行不得带 exemplar（+Inf 桶没有、sum/count 没有、runs_total 没有）
+    assert.match(txt, /^agentia_run_duration_ms_bucket\{le="\+Inf"\} 2$/m);
+    assert.match(txt, /^agentia_runs_total 2$/m);
+    // 除 exemplar 与 EOF 外与 prometheus 渲染同源：去掉两处尾巴与 EOF 后应逐字节相等
+    const stripped = txt.replace(/ # \{trace_id="[^"]+"\} [^\n]+/g, '').replace('# EOF\n', '');
+    const p = metricsSink({ buckets: [100] });
+    p.export(tracedRun(A, { durationMs: 50 }));
+    p.export(tracedRun(B, { status: 'error', durationMs: 10 }));
+    assert.equal(stripped, p.render());
+  });
+
+  it('openmetrics：最慢那次越过所有桶边界时，exemplar 挂在 +Inf 桶行上', () => {
+    const m = metricsSink({ export: 'openmetrics', buckets: [100] });
+    m.export(tracedRun(A, { durationMs: 5000 }));
+    assert.match(
+      m.render(),
+      new RegExp(
+        `^agentia_run_duration_ms_bucket\\{le="\\+Inf"\\} 1 # \\{trace_id="${A}"\\} 5000 `,
+        'm',
+      ),
+    );
+  });
+
+  it('openmetrics：无失败/无时长样本时不挂 exemplar（只有 # EOF 这一个新增）', () => {
+    const m = metricsSink({ export: 'openmetrics' });
+    m.export(traceOf({})); // 根未收尾 + 无失败
+    const txt = m.render();
+    assert.ok(txt.endsWith('# EOF\n'));
+    assert.equal(txt.includes('# {trace_id='), false);
+  });
+
+  it('OTLP：runs_failed_total 与 run_duration_ms 的数据点带 exemplars（hex 投影 + 根 spanId）', async () => {
+    const bodies: any[] = [];
+    const server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const m = metricsSink({
+        export: 'otlp',
+        endpoint: `http://127.0.0.1:${port}`,
+        intervalMs: 0,
+      });
+      await m.export(tracedRun(A, { durationMs: 50 }));
+      await m.export(tracedRun(B, { status: 'error', durationMs: 10 }));
+      m.stop();
+
+      const metrics = bodies.at(-1).resourceMetrics[0].scopeMetrics[0].metrics as Array<
+        Record<string, any>
+      >;
+      const byName = (n: string) => metrics.find((x) => x.name === n)!;
+
+      const failed = byName('agentia_runs_failed_total').sum.dataPoints[0];
+      assert.equal(failed.exemplars.length, 1);
+      assert.equal(failed.exemplars[0].traceId, B, '已是 hex 形态（wireTraceId 恒等投影）');
+      assert.equal(failed.exemplars[0].spanId, 'root1', 'wireSpanId：去横线截 16 位');
+      assert.equal(failed.exemplars[0].asInt, '1', 'counter exemplar 值 = 该次增量');
+      assert.equal(BigInt(failed.exemplars[0].timeUnixNano) % 1_000_000n, 0n);
+
+      const hist = byName('agentia_run_duration_ms').histogram.dataPoints[0];
+      assert.equal(hist.exemplars.length, 1);
+      assert.equal(hist.exemplars[0].traceId, A, '最慢那次（50ms）');
+      assert.equal(hist.exemplars[0].asDouble, 50, 'histogram exemplar 值 = 观测时长');
+
+      // 不挂 exemplar 的数据点不得有 exemplars 键
+      assert.equal('exemplars' in byName('agentia_runs_total').sum.dataPoints[0], false);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});

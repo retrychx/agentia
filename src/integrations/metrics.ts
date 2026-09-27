@@ -1,15 +1,16 @@
 import type { Trace, TraceSink } from '../core/trace.js';
 import { MetricsState } from './metrics-state.js';
 import type { MetricsSnapshot } from './metrics-state.js';
-import { renderPrometheus } from './metrics-render.js';
+import { renderOpenMetrics, renderPrometheus } from './metrics-render.js';
 import { flushOtlpMetrics } from './metrics-otlp.js';
 
 // 结构拆分（2026-09-20）：累加/快照在 `metrics-state.ts`（MetricsState），
-// Prometheus 文本渲染在 `metrics-render.ts`（renderPrometheus），OTLP 组装与导出在
-// `metrics-otlp.ts`（buildOtlpPayload / flushOtlpMetrics / MetricsExportError）。
+// 文本渲染在 `metrics-render.ts`（renderPrometheus / renderOpenMetrics），
+// OTLP 组装与导出在 `metrics-otlp.ts`（buildOtlpPayload / flushOtlpMetrics / MetricsExportError）。
 // 均为同层 module 级 export，不进公共面；本文件只留选项校验、定时器与组装。
 export type {
   CapabilityMetrics,
+  ExemplarSnapshot,
   ModelMetrics,
   ScoreMetrics,
   MetricsSnapshot,
@@ -36,17 +37,26 @@ export { MetricsExportError } from './metrics-otlp.js';
  * - **histogram**（`*_bucket` / `*_sum` / `*_count`，累积语义）—— 抓取端可跨实例任意聚合；
  * - **窗口内精确分位**（`*_last{quantile=...}` gauge）—— 单实例排障时更好读。
  *
- * 零依赖：Prometheus 文本与 OTLP/JSON 都手写（纯文本 / JSON，不值得为此引客户端库）。
+ * **exemplars**（指标 → trace 的桥）：记账时跟踪两个槽位 —— 失败 counter 挂「最近一次失败
+ * run」、run 时长 histogram 挂「迄今最慢的一次 run」（口径见 `MetricsSnapshot.exemplars`）。
+ * 出口：`'openmetrics'` 文本模式（样本行尾 `# {trace_id=…}`）与 OTLP（数据点原生
+ * exemplars 字段）；缺省 `'prometheus'` 文本**不支持** exemplar，输出不含它。
+ *
+ * 零依赖：Prometheus/OpenMetrics 文本与 OTLP/JSON 都手写（纯文本 / JSON，不值得为此引客户端库）。
  */
 
 export interface MetricsSinkOptions {
   /**
    * 输出形态：
    * - `'prometheus'`（缺省）—— `render()` 出 Prometheus 文本，宿主挂到 `GET /metrics`；
-   * - `'otlp'` —— 用全局 `fetch` POST 到 `${endpoint}/v1/metrics`（OTLP/JSON，零依赖）。
+   * - `'openmetrics'` —— 同为拉取式，但 `render()` 出 **OpenMetrics 文本**（样本行尾挂
+   *   exemplar `# {trace_id="…"}`、文件以 `# EOF` 收尾）—— 「指标尖峰 → 那条 trace」的桥。
+   *   宿主需以 `application/openmetrics-text` 提供该端点（Prometheus 按 0.0.4 抓取会丢掉 exemplar）；
+   * - `'otlp'` —— 用全局 `fetch` POST 到 `${endpoint}/v1/metrics`（OTLP/JSON，零依赖；
+   *   exemplar 是 OTLP 的原生字段，随数据点一并发出）。
    *   必须给 `endpoint`（不给就构造期抛错，比"静默不导出"好）。
    */
-  export?: 'prometheus' | 'otlp';
+  export?: 'prometheus' | 'openmetrics' | 'otlp';
   /** `export:'otlp'` 的采集端基地址，例如 http://localhost:4318（尾部斜杠会被去掉） */
   endpoint?: string;
   /**
@@ -114,9 +124,13 @@ export interface MetricsSinkOptions {
 
 export interface MetricsSink extends TraceSink {
   snapshot(): MetricsSnapshot;
-  /** Prometheus 文本格式（`text/plain; version=0.0.4`），零依赖手写 */
+  /**
+   * 文本格式渲染（零依赖手写）：`export:'prometheus'`（缺省）出 `text/plain; version=0.0.4`，
+   * `export:'openmetrics'` 出 OpenMetrics 文本（带 exemplar、以 `# EOF` 收尾；
+   * 宿主端点的 Content-Type 应配 `application/openmetrics-text`）
+   */
   render(): string;
-  /** 主动导出一次（`export:'otlp'` 时有意义；prometheus 模式为空操作）。失败按 onExportError 处理 */
+  /** 主动导出一次（`export:'otlp'` 时有意义；prometheus/openmetrics 拉取式为空操作）。失败按 onExportError 处理 */
   flush(): Promise<void>;
   /** 停掉定时导出（进程收尾 / 测试用） */
   stop(): void;
@@ -137,8 +151,10 @@ export const DEFAULT_BUCKETS: readonly number[] = [
 
 export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   const format = opts.export ?? 'prometheus';
-  if (format !== 'prometheus' && format !== 'otlp') {
-    throw new Error(`metricsSink: export 只支持 'prometheus' | 'otlp'，收到 ${String(format)}`);
+  if (format !== 'prometheus' && format !== 'openmetrics' && format !== 'otlp') {
+    throw new Error(
+      `metricsSink: export 只支持 'prometheus' | 'openmetrics' | 'otlp'，收到 ${String(format)}`,
+    );
   }
   const otlpEndpoint = opts.endpoint?.replace(/\/+$/, '');
   if (format === 'otlp' && !otlpEndpoint) {
@@ -183,7 +199,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
 
   const snapshot = (): MetricsSnapshot => state.snapshot();
 
-  const render = (): string => renderPrometheus(state, p);
+  const render = (): string =>
+    format === 'openmetrics' ? renderOpenMetrics(state, p) : renderPrometheus(state, p);
 
   const flush = async (): Promise<void> => {
     if (format !== 'otlp') return; // prometheus 模式：拉取式，无主动导出

@@ -170,6 +170,8 @@ export type {
 } from './transport/http.js';
 export { SqliteTaskStore } from './store/sqliteStore.js';
 export { createOtlpExporter } from './integrations/otlp.js';
+// JSONL 文件 sink：`agentia report` / `diff` / `harvest` 的输入格式（一行一条裸 Trace）
+export { jsonlTraceSink } from './integrations/file-sink.js';
 export { createOpenAIClient } from './integrations/openai.js';
 export { createAnthropicClient } from './integrations/anthropic.js';
 export type { AnthropicClientOptions } from './integrations/anthropic.js';
@@ -212,6 +214,7 @@ export type {
   MetricsSnapshot,
   ModelMetrics,
   CapabilityMetrics,
+  ExemplarSnapshot,
 } from './integrations/metrics.js';
 // integrations：调优报告（G1）—— 纯函数，从 trace 派生「哪个能力慢/贵/爱失败」
 export { buildRunReport, mergeRunReports, renderRunReport } from './integrations/report.js';

@@ -50,6 +50,34 @@ describe('executeRun · trace 出口（sinks）', () => {
     assert.equal(traces.length, 1, '前一个 sink 抛错不阻断后续 sink');
   });
 
+  it('sink 抛错：吞掉但**不再零信号** —— console.warn 落一条带「trace sink」与错误消息的告警', async () => {
+    const bad: TraceSink = {
+      export() {
+        throw new Error('sink boom');
+      },
+    };
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    let status: string | undefined;
+    try {
+      const { run } = await executeRun({
+        messages: [{ role: 'user', content: 'hi' }],
+        client: mockClient([endTurnMsg('done')]).client,
+        sinks: [bad],
+      });
+      status = run.status;
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(status, 'succeeded', 'run 照常成功（观测不击穿业务）');
+    assert.equal(warnings.length, 1, '一次投递失败 = 恰好一条告警');
+    assert.match(warnings[0]!, /trace sink/, '文案含「trace sink」字样（可 grep）');
+    assert.match(warnings[0]!, /sink boom/, '告警要带 sink 的错误消息');
+  });
+
   it('失败 run（rethrow:false）：sink 仍收到 trace，且状态为 error', async () => {
     const { sink, traces } = collector();
     const { run } = await executeRun({

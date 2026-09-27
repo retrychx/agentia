@@ -693,6 +693,7 @@ process.on('SIGTERM', async () => {
 - 超限后 run 以 `stopReason='budget_exceeded'` 收尾（**算失败**），run 根记一条 `budget.exceeded` 事件（带 `{ kind, limit, actual, totalTokens, costUsd }`）。
 - **不是硬实时**：一回合跑完才判，实际用量可能超上限一个回合的量。
 - **模型自然收尾的那一回合超限不改判失败**（只留事件）—— 那次 run 的任务其实做完了，不该追认成失败。同理，超预算的回合仍照常处理 `submit_result`（纯内部的结构化提交、零副作用）—— 模型已把最终结果交出来，连同回合丢弃等于白烧这一回合。
+- **超预算当回合的普通工具不执行**：判出超限后，本回合模型要求的工具调用被**连带丢弃** —— 不执行、不回灌 tool_result，trace 里**也没有**对应的 `tool.input` / `tool.output` 事件（「避免超预算的 run 继续产生副作用」）；run 随即以 `budget_exceeded` 收尾。所以别指望「超限那一回合的工具结果会进 trace」—— 它们根本没有发生；唯一例外是上面说的 `submit_result`。
 - 预算是**整条 run（含各级子 agent / skill 子循环）**的口径：上限经 `ToolRunContext` 透传，各级循环共享同一 recorder 的累计账单、每回合各自检查。子循环超限以 `budget_exceeded` 收尾（该次能力调用记 `is_error`，capability span 上记 `budget.exceeded` 事件），主循环在下一回合**入口**拦住、不再发出新请求，整条 run 以 `budget_exceeded` 收尾。
 
 ```ts
@@ -737,11 +738,12 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 
 | API | 说明 |
 |---|---|
-| `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递，抛错被吞 |
+| `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递，抛错被吞（吞之前落一条 `console.warn`，文案含「trace sink」） |
 | `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项见下面「`OtlpExporterOptions`」表 |
+| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` 的输入格式**，见 §6「调优报告」 |
 | `TraceRecordEvent` | **增量记账事件**（`onTraceEvent` 的回调参数）：`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`，每条带单调 `seq`。载荷是**增量 + 此刻的拷贝**（`span.begin` 只给初始形状，属性/事件/链路各走自己的类型）；按 `seq` 升序折回必须**逐字等于**收尾时的 trace |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
@@ -756,7 +758,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `headers` | 追加的请求头（鉴权 / 租户标） |
 | `serviceName` | OTLP resource 的 `service.name`，缺省 `agentia` |
 | `timeoutMs` | 单次导出请求超时（毫秒，缺省 10000，非正数 = 不限）——裸 `fetch` 没有超时，collector 半开连接会让 run 收尾**永久挂起**；超时按导出失败处理 |
-| `onExportError` | 导出失败回调：给了它，**所有**失败（非 2xx / 超时 / **HTTP 200 但 collector 报部分接收**）都交给它、不再向 `TraceSink` 调用方抛；不给则维持既有行为（抛出，由 `flushSinks` 吞掉 —— 观测失败不击穿业务）。存在理由：`TraceSink` 的失败缺省是**静默**的，「导出其实少了一半数据」这类消息得有人能收到 |
+| `onExportError` | 导出失败回调：给了它，**所有**失败（非 2xx / 超时 / **HTTP 200 但 collector 报部分接收**）都交给它、不再向 `TraceSink` 调用方抛；不给则维持既有行为（抛出，由 `flushSinks` 吞掉并落 `console.warn` —— 观测失败不击穿业务）。存在理由：`TraceSink` 的失败缺省只有一条泛化的 warn，「导出其实少了一半数据」这类**带分类的**消息得有人能收到 |
 
 导出器的两条线缆口径（都有守卫钉着，别按直觉改）：
 
@@ -779,6 +781,7 @@ run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attribu
 `llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
 capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 是**裸能力名**）：`subagent` → `invoke_agent` + `gen_ai.agent.name`，`skill` → `execute_tool` + `gen_ai.tool.name`；
 `score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处，下游（Langfuse / Grafana / Datadog）按 1.37+ 识别这批键做 GenAI 专项视图。
+从 Tempo / Grafana 按 run 找回 trace 的做法（id 的 hex 投影、run 根按 `invoke_agent` 过滤）见 `docs/observability.md` §2.7。
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
 > 框架只保证 trace 出口，这些都在缝外用 sink 组合；四条现成 sink 的实码在
@@ -885,7 +888,7 @@ async placeOrder(input: { sku: string }) {
 
 | 字段 | 说明 |
 |---|---|
-| `export` | 输出形态；缺省 `'prometheus'`。`'otlp'` 走 OTLP/JSON 导出（**必须同时给 `endpoint`**，不给就构造期抛错） |
+| `export` | 输出形态；缺省 `'prometheus'`。`'openmetrics'` 出带 exemplars 的 OpenMetrics 文本（指标 ↔ trace 互跳，见 `docs/observability.md` §4）。`'otlp'` 走 OTLP/JSON 导出（**必须同时给 `endpoint`**，不给就构造期抛错） |
 | `endpoint` | OTLP 采集端基地址（如 `http://localhost:4318`）；尾部斜杠会被去掉 |
 | `intervalMs` | OTLP 导出间隔（毫秒，缺省 60000）；`0` = 每次 run 收尾立即导出。定时器已 `unref()`，不阻止进程退出 |
 | `resourceAttributes` / `serviceName` | OTLP resource 属性（`service.name` 缺省 `agentia`） |
@@ -982,18 +985,19 @@ failures, capabilities, totals }`）、没有人类装饰，适合脚本与 CI �
 > 要看分位请用 `mergeRunReports` 汇总多条，或用 `metricsSink` 的直方图。
 > CLI 报告的聚合口径与 `agentia dev` 面板的能力排行同源（同一份 `@migor/trace-view` 实现）。
 
-那个 jsonl 从哪来 —— 框架不替你落盘（观测出口是缝），自己接一个 sink 就行，零依赖：
+那个 jsonl 从哪来 —— 框架内置了文件 sink，一行接入（零依赖）。它产出的格式就是
+**CLI 三件套的输入**：`agentia report` / `agentia diff` / `agentia harvest` 都吃这个文件
+（一行一个 JSON，裸 Trace）：
 
 ```ts
-import { appendFileSync } from 'node:fs';
-import { createApp, type TraceSink } from '@migor/agentia';
+import { createApp, jsonlTraceSink } from '@migor/agentia';
 
-const jsonl: TraceSink = {
-  export: (trace) => appendFileSync('trace.jsonl', `${JSON.stringify(trace)}\n`, 'utf8'),
-};
-const app = await createApp({ /* … */ sinks: [jsonl] });
-// 之后：agentia report trace.jsonl
+const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.jsonl' })] });
+// 之后：agentia report trace.jsonl / agentia diff a.jsonl b.jsonl / agentia harvest trace.jsonl
 ```
+
+父目录不存在会自动递归创建；**追加不覆盖**（多跑几次就累积多行）；写失败抛给 `flushSinks`
+吞掉并落 `console.warn`（观测失败不击穿业务，但不再零信号）。
 
 异步宿主更省事：把 `FileTaskStore` 的落盘文件直接喂给它 —— `TaskRecord` 里带 `result.trace`，
 `report` 认这种形态，不用另写 sink。
@@ -1115,6 +1119,7 @@ const app = createApp({ system, providers: [...], tools });
 - 断言源是既有 `Trace`：「先 `search` 才 `summarize`」这类顺序断言全从 trace 读，框架不为此新增埋点。
 - `run()` **不抛**（用例失败进报告，一次跑完能看到所有回归，而不是修一个跑一次）；只有「应用建不起来」才冒泡 —— 那是环境错误，不是回归。失败 case 带 `trace`，直接看现场。
 - `scriptedClient` 的步骤**在 `finalMessage()` 成功返回后才前进**：抛错的步骤（函数步骤 `throw` 模拟 429）会在重试时**重放同一步**，想验重试就这么写。
+- **脚本消息要带 `usage`，否则记账全 0**：脚本是模型响应的线缆形状，`usage` 用 snake_case 四字段 —— `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`（缺了的字段按 0 计）。整个 `usage` 缺省**不报错**，但该回合的 token 与成本记账为 0 —— 想在 eval 里演示 `maxTotalTokens` / `maxCostUsd` 护栏时，护栏会永远「不触发」。现成形状见 `tests/helpers.ts` 的 `U`。
 - **用例结论自动落 score**：每个用例跑完，结论以 `{ name: 'eval', value: 0|1, source: eval 名, comment: 失败原因 }` 自动 `attachScore` 到该用例的 trace —— eval 的 trace 自带质量结论，下游 sink / `metricsSink` 可直接聚合「这个 eval 的通过率」（`app.run` 抛错拿不到 trace 时不挂）。
 
 ```ts
@@ -1410,7 +1415,7 @@ const callable = {
 | 默认 client 的真端点验证范围 | `e2e:live` 跑在 DeepSeek 的 Anthropic **兼容**端点上；官方 Anthropic 端点的行为差异（thinking 细节、cache TTL 语义、新块型）目前只有本地假端点测试在守 —— mock 全绿发现不了厂商真实行为 —— 接入官方端点前自己跑一遍 `npm run e2e:live` |
 | thinking 块「能收、不主动请求」 | 框架**从不**在请求里开 extended thinking；默认 client 能收拼 thinking 块（`signature_delta` 会累积），`redacted_thinking` 与未知块型**原样透传**不丢 —— 但官方 API 的 thinking 回灌要求带合法 `signature`，自定义 client 开 thinking 时自己验证这条链 |
 | 工具阶段的 abort 有盲区 | abort 只在三处被观察：**回合边界 / 在飞模型请求 / 重试退避 sleep**。没设 `toolTimeoutMs` 且工具挂死时，abort 之后 run 也不会返回（工具的 Promise 永不 settle）—— 挂死的工具要么设超时，要么自己读 `ToolRunContext.signal` |
-| 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；同理记忆水合/回写失败也不击穿 run |
+| 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；但吞之前落一条 `console.warn`（含「trace sink」字样）—— sink 天天挂不再零信号。同理记忆水合/回写失败也不击穿 run |
 | 框架不自动读 .env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外，框架自己不去翻环境变量，也不读 `.env`；要读就在启动代码里调 `loadEnvFile()`（脚手架已内置那行），**真实环境变量优先**于文件 |
 | 鉴权只是缝 | 框架**不实现** token / JWT / 签名策略，也不碰凭据 env —— `authenticate` 只承诺「拦在入口、读 body 之前」；策略是宿主或反代的事 |
 | 运行时是 Node | 按 Node ≥ 18 设计与测试（`engines` 写明，CI 在 18/20/22 上守）；**未对 Deno / edge 做验证**。`SqliteTaskStore` 需 Node ≥ 22.5（`node:sqlite`），未提供时构造期抛可读报错 |

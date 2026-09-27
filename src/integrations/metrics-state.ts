@@ -1,5 +1,5 @@
 import { capabilityKindOf } from '../core/trace.js';
-import type { Trace } from '../core/trace.js';
+import type { SpanId, Trace, TraceId } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
 /**
@@ -47,6 +47,26 @@ export interface ScoreMetrics {
   sum: number;
 }
 
+/**
+ * exemplar 槽位内容：指向「哪条 run」的最小引用（traceId + 根 spanId + 记账时刻）。
+ * 内部存**原始 id**，hex 投影（`wireTraceId` / `wireSpanId`）在各自出口做（单一真源在 core/trace.ts）。
+ */
+export interface RunExemplar {
+  traceId: TraceId;
+  /** run 根 span 的 id —— OTLP exemplar 的 spanId 字段（跳到具体 span，不只是整条 trace） */
+  spanId: SpanId;
+  /** 记账时刻（epoch 毫秒）—— OTLP 的 timeUnixNano / OpenMetrics 行尾时间戳都从它派生 */
+  at: number;
+}
+
+/** `snapshot().exemplars` 的形状 —— 「指标尖峰 → 那条 trace」的桥（只给读侧，不含 spanId 细节） */
+export interface ExemplarSnapshot {
+  /** `runs_failed_total` 的 exemplar：**最近一次**失败的 run；尚无失败时 undefined */
+  failed: { traceId: TraceId; at: number } | undefined;
+  /** `run_duration_ms` 的 exemplar：迄今**最慢**的一次 run；尚无时长样本时 undefined */
+  slowest: { traceId: TraceId; durationMs: number; at: number } | undefined;
+}
+
 /** 进程内累计快照（`snapshot()` 返回） */
 export interface MetricsSnapshot {
   /** 投递过 trace 的 run 总数（= `export` 被调用次数） */
@@ -81,6 +101,12 @@ export interface MetricsSnapshot {
   droppedModels: number;
   /** 因 `maxScores` 上限被归入 `__other__` 的不同评分维度数 */
   droppedScores: number;
+  /**
+   * exemplar（指标 → trace 的桥，2026-09-27）：只跟踪价值最高的两个槽位 ——
+   * 失败 counter 的「最近一次」与 run 时长 histogram 的「最慢一次」。
+   * 不做 per-能力/per-模型：基数上限封的是标签，挡不住「每键一个槽位」的扩散。
+   */
+  exemplars: ExemplarSnapshot;
   // 注：三个计数各自最多记账 1024 个不同键，满了以后是**下界**（那已是键空间失控的
   // 量级，报警够用）。要精确值就得为无界键空间留一本无界的账 —— 与设上限的初衷相反。
 }
@@ -285,6 +311,13 @@ export class MetricsState {
   readonly models = new Map<string, ModelAcc>();
   /** 评分累加器：key = `${name}\t${source}`（source 缺省 ''；\t 不会出现在正常评分名里，做天然分隔符） */
   readonly scores = new Map<string, ScoreMetrics>();
+  /**
+   * exemplar 槽位（各一个，O(1)，无界风险为零）—— 「指标尖峰 → 那条 trace」的桥。
+   * 失败是**覆盖式**（尖峰时要看的是最新的那条）；最慢是**破纪录才换**
+   * （等值保留旧的：「最慢」是稳定锚点，不该被同速的新 run 顶来顶去）。
+   */
+  failedExemplar: RunExemplar | undefined;
+  slowestExemplar: (RunExemplar & { durationMs: number }) | undefined;
   // 三个维度的键空间都封在这些配额里 —— 没有它们，三张 Map 与各自的时长窗口都是无界的
   readonly capBudget: KeyBudget;
   readonly modelBudget: KeyBudget;
@@ -325,7 +358,10 @@ export class MetricsState {
 
   accumulate(trace: Trace): void {
     this.runs++;
-    if (trace.status === 'error') this.failed++;
+    if (trace.status === 'error') {
+      this.failed++;
+      this.failedExemplar = { traceId: trace.traceId, spanId: trace.rootSpanId, at: Date.now() };
+    }
     const u = trace.totalUsage;
     this.tokens.input += u.inputTokens;
     this.tokens.output += u.outputTokens;
@@ -334,7 +370,17 @@ export class MetricsState {
     if (u.costEstimate != null) this.costUsd += u.costEstimate;
 
     const d = runDurationMs(trace);
-    if (d !== undefined) this.runStat.add(d);
+    if (d !== undefined) {
+      this.runStat.add(d);
+      if (this.slowestExemplar === undefined || d > this.slowestExemplar.durationMs) {
+        this.slowestExemplar = {
+          traceId: trace.traceId,
+          spanId: trace.rootSpanId,
+          durationMs: d,
+          at: Date.now(),
+        };
+      }
+    }
 
     // —— 评分（R7）：只认根 span 的 score 事件（attachScore 的写入位置）；
     // body 宽容读取 —— name 不是 string / value 不是有限 number 就跳过，观测不击穿业务
@@ -467,6 +513,18 @@ export class MetricsState {
       droppedCapabilities: this.capBudget.dropped,
       droppedModels: this.modelBudget.dropped,
       droppedScores: this.scoreBudget.dropped,
+      exemplars: {
+        failed: this.failedExemplar
+          ? { traceId: this.failedExemplar.traceId, at: this.failedExemplar.at }
+          : undefined,
+        slowest: this.slowestExemplar
+          ? {
+              traceId: this.slowestExemplar.traceId,
+              durationMs: this.slowestExemplar.durationMs,
+              at: this.slowestExemplar.at,
+            }
+          : undefined,
+      },
     };
   }
 
@@ -483,6 +541,8 @@ export class MetricsState {
     this.tokens.cacheRead = 0;
     this.tokens.cacheCreation = 0;
     this.runStat.reset();
+    this.failedExemplar = undefined;
+    this.slowestExemplar = undefined;
     this.capabilities.clear();
     this.models.clear();
     this.scores.clear();

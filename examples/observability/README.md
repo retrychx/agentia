@@ -10,6 +10,22 @@ Agentia 生产可观测栈的**现成 sink** —— 落库检索 / 日志关联 
 示例 [`../complete/`](../complete/) 要用这些 sink，而 `tsc` 的 `rootDir` 不允许跨目录引源码
 （也为了零重复）。做成一个本地小包，就是仓库对 `packages/trace-view` 的同一套办法。
 
+## ⚠️ 以 `file:` 引入时的双实例陷阱
+
+本包的 `package.json` 带着 `"@migor/agentia": "file:../.."`。把这个目录拷进你的工程、以
+`"@migor/agentia-observability": "file:./observability"` 引入后，它会自带一份自己的
+`node_modules/@migor/agentia` —— 与宿主顶层那份是**两个模块实例**。
+
+跨边界传 `Trace` 数据无碍（类型是结构的）；但**模块级状态不共享** —— 典型是
+`registerDefaultTraceSink` 的默认 sink 注册表（模块级数组）：在这份实例上注册，另一份看不到；
+装饰器能力注册表（模块级 `WeakMap`）同理，与 usage-guide §2 的「陷阱」是同一条。
+
+四个 sink 目前只 `import type` 框架的类型面（运行期零导入），所以**照现状直接用不出事**；
+但一旦在这个包里写任何**运行期** `import { ... } from '@migor/agentia'`（比如加一个替宿主调
+`registerDefaultTraceSink` 的组装函数），就踩进双实例。**推荐做法：把 sink 源码
+（`src/index.ts`，单文件、零依赖）直接拷进你的工程** —— 拷走后它与宿主共享同一个
+`@migor/agentia` 实例，这条陷阱整段不适用（与 `docs/observability.md` §2 的建议同款）。
+
 ## 构建
 
 ```bash

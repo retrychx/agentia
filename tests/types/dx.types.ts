@@ -224,8 +224,14 @@ async function dPhaseTypeChecks(): Promise<void> {
   const snap: MetricsSnapshot = metrics.snapshot();
   const text: string = metrics.render();
   void [asSink, snap, text];
-  // @ts-expect-error export 只认 'prometheus' | 'otlp'
+  metricsSink({ export: 'openmetrics' }); // exemplars 的文本出口（prometheus 原文格式不支持）
+  // @ts-expect-error export 只认 'prometheus' | 'openmetrics' | 'otlp'
   metricsSink({ export: 'statsd' });
+  // exemplars 快照：两个槽位各自是「有对象 | undefined」
+  const failedEx: { traceId: string; at: number } | undefined = snap.exemplars.failed;
+  const slowestEx: { traceId: string; durationMs: number; at: number } | undefined =
+    snap.exemplars.slowest;
+  void [failedEx, slowestEx];
 
   /* D4：提示词版本 —— SystemPrompt({ version })，引擎级选项 systemVersion */
   const sp = new SystemPrompt({ version: 'v1' });
