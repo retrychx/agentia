@@ -67,8 +67,10 @@ function hasToolUse(msg: MessageParam): boolean {
 }
 
 function contentToText(content: MessageParam['content']): string {
-  if (typeof content === 'string') return content;
-  return content.map(blockToText).join('\n');
+  // 折叠的**唯一收口**：字符串正文与块数组都在这里过一道 —— 见 `PAYLOAD_RUN_RE` 的理由
+  // （工具把载荷当字符串返回时的最后一道口子）。
+  if (typeof content === 'string') return foldPayloadRuns(content);
+  return foldPayloadRuns(content.map(blockToText).join('\n'));
 }
 
 /**
@@ -99,6 +101,32 @@ const TOOL_INPUT_CHARS = 2000;
 /** 有界渲染：超上限则截断并**留计数**（静默丢内容会让摘要读起来像参数本来就那么短）。 */
 function boundedText(json: string, cap: number): string {
   return json.length <= cap ? json : `${json.slice(0, cap)}…（共 ${json.length} 字符）`;
+}
+
+/**
+ * **纯载荷长串**的判据：字符集 + 长度下限。
+ *
+ * 为什么要有它：`tool_result` 的**字符串正文**刻意不按长度截断（那是摘要器要读的「话」），
+ * 但框架自己的 `toolResultBlock()` 对任何返回值走 `stringifySafe` ⇒ **工具把载荷当字符串
+ * 返回时**（截图 base64 / 大文件 / 抓取结果）**整段载荷会绕过上面全部封顶直接进摘要器**。
+ * 2026-09-27 实测：一张 200 000 字符 base64 的截图 ⇒ 渲染 **200 043 字符 / 50 012 token**
+ * （与顶层图片块的 37 字符 / 3 142 token 差三个数量级），而那整段正是 `compactMessages`
+ * 交给宿主 `summarize` 的正文。所以这一条按**形态**收口，不按长度：只有**字符集落在
+ * base64/hex 内**、且**连续**长度 ≥ 下限的串才折叠。
+ *
+ * ⚠️ 判据为什么是**字符集**而不是「无空白」：**CJK 与英文散文没有空格也照样是散文** ——
+ * 一段两千字中文就是一个「无空白长串」，按「无空白」折叠会把摘要器**最需要**的内容折掉。
+ * 而 `{` `"` `,` `:`、空格、换行、标点、CJK 都不在字符集内 ⇒ 散文 / JSON 结构 / 代码
+ * 天然豁免，只有载荷串被折。
+ *
+ * ⚠️ **这不是上界保证**：折行载荷（PEM 式每 76 字符换行）每段都够不着下限，整段照旧进
+ * 摘要器。它消掉的是**最常见的那种形态**，不是全部 —— 契约照实写，别当护栏用。
+ */
+const PAYLOAD_RUN_RE = /[A-Za-z0-9+/=_-]{4000,}/g;
+
+/** 折叠纯载荷长串，**留计数**（静默丢会让摘要以为那里本来就没东西）。 */
+function foldPayloadRuns(text: string): string {
+  return text.replace(PAYLOAD_RUN_RE, (run) => `⟨载荷 ${run.length} 字符已折叠⟩`);
 }
 
 /**

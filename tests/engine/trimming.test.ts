@@ -504,4 +504,94 @@ describe('图片块 / 未知块：渲染有界、估算不低估', () => {
     ] as never);
     assert.match(small, /read_file\(\{"path":"src\/x\.ts"\}\)/, '小参数原样渲染，无截断、无计数');
   });
+
+  it('字符串正文里的纯载荷长串：渲染折叠（留计数）、估算仍按未截断算', async () => {
+    // 2026-09-27。补的是「纯文本刻意不截断」留下的**最后一个口子**，而它由框架自己的转换
+    // 路径制造：`tool-events.ts` 的 `toolResultBlock()` 对任何返回值走 `stringifySafe` ⇒
+    // 工具把截图 base64 当**字符串**返回时，正文形态是字符串（不是块数组），于是绕过上面
+    // 三条封顶（图片占位 / 未知块 200 / 参数 2000）整段进摘要器。
+    // 实测（本轮，见下方断言读数）：200 043 字符 / 50 012 token —— 而顶层图片块是 37 / 3 142。
+    const B64STR = 'iVBORw0KGgoAAAANSUhEUg'.padEnd(200_000, 'A');
+    const msg: MessageParam = {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 't1',
+          content: JSON.stringify({ type: 'base64', data: B64STR }),
+        },
+      ],
+    } as never;
+
+    const rendered = renderMessages([msg]);
+    assert.ok(!rendered.includes(B64STR), '载荷不得原样进渲染');
+    assert.ok(rendered.length < 400, `渲染必须有界（实测 ${rendered.length} 字符）`);
+    assert.match(
+      rendered,
+      /载荷 \d+ 字符已折叠/,
+      '折叠要**留计数** —— 静默丢会让摘要以为那里本来就没东西',
+    );
+    // 方向与另外三处一致：**渲染折叠 ≠ 估算折叠**（低估 ⇒ `maxTotalTokens` 迟触发）。
+    const tokens = estimateMessages([msg]);
+    assert.ok(tokens > 10_000, `估算仍按未截断负载（实测 ${tokens}）—— 渲染有界 ≠ 估算有界`);
+
+    // 真路径：摘要器收到的正文同样不得含载荷（`compactMessages` 把 `renderMessages`
+    // 的产物整段交给 summarize —— 这就是「真金白银」那一跳）
+    let seen = '';
+    await compactMessages([msg, { role: 'assistant', content: 'x' }], {
+      keepRecent: 1,
+      summarize: (h) => {
+        seen = h;
+        return 'S';
+      },
+    });
+    assert.ok(!seen.includes(B64STR), 'summarize 收到的文本里不得出现原始载荷');
+  });
+
+  it('折叠判据只认**载荷**：中文/英文散文、结构化 JSON 一个字都不许折', () => {
+    // ⚠️ 这条是上一条的**阳性对照**，也是本判据最要紧的一条。折叠的诱惑是写成「无空白的
+    // 长串就折」—— 那会错得很难看：**CJK 与英文散文没有空格也照样是散文**，一段几千字的
+    // 中文正文按「无空白」判据就是一个长串，折掉等于让摘要器丢掉最该读的内容。所以判据
+    // 必须是**字符集**（base64/hex 集合，不含空格/标点/CJK），而不是「无空白」。
+    const cjk = '这是一段中文正文，它没有空格也仍然是散文。'.repeat(300); // 6000 字，无空格
+    const en = 'the quick brown fox '.repeat(400); // 9000 字符，带空格
+    const json = JSON.stringify(Array.from({ length: 500 }, (_, i) => ({ i, name: 'item' })));
+
+    for (const [label, text] of [
+      ['中文散文（无空格 —— 只有字符集判据能保住它）', cjk],
+      ['英文散文（带空格）', en],
+      ['结构化 JSON（含 { " , : 故天然豁免）', json],
+    ] as const) {
+      const rendered = renderMessages([
+        { role: 'user', content: [{ type: 'text', text }] },
+      ] as never);
+      assert.ok(rendered.includes(text), `${label}必须**一字不折**（整段在场）`);
+      assert.ok(!rendered.includes('载荷'), `${label}不该出现折叠标记`);
+    }
+  });
+
+  it('低于下限的短载荷不许被折（下限是判据的一半，不能只守字符集）', () => {
+    // 与上一条同源的对照组：字符集对了、下限丢了照样错 —— 短签名 / 短 hash / 短 base64
+    // 长度本来就只有几百到一两千字符，折掉它们是纯粹的噪声（摘要本来读得完）。
+    const shortB64 = 'A'.repeat(1000);
+    const rendered = renderMessages([
+      { role: 'user', content: [{ type: 'text', text: 'sig=' + shortB64 }] },
+    ] as never);
+    assert.ok(rendered.includes(shortB64), '低于下限的载荷必须原样在场（4000 是下限的另一半）');
+    assert.ok(!rendered.includes('载荷'), '短载荷不该出现折叠标记');
+
+    // **边界双侧**：`{4000,}` 是含端点的，3999 与 4000 必须分道扬镳 ——
+    // 差一（写成 `{4001,}` 或 `{3999,}`）在别处没有任何一条断言看得见。
+    const at3999 = 'A'.repeat(3999);
+    const r1 = renderMessages([
+      { role: 'user', content: [{ type: 'text', text: at3999 }] },
+    ] as never);
+    assert.ok(r1.includes(at3999), '3999 字符**不许**折（下限含端点 4000）');
+    const at4000 = 'A'.repeat(4000);
+    const r2 = renderMessages([
+      { role: 'user', content: [{ type: 'text', text: at4000 }] },
+    ] as never);
+    assert.ok(!r2.includes(at4000), '4000 字符**必须**折（下限含端点）');
+    assert.match(r2, /载荷 4000 字符已折叠/, '计数要报真实长度');
+  });
 });
