@@ -319,10 +319,12 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 > **设计稿与逐项验收口径在 `docs/plans/2026-09-27-evolution-r8.md`**（单一真源，含定位筛子
 > 与实施纪律），这里只登记清单与状态。
 
-- P1 trace 脱敏钩（redacting sink）—— 进行中
-- P2 模型 fallback client —— 待做
+- P1 trace 脱敏 —— 待做（已重定界：**配方 2.4 升级**，不进框架 —— spec §9.3 / §10
+  2026-09-14 ⑥ 已锁定「脱敏不在框架内」，且 `examples/observability` 已有成品 `redactSink`）
+- P2 模型 fallback —— 待做（已重定界：**引擎级** fallback 链，每环独立 llm.turn 保证
+  成本归因正确；client 层组合器会记错账，评审否决）
 - P3 trace → SFT 导出（拆 P3a 引擎可选记 assistant 文本 + P3b CLI 导出）—— 待做
-- P4 租户归因 labels —— 待做
+- P4 租户归因 labels（含 metrics 侧 `maxLabelValues` 基数上限 —— 光 opt-in 封不住内存不变量）—— 待做
 - P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— 待做
 - P6 durable 长时程 —— 只立项调研（Temporal/Restate 对照 + 差距清单），本轮不写实现
 - 缓：A2A 协议适配（协议漂移中）；拒：后端看板 / DAG 编辑器 / swarm 编排（定位）
