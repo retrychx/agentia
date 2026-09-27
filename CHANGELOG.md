@@ -9,6 +9,18 @@
 
 ### 新增
 
+- **MCP 反向桥（`createMcpServer`，R8-P5）**：把 app 的能力菜单（装配后、过中间件的那份）
+  暴露成 MCP server —— Claude Code / Cursor / 任何 MCP 宿主能直接调你的 `@Tool`。
+  传输二选一（都只用标准库）：`stdio`（换行分隔 JSON-RPC，日志只去 stderr）与
+  StreamableHTTP（POST 收报文回 `application/json`；`initialize` 铸 `mcp-session-id`
+  头但**不校验**（无状态 server，宽容是有意的）；GET → 405、DELETE → 200；客户端断连
+  中止该次调用的 signal；`auth` 钩子只给缝 —— 读 body 之前、抛错即 401，与
+  `createHttpHandler` 同纪律）。协议范围只到 tools（initialize / tools/list / tools/call
+  + ping）。**trace 叙事不破**：每次 tools/call 造一棵 trace（run 根 `mcp.tools/call` +
+  capability span + 与引擎同形状的 `tool.input`/`tool.output` 事件）投递 `opts.sinks`；
+  结果映射与正向桥方向对称（抛错 → 协议层成功 + `isError: true`）。公共面新增
+  `createMcpServer` 与 `McpServerApp` / `McpServerOptions` / `McpServer` 类型。
+  决策见 spec §10 2026-09-27 ⑦。
 - **租户归因 labels（`labels: Record<string, string>`，R8-P4）**：`createApp` 缺省 +
   `app.run` 单次覆盖（**整体替换**不合并）+ `runAgent` 直连三层同语义。落 run 根的
   `labels.<key>` 属性（trace 侧无基数问题；与框架自写的 `source` 触发来源审计正交）；

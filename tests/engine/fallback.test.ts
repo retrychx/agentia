@@ -195,7 +195,10 @@ describe('模型 fallback 链（R8-P2）', () => {
       ],
     );
     assert.equal(turns[1]!.attributes['retry.attempt'], 2, '第二尝试带 retry.attempt');
-    assert.ok(turns[0]!.events.some((e) => e.name === 'llm.retry'), '第一次失败记 llm.retry');
+    assert.ok(
+      turns[0]!.events.some((e) => e.name === 'llm.retry'),
+      '第一次失败记 llm.retry',
+    );
     assert.ok(
       turns[2]!.events.some((e) => e.name === 'llm.fallback'),
       '换环记 llm.fallback（不与重试记法混用）',

@@ -246,6 +246,27 @@ agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。
   R8-P4 块 7 条 + limits 探针；反向验证 2 变异（摘 cap 折叠 ⇒ 折叠/reset 两条红；
   引擎摘 labels 落根 ⇒ run-labels 3 条红）。公共面新增 `RunLabelMetrics` 类型导出
   （api.html 计数 219 → 220）。
+- **P5 已落地（2026-09-27）**：MCP 反向桥 `createMcpServer(app, opts)`
+  （`src/engine/mcp-server.ts`；落 engine 的理由 —— integrations 只许依赖 core 装不下
+  TraceRecorder、engine→integrations 反向成环、transport 够不到 integrations）。
+  app 是鸭子类型 `{ tools: AgentTool[] }`（e2e 夹具走 createApp + @Tool 真装配钉住
+  「AgentApp 结构满足」）。协议只到 tools（initialize / tools/list / tools/call + ping；
+  其余 -32601、params 坏 -32602）；传输 stdio + StreamableHTTP 都只用标准库；
+  每次 tools/call 一棵 trace（run 根 `mcp.tools/call` + capability span +
+  同形状的 tool.input/tool.output 事件）投递 opts.sinks；结果映射与正向桥方向对称
+  （抛错 → isError: true）。**偏差**：① 设计稿说 capabilityKindOf 把这种 span
+  「归为 tool」—— 读码核实后它归 `capability:<name>`（capabilityKindOf 三值里没有
+  'tool'；`tool:` 标签只来自 llm.turn 上的 tool.output 事件），「自动进能力指标」
+  成立但标签名不同，已写进 spec §10 ⑦；② HTTP 选项形状定为 host/port/path +
+  可挂进既有 http.Server（close 只摘 handler）。门禁
+  `tests/engine/mcp-server.test.ts` 19 条；反向验证 3 变异（摘 isError 映射 ⇒
+  恰好 3 条红；摘 trace 投递 ⇒ 恰好 4 条红；未知 method 不回 -32601 ⇒ 恰好 1 条红），
+  还原后 19/19。e2e `npm run e2e:mcp:server`（stdio 真子进程 + HTTP 真端口，离线零网络，
+  不进 verify-all）。公共面 +4（api.html 计数 220 → 224）。
+  **规划稿 P5 验收口径的偏离**：原稿写「真第三方 MCP **client** 打过来跑一轮」——
+  落地用**自己的出厂连接器**当真协议客户端（createStdioMcpConnector /
+  createStreamableHttpMcpConnector，本身就是真协议实现且双向都被 e2e 守住）；
+  第三方 client（如官方 SDK）要引依赖才能进 CI，留给后续评估。
 - **P6 已交付（2026-09-27，调研）**：`docs/plans/2026-09-27-durable-execution-research.md`。
   关键判断：agent 主循环的状态是消息历史（天然可序列化、可断点续传），Temporal 系的
   事件溯源重放对它是**错的抽象** —— 差距清单 G5（重放模型）确认不做；要补的是

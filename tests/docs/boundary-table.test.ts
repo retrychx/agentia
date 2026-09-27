@@ -353,6 +353,13 @@ const REGISTRY: ReadonlyArray<Entry> = [
   },
   { key: 'MCP 只做 tools', choice: 'YAGNI（spec §10）：sampling / resources / prompts 原语不做' },
   {
+    key: 'MCP 反向桥不校验会话（无状态 server）',
+    pin: {
+      file: 'tests/engine/mcp-server.test.ts',
+      marker: 'initialize 响应带 mcp-session-id；后续**不带**该头的请求照常服务（无状态宽容）',
+    },
+  },
+  {
     key: 'MCP 的协议层错误框架看不见',
     pin: {
       file: 'tests/integrations/mcpConnector.test.ts',

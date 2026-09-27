@@ -207,6 +207,10 @@ export type {
   StdioMcpConnectorOptions,
   StreamableHttpMcpConnectorOptions,
 } from './integrations/mcp.js';
+// engine：MCP 反向桥（R8-P5）—— 把 app 的能力菜单暴露成 MCP server（stdio / StreamableHTTP，
+// 只用标准库）。落 engine 层的理由见该文件头注（integrations 只允许依赖 core，装不下它）
+export { createMcpServer } from './engine/mcp-server.js';
+export type { McpServer, McpServerApp, McpServerOptions } from './engine/mcp-server.js';
 // integrations：指标（D3 → E2/E3/E4/E5）—— 满足 TraceSink 即可接入，能力零新出口
 export { metricsSink, DEFAULT_BUCKETS } from './integrations/metrics.js';
 export type {

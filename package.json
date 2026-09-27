@@ -53,6 +53,7 @@
     "e2e:grpc": "npm run build && tsx scripts/e2e-grpc.ts",
     "e2e:live": "tsx scripts/e2e-live.ts",
     "e2e:mcp": "npm run build:cli && tsx scripts/e2e-mcp.ts",
+    "e2e:mcp:server": "tsx scripts/e2e-mcp-server.ts",
     "e2e:soak": "tsx scripts/e2e-soak.ts",
     "bench:trace": "tsx scripts/bench-trace-cost.ts",
     "bench:assembly": "tsx scripts/bench-app-assembly.ts"

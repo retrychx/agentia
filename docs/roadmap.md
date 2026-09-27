@@ -328,7 +328,9 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 - P4 租户归因 labels —— ✅ 已落地（2026-09-27）：run 根 `labels.*` 属性（三层同语义）
   + metrics 侧 `labelKeys` opt-in + `maxLabelValues` 基数上限（limits 真源表登记）；
   决策见 spec §10 2026-09-27 ⑥
-- P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— 待做
+- P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— ✅ 已落地（2026-09-27）：`createMcpServer`
+  （stdio / StreamableHTTP，只用标准库；每次 tools/call 一棵 trace 进 sinks）；
+  决策见 spec §10 2026-09-27 ⑦
 - P6 durable 长时程 —— ✅ 调研交付（2026-09-27）：`docs/plans/2026-09-27-durable-execution-research.md`
   （Temporal/Restate/DBOS 对照 + 差距清单 G1-G5 + 最小语义增量候选四条；**不写实现**，
   动代码前回 spec §10 立项）

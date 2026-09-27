@@ -132,7 +132,11 @@ describe('traceContent: 记录 assistant 文本（R8-P3a）', () => {
       traceContent: 'full',
     });
     const texts = llmSpans(r.trace.spans).map((s) => s.attributes['output.text']);
-    assert.deepEqual(texts, [undefined, '子 agent 正文', '主收尾'], '子循环的回合也要记（同树同口径）');
+    assert.deepEqual(
+      texts,
+      [undefined, '子 agent 正文', '主收尾'],
+      '子循环的回合也要记（同树同口径）',
+    );
   });
 
   it('快照：开启时记 config.traceContent，缺省不记', async () => {

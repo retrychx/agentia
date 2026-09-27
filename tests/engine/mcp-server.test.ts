@@ -1,0 +1,511 @@
+import { describe, it, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createMcpServer } from '../../src/engine/mcp-server.js';
+import type { McpServer, McpServerOptions } from '../../src/engine/mcp-server.js';
+import { createStdioMcpConnector } from '../../src/integrations/mcp.js';
+import type { AgentTool, ModelClient, ToolRunContext } from '../../src/core/tool.js';
+import type { Span, Trace, TraceSink } from '../../src/core/trace.js';
+import { DEFAULT_PROTOCOL_VERSION } from '../../src/integrations/mcp.js';
+
+/**
+ * MCP 反向桥（`createMcpServer`，R8-P5）的测试。
+ *
+ * 协议面大多走**真 HTTP**（in-process listen 127.0.0.1:0，零网络）：形状断言要穿过
+ * 真实的序列化/反序列化才有意义。stdio 侧起**真子进程**（fixtures/mcp/reverse-server.ts，
+ * 与连接器测试同一纪律：spawn / 分帧 / 握手顺序只存在于真子进程世界里），且夹具走
+ * `createApp` + `@Tool` 真装配 —— 顺带钉住「真 AgentApp 满足鸭子类型入参」。
+ */
+
+const FIXTURE = fileURLToPath(new URL('../fixtures/mcp/reverse-server.ts', import.meta.url));
+
+const hello: AgentTool = {
+  name: 'say_hello',
+  description: '打招呼',
+  inputSchema: { type: 'object', properties: { name: { type: 'string' } } },
+  run: (input) => `你好，${(input as { name: string }).name}`,
+};
+
+const echoObj: AgentTool = {
+  name: 'echo_object',
+  description: '回显对象',
+  inputSchema: { type: 'object' },
+  run: () => ({ ok: true, n: 7 }),
+};
+
+const failer: AgentTool = {
+  name: 'fail_tool',
+  description: '总是失败',
+  inputSchema: { type: 'object' },
+  run: () => {
+    throw new Error('工具炸了');
+  },
+};
+
+/** 收 trace 的测试 sink */
+function collectTraces(): { sink: TraceSink; traces: Trace[] } {
+  const traces: Trace[] = [];
+  return { sink: { export: (t) => void traces.push(t) }, traces };
+}
+
+/** 本文件开过的 server：afterEach 统一收掉 */
+const open: Array<{ close(): Promise<void> }> = [];
+afterEach(async () => {
+  await Promise.all(open.splice(0).map((s) => s.close().catch(() => undefined)));
+});
+
+async function startHttp(
+  tools: AgentTool[],
+  opts: Partial<McpServerOptions> = {},
+): Promise<McpServer> {
+  const s = createMcpServer({ tools }, { transport: 'http', port: 0, ...opts });
+  open.push(s);
+  await s.ready;
+  return s;
+}
+
+interface RawResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: Record<string, unknown> | null;
+}
+
+/** 裸 POST（不过连接器：要能看到状态码与头的原样） */
+async function post(
+  url: string,
+  payload: unknown,
+  init: { headers?: Record<string, string>; signal?: AbortSignal } = {},
+): Promise<RawResponse> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...init.headers },
+    body: JSON.stringify(payload),
+    ...(init.signal !== undefined ? { signal: init.signal } : {}),
+  });
+  const text = await res.text();
+  const headers: Record<string, string> = {};
+  res.headers.forEach((v, k) => {
+    headers[k] = v;
+  });
+  return { status: res.status, headers, body: text === '' ? null : JSON.parse(text) };
+}
+
+const rpc = (id: number, method: string, params?: unknown): Record<string, unknown> => ({
+  jsonrpc: '2.0',
+  id,
+  method,
+  ...(params !== undefined ? { params } : {}),
+});
+
+describe('createMcpServer —— 构造期校验', () => {
+  it('app 不是 { tools } 形状 / transport 非法 ⇒ 构造期抛 TypeError', () => {
+    assert.throws(() => createMcpServer({} as never, { transport: 'stdio' }), /app 必须是鸭子类型/);
+    assert.throws(
+      () => createMcpServer({ tools: [] }, { transport: 'ws' as never }),
+      /transport 只认/,
+    );
+  });
+});
+
+describe('createMcpServer —— StreamableHTTP 协议面', () => {
+  it('initialize 回 protocolVersion / capabilities.tools / serverInfo，并铸 mcp-session-id 头', async () => {
+    const s = await startHttp([hello]);
+    const r = await post(
+      s.url as string,
+      rpc(1, 'initialize', {
+        protocolVersion: DEFAULT_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'x', version: '0' },
+      }),
+    );
+    assert.equal(r.status, 200);
+    const result = r.body!.result as Record<string, unknown>;
+    assert.equal(result.protocolVersion, DEFAULT_PROTOCOL_VERSION);
+    assert.deepEqual(result.capabilities, { tools: {} });
+    assert.deepEqual(result.serverInfo, { name: 'agentia', version: '0.0.0' });
+    // 会话头是 uuid 形状（无状态 server：只发不校验）
+    assert.match(
+      r.headers['mcp-session-id'] ?? '',
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('serverInfo.name 可配（opts.name）', async () => {
+    const s = await startHttp([hello], { name: 'my-tools' });
+    const r = await post(s.url as string, rpc(1, 'initialize', {}));
+    assert.equal((r.body!.result as { serverInfo: { name: string } }).serverInfo.name, 'my-tools');
+  });
+
+  it('initialize 响应带 mcp-session-id；后续**不带**该头的请求照常服务（无状态宽容）', async () => {
+    // 反向验证：若实现改成「校验会话头、缺失即拒」，本用例红在 listTools/callTool 被拒。
+    const s = await startHttp([hello]);
+    const init = await post(s.url as string, rpc(1, 'initialize', {}));
+    assert.ok(init.headers['mcp-session-id'], 'initialize 必须铸会话头');
+    // 后续请求故意不带会话头 —— 宽容选择：无状态 server 不该因此拒客
+    const list = await post(s.url as string, rpc(2, 'tools/list', {}));
+    assert.equal(list.status, 200);
+    const call = await post(
+      s.url as string,
+      rpc(3, 'tools/call', { name: 'say_hello', arguments: { name: 'MCP' } }),
+    );
+    assert.equal(call.status, 200);
+  });
+
+  it('tools/list 回完整菜单（name/description/inputSchema），且不建 trace', async () => {
+    const { sink, traces } = collectTraces();
+    const s = await startHttp([hello, echoObj], { sinks: [sink] });
+    await post(s.url as string, rpc(1, 'initialize', {}));
+    const r = await post(s.url as string, rpc(2, 'tools/list', {}));
+    const tools = (r.body!.result as { tools: Array<Record<string, unknown>> }).tools;
+    assert.deepEqual(
+      tools.map((t) => t.name),
+      ['say_hello', 'echo_object'],
+    );
+    assert.equal(tools[0]?.description, '打招呼');
+    assert.deepEqual(tools[0]?.inputSchema, hello.inputSchema);
+    assert.equal(traces.length, 0, 'initialize / tools/list 不建 trace（菜单查询不是能力调用）');
+  });
+
+  it('tools/call：string 结果原样进 text 块；trace 一棵（run 根 + capability span + 两个事件）投递 sinks', async () => {
+    const { sink, traces } = collectTraces();
+    const s = await startHttp([hello], { sinks: [sink] });
+    const r = await post(
+      s.url as string,
+      rpc(1, 'tools/call', { name: 'say_hello', arguments: { name: 'MCP' } }),
+    );
+    const result = r.body!.result as { content: Array<{ type: string; text: string }> };
+    assert.deepEqual(result.content, [{ type: 'text', text: '你好，MCP' }]);
+    assert.equal((r.body!.result as { isError?: unknown }).isError, undefined);
+
+    assert.equal(traces.length, 1, '一次 tools/call = 一棵 trace');
+    const trace = traces[0]!;
+    assert.equal(trace.status, 'ok');
+    const root = trace.spans.find((sp) => sp.spanId === trace.rootSpanId)!;
+    assert.equal(root.kind, 'run');
+    assert.equal(root.name, 'mcp.tools/call');
+    const cap = trace.spans.find((sp) => sp.kind === 'capability')!;
+    assert.equal(cap.name, 'say_hello');
+    assert.equal(cap.parentSpanId, root.spanId);
+    assert.equal(cap.status, 'ok');
+    // 账目形状与引擎一致：capability span 上记 tool.input / tool.output（同名同口径）
+    const input = cap.events.find((e) => e.name === 'tool.input')!;
+    assert.equal((input.body as { tool: string }).tool, 'say_hello');
+    const output = cap.events.find((e) => e.name === 'tool.output')!;
+    const outBody = output.body as { ok: boolean; tool: string; durationMs: number };
+    assert.equal(outBody.ok, true);
+    assert.equal(outBody.tool, 'say_hello');
+    assert.ok(outBody.durationMs >= 0);
+  });
+
+  it('tools/call：非 string 结果 JSON 化进 text', async () => {
+    const s = await startHttp([echoObj]);
+    const r = await post(
+      s.url as string,
+      rpc(1, 'tools/call', { name: 'echo_object', arguments: {} }),
+    );
+    const result = r.body!.result as { content: Array<{ text: string }> };
+    assert.deepEqual(JSON.parse(result.content[0]!.text), { ok: true, n: 7 });
+  });
+
+  it('工具抛错 → 协议层成功 + isError:true（MCP 惯例）；trace 里 span status=error 带结构化 error', async () => {
+    // 反向验证（M1）：摘掉 isError 映射（错误也回成功形状）⇒ 本用例红在
+    // `result.isError === true` 与「trace 记成 error」两处。
+    const { sink, traces } = collectTraces();
+    const s = await startHttp([failer], { sinks: [sink] });
+    const r = await post(
+      s.url as string,
+      rpc(1, 'tools/call', { name: 'fail_tool', arguments: {} }),
+    );
+    const result = r.body!.result as { isError?: unknown; content: Array<{ text: string }> };
+    assert.equal(result.isError, true, '工具抛错必须回 isError（正向桥那头把它转回抛错）');
+    assert.match(result.content[0]!.text, /工具炸了/);
+
+    assert.equal(traces.length, 1);
+    const cap = traces[0]!.spans.find((sp) => sp.kind === 'capability')!;
+    assert.equal(cap.status, 'error');
+    assert.equal(cap.error?.message.includes('工具炸了'), true);
+    const output = cap.events.find((e) => e.name === 'tool.output')!;
+    assert.equal((output.body as { ok: boolean; errorKind?: string }).ok, false);
+    assert.equal((output.body as { errorKind?: string }).errorKind, 'threw');
+  });
+
+  it('未知 method → -32601；params 形状坏 → -32602；未知工具 → -32602', async () => {
+    const s = await startHttp([hello]);
+    const unknown = await post(s.url as string, rpc(1, 'resources/list', {}));
+    assert.equal((unknown.body!.error as { code: number }).code, -32601);
+
+    const noName = await post(s.url as string, rpc(2, 'tools/call', { arguments: {} }));
+    assert.equal((noName.body!.error as { code: number }).code, -32602);
+    const badArgs = await post(
+      s.url as string,
+      rpc(3, 'tools/call', { name: 'say_hello', arguments: '不是对象' }),
+    );
+    assert.equal((badArgs.body!.error as { code: number }).code, -32602);
+    const noTool = await post(
+      s.url as string,
+      rpc(4, 'tools/call', { name: 'nope', arguments: {} }),
+    );
+    const err = noTool.body!.error as { code: number; message: string };
+    assert.equal(err.code, -32602);
+    assert.match(err.message, /未知工具/);
+  });
+
+  it('notifications/initialized → 202 空体；ping → 空 result', async () => {
+    const s = await startHttp([hello]);
+    const n = await post(s.url as string, {
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+      params: {},
+    });
+    assert.equal(n.status, 202);
+    assert.equal(n.body, null);
+    const p = await post(s.url as string, rpc(1, 'ping'));
+    assert.deepEqual(p.body!.result, {});
+  });
+
+  it('GET → 405（server→client 流不做）；DELETE → 200；别的路径 → 404；body 非法 JSON → 400', async () => {
+    const s = await startHttp([hello]);
+    const url = s.url as string;
+    const get = await fetch(url);
+    assert.equal(get.status, 405);
+    await get.text();
+    const del = await fetch(url, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    await del.text();
+    const wrongPath = await fetch(`${url}-nope`, { method: 'POST', body: '{}' });
+    assert.equal(wrongPath.status, 404);
+    await wrongPath.text();
+    const badJson = await fetch(url, { method: 'POST', body: '{ 不是 json' });
+    assert.equal(badJson.status, 400);
+    await badJson.text();
+  });
+
+  it('鉴权钩子抛错 → 401（原文不进响应）；通过则正常服务', async () => {
+    const s = await startHttp([hello], {
+      auth: (req) => {
+        if (req.headers['x-key'] !== 'ok') throw new Error('内部拓扑细节不该外泄');
+      },
+    });
+    const denied = await post(s.url as string, rpc(1, 'initialize', {}));
+    assert.equal(denied.status, 401);
+    assert.equal(JSON.stringify(denied.body).includes('内部拓扑细节'), false);
+    const allowed = await post(s.url as string, rpc(1, 'initialize', {}), {
+      headers: { 'x-key': 'ok' },
+    });
+    assert.equal(allowed.status, 200);
+  });
+
+  it('toolTimeoutMs 超时 → isError + errorKind timeout，且 abandoned 信号被 abort（放弃等待 ≠ 取消）', async () => {
+    let gate: () => void = () => {};
+    let seenAbandoned: AbortSignal | undefined;
+    const slow: AgentTool = {
+      name: 'slow',
+      description: '永不自己完成',
+      inputSchema: { type: 'object' },
+      run: (_input, ctx?: ToolRunContext) => {
+        seenAbandoned = ctx?.abandoned;
+        return new Promise<string>((resolvePromise) => {
+          gate = () => resolvePromise('迟到');
+        });
+      },
+    };
+    const { sink, traces } = collectTraces();
+    const s = await startHttp([slow], { sinks: [sink], toolTimeoutMs: 30 });
+    const r = await post(s.url as string, rpc(1, 'tools/call', { name: 'slow', arguments: {} }));
+    const result = r.body!.result as { isError?: unknown; content: Array<{ text: string }> };
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]!.text, /error\(timeout\)/);
+    assert.equal(seenAbandoned?.aborted, true, '放弃等待时必须通知工具（abandoned）');
+    const cap = traces[0]!.spans.find((sp) => sp.kind === 'capability')!;
+    assert.equal(cap.status, 'error');
+    assert.equal(cap.error?.type, 'timeout');
+    gate(); // 收尾，别让永不 settle 的 Promise 吊着
+  });
+
+  it('opts.client 原样进 ToolRunContext（自定义 client 的接缝）', async () => {
+    const marker = {
+      messages: { stream: () => Promise.reject(new Error('不该被调')) },
+    } as unknown as ModelClient;
+    let seen: ModelClient | undefined;
+    const probe: AgentTool = {
+      name: 'probe',
+      description: '读 ctx.client',
+      inputSchema: { type: 'object' },
+      run: (_input, ctx?: ToolRunContext) => {
+        seen = ctx?.client;
+        return 'ok';
+      },
+    };
+    const s = await startHttp([probe], { client: marker });
+    await post(s.url as string, rpc(1, 'tools/call', { name: 'probe', arguments: {} }));
+    assert.equal(seen, marker, 'opts.client 必须原样透传，不是被包一层');
+  });
+
+  it('sink 抛错被吞（观测不击穿业务）：调用照常成功', async () => {
+    const s = await startHttp([hello], {
+      sinks: [
+        {
+          export: () => {
+            throw new Error('sink 挂了');
+          },
+        },
+      ],
+    });
+    const r = await post(
+      s.url as string,
+      rpc(1, 'tools/call', { name: 'say_hello', arguments: { name: 'x' } }),
+    );
+    assert.equal(
+      (r.body!.result as { content: Array<{ text: string }> }).content[0]!.text,
+      '你好，x',
+    );
+  });
+
+  it('客户端断连 → 在飞工具调用的 signal 被中止；server 随后照常服务', async () => {
+    let started: () => void = () => {};
+    const toolStarted = new Promise<void>((r) => {
+      started = r;
+    });
+    let aborted: (v: boolean) => void = () => {};
+    const abortedSeen = new Promise<boolean>((r) => {
+      aborted = r;
+    });
+    let gate: () => void = () => {};
+    const slow: AgentTool = {
+      name: 'slow',
+      description: '挂在闸门上',
+      inputSchema: { type: 'object' },
+      run: (_input, ctx?: ToolRunContext) => {
+        started();
+        ctx?.signal?.addEventListener('abort', () => aborted(true));
+        return new Promise<string>((resolvePromise) => {
+          gate = () => resolvePromise('迟到');
+        });
+      },
+    };
+    const s = await startHttp([slow, hello]);
+    const fetchAc = new AbortController();
+    const pending = post(s.url as string, rpc(1, 'tools/call', { name: 'slow', arguments: {} }), {
+      signal: fetchAc.signal,
+    }).then(
+      () => 'resolved',
+      () => 'aborted',
+    );
+    await toolStarted;
+    fetchAc.abort();
+    assert.equal(await pending, 'aborted');
+    assert.equal(
+      await Promise.race([
+        abortedSeen,
+        new Promise<boolean>((r) => setTimeout(() => r(false), 2000)),
+      ]),
+      true,
+      '客户端断连必须中止该次调用的 signal',
+    );
+    gate();
+    // server 随后照常服务（换快工具验 —— slow 的闸门已经没人放了）
+    const again = await post(
+      s.url as string,
+      rpc(2, 'tools/call', { name: 'say_hello', arguments: { name: '回来' } }),
+    );
+    assert.equal(again.status, 200);
+  });
+
+  it('挂进既有 http.Server：close() 只摘本 handler，不关宿主的 server', async () => {
+    // Node 对**每个**请求调**所有** request 监听器：共享时宿主那边必须在桥挂着期间
+    // 忽略 /mcp（真实共托管就是这么路由的），摘掉之后才回落给宿主自己的 handler。
+    let bridgeAttached = true;
+    const host = createServer((req, res) => {
+      if (bridgeAttached && (req.url ?? '').startsWith('/mcp')) return; // 让给反向桥
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('host');
+    });
+    await new Promise<void>((r) => host.listen(0, '127.0.0.1', r));
+    const port = (host.address() as { port: number }).port;
+    open.push({ close: () => new Promise<void>((r) => host.close(() => r())) });
+
+    const s = createMcpServer(
+      { tools: [hello] },
+      { transport: 'http', server: host, path: '/mcp' },
+    );
+    open.push(s);
+    await s.ready;
+
+    const mcpUrl = `http://127.0.0.1:${port}/mcp`;
+    const before = await post(mcpUrl, rpc(1, 'initialize', {}));
+    assert.equal(before.status, 200, '挂上后 /mcp 由反向桥服务');
+    const other = await fetch(`http://127.0.0.1:${port}/other`);
+    assert.equal(await other.text(), 'host', '别的路径不受反向桥影响');
+
+    await s.close();
+    bridgeAttached = false;
+    const after = await fetch(mcpUrl, { method: 'POST', body: '{}' });
+    assert.equal(await after.text(), 'host', 'close 后 /mcp 回落给宿主自己的 handler');
+  });
+
+  it('close() 幂等；自有 server 关闭后端口不再服务', async () => {
+    const s = await startHttp([hello]);
+    await s.close();
+    await s.close();
+    await assert.rejects(fetch(s.url as string, { method: 'POST', body: '{}' }));
+  });
+});
+
+describe('createMcpServer —— stdio（真子进程，夹具走 createApp + @Tool 真装配）', () => {
+  it('连接器握手 → listTools → callTool → isError 转抛错；每次调用一棵 trace 落盘', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-mcp-server-'));
+    const traceFile = join(dir, 'trace.jsonl');
+    const c = createStdioMcpConnector([process.execPath, '--import', 'tsx', FIXTURE], {
+      env: { MCP_REVERSE_TRACE_FILE: traceFile },
+      stderr: 'ignore',
+      timeoutMs: 30_000,
+    });
+    open.push(c);
+    try {
+      const tools = await c.listTools(); // 内含 initialize 握手
+      assert.deepEqual(
+        tools.map((t) => t.name).sort(),
+        ['echo_object', 'fail_tool', 'say_hello'],
+        '真 AgentApp 的装配菜单（鸭子类型成立）',
+      );
+
+      const r = (await c.callTool('say_hello', { name: 'MCP' })) as {
+        content: Array<{ text: string }>;
+      };
+      assert.deepEqual(r.content, [{ type: 'text', text: '你好，MCP' }]);
+
+      const obj = (await c.callTool('echo_object', { n: 3 })) as {
+        content: Array<{ text: string }>;
+      };
+      assert.deepEqual(JSON.parse(obj.content[0]!.text), { ok: true, n: 3 });
+
+      // 协议层 isError → 连接器转成抛错（正向桥纪律，方向对称）
+      await assert.rejects(() => c.callTool('fail_tool', {}), /isError.*夹具工具炸了/);
+    } finally {
+      await c.close();
+    }
+
+    // trace 叙事不破：两次成功 + 一次失败各一棵，落盘文件里逐条可查
+    const lines = readFileSync(traceFile, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3, '三次 tools/call 各一棵 trace');
+    const traces = lines.map((l) => JSON.parse(l) as Trace);
+    const rootNames = traces.map(
+      (t) => t.spans.find((sp: Span) => sp.spanId === t.rootSpanId)?.name,
+    );
+    assert.deepEqual(rootNames, ['mcp.tools/call', 'mcp.tools/call', 'mcp.tools/call']);
+    const capNames = traces.map((t) => t.spans.find((sp: Span) => sp.kind === 'capability')?.name);
+    assert.deepEqual(capNames, ['say_hello', 'echo_object', 'fail_tool']);
+    const failed = traces[2]!;
+    assert.equal(failed.status, 'error');
+    assert.equal(
+      failed.spans
+        .find((sp: Span) => sp.kind === 'capability')
+        ?.error?.message.includes('夹具工具炸了'),
+      true,
+    );
+  });
+});

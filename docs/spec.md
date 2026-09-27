@@ -3632,6 +3632,52 @@ harvest 的孪生（它产 eval 用例骨架，这里产训练数据 JSONL）。
 `maxLabelValues=1` 折叠用例与 reset 用例红；引擎侧摘掉 labels 落根 ⇒ run-labels
 3 条红）。公共面新增 `RunLabelMetrics` 类型导出（`MetricsSnapshot.runLabels` 的值型）。
 
+### 2026-09-27 ⑦：**MCP 反向桥**（`createMcpServer`，R8-P5）—— 把能力菜单暴露成 MCP server，trace 叙事不破
+
+动机：生态位跃迁 —— 框架从「agent 的运行容器」变成「生态里的工具供应商」：`@Tool`
+集合暴露成 MCP server 后，Claude Code / Cursor / 任何 MCP 宿主能直接调。决策：
+
+1. **落点 `engine/mcp-server.ts`**（不是 integrations）：它只允许依赖 core
+   （layering 守卫的 ALLOWED），而 server 每次 tools/call 要造一棵 trace、需要 engine 的
+   `TraceRecorder`；engine → integrations 这条边已存在（取默认 ModelClient），反向即成环；
+   transport 够不到 integrations。engine 是分层图上唯一能同时够到 core 与 integrations 的层。
+2. **app 入参是鸭子类型** `{ tools: AgentTool[] }`（`AgentApp` 结构满足 —— `app.tools`
+   就是装配后、过中间件的那份菜单）：engine 不能 import toolkit，鸭子类型让「菜单来自
+   装配层」这件事不引入新依赖边。e2e 夹具刻意走 `createApp` + `@Tool` 真装配来钉这条。
+3. **协议范围只到 tools**：initialize / notifications/initialized / tools/list /
+   tools/call + ping；其余 method 一律 -32601，params 形状坏 -32602。不做（YAGNI，与
+   正向桥同一张清单）：resources / prompts / sampling / SSE 推送 / 会话强制校验。
+4. **两个传输只用标准库**：stdio = 换行分隔 JSON-RPC（stdout 是协议面，日志只去
+   stderr）；StreamableHTTP = POST 收、回 application/json（简单应答不上 SSE），
+   initialize 铸 `mcp-session-id` 头但**不校验**（无状态 server：带了接受、不带也
+   服务 —— 宽容选择，写进 usage-guide §7）；GET → 405、DELETE → 200；客户端断连
+   中止该次调用的 `signal`。`server` 选项可把 handler 挂进既有 http.Server
+   （不替它 listen，close 只摘 handler）。
+5. **trace 叙事不破**：每次 tools/call 造一个 TraceRecorder —— run 根
+   `mcp.tools/call` + capability span（name = 工具名）+ 与引擎同形状的
+   `tool.input` / `tool.output` 事件（复用 `tool-events.ts` 的载荷装配），收尾投递
+   `opts.sinks`（抛错吞 + console.warn，与 flushSinks 同款）；initialize / tools/list
+   不建 trace。**偏差更正一处设计稿断言**：设计稿说 metrics 的 capabilityKindOf 会把这种
+   span「归为 tool」—— 读码核实后它不是：无 skill/subagent 属性的 capability span 归为
+   `capability:<name>` 标签（`capabilityKindOf` 的三值里根本没有 'tool'；`tool:` 标签来自
+   turn 上的 `tool.output` 事件，而 metrics 只扫 llm.turn 的事件）。「自动进能力指标」
+   本身成立，只是标签名是 `capability:` 前缀。
+6. **结果映射与正向桥方向对称**：string → text 块、其他 JSON 化、抛错 → 协议层成功 +
+   `isError: true`（正向桥的连接器正好把 isError 转回抛错）。`toolTimeoutMs` 复用引擎
+   同款语义（withTimeout 实测耗时判定 + 超时 abort `abandoned`），故不进 limits 真源表。
+7. **鉴权只给缝**：http 侧 `auth` 钩子在读 body 之前、抛错即 401（原文只进服务端日志）——
+   与 `createHttpHandler` 的 `authenticate` 同纪律；stdio 信任父进程。`client` 缺省
+   **惰性**走 `createAnthropicClient()`（首次 tools/call 才构造 —— 纯工具 server 不需要
+   API key 在场）。
+
+门禁 `tests/engine/mcp-server.test.ts`（19 条：协议面 HTTP 真端口 + stdio 真子进程 +
+trace 形状 + 断连/超时/鉴权/共享 server）；反向验证 3 变异：摘 isError 映射 ⇒ 恰好 3 条红
+（isError http / 超时 isError / stdio isError）；摘 trace 投递 ⇒ 恰好 4 条红（成功/抛错/
+超时/stdio 的 trace 断言）；未知 method 不回 -32601 ⇒ 恰好 1 条红；还原后 19/19。
+e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公共面新增
+`createMcpServer` + `McpServerApp` / `McpServerOptions` / `McpServer`（api.html 计数
+220 → 224）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

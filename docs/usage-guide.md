@@ -1116,6 +1116,60 @@ const app = createApp({ system, providers: [...], tools });
 | `onSessionExpired` | 会话过期自愈时被调一次（见「已知边界」）—— 要计数 / 告警 / 打日志就挂它 |
 | `fetchImpl` | 注入 `fetch`（测试用；缺省全局 `fetch`，与 `createOpenAIClient` 同款） |
 
+#### MCP 反向桥（把能力菜单暴露成 MCP server）
+
+正向桥是「接进来」（`mcpTools` 把外部 server 的工具接进菜单）；反向桥是「**暴露出去**」：
+`createMcpServer(app, opts)` 把 `app.tools`（装配后、过了中间件的那份菜单）变成一个 MCP
+server —— Claude Code / Cursor / 任何 MCP 宿主都能直接调你的 `@Tool`。`app` 入参是鸭子类型
+（`AgentApp` 结构满足），也可以手拼 `{ tools: [...] }`。
+
+| API | 说明 |
+|---|---|
+| `createMcpServer` | 把能力菜单暴露成 MCP server（协议范围**只到 tools**：`initialize` / `notifications/initialized` / `tools/list` / `tools/call`，另有 `ping`；其余 method 一律 -32601，params 形状坏 -32602） |
+| `McpServerApp` | `app` 入参的鸭子类型：`{ tools: AgentTool[] }` |
+| `McpServerOptions` | 传输与行为选项（见下表） |
+| `McpServer` | 返回句柄：`url`（http 模式的实际 endpoint；stdio 为 `undefined`）/ `ready` / `close()`（幂等，中止在飞调用的 signal；自有 server 才关，挂进来的只摘 handler） |
+
+- **两个传输都只用标准库**：stdio = stdin/stdout 换行分隔 JSON-RPC（日志只去 stderr，stdout 是协议面）；http = StreamableHTTP（POST 收报文、应答 `application/json`，简单应答不上 SSE；GET → 405、DELETE → 200）。
+- **trace 叙事不破**：每次 `tools/call` 造一棵 trace —— run 根 `mcp.tools/call` 下挂一个 capability span（name = 工具名），记 `tool.input` / `tool.output` 事件（与引擎同账目形状），收尾投递 `sinks`；`initialize` / `tools/list` 不建 trace。capability span 无 skill/subagent 属性 ⇒ metrics 里以 `capability:<工具名>` 标签进能力指标。
+- **结果映射与正向桥方向对称**：工具返回 string → `content: [{ type: 'text', text }]`，其他 JSON 化进 text；抛错 → 协议层成功 + `isError: true`（MCP 惯例；正向桥的连接器正好把 `isError` 转回抛错）。
+- **取消是协作式**：客户端断连 / `close()` 会中止该次调用的 `ToolRunContext.signal`；`toolTimeoutMs` 与引擎同款语义（非正数 / 不设 = 不限；超时 = **放弃等待** + abort `abandoned`，该次调用回 `isError`，server 不挂）。
+- **默认 client 是惰性构造的**：`client` 不给时第一次 `tools/call` 才走 `createAnthropicClient()`（与引擎默认同款）—— 纯工具 server 不需要 API key 在场。
+
+```ts
+import { createMcpServer, jsonlTraceSink } from '@migor/agentia';
+
+// stdio（Claude Code / Cursor 这类宿主：它们 spawn 这个进程）
+createMcpServer(app, { transport: 'stdio', sinks: [jsonlTraceSink({ path: 'mcp-trace.jsonl' })] });
+
+// http（服务形态）：port 0 = 系统分配，读返回值的 url 拿实际端口
+const mcp = createMcpServer(app, {
+  transport: 'http',
+  port: 8787,
+  auth: (req) => {
+    // 只给缝：token/JWT 策略是你的（与 createHttpHandler 的 authenticate 同纪律）
+    if (req.headers['x-api-key'] !== expected) throw new Error('bad key');
+  },
+});
+await mcp.ready;
+console.log(mcp.url); // http://127.0.0.1:8787/mcp
+```
+
+#### `McpServerOptions`（反向桥的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `transport` | `'stdio'` / `'http'`（必填） |
+| `host` | http 监听地址，缺省 `127.0.0.1` |
+| `port` | http 监听端口，缺省 `0`（系统分配）；自带 `server` 时无效 |
+| `path` | http endpoint 路径，缺省 `/mcp` |
+| `server` | 挂进**既有** `http.Server`（框架不替它 listen；`close()` 只摘本 handler 不关它）。非本 `path` 的请求本 handler 直接忽略（交给宿主自己的路由） |
+| `client` | 进 `ToolRunContext.client`（子 agent / skill 类工具要它拉子循环）；缺省惰性 `createAnthropicClient()` |
+| `sinks` | trace 出口：每次 `tools/call` 收尾投递（抛错被吞 + `console.warn`，观测不击穿业务） |
+| `toolTimeoutMs` | 单次 `tools/call` 的工具执行超时（毫秒），语义与引擎 `toolTimeoutMs` 同款；非正数 / 不设 = 不限 |
+| `auth` | http 侧鉴权钩子：在读 body 之前调用，抛错即 401（原文只进服务端日志）；stdio 侧信任父进程、本项不生效 |
+| `name` | `serverInfo.name`（握手回给客户端），缺省 `'agentia'` |
+
 #### evals（把 mockClient 提升为一等能力）
 
 | API | 说明 |
@@ -1461,6 +1515,7 @@ const callable = {
 | OpenAI 流式的上游故障按失败处理 | 三种形态都**抛错**按失败处理：流中 `error` 分片（上游把故障塞进 200 的流；按 `type`/`code` 反推 status，限流能被引擎重试认出）；**未收到 `[DONE]` 也无 `finish_reason`**（流被上游/代理截断 —— 哪怕已吐出半句、有累积文本，也按不完整响应抛错，不报 `end_turn`）；正常终止却无任何文本与工具调用（与非流式空 `choices` 同一守卫）。**例外**：`finish_reason=content_filter` 的空流是合法 refusal，不抛 —— 与非流式路径同一个响应同一个结论 |
 | OpenAI 兼容端点回 legacy `function_call` 形态时**不支持** | 适配器只认现代 `tool_calls`（请求侧也只发这个形态）。收到 `finish_reason=function_call` 会**响亮失败**（400，落 `api`／不可重试），**不**按 `end_turn` 收尾 —— 那种回法里的调用在 `message.function_call` 里、读不出来，报成正常收尾会让「模型要调工具、工具却没执行」记成成功。换支持 `tool_calls` 的端点或模型即可（legacy `functions` 形态 OpenAI 2023 已废弃） |
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；出厂连接器同样只做 `tools/list` + `tools/call` |
+| MCP 反向桥不校验会话（无状态 server） | `createMcpServer` 的 http 模式：`initialize` 铸 `mcp-session-id` 头但后续请求**不带也服务**（宽容是有意的）；GET → 405、DELETE → 200；鉴权只有 `auth` 钩子一道（stdio 信任父进程）。范围同样只到 tools（与正向桥同一张 YAGNI 清单） |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果（出厂连接器已代你处理） |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判；**显式 `toolTimeoutMs: 0` 也算设了** —— 那是引擎表态「不限」，桥不会再自作主张判 60s），两条路径**同判定、同账**（`errorKind='timeout'`） |
 | 已中止的 MCP 调用**不发请求** | 信号在**发送前**就已中止 ⇒ 立刻以 `AbortError` 收场，请求不出门（2026-09-21 前是「照样 write、Promise 永不 settle」：副作用真送达、调用方永久挂起）。发送**之后**才中止的，请求已在路上、取消不了 server 侧的执行，但返回的 Promise 同样立刻以 `AbortError` 收场、簿记同步清掉 —— 直接 await 连接器 API 的宿主不会永久挂起（2026-09-22 前是「只删簿记不 reject」：Promise 永不 settle，与 HTTP 连接器的在途中止行为不一致）；取消不了的只是 server 侧执行，这点与 `toolTimeoutMs` 同口径 |
