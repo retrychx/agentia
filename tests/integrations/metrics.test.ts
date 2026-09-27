@@ -553,6 +553,7 @@ describe('E5 OTLP/JSON 指标导出', () => {
         buckets: [10],
         labelKeys: [],
         maxLabelValues: 8,
+        maxLabelCombos: 8,
       });
       state.reset();
       const first = state.windowStartedAt;
@@ -1331,6 +1332,45 @@ describe('R8-P4 归因标签（labelKeys → 指标标签）', () => {
     assert.match(text, /agentia_dropped_keys\{kind="label:tenant"\} 2/);
   });
 
+  it('maxLabelCombos：组合数（叉乘）也封顶 —— 折叠可见、量不丢、render 露头', () => {
+    // 反向验证：摘掉 accumulate 里 comboBudget 那一跳 ⇒ 本用例红在「组合数 = 每键折叠桶
+    // 的叉乘」（此前实测 maxLabelValues=2 + 2 键 = 9 条常驻）与 droppedLabelCombos 恒 0。
+    const sink = metricsSink({ labelKeys: ['a', 'b'], maxLabelValues: 2, maxLabelCombos: 3 });
+    for (const a of ['a1', 'a2', 'a3']) {
+      for (const b of ['b1', 'b2', 'b3']) {
+        sink.export(traceOf({ durationMs: 1, input: 1, labels: { a, b } }));
+      }
+    }
+    const s = sink.snapshot();
+    assert.equal(Object.keys(s.runLabels).length, 4, '3 个组合认自己 + 1 个折叠桶（未封顶是 9）');
+    assert.equal(s.droppedLabelCombos, 6, '被折叠的**不同组合**数（这是此前完全看不见的那一项）');
+    assert.equal(
+      Object.values(s.runLabels).reduce((n, x) => n + x.runs, 0),
+      s.runs,
+      '折叠只丢标签粒度，不丢量',
+    );
+    assert.match(sink.render(), /agentia_dropped_keys\{kind="label:combos"\} 6/);
+  });
+
+  it('值里含 `,`/`=` 不许并账：两个不同标签集各记各的（combo 身份不是裸拼接）', () => {
+    // 2026-09-27 ⑧ 实测：裸拼接时这两条都拼成 `a=x,b=y,b=z` ⇒ 并成一本账、且按第一条的
+    // 标签渲染（第二条的量被错配）。
+    const sink = metricsSink({ labelKeys: ['a', 'b'] });
+    sink.export(traceOf({ durationMs: 1, input: 10, labels: { a: 'x,b=y', b: 'z' } }));
+    sink.export(traceOf({ durationMs: 1, input: 20, labels: { a: 'x', b: 'y,b=z' } }));
+
+    const s = sink.snapshot();
+    assert.equal(Object.keys(s.runLabels).length, 2, '两个不同标签集必须是两条账');
+    assert.equal(
+      Object.values(s.runLabels).reduce((n, x) => n + x.runs, 0),
+      2,
+      '各 1 条 run（并账会变成一条 2）',
+    );
+    const text = sink.render();
+    assert.match(text, /agentia_runs_total\{a="x,b=y",b="z"\} 1/);
+    assert.match(text, /agentia_runs_total\{a="x",b="y,b=z"\} 1/, '第二条必须是自己的标签');
+  });
+
   it('缺键 / 空串值按 "" 计（观测宽容读取，不击穿业务）', () => {
     const sink = metricsSink({ labelKeys: ['tenant', 'plan'] });
     sink.export(traceOf({ durationMs: 5, labels: { tenant: 'acme' } })); // plan 缺
@@ -1371,6 +1411,7 @@ describe('R8-P4 归因标签（labelKeys → 指标标签）', () => {
       buckets: [10],
       labelKeys: ['tenant'],
       maxLabelValues: 8,
+      maxLabelCombos: 8,
     });
     st.accumulate(traceOf({ durationMs: 5, input: 3, labels: { tenant: 'acme' } }));
     const payload = buildOtlpPayload(st, {

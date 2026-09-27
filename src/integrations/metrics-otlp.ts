@@ -245,6 +245,12 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
   for (const [key, budget] of state.labelBudgets) {
     gauge(`${p}dropped_keys`, budget.dropped, droppedHelp, [strAttr('kind', `label:${key}`)]);
   }
+  // 组合数的折叠（`maxLabelCombos`）：与 Prometheus 侧同一行，未配置 labelKeys 时不发
+  if (state.labelBudgets.size > 0) {
+    gauge(`${p}dropped_keys`, state.comboBudget.dropped, droppedHelp, [
+      strAttr('kind', 'label:combos'),
+    ]);
+  }
 
   const metrics = [...metricTable.values()];
 

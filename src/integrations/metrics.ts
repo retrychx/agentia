@@ -140,6 +140,21 @@ export interface MetricsSinkOptions {
    * 超出后新值归入 `__other__`；被折叠的不同值数见 `snapshot().droppedLabelValues`。
    */
   maxLabelValues?: number;
+  /**
+   * **标签组合数**上限（缺省 200，**必须为正数**）。
+   *
+   * 为什么需要它：`maxLabelValues` 封的是**每个键的值域**，而进内存的是键的组合 ——
+   * 组合数是叉乘（`(maxLabelValues+1)^labelKeys.length`），缺省值域 100 配 3 个键就是
+   * 一百万条常驻条目，且 `droppedLabelValues` 只报每键的折叠数、看不出组合已经爆了
+   * （2026-09-27 ⑧ 实测的静默失效）。这道上限与 `maxCapabilities` / `maxModels` /
+   * `maxScores` 同款：超限后**新的组合**折叠进一个全 `__other__` 的桶（量照收，只丢
+   * 标签粒度），被折叠的组合数见 `snapshot().droppedLabelCombos` 与
+   * `agentia_dropped_keys{kind="label:combos"}`。**不可关** —— 内存不变量要求每个新
+   * 基数维度都有 cap，opt-in 挡不住「明知有几千租户偏要上」。
+   *
+   * 单键配置（最常见）下组合数 ≈ 值数，这道上限不改变行为。
+   */
+  maxLabelCombos?: number;
   /** 时长直方图的桶边界（毫秒，升序）；缺省见 DEFAULT_BUCKETS */
   buckets?: readonly number[];
 }
@@ -179,6 +194,12 @@ const DEFAULT_MAX_SCORES = 200;
  * 而不是把 Prometheus 与 sink 内存一起打爆
  */
 const DEFAULT_MAX_LABEL_VALUES = 100;
+/**
+ * 标签**组合数**缺省上限。取 200 而不是与 `maxLabelValues` 同值（100）：单键配置下
+ * 组合数 ≈ 值数（100 < 200，行为不变），多键配置才是它的用武之地 —— 上限是
+ * 「上限 × 窗口 = 常驻内存」这条不变量里缺的那一角，宁可给够正常用量也不要紧到误折。
+ */
+const DEFAULT_MAX_LABEL_COMBOS = 200;
 /** Prometheus 标签名的合法形状（labelKeys 的构造期校验按它） */
 const LABEL_NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 /** 缺省时长桶（毫秒）：覆盖"工具几十毫秒 → run 几十秒"的常见区间 */
@@ -217,6 +238,10 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   if (!(maxLabelValues > 0)) {
     throw new Error(`metricsSink: maxLabelValues 必须为正数，收到 ${opts.maxLabelValues}`);
   }
+  const maxLabelCombos = opts.maxLabelCombos ?? DEFAULT_MAX_LABEL_COMBOS;
+  if (!(maxLabelCombos > 0)) {
+    throw new Error(`metricsSink: maxLabelCombos 必须为正数，收到 ${opts.maxLabelCombos}`);
+  }
   const labelKeys: string[] = [];
   for (const k of opts.labelKeys ?? []) {
     if (typeof k !== 'string' || !LABEL_NAME_RE.test(k)) {
@@ -250,6 +275,7 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     buckets,
     labelKeys,
     maxLabelValues,
+    maxLabelCombos,
   });
 
   const snapshot = (): MetricsSnapshot => state.snapshot();

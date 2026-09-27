@@ -116,6 +116,11 @@ export function renderPrometheus(state: MetricsState, p: string): string {
       ...[...state.labelBudgets.entries()].map(
         ([key, budget]) => `${p}dropped_keys{kind="label:${key}"} ${budget.dropped}`,
       ),
+      // 组合数有自己的上限（`maxLabelCombos`）：每键折叠数是**看不见**叉乘爆炸的
+      // （2026-09-27 ⑧），所以这一行与上面每键那几行并存、单列一个 kind
+      ...(state.labelBudgets.size > 0
+        ? [`${p}dropped_keys{kind="label:combos"} ${state.comboBudget.dropped}`]
+        : []),
     ]),
   );
   // 时长：histogram（可跨实例聚合）+ 窗口内精确分位（单实例好读），两种口径并存。
