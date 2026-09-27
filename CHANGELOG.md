@@ -19,6 +19,10 @@
   指标尖峰可以一键跳到那条 trace（配置见 `docs/observability.md` §4）。
   内置 `GET /metrics` 路由的 Content-Type 跟 sink 的 `contentType` 走 —— openmetrics 模式
   直接喂给 `createHttpHandler({ metrics })` 即可，不用自己挂路由。
+- **摘要渲染折叠纯载荷长串**（#147）：长上下文摘要器此前有三条封顶（图片占位 / 未知块 /
+  参数截断），但工具把 base64 这类载荷当**字符串**返回时整段进摘要器。现在连续 ≥4000
+  字符的载荷串折成 `⟨载荷 N 字符已折叠⟩` —— 只影响摘要渲染，trace 本体与 token 估算不变。
+  （PEM 折行载荷够不着下限，已知边界已在文档声明。）
 
 ### 变更
 
