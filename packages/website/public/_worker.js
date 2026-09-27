@@ -35,7 +35,10 @@ export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url);
-      const wantsMarkdown = (request.headers.get('accept') ?? '').includes('text/markdown');
+      // 媒体类型按 RFC 9110 大小写不敏感（`Text/Markdown` 与 `text/markdown` 同义）⇒ 先归一
+      const wantsMarkdown = (request.headers.get('accept') ?? '')
+        .toLowerCase()
+        .includes('text/markdown');
 
       // `/`（首页）单独放行：它的 pathname 以 `/` 结尾，会被下面那条「尾部斜杠不处理」的规则挡掉
       const isPagePath =

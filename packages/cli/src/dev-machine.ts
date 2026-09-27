@@ -583,6 +583,11 @@ export function update(
     case 'abort-grace-expired':
       // 兜底计时器只可能在 aborting 相位到点；否则是已被 disarm 的残余（防御性忽略）
       if (state.run !== 'aborting') return { state, effects: [] };
+      // ⚠️ 相位语义在此处有意弱化：相位随 restart 效果**发出**就落 idle（受理闸随之打开），
+      // 不等 stopChild 真把旧子进程停掉 —— 旧代码是「关到真停」。之所以安全：此刻 restart 链
+      // 必为空（aborting 只可能从 running 进，launching 期闸在 409 挡着；file-changed 在飞时
+      // 只记 pendingRestart 不排队），且派发的效果链在微任务内连跑到 stopChild，HTTP 请求
+      // 插不进这个窗口。哪天链上插进了会先 await 的环节，先重审这句再动。
       return {
         state: {
           ...state,
