@@ -137,7 +137,7 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
    * 意外抛出等）；rethrow:false 时这些同样收成 result 返回。
    */
   rethrow?: boolean;
-  /** trace 出口（观测）：run 收尾后逐个投递；sink 抛错被吞，不影响 run */
+  /** trace 出口（观测）：run 收尾后逐个投递；sink 抛错被吞（吞之前落一条 console.warn 告警），不影响 run */
   sinks?: TraceSink[];
   /**
    * trace 交给 sinks **之前**的最后一笔账（`run.finish` 之后、`flushSinks` 之前调一次，
@@ -329,14 +329,18 @@ async function runBeforeFlush<S extends JsonSchema>(
   }
 }
 
-/** 投递 trace 给所有 sink：观测失败（sink 抛错）不得影响 run 结果（同 memory 回写防护） */
+/**
+ * 投递 trace 给所有 sink：观测失败（sink 抛错）不得影响 run 结果（同 memory 回写防护），
+ * 但**不再零信号**：吞之前落一条 console.warn（文案含「trace sink」，可 grep / 接日志采集）——
+ * 否则 sink 天天挂、面板一切如常，「trace 根本没落盘」要等下游消费时才发现。
+ */
 async function flushSinks(sinks: TraceSink[] | undefined, trace: Trace): Promise<void> {
   if (!sinks || sinks.length === 0) return;
   for (const sink of sinks) {
     try {
       await sink.export(trace);
-    } catch {
-      /* 观测失败不得影响 run */
+    } catch (e) {
+      console.warn('[agentia] trace sink 投递失败:', e instanceof Error ? e.message : e);
     }
   }
 }

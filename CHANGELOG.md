@@ -5,6 +5,25 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 新增
+
+- **`jsonlTraceSink({ path })`：JSONL 文件 sink 进框架** —— CLI 三件套（`agentia report` /
+  `diff` / `harvest`）消费 `trace.jsonl`，而产出侧此前要用户手写 `appendFileSync`（usage-guide
+  曾这么教）。现在一行接入：`createApp({ sinks: [jsonlTraceSink({ path: 'trace.jsonl' })] })`。
+- **metrics exemplars（指标 ↔ trace 互跳）**：`metricsSink` 记账时跟踪两个代表性现场 ——
+  `runs_failed_total` 挂**最近一次失败** run、`run_duration_ms` histogram 挂**迄今最慢** run
+  的 traceId/spanId（`snapshot().exemplars` 可见；`export: 'openmetrics'` 与 `'otlp'`
+  两个出口会挂上，缺省 `prometheus` 输出逐字节不变）。Grafana 配好 exemplar 跳转后，
+  指标尖峰可以一键跳到那条 trace（配置见 `docs/observability.md` §4）。
+
+### 变更
+
+- **sink 投递失败不再完全静默**：`flushSinks` 吞掉 sink 异常的纪律不变（观测不击穿业务），
+  但吞之前现在会落一条 `console.warn`（文案含「trace sink」，可 grep）——「观测的观测」
+  此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ②。
+
 ## [0.9.4] - 2026-09-26
 
 > 本版主题（窗口 `0.9.3 → 0.9.4`）：**成本与限制的账本对齐 + 「能不能发」有了判据**。

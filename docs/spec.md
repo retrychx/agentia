@@ -163,7 +163,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   按 runId 检索都由宿主用 sink 组合，零 engine 改动。
 - 成本：span 级 usage 聚合自 API usage 字段（`cache_read_input_tokens` 等），run 汇总 = 各 span 求和。
 - **trace 出口（sink）**：`TraceSink { export(trace) }` —— run 收尾（成功 / 失败两条路径）后框架把
-  完整 trace 交给每个 sink；sink 抛错被吞，不影响 run。
+  完整 trace 交给每个 sink；sink 抛错被吞（吞之前落一条 `console.warn` 告警，§10 2026-09-27 ②），
+  不影响 run。
 - **增量出口（2026-09-21，与 sink 并列为第二条缝）**：`onTraceEvent`（单次 run 一个 + 应用级缺省）
   在 run **进行中**逐笔回调记账事件（`span.begin` / `span.end` / `span.event` / `span.attribute` /
   `span.link`，各带单调 `seq`），消费者是**等不了收尾**的那一类（终端面板 / SSE / 异步任务流）。
@@ -3502,6 +3503,25 @@ sha256 逐字节一致。
 
 `src/` 净改动：**1 文件 / +30 −2**（`engine/trimming.ts`：常量 + 折叠函数 + 收口各一处）；
 用例 **27 → 30 例**（+3）。
+
+### 2026-09-27 ②：**sink 失败不再零信号** —— `flushSinks` 照吞但落 `console.warn`；JSONL 文件 sink 进框架
+
+两件事同一个动机：**观测链路自己的故障不能隐形**。
+
+① **「观测不击穿业务」的纪律不变，但吞掉之前要留信号。** `flushSinks` 依旧吞掉 sink 的异常
+（run 结果不受影响）——这条是对的，不动。变的是此前吞得**零信号**：sink 天天挂、面板一切如常，
+「trace 根本没落盘」要等下游消费（CLI 对不上账）时才发现。现在 catch 里落一条 `console.warn`
+（文案含「trace sink」字样，可 grep / 接日志采集，带 sink 的错误消息）。与
+`createOtlpExporter({ onExportError })` 的分工：那个是**导出器自己的**失败分类出口
+（HTTP 状态 / 超时 / partialSuccess，要不要吞由它选），这个是**框架侧对任意 sink** 的兜底告警
+—— 两层不冲突，一个管「导出器内部的分类」，一个管「sink 这个缝本身的故障」。
+
+② **CLI 三件套的消费格式，产出侧收进框架。** `agentia report` / `diff` / `harvest` 消费
+`trace.jsonl`（一行一个 JSON，裸 Trace）已久，而产出侧文档还在教用户手写 `appendFileSync`
+的 sink —— 断了一截。新导出 `jsonlTraceSink({ path })`（`src/integrations/file-sink.ts`）：
+一行一条裸 Trace 追加落盘、父目录构造期递归创建、追加不覆盖、写失败**抛给调用方**
+（由 ① 的告警兜底接住）。落 integrations 层（只依赖 core + `node:fs`，零新增依赖），
+与 `createOtlpExporter` 同组登记进公共面。
 
 ## 11. 开放项
 

@@ -1,9 +1,11 @@
 import type { DurationStat, MetricsState } from './metrics-state.js';
 import { scoreLabels } from './metrics-state.js';
+import { wireTraceId } from '../core/trace.js';
 
 /**
- * metricsSink 的 **Prometheus 文本渲染**（`text/plain; version=0.0.4`，零依赖手写）。
- * 只读 `MetricsState`，不改账。module 级 export，不进公共面（`src/index.ts`）。
+ * metricsSink 的 **Prometheus 文本渲染**（`text/plain; version=0.0.4`，零依赖手写）
+ * 与 **OpenMetrics 渲染**（exemplars 的唯一文本出口）。只读 `MetricsState`，不改账。
+ * module 级 export，不进公共面（`src/index.ts`）。
  */
 
 /**
@@ -225,4 +227,45 @@ export function renderPrometheus(state: MetricsState, p: string): string {
     out.push(family(`${p}score_total`, 'counter', '评分条数', counterSamples));
   }
   return out.join('');
+}
+
+/**
+ * **OpenMetrics 文本渲染**（`application/openmetrics-text`）—— exemplars 的出口。
+ *
+ * Prometheus 原文格式（0.0.4）**不支持** exemplar（样本行尾 `# {…}` 那段语法只有
+ * OpenMetrics 有），所以要「指标尖峰 → 那条 trace」就必须换这一个格式。
+ *
+ * 实现 = `renderPrometheus` 的输出 + 两处样本行尾追加 exemplar + `# EOF` 收尾，
+ * 其余内容**逐字节同源**（两条输出共用同一份渲染，永远不会漂）。三个编辑点：
+ * - `runs_failed_total` 样本行尾挂最近一次失败 run（counter 的 exemplar 值 = 该次增量 1）；
+ * - `run_duration_ms` 的 exemplar 挂在**最慢那次落入的 bucket** 行上
+ *   （OpenMetrics 规定 histogram 的 exemplar 必须挂 bucket，不能挂 sum/count）；
+ * - 文件末尾 `# EOF`（OpenMetrics 的强制收尾）。
+ * trace_id 走 `wireTraceId` 投影（hex，Tempo/Grafana 的 exemplar 跳转按它查）。
+ */
+export function renderOpenMetrics(state: MetricsState, p: string): string {
+  let text = renderPrometheus(state, p);
+
+  const failed = state.failedExemplar;
+  if (failed) {
+    const plain = `${p}runs_failed_total ${state.failed}\n`;
+    // renderPrometheus 恒定输出这行（failed ≥ 1 是 failedExemplar 存在的前提）
+    text = text.replace(
+      plain,
+      `${plain.trimEnd()} # {trace_id="${wireTraceId(failed.traceId)}"} 1 ${failed.at / 1000}\n`,
+    );
+  }
+
+  const slowest = state.slowestExemplar;
+  if (slowest) {
+    const le = state.runStat.boundsList.find((b) => slowest.durationMs <= b);
+    const head = `${p}run_duration_ms_bucket{le="${le === undefined ? '+Inf' : le}"} `;
+    const i = text.indexOf(head);
+    if (i >= 0) {
+      const eol = text.indexOf('\n', i);
+      text = `${text.slice(0, eol)} # {trace_id="${wireTraceId(slowest.traceId)}"} ${slowest.durationMs} ${slowest.at / 1000}${text.slice(eol)}`;
+    }
+  }
+
+  return `${text}# EOF\n`;
 }

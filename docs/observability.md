@@ -34,8 +34,9 @@ interface TraceSink {
 
 - **投递时机**：run 收尾后，**成功与失败两条路径都投递**（`runtime/run.ts`）。失败时 trace 仍完整，只是根 span
   可能带 `status: 'error'`。
-- **抛错语义**：sink 抛错被框架**吞掉**，绝不影响 run 结果（与记忆回写同款防护）。所以每个 sink 自己
-  负责「观测失败不能连累别的 sink」—— 见示例里的 `fanOut()`。
+- **抛错语义**：sink 抛错被框架**吞掉**，绝不影响 run 结果（与记忆回写同款防护）；但**不再零信号** ——
+  吞之前落一条 `console.warn`（文案含「trace sink」，可 grep / 接日志采集；2026-09-27 起）。
+  所以每个 sink 自己负责「观测失败不能连累别的 sink」—— 见示例里的 `fanOut()`。
 - **挂载点两个**：
   - `createApp({ sinks: [...] })` —— 按 app 装配（推荐，作用域清晰）。
   - `registerDefaultTraceSink(sink)` —— 全局默认（**构造期快照合并**，之后再注册不影响已建好的 app）。
@@ -214,6 +215,34 @@ createApp({ name: 'svc', providers, sinks: [platform] });
 > 框架**不内置任何平台 SDK**。理由：`TraceSink` 只有一个 `export(trace)`，自己写一个比引依赖更省心，
 > 也不会把「平台 SDK 的版本」变成框架的维护负担。内置的只有 OTLP（协议标准、零依赖）。
 
+### 2.7 OTLP 关联：在 Tempo / Grafana 里「从 span 找回 run」
+
+把 `createOtlpExporter` 接进 Tempo 之后，「按 run 查 trace」卡在两个没写进线缆形态的事实上：
+
+**① id 是投影过的 hex。** 框架内部 id 是 UUID（`runId == traceId`，带 `-`）；OTLP 要求 trace id
+是 **32 位 hex**、span id 是 **16 位 hex**，导出时统一过 `wireTraceId` / `wireSpanId`
+（`src/core/trace.ts` —— 与出站 `traceparent` 用的是**同一份**投影，改一处两处同步）：
+
+- **traceId**：去掉 `-` 即 32 位 hex —— **无损**：按 8-4-4-4-12 加回横线就是 runId。
+  所以在 Tempo 里查某条 run：把日志（配方 2.2）/ 落库（配方 2.1）拿到的 runId 删掉 `-`，
+  直接按 trace id 查；反过来从 Tempo 的 32 位 trace id 找回 runId 也是纯加横线，**不用另建映射表**。
+- **spanId**：去 `-` 后**截前 16 位**（8 字节）—— 有损，本地完整 spanId 反推不回去；
+  投影幂等（已是 hex 的输入原样通过，上游转发来的 span id 不再变形）。
+
+**② 查 run 根要按 `gen_ai.operation.name = 'invoke_agent'` 过滤，不能按「带 `gen_ai.*` 键」过滤。**
+llm.turn 也带 `gen_ai.*` 键（`gen_ai.operation.name = 'chat'`），且与 run 根**共享同一 traceId** ——
+只按「键存在」过滤会把每一回合的 turn 全捞进来。列出「最近的 run」（TraceQL；带点号的属性名
+可直接写，点号会被并进属性名，遇解析歧义改用带引号写法 `."gen_ai.operation.name"`）：
+
+```
+{ .gen_ai.operation.name = "invoke_agent" && .gen_ai.agent.name = "你的应用名" }
+```
+
+⚠️ 子 agent 的 capability span **同样**带 `invoke_agent`（它确实是一次嵌套 agent 调用，semconv
+口径如此），区别是它**有父 span**（run 根没有）。上面的查询把 `gen_ai.agent.name` 收窄成应用名后
+（经 `createApp({ name })` 走的 run，根 span 的该值就是应用名；子 agent 那里是子 agent 名），
+剩下的一般就是 run 根；要严格区分，再按「无父 span」过滤一道。
+
 ## 3. 与内置件的关系（别重复造）
 
 | 内置件 | 干什么 | 和上面的关系 |
@@ -225,7 +254,52 @@ createApp({ name: 'svc', providers, sinks: [platform] });
 OTLP 与本文配方**不互斥**：`sinks: [sampleSink({ rate: 0.1, sinks: [createOtlpExporter({...})] }), sqliteTraceSink({ db })]`
 = OTLP 采样 10%、本地库全量留档，是常见配法。
 
-## 4. 边界（如实标注）
+## 4. 指标 ↔ trace 互跳（exemplars）
+
+`metricsSink` 聚出来的指标与 trace 之间有一座桥：**exemplar** —— 数据点上挂一个代表性
+traceId，在 Grafana 里从「`runs_failed_total` 的尖峰」一键跳到「那条失败 run 的调用树」。
+框架记账时跟踪两个槽位（价值最高的两个「尖峰 → 现场」；各一个槽位、O(1)，无内存压力）：
+
+| 指标 | exemplar 口径 |
+|---|---|
+| `<prefix>runs_failed_total`（counter） | **最近一次**失败的 run（覆盖式 —— 尖峰时要看的是最新的那条） |
+| `<prefix>run_duration_ms`（histogram） | 迄今**最慢**的一次 run（破纪录才换；等值保留旧的，「最慢」是稳定锚点） |
+
+`snapshot().exemplars` 里也能直接读到这两个槽位（`failed` / `slowest`，还没有时为 `undefined`）。
+不做 per-能力 / per-模型 exemplar：那两个维度的基数上限封得住标签，封不住「每键一个槽位」的扩散。
+
+### 怎么开
+
+exemplar **记账恒开**（两个槽位各存一条引用，成本可忽略）；差别只在**出口**：
+
+- 缺省 `export: 'prometheus'`：Prometheus 原文格式（0.0.4）**没有 exemplar 语法**，输出不含它（逐字节不变）。
+- `export: 'openmetrics'`：`render()` 出 OpenMetrics 文本 —— 失败 counter 的样本行尾挂
+  `# {trace_id="…"} 1 <时间戳>`；时长 histogram 的 exemplar 挂在**最慢那次落入的 `_bucket` 行**上
+  （规范要求 histogram 的 exemplar 必须挂 bucket，不能挂 sum/count）；文件以 `# EOF` 收尾。
+  ⚠️ 这时端点的 Content-Type 必须是 `application/openmetrics-text; version=1.0.0`，
+  否则抓取端按 0.0.4 解析、exemplar 被静默丢掉 —— 所以**别**走 `createHttpHandler({ metrics })`
+  那条内置路由（它按 Prometheus 0.0.4 发），自己挂一个路由发 `render()` 并带上正确的 Content-Type。
+- `export: 'otlp'`：exemplar 是 OTLP 数据点的原生字段（`exemplars[]`，含 hex 投影的
+  `traceId` / `spanId` 与 `timeUnixNano`），随导出自动带上，无需任何配置。
+
+```ts
+import { metricsSink } from '@migor/agentia';
+
+const metrics = metricsSink({ export: 'openmetrics' });
+// GET /metrics → metrics.render()
+// Content-Type: application/openmetrics-text; version=1.0.0
+```
+
+### Grafana 里长什么样
+
+1. Prometheus 开 exemplar 存取（启动参数 `--enable-feature=exemplar-storage`；Grafana Mimir 原生支持）。
+2. Grafana 的 **Prometheus 数据源**配置页 → **Exemplars**：加一条 internal link，指向你的
+   **Tempo 数据源**，label 名填 `trace_id`（与本框架挂在样本行尾的标签同名）。
+3. Explore 里查 `agentia_runs_failed_total`（或 `histogram_quantile` 包 `agentia_run_duration_ms`），
+   尖峰数据点旁的 exemplar 标记点开即跳到 Tempo 里**那条** trace —— trace 侧由
+   `createOtlpExporter` 送进 Tempo，两侧走同一份 `wireTraceId` hex 投影，是同一个 id。
+
+## 5. 边界（如实标注）
 
 - **框架不内建日志层 / 采样 / 脱敏 / 存储 / 部署产物** —— 那是宿主职责，框架只保证 trace 出口。
 - **失败路径的根 span 可能未收尾**（`endedAt === undefined`）：半截 trace 仍会投递（信息比丢了好），

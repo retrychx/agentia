@@ -50,9 +50,9 @@ export interface OtlpExporterOptions {
    * 导出失败回调（与 `metricsSink` 的同名选项对称）。
    *
    * 给了它，**所有**导出失败（非 2xx / 超时 / **HTTP 200 但 collector 报部分接收**）都走这里、
-   * 不再向 `TraceSink` 调用方抛出；不给则保持既有行为（抛出，由 `flushSinks` 吞掉）。
-   * 存在的理由：`TraceSink` 的失败缺省是**静默**的（观测失败不得击穿业务），
-   * 「导出其实少了一半数据」这类消息要有人能收到。
+   * 不再向 `TraceSink` 调用方抛出；不给则保持既有行为（抛出，由 `flushSinks` 吞掉并落 console.warn）。
+   * 存在的理由：`TraceSink` 的失败缺省只有一条泛化的 warn（观测失败不得击穿业务），
+   * 「导出其实少了一半数据」这类**带分类的**消息要有人能收到。
    */
   onExportError?: (err: unknown) => void;
 }

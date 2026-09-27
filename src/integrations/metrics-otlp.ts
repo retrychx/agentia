@@ -1,6 +1,7 @@
-import type { DurationStat, MetricsState } from './metrics-state.js';
+import type { DurationStat, MetricsState, RunExemplar } from './metrics-state.js';
 import { scoreLabels } from './metrics-state.js';
 import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
+import { wireSpanId, wireTraceId } from '../core/trace.js';
 
 /**
  * metricsSink 的 **OTLP/JSON 导出**（E5）：从 `MetricsState` 组装 payload + POST 到
@@ -55,6 +56,21 @@ const nanos = (ms: number): string => String(BigInt(Math.round(ms)) * 1_000_000n
 type OtlpAttr = { key: string; value: Record<string, unknown> };
 const strAttr = (key: string, v: string): OtlpAttr => ({ key, value: { stringValue: v } });
 
+/**
+ * exemplar（指标 → trace 的桥）：OTLP 数据点的原生字段。
+ * trace_id/span_id 走 core/trace.ts 的 hex 投影（单一真源，与 traces 导出同一份）；
+ * filteredAttributes 为空 —— 我们的 exemplar 没有额外 label（两个槽位都是无 label 的数据点）。
+ */
+const exemplarOf = (
+  ex: RunExemplar,
+  value: { asInt: string } | { asDouble: number },
+): Record<string, unknown> => ({
+  timeUnixNano: nanos(ex.at),
+  ...value,
+  spanId: wireSpanId(ex.spanId),
+  traceId: wireTraceId(ex.traceId),
+});
+
 export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions): unknown {
   const p = opts.prefix;
   const now = nanos(Date.now());
@@ -88,6 +104,7 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
     help: string,
     attrs: OtlpAttr[],
     monotonic = true,
+    exemplars?: Record<string, unknown>[],
   ): void => {
     const m = takeMetric(name, help);
     m.sum ??= { aggregationTemporality: 2, isMonotonic: monotonic, dataPoints: [] };
@@ -96,6 +113,7 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
       startTimeUnixNano: start,
       timeUnixNano: now,
       asInt: String(value),
+      ...(exemplars !== undefined ? { exemplars } : {}),
     });
   };
   // 浮点指标（成本）必须走 asDouble —— OTLP 的 asInt 是 string 编码 int64，
@@ -121,7 +139,13 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
       asDouble: value,
     });
   };
-  const hist = (name: string, stat: DurationStat, help: string, attrs: OtlpAttr[]): void => {
+  const hist = (
+    name: string,
+    stat: DurationStat,
+    help: string,
+    attrs: OtlpAttr[],
+    exemplars?: Record<string, unknown>[],
+  ): void => {
     const m = takeMetric(name, help);
     m.histogram ??= { aggregationTemporality: 2, dataPoints: [] };
     m.histogram.dataPoints.push({
@@ -133,11 +157,22 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
       // OTLP 的 bucketCounts 是每桶**非累积**计数（Prometheus 文本才是累积语义）
       bucketCounts: stat.perBucket(),
       explicitBounds: [...stat.boundsList],
+      ...(exemplars !== undefined ? { exemplars } : {}),
     });
   };
 
   sum(`${p}runs_total`, s.runs, 'run 总数', []);
-  sum(`${p}runs_failed_total`, s.failed, '失败的 run 数', []);
+  sum(
+    `${p}runs_failed_total`,
+    s.failed,
+    '失败的 run 数',
+    [],
+    true,
+    // exemplar：最近一次失败的 run（counter 语义 → asInt=该次增量 1）
+    state.failedExemplar !== undefined
+      ? [exemplarOf(state.failedExemplar, { asInt: '1' })]
+      : undefined,
+  );
   // tokens_total：四类 kind 分项收进**同一个** Metric；description 与 Prometheus 侧
   // render() 的 family() 统一成同一句总述（同名 Metric 各带一份描述是 semantic error）
   const tokensHelp = 'token 累计（kind 分项：input / output / cache_read / cache_creation）';
@@ -148,7 +183,16 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
     strAttr('kind', 'cache_creation'),
   ]);
   sumDouble(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []);
-  hist(`${p}run_duration_ms`, state.runStat, 'run 时长（毫秒）', []);
+  hist(
+    `${p}run_duration_ms`,
+    state.runStat,
+    'run 时长（毫秒）',
+    [],
+    // exemplar：迄今最慢的一次 run（histogram 语义 → asDouble=观测到的时长）
+    state.slowestExemplar !== undefined
+      ? [exemplarOf(state.slowestExemplar, { asDouble: state.slowestExemplar.durationMs })]
+      : undefined,
+  );
 
   for (const label of [...state.capabilities.keys()].sort()) {
     const acc = state.capabilities.get(label)!;
