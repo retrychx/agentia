@@ -578,7 +578,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | `GET /tasks/:id/stream` | — | **任务进度流（SSE）**：先在 `id:` 里给流序号，逐帧下发 `trace.event`（body 即 `TraceRecordEvent`），终态发 `task.end` 并关闭。断线重连带 `Last-Event-ID`（或 `?from=<序号>`）即可续订 —— 只补该序号之后的事件。缓冲超限先发一帧 `stream.truncated{droppedBefore}`；别的进程在跑的任务发 `stream.unavailable` 后收口（**不假装实时**）。任务不存在 → 404；方法不对 → 405。⚠️ 它的读者是**旁观者**：背压/断开只收口这条流，**不中止任务** |
 | `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；不在 `awaiting_approval` 状态 → 409；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
 | `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
-| `GET /metrics` | — | 200 Prometheus 文本（`text/plain; version=0.0.4`）；**需在 `createHttpHandler` 里传 `metrics`**，**不鉴权**（与 `/healthz` 同档），停机中也回 |
+| `GET /metrics` | — | 200 指标文本（Content-Type 跟 sink 的 `contentType` 走：缺省 `text/plain; version=0.0.4`，`export:'openmetrics'` 的 sink 发 `application/openmetrics-text`）；**需在 `createHttpHandler` 里传 `metrics`**，**不鉴权**（与 `/healthz` 同档），停机中也回 |
 
 方法不符 → 405（带 `Allow` 头）；路径不符 → 404；body 非法 JSON → 400；body 超 `maxBodyBytes` → 413；
 `POST /run` 超 `maxConcurrentRuns` → 503 + `Retry-After`；停机中 `POST /run`、`POST /tasks` → 503。

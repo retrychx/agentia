@@ -91,15 +91,20 @@ export interface HttpHandlerOptions {
    */
   authenticate?: (req: IncomingMessage) => unknown | Promise<unknown>;
   /**
-   * 指标出口（G4）：提供后 `GET /metrics` 输出其 Prometheus 文本（`text/plain; version=0.0.4`）。
+   * 指标出口（G4）：提供后 `GET /metrics` 输出其 `render()` 的文本。
    * 通常直接传 `metricsSink()`（它有 `render()`）。
+   *
+   * 响应的 Content-Type 跟提供者的 `contentType` 字段走（metricsSink 会按自己的
+   * `export` 模式声明：openmetrics 模式 ⇒ `application/openmetrics-text`，
+   * 带 exemplar 的文本必须配这个头）；没有这个字段（或传的是纯函数）⇒
+   * 缺省 `text/plain; version=0.0.4`，与既有行为一致。
    *
    * 与 `/healthz` 同档处理：**不鉴权**、停机中仍可拉（拉取端在集群内网）。要保护它，
    * 请放到反代之后，或不要传这个选项、自己在 handler 外层挂路由。
    *
    * 框架只给缝：它不知道指标从哪来 —— 传 sink、传读快照的闭包都行。
    */
-  metrics?: { render(): string } | (() => string);
+  metrics?: { render(): string; contentType?: string } | (() => string);
 }
 
 /** GET /healthz 的响应形态 */
@@ -172,9 +177,13 @@ function methodNotAllowed(res: ServerResponse, method: string, allowed: string):
 }
 
 /** Prometheus 文本响应（G4）：抓取端按 text/plain; version=0.0.4 解析 */
-function sendPrometheus(res: ServerResponse, body: string): void {
+function sendPrometheus(
+  res: ServerResponse,
+  body: string,
+  contentType = 'text/plain; version=0.0.4; charset=utf-8',
+): void {
   res.writeHead(200, {
-    'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+    'content-type': contentType,
     'content-length': Buffer.byteLength(body),
     'cache-control': 'no-store',
   });
@@ -389,11 +398,17 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
         }
         // 指标：与 /healthz 同档（不鉴权、停机中仍可拉 —— 抓取端在集群内网）。
         // `?.` 只为让类型收窄（这条分支只在配了 metrics 出口时可达），行为与原来一致。
+        // Content-Type 跟提供者走：metricsSink 在 openmetrics 模式下会声明
+        // `application/openmetrics-text`（带 exemplar 的文本拿 0.0.4 的头去发，
+        // 严格抓取端会解析失败）；纯函数形态的提供者没有这个字段 ⇒ 回落 0.0.4。
         sendPrometheus(
           res,
           typeof metricsProvider === 'function'
             ? metricsProvider()
             : (metricsProvider?.render() ?? ''),
+          typeof metricsProvider === 'function'
+            ? undefined
+            : (metricsProvider as { contentType?: string } | undefined)?.contentType,
         );
         return;
       }

@@ -276,9 +276,10 @@ exemplar **记账恒开**（两个槽位各存一条引用，成本可忽略）�
 - `export: 'openmetrics'`：`render()` 出 OpenMetrics 文本 —— 失败 counter 的样本行尾挂
   `# {trace_id="…"} 1 <时间戳>`；时长 histogram 的 exemplar 挂在**最慢那次落入的 `_bucket` 行**上
   （规范要求 histogram 的 exemplar 必须挂 bucket，不能挂 sum/count）；文件以 `# EOF` 收尾。
-  ⚠️ 这时端点的 Content-Type 必须是 `application/openmetrics-text; version=1.0.0`，
-  否则抓取端按 0.0.4 解析、exemplar 被静默丢掉 —— 所以**别**走 `createHttpHandler({ metrics })`
-  那条内置路由（它按 Prometheus 0.0.4 发），自己挂一个路由发 `render()` 并带上正确的 Content-Type。
+  端点的 Content-Type 必须是 `application/openmetrics-text; version=1.0.0`
+  （否则抓取端按 0.0.4 解析、exemplar 被静默丢掉）—— 内置路由 `createHttpHandler({ metrics })`
+  **自己认这个**：sink 的 `contentType` 字段随 `export` 模式走，路由直接读它发响应头，
+  不用自己挂路由（自己挂端点同理：读 `sink.contentType`，别写死）。
 - `export: 'otlp'`：exemplar 是 OTLP 数据点的原生字段（`exemplars[]`，含 hex 投影的
   `traceId` / `spanId` 与 `timeUnixNano`），随导出自动带上，无需任何配置。
 
@@ -286,8 +287,8 @@ exemplar **记账恒开**（两个槽位各存一条引用，成本可忽略）�
 import { metricsSink } from '@migor/agentia';
 
 const metrics = metricsSink({ export: 'openmetrics' });
-// GET /metrics → metrics.render()
-// Content-Type: application/openmetrics-text; version=1.0.0
+// 直接喂给内置路由即可 —— Content-Type 由 sink.contentType 声明，路由读它：
+createHttpHandler(app, { metrics });
 ```
 
 ### Grafana 里长什么样
