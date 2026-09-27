@@ -126,10 +126,17 @@ export interface MetricsSink extends TraceSink {
   snapshot(): MetricsSnapshot;
   /**
    * 文本格式渲染（零依赖手写）：`export:'prometheus'`（缺省）出 `text/plain; version=0.0.4`，
-   * `export:'openmetrics'` 出 OpenMetrics 文本（带 exemplar、以 `# EOF` 收尾；
-   * 宿主端点的 Content-Type 应配 `application/openmetrics-text`）
+   * `export:'openmetrics'` 出 OpenMetrics 文本（带 exemplar、以 `# EOF` 收尾）。
+   * 宿主端点直接读 `contentType` 当响应头即可（框架内置的 `/metrics` 路由就是这么做的）。
    */
   render(): string;
+  /**
+   * `render()` 产物的 Content-Type（随 `export` 模式走）：内置 `/metrics` 路由读它发响应头，
+   * 自己挂端点时也该读它而不是写死 —— 0.0.4 与 OpenMetrics 不是可互换的两种写法，
+   * 拿 0.0.4 的头去发带 exemplar 的文本，严格的抓取端会解析失败。
+   * （可选是为了向后兼容手写的 MetricsSink 实现；本工厂返回的一定带。）
+   */
+  readonly contentType?: string;
   /** 主动导出一次（`export:'otlp'` 时有意义；prometheus/openmetrics 拉取式为空操作）。失败按 onExportError 处理 */
   flush(): Promise<void>;
   /** 停掉定时导出（进程收尾 / 测试用） */
@@ -240,6 +247,12 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
 
     snapshot,
     render,
+    // 与 render() 同源：0.0.4 与 OpenMetrics 不可互换（后者带 exemplar、以 # EOF 收尾），
+    // 内置 /metrics 路由与本对象自带的 contentType 必须永远一致 ⇒ 只在这里写一次。
+    contentType:
+      format === 'openmetrics'
+        ? 'application/openmetrics-text; version=1.0.0; charset=utf-8'
+        : 'text/plain; version=0.0.4; charset=utf-8',
     flush,
 
     stop(): void {

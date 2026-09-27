@@ -17,6 +17,8 @@
   的 traceId/spanId（`snapshot().exemplars` 可见；`export: 'openmetrics'` 与 `'otlp'`
   两个出口会挂上，缺省 `prometheus` 输出逐字节不变）。Grafana 配好 exemplar 跳转后，
   指标尖峰可以一键跳到那条 trace（配置见 `docs/observability.md` §4）。
+  内置 `GET /metrics` 路由的 Content-Type 跟 sink 的 `contentType` 走 —— openmetrics 模式
+  直接喂给 `createHttpHandler({ metrics })` 即可，不用自己挂路由。
 
 ### 变更
 

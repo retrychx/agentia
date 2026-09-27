@@ -69,6 +69,29 @@ describe('G4 GET /metrics', () => {
       const res = await fetch(`${base}/metrics`);
       assert.equal(res.status, 200);
       assert.equal(await res.text(), '# custom\nfoo 1\n');
+      // 纯函数形态没有 contentType 可声明 ⇒ 回落 0.0.4（既有行为不变）
+      assert.match(res.headers.get('content-type') ?? '', /text\/plain; version=0\.0\.4/);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('openmetrics 模式的 sink ⇒ Content-Type 跟 sink 走（exemplar 的合法出口）', async () => {
+    // 带 exemplar 的 OpenMetrics 文本若拿 0.0.4 的头去发，严格抓取端会解析失败 ——
+    // 所以响应头必须跟 sink 自己声明的 contentType，不再写死 0.0.4。
+    const sink = metricsSink({ export: 'openmetrics', prefix: 'svc_' });
+    const { server, base } = await start({ metrics: sink });
+    try {
+      const res = await fetch(`${base}/metrics`);
+      assert.equal(res.status, 200);
+      assert.match(
+        res.headers.get('content-type') ?? '',
+        /application\/openmetrics-text/,
+        'openmetrics 模式的 sink 必须发 OpenMetrics 头',
+      );
+      const body = await res.text();
+      assert.equal(body, sink.render(), '响应体与 render() 一致');
+      assert.ok(body.trimEnd().endsWith('# EOF'), 'OpenMetrics 文本必须以 # EOF 收尾');
     } finally {
       await close(server);
     }
