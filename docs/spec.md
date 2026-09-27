@@ -3575,6 +3575,28 @@ usage/事件，replay/fork 的有损边界声明在 `engine/replay.ts`）。要�
 门禁 `tests/engine/trace-content.test.ts`（7 条）；反向验证 3 变异（记录闸摘掉 /
 不透传子循环 / 恒记）各恰好咬死对应用例。
 
+### 2026-09-27 ⑤：**`agentia export`（trace → 训练数据）**—— 导出器对「缺席」的态度：标注，不填假内容（R8-P3b）
+
+harvest 的孪生（它产 eval 用例骨架，这里产训练数据 JSONL）。核心决策都在
+「trace 里没有什么就怎么办」上：
+
+1. **原始输入不在 trace 里** ⇒ 首条 user 恒为占位，且 `meta.incomplete` 标 `'input'` ——
+   占位要自陈（词里带「训练前请补写」），不装成真输入。
+2. **assistant 文本缺口不造占位**（与 harvest 相反！harvest 的占位是给人看的脚手架注释，
+   这里的占位会进训练集 = 投毒）—— 终端回合没记到文本就**整条 assistant 不产生**，
+   标 `'assistant-text'`。纯 tool_use 回合本来就没文本，**不算缺口**（判定口径：
+   无 tool_use 又无文本的回合缺文本才是真缺口）。
+3. **tool_use ↔ tool_result 配对合法是硬要求**（残缺历史喂训练是静音投毒）：
+   缺输出补 is_error 占位块；有输出配不上对的跳过并计数 `meta.droppedOutputs`。
+4. **过滤语义**：`--min-score` 排除没分数的 run（没判过 ≠ 及格）；`--ok-only` 排除
+   失败 run。全部滤光要报错（静默产空文件是最难查的那种错）。
+5. 子 agent 嵌套回合不进主线（其能力出参已在主线 tool_result 里 —— 那是主线的合法
+   视角），数量记 `meta.nestedTurns`（与 harvest 同口径）。
+
+框架侧 `src/eval/export.ts` module 级（不进公共面，同 harvestEvalCase 纪律）；CLI 侧
+去类型移植副本 + 逐字对拍（`packages/cli/test/export.test.mjs`）。门禁：框架侧
+`tests/eval/export.test.ts` 6 条（夹具全是真引擎跑出来的 trace）+ CLI 侧 6 条（含对拍）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。

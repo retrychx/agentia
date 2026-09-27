@@ -60,7 +60,17 @@ function withTmp(fn) {
 
 describe('CLI 用法与错误路径', { skip: SKIP }, () => {
   it('子命令 --help 打出该命令的用法（此前会被当成要读的文件名）', () => {
-    for (const cmd of ['create', 'g', 'dev', 'doctor', 'report', 'harvest', 'diff', 'add']) {
+    for (const cmd of [
+      'create',
+      'g',
+      'dev',
+      'doctor',
+      'report',
+      'harvest',
+      'diff',
+      'export',
+      'add',
+    ]) {
       const r = run([cmd, '--help'], tmpdir());
       assert.equal(r.status, 0, `agentia ${cmd} --help 退出码应为 0（stdout=${r.stdout}）`);
       assert.match(r.stdout, /^用法：agentia /m, `agentia ${cmd} --help 应打出用法`);

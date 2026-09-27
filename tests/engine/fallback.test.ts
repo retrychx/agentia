@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAgent } from '../../src/engine/loop.js';
-import type { ModelClient } from '../../src/core/tool.js';
+import type { AgentTool, ModelClient } from '../../src/core/tool.js';
 import type { Span } from '../../src/core/trace.js';
 import { mockClient, endTurnMsg, toolUseMsg } from '../helpers.js';
 

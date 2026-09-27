@@ -220,3 +220,11 @@ agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。
   当场编译红）。偏差：无。实测体积数（3 回合 × ~1600 字符 ⇒ 5 564 → 11 010 字节）
   进了 spec §10 ④ 与 CHANGELOG。门禁 `tests/engine/trace-content.test.ts` 7 条 +
   反向验证 3 变异。
+- **P3b 已落地（2026-09-27）**：`agentia export <trace.jsonl> [--out] [--ok-only]
+  [--min-score n]`。框架侧 `src/eval/export.ts` 的 `exportRun`（module 级，不进公共面）；
+  CLI 侧去类型移植副本 + 逐字对拍（`packages/cli/test/export.test.mjs`）。
+  实施中设计修正一处（写进 spec §10 ⑤）：assistant 文本缺口的判定口径 —— 纯 tool_use
+  回合本来就没文本，**不算缺口**（初版实现把所有无 output.text 的回合都标缺口，
+  被「全量记录的 run」用例当场抓住）；占位文本纪律与 harvest **相反**（那里是给人看的
+  脚手架，这里会进训练集）。反向验证 2 变异（造占位文本 / 缺输出不补占位块）各咬死
+  对应用例。structure 棘轮补账 8328 → 8639。

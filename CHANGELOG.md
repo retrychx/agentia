@@ -9,6 +9,14 @@
 
 ### 新增
 
+- **CLI `agentia export`：trace 落盘文件 → 训练数据集**（JSONL，一行一份
+  `{ messages, meta }`；R8-P3b）—— harvest（产回归用例）的孪生。开了
+  `traceContent: 'full'` 的 run 导出带真 assistant 文本的完整对话；没开的导出工具
+  轨迹，缺文本**不造占位**（占位文本进训练数据是投毒），缺口进 `meta.incomplete`。
+  过滤：`--ok-only` / `--min-score n`（没带分数的 run 被排除：没判过 ≠ 及格）；
+  `--out` 落盘（stdout 是产物的纪律同 harvest）。框架侧 `src/eval/export.ts` 的
+  `exportRun` 是 module 级（不进公共面，同 harvestEvalCase 纪律），CLI 侧为去类型
+  移植副本 + 逐字对拍守护。决策见 spec §10 2026-09-27 ⑤。
 - **opt-in 记录 assistant 文本进 trace（`traceContent: 'full'`）**：每回合的模型文本落
   该 llm.turn span 的 `output.text` 属性（多块 `\n` 连接；过 `maxEventChars` 同一道
   截断闸 —— 它管「多长」，`traceContent` 管「记不记」）。缺省不记，现状逐字不变；

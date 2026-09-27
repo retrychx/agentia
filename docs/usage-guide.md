@@ -1163,6 +1163,25 @@ agentia harvest trace.jsonl --out evals/harvested.ts --force   # 覆盖已存在
   - 预填的 `expect` 是从原 trace **抄录的实际轨迹** —— 发生过 ≠ 应该发生；
   - `EvalCase` 没有 `expect` 字段，粘贴时把断言搬进 `defineEval({ expect })`（脚手架注释会教）。
 
+#### trace → 训练数据集（`agentia export`）
+
+harvest 的孪生（R8-P3b）：harvest 产**回归用例**，export 产**训练数据**（JSONL，一行一份
+`{ messages, meta }`）。配 `traceContent: 'full'`（§4）跑出来的 trace 导出的是带真 assistant
+文本的完整对话；没开的导出工具轨迹（text 块缺席**不造占位** —— 占位文本进训练数据是投毒）。
+
+```bash
+agentia export trace.jsonl                                # 全部记录 → JSONL 打到 stdout
+agentia export trace.jsonl --ok-only --min-score 0.8 --out dataset.jsonl
+```
+
+- 输入同 `agentia report` / `harvest`；`--min-score` 按 run 根 score 事件的最大值过滤
+  （**没带分数的 run 在此过滤下被排除**：没判过 ≠ 及格）；`--ok-only` 只留 status ok。
+- 每条记录的 `meta.incomplete` 如实标注缺口（`input` = 原始输入未入 trace，首条 user
+  恒为占位；`assistant-text` = 终端回合没记到模型正文）；`meta.nestedTurns` 记略去的
+  子 agent 嵌套回合数（它们不进主线 —— 其能力出参已在主线的 tool_result 里）。
+- 缺输出的 tool_use 补 is_error 占位块（协议要求配对合法）；有输出配不上对的计数进
+  `meta.droppedOutputs`，不静默丢。
+
 #### prompt / 模型 A/B（trace diff 与分叉重放）
 
 同一份输入跑两条 run（换模型、换 `SystemPrompt` 版本、换 prompt 都行），用 `diffTraces` 比出**结构与成本差**；
