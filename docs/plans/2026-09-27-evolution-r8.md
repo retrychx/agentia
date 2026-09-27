@@ -246,3 +246,8 @@ agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。
   R8-P4 块 7 条 + limits 探针；反向验证 2 变异（摘 cap 折叠 ⇒ 折叠/reset 两条红；
   引擎摘 labels 落根 ⇒ run-labels 3 条红）。公共面新增 `RunLabelMetrics` 类型导出
   （api.html 计数 219 → 220）。
+- **P6 已交付（2026-09-27，调研）**：`docs/plans/2026-09-27-durable-execution-research.md`。
+  关键判断：agent 主循环的状态是消息历史（天然可序列化、可断点续传），Temporal 系的
+  事件溯源重放对它是**错的抽象** —— 差距清单 G5（重放模型）确认不做；要补的是
+  durable timer（G1）与外部事件唤醒（G2）两个维度，候选增量列在文档 §6，
+  动代码前各自回 spec §10 立项。偏差：无（范围就是调研）。

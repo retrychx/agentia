@@ -329,7 +329,9 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   + metrics 侧 `labelKeys` opt-in + `maxLabelValues` 基数上限（limits 真源表登记）；
   决策见 spec §10 2026-09-27 ⑥
 - P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— 待做
-- P6 durable 长时程 —— 只立项调研（Temporal/Restate 对照 + 差距清单），本轮不写实现
+- P6 durable 长时程 —— ✅ 调研交付（2026-09-27）：`docs/plans/2026-09-27-durable-execution-research.md`
+  （Temporal/Restate/DBOS 对照 + 差距清单 G1-G5 + 最小语义增量候选四条；**不写实现**，
+  动代码前回 spec §10 立项）
 - 缓：A2A 协议适配（协议漂移中）；拒：后端看板 / DAG 编辑器 / swarm 编排（定位）
 
 ## 原则（约束所有 R）
