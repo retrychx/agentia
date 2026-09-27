@@ -1,4 +1,5 @@
 import type { MessageParam } from '../core/message.js';
+import { truncateWithMark } from '../core/json.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import type {
   AgentTool,
@@ -13,6 +14,7 @@ import { withCurrentSpan } from './span-scope.js';
 import type { AgentLoopResult } from './loop-result.js';
 import { abortedResult, failedResult, finishedResult, suspendedResult } from './loop-result.js';
 import { tailToolUses, textOfParam } from './resume-input.js';
+import { detectMenuDrift, menuSignature } from './menu-drift.js';
 import {
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_MAX_TOKENS,
@@ -100,6 +102,40 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   // （不发请求、零花费）。
   const resumeUses = tailToolUses(ctx.messages);
   if (resumeUses.length > 0) {
+    // 菜单漂移（R8 候选 3 / durable 调研 §4.1 + §6 候选 3）：**续跑**时未决 tool_use 引用的
+    // 工具在当前菜单里找不到了 —— 上一段与这一段跑在不同的代码版本上（删了 / 改名了一个工具）。
+    // 这与回合内「模型编了个不存在的工具名」不同类：那个模型拿一句 `unknown tool` 就能自我
+    // 修正（既有路径，钉在 tests/engine/toolTiming.test.ts）；这个是**我们的部署动作**把一条
+    // 在飞 run 的意图作废了 —— 而它此前**完全静默**（run 照常收尾、调用方零信号，见 spec §10 ⑧）。
+    //
+    // 动作（本轮立项的取舍，理由写在 spec §10）：**不改 run 的成败** —— 挂起是合法态、改代码
+    // 是发布常态，判失败会让「续跑」在正常迭代节奏下频繁失败。但把它变成三处看得见：
+    //   ① `menu.drift` 事件（时间线；经 onTraceEvent 也进 `GET /tasks/:id/stream`）
+    //   ② 父 span 属性 `menu.drift`（可查询：`TaskRecord.result.trace` 里就带得到）
+    //   ③ `console.warn`（运维面立即看见，与「sink 失败落 warn」同款，见 spec §10 2026-09-27 ②）
+    // 「严格失败」若要做，是把这里换成带具名 error 的收尾 —— 那要动公共选项面 + limits 真源表，
+    // 留给后续决策，别在这里先斩后奏。
+    const drift = detectMenuDrift(resumeUses, args.tools, { resultSchema: args.resultSchema });
+    if (drift.missing.length > 0) {
+      const where = args.parentSpanId ?? '';
+      args.recorder.event(where, 'menu.drift', {
+        missing: drift.missing,
+        tool_use_ids: drift.toolUseIds,
+        menu_size: args.tools.length,
+      });
+      if (where) {
+        args.recorder.setAttribute(
+          where,
+          'menu.drift',
+          `missing:${truncateWithMark(drift.missing.join(','), 200)}`,
+        );
+      }
+      console.warn(
+        `[agentia] 续跑时菜单漂移：未决工具在当前菜单里不存在（${drift.missing.join(', ')}）` +
+          '—— 这条 run 是上一段代码版本留下的；这些 tool_use 会以 "unknown tool" 回给模型、' +
+          'run 照常收尾（trace 上记了 menu.drift 事件与属性）。要按原样续跑就把它们加回菜单。',
+      );
+    }
     // 已取消：不执行任何工具（副作用不该在取消后发生），按 aborted 收尾
     if (args.signal?.aborted) {
       return abortedResult();
@@ -244,6 +280,15 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       traceId: options.traceContext.traceId,
       ...(options.traceContext.spanId ? { spanId: options.traceContext.spanId } : {}),
     });
+  }
+  // 菜单版本化（R8 候选 3）：名字清单（人读、有界）+ 摘要（比对）。
+  // 与 `prompts.versions` 同一动机 —— 质量回归要能定位到具体菜单版本；摘要覆盖 schema，
+  // 所以「工具还在、签名变了」也算漂移。**只在 run 根记**：子循环走 `runAgentScoped`
+  // （不开 run 根、不设根属性），所以不会把子菜单覆写到根上。
+  if (options.tools && options.tools.length > 0) {
+    const { names, hash } = menuSignature(options.tools);
+    recorder.setAttribute(rootId, 'tools.names', names);
+    recorder.setAttribute(rootId, 'tools.menuHash', hash);
   }
   // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
   // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。

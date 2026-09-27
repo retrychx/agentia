@@ -54,8 +54,13 @@ import type { ResolvedRetry, RetryOptions } from './retry.js';
 import type { AgentStopReason, ContextPolicy, SystemParam } from './types.js';
 import { buildPricing, costEstimate, usageFromAnthropic } from './usage.js';
 
-/** 隐藏提交工具名：resultSchema 模式下由 engine 内部追加，不属开发者工具菜单 */
-const SUBMIT_RESULT = 'submit_result';
+/**
+ * 隐藏提交工具名：`resultSchema` 在场时由 engine 内部追加，**不属**开发者工具菜单。
+ *
+ * 它从不进 `args.tools` —— 所以「当前菜单里有没有这个名字」这个问题要单独处理
+ * （见 engine/menu-drift.ts 的 `detectMenuDrift`，那条口径只有一份）。
+ */
+export const SUBMIT_RESULT = 'submit_result';
 
 /** resultSchema 模式下追加到 system 末尾的指令 */
 const RESULT_INSTRUCTION =
