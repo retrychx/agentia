@@ -325,7 +325,9 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   （成本归因正确）+ `llm.fallback` 事件 + run 入口校验；决策见 spec §10 2026-09-27 ③
 - P3 trace → SFT 导出 —— ✅ 全部落地（2026-09-27）：P3a `traceContent: 'full'`（spec §10
   当日 ④）+ P3b `agentia export`（trace → 训练数据 JSONL，spec §10 当日 ⑤）
-- P4 租户归因 labels（含 metrics 侧 `maxLabelValues` 基数上限 —— 光 opt-in 封不住内存不变量）—— 待做
+- P4 租户归因 labels —— ✅ 已落地（2026-09-27）：run 根 `labels.*` 属性（三层同语义）
+  + metrics 侧 `labelKeys` opt-in + `maxLabelValues` 基数上限（limits 真源表登记）；
+  决策见 spec §10 2026-09-27 ⑥
 - P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— 待做
 - P6 durable 长时程 —— 只立项调研（Temporal/Restate 对照 + 差距清单），本轮不写实现
 - 缓：A2A 协议适配（协议漂移中）；拒：后端看板 / DAG 编辑器 / swarm 编排（定位）

@@ -215,6 +215,7 @@ export type {
   MetricsSnapshot,
   ModelMetrics,
   CapabilityMetrics,
+  RunLabelMetrics,
   ExemplarSnapshot,
 } from './integrations/metrics.js';
 // integrations：调优报告（G1）—— 纯函数，从 trace 派生「哪个能力慢/贵/爱失败」

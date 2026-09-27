@@ -47,6 +47,25 @@ export interface ScoreMetrics {
   sum: number;
 }
 
+/** 归因标签维度的 run 级指标（R8-P4；`snapshot().runLabels[key]`，key 为 `k=v` 逗号连） */
+export interface RunLabelMetrics {
+  runs: number;
+  failed: number;
+  /** 四类 token 之和（与 run 级 tokens 口径一致） */
+  tokens: number;
+  /** 累计成本估算（美元）；未定价的 run 不计入（与全局 costUsd 同口径） */
+  costUsd: number;
+}
+
+/**
+ * runLabels 的内部累加器：比快照形状多带一份 `pairs`（渲染/出口按它拼标签，
+ * 不从 combo 键反解 —— 值里含 `,`/`=` 时反解会碎）。
+ */
+export interface RunLabelAcc extends RunLabelMetrics {
+  /** 已过完各自 KeyBudget 的 `[key, value]` 对（顺序 = 配置的 labelKeys 顺序） */
+  pairs: readonly (readonly [string, string])[];
+}
+
 /**
  * exemplar 槽位内容：指向「哪条 run」的最小引用（traceId + 根 spanId + 记账时刻）。
  * 内部存**原始 id**，hex 投影（`wireTraceId` / `wireSpanId`）在各自出口做（单一真源在 core/trace.ts）。
@@ -101,6 +120,14 @@ export interface MetricsSnapshot {
   droppedModels: number;
   /** 因 `maxScores` 上限被归入 `__other__` 的不同评分维度数 */
   droppedScores: number;
+  /**
+   * 归因标签维度（R8-P4）：`metricsSink({ labelKeys })` 显式点名的键才有 —— 缺省为空对象
+   * （一个都不上）。key 为 `k=v` 逗号连（如 `tenant=acme,plan=pro`）；每个键的相异值数受
+   * `maxLabelValues` 封顶，超出归入 `__other__`（折叠只丢标签粒度，不丢量）。
+   */
+  runLabels: Record<string, RunLabelMetrics>;
+  /** 每个已配置 labelKey 被 `maxLabelValues` 折叠的不同值数（只含配置了的键） */
+  droppedLabelValues: Record<string, number>;
   /**
    * exemplar（指标 → trace 的桥，2026-09-27）：只跟踪价值最高的两个槽位 ——
    * 失败 counter 的「最近一次」与 run 时长 histogram 的「最慢一次」。
@@ -322,6 +349,14 @@ export class MetricsState {
   readonly capBudget: KeyBudget;
   readonly modelBudget: KeyBudget;
   readonly scoreBudget: KeyBudget;
+  /**
+   * 归因标签维度（R8-P4）：combo 键（`k=v` 逗号连，展示用）→ 累加器。
+   * 与上面三个维度不同：这里**没有** per-combo 时长窗口（时长直方图 × 标签组合的内存
+   * 是 cap × windowSize 的另一份乘法，收益不抵代价），只有四个计数。
+   */
+  readonly runLabels = new Map<string, RunLabelAcc>();
+  /** 每个配置的 labelKey 一本基数配额（构造时按 labelKeys 建齐） */
+  readonly labelBudgets = new Map<string, KeyBudget>();
 
   constructor(
     private readonly opts: {
@@ -331,12 +366,19 @@ export class MetricsState {
       maxScores: number;
       labelMode: 'capability' | 'kind' | 'none';
       buckets: readonly number[];
+      /** 归因标签键（已过 metrics.ts 的形状校验；空数组 = 维度整个关掉） */
+      labelKeys: readonly string[];
+      /** 每个 labelKey 的相异值上限（构造期已保证正数） */
+      maxLabelValues: number;
     },
   ) {
     this.runStat = new DurationStat(opts.windowSize, opts.buckets);
     this.capBudget = new KeyBudget(opts.maxCapabilities);
     this.modelBudget = new KeyBudget(opts.maxModels);
     this.scoreBudget = new KeyBudget(opts.maxScores);
+    for (const key of opts.labelKeys) {
+      this.labelBudgets.set(key, new KeyBudget(opts.maxLabelValues));
+    }
   }
 
   private newCapability(): CapabilityAcc {
@@ -400,6 +442,25 @@ export class MetricsState {
         acc.sum += body.value;
         this.scores.set(key, acc);
       }
+    }
+
+    // —— 归因标签（R8-P4）：只在显式配置了 labelKeys 时记账。值从 run 根的
+    // `labels.<key>` 属性读（loop.ts 写入），缺键/非字符串一律按 '' 计（观测宽容读取，
+    // 不击穿业务）；每个值先过它那一键的 KeyBudget，超限折叠进 `__other__`。
+    if (this.opts.labelKeys.length > 0 && rootSpan) {
+      const pairs: [string, string][] = [];
+      for (const key of this.opts.labelKeys) {
+        const raw = rootSpan.attributes[`labels.${key}`];
+        const value = typeof raw === 'string' ? raw : '';
+        pairs.push([key, this.labelBudgets.get(key)!.take(value)]);
+      }
+      const combo = pairs.map(([k, v]) => `${k}=${v}`).join(',');
+      const acc = this.runLabels.get(combo) ?? { runs: 0, failed: 0, tokens: 0, costUsd: 0, pairs };
+      acc.runs++;
+      if (trace.status === 'error') acc.failed++;
+      acc.tokens += u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
+      if (u.costEstimate != null) acc.costUsd += u.costEstimate;
+      this.runLabels.set(combo, acc);
     }
 
     for (const span of trace.spans) {
@@ -499,6 +560,19 @@ export class MetricsState {
       const { name, source } = scoreLabels(key);
       scoreOut[source === '' ? name : `${name}@${source}`] = { ...acc };
     }
+    const runLabelOut: Record<string, RunLabelMetrics> = {};
+    for (const [combo, acc] of this.runLabels) {
+      runLabelOut[combo] = {
+        runs: acc.runs,
+        failed: acc.failed,
+        tokens: acc.tokens,
+        costUsd: acc.costUsd,
+      };
+    }
+    const droppedLabelValues: Record<string, number> = {};
+    for (const key of this.opts.labelKeys) {
+      droppedLabelValues[key] = this.labelBudgets.get(key)!.dropped;
+    }
     return {
       runs: this.runs,
       failed: this.failed,
@@ -510,6 +584,8 @@ export class MetricsState {
       capabilities: capabilityOut,
       models: modelOut,
       scores: scoreOut,
+      runLabels: runLabelOut,
+      droppedLabelValues,
       droppedCapabilities: this.capBudget.dropped,
       droppedModels: this.modelBudget.dropped,
       droppedScores: this.scoreBudget.dropped,
@@ -546,8 +622,10 @@ export class MetricsState {
     this.capabilities.clear();
     this.models.clear();
     this.scores.clear();
+    this.runLabels.clear();
     this.capBudget.reset();
     this.modelBudget.reset();
     this.scoreBudget.reset();
+    for (const budget of this.labelBudgets.values()) budget.reset();
   }
 }

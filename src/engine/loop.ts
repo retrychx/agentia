@@ -19,6 +19,7 @@ import {
   resolveDefaultModel,
   resolveModelChain,
   runConfigSnapshot,
+  validateLabels,
 } from './run-config.js';
 import type { RetryOptions } from './retry.js';
 import { TraceRecorder } from './tracer.js';
@@ -228,6 +229,13 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   }
   // 会话标识（R7 thread 维度）：多轮 run 按 session 聚合；OTLP 侧映射 gen_ai.conversation.id
   if (options.sessionId) recorder.setAttribute(rootId, 'session.id', options.sessionId);
+  // 归因标签（R8-P4）：labels.* 落 run 根（trace 侧无基数问题；进 metrics 是
+  // metricsSink 的 labelKeys 那道显式开关 —— 两套纪律在各自的注释里互相指）
+  if (options.labels) {
+    for (const [k, v] of Object.entries(options.labels)) {
+      recorder.setAttribute(rootId, `labels.${k}`, v);
+    }
+  }
   // 入站链路（spec §9.2 跨进程关联）：把「谁触发了这次 run」记成 run 根的一条 link。
   // 与 `traceId == runId` 共存 —— 上游是被**链接**而不是被继承成父 span，所以本 run
   // 的树永远自洽（上游采样掉/已结束都不影响），因果关系仍然可查。见 core/trace.ts。
@@ -250,6 +258,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   const client = options.client ?? createAnthropicClient();
   const model = resolveDefaultModel(options.model);
   const modelChain = resolveModelChain({ model, client, fallbacks: options.fallbacks });
+  // 归因标签（R8-P4）同一条入口校验纪律：配置错响亮抛，不收成失败的 run
+  validateLabels(options.labels);
   let result: AgentLoopResult<SchemaType<S>>;
   try {
     // run 根作用域（spec §9.2 出站传播）：循环内任何地方（工具 / 子能力 / 中间件）都读得到

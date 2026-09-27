@@ -40,18 +40,46 @@ const histogramSamples = (name: string, stat: DurationStat, labels = ''): string
   return out;
 };
 
+/**
+ * 归因标签对的 label 文本（`{tenant="acme",plan="pro"}`）。键已过 Prometheus 标签名
+ * 校验（metrics.ts 构造期），只需转义**值**。不从 combo 键反解 —— 值里含 `,`/`=` 时反解会碎。
+ */
+const labelPairsText = (pairs: readonly (readonly [string, string])[]): string =>
+  `{${pairs.map(([k, v]) => `${k}="${escLabel(v)}"`).join(',')}}`;
+
+/** 归因标签维度的样本（按 combo 键排序，确定性输出）；未配置 labelKeys 时为空表 */
+const labeledSamples = (
+  state: MetricsState,
+  pick: (acc: { runs: number; failed: number; tokens: number; costUsd: number }) => number,
+): { text: string; value: number }[] => {
+  const out: { text: string; value: number }[] = [];
+  for (const combo of [...state.runLabels.keys()].sort()) {
+    const acc = state.runLabels.get(combo)!;
+    out.push({ text: labelPairsText(acc.pairs), value: pick(acc) });
+  }
+  return out;
+};
+
 export function renderPrometheus(state: MetricsState, p: string): string {
   const out: string[] = [];
+  // 归因标签（R8-P4）：四个 run 级家族在全局样本之外追加带标签的样本；
+  // 全局那行（无 label）保持**第一个** —— renderOpenMetrics 靠精确匹配它挂 exemplar。
+  const labelRuns = labeledSamples(state, (a) => a.runs);
   out.push(
     family(`${p}runs_total`, 'counter', 'run 总数（成功 + 失败）', [
       `${p}runs_total ${state.runs}`,
+      ...labelRuns.map((s) => `${p}runs_total${s.text} ${s.value}`),
     ]),
   );
+  const labelFailed = labeledSamples(state, (a) => a.failed);
   out.push(
     family(`${p}runs_failed_total`, 'counter', '失败的 run 数（trace.status=error）', [
       `${p}runs_failed_total ${state.failed}`,
+      ...labelFailed.map((s) => `${p}runs_failed_total${s.text} ${s.value}`),
     ]),
   );
+  // 带标签的 token 样本是**四类之和**（combo 标签不再拆 kind —— 两类标签叉乘会把序列数打飞）
+  const labelTokens = labeledSamples(state, (a) => a.tokens);
   out.push(
     family(
       `${p}tokens_total`,
@@ -62,12 +90,15 @@ export function renderPrometheus(state: MetricsState, p: string): string {
         `${p}tokens_total{kind="output"} ${state.tokens.output}`,
         `${p}tokens_total{kind="cache_read"} ${state.tokens.cacheRead}`,
         `${p}tokens_total{kind="cache_creation"} ${state.tokens.cacheCreation}`,
+        ...labelTokens.map((s) => `${p}tokens_total${s.text} ${s.value}`),
       ],
     ),
   );
+  const labelCost = labeledSamples(state, (a) => a.costUsd);
   out.push(
     family(`${p}cost_usd_total`, 'counter', '累计成本估算（美元）', [
       `${p}cost_usd_total ${state.costUsd}`,
+      ...labelCost.map((s) => `${p}cost_usd_total${s.text} ${s.value}`),
     ]),
   );
   // 基数上限的**可见性**：被折叠掉的不同键数。与 `snapshot()` 的同名字段一一对应 ——
@@ -80,6 +111,11 @@ export function renderPrometheus(state: MetricsState, p: string): string {
       `${p}dropped_keys{kind="capability"} ${state.capBudget.dropped}`,
       `${p}dropped_keys{kind="model"} ${state.modelBudget.dropped}`,
       `${p}dropped_keys{kind="score"} ${state.scoreBudget.dropped}`,
+      // 归因标签每键一行（kind 取 `label:<key>`，与能力标签的 `kind:name` 同款拼法）；
+      // 未配置 labelKeys 时一行都没有（不是 0 —— 那个维度压根没开）
+      ...[...state.labelBudgets.entries()].map(
+        ([key, budget]) => `${p}dropped_keys{kind="label:${key}"} ${budget.dropped}`,
+      ),
     ]),
   );
   // 时长：histogram（可跨实例聚合）+ 窗口内精确分位（单实例好读），两种口径并存。

@@ -34,7 +34,6 @@ export interface ModelFallbackLink {
   client?: ModelClient;
 }
 
-
 export type AgentStopReason =
   /** 模型自然结束（含 stop_sequence：命中 stop 序列同样是正常收尾） */
   | 'end_turn'
@@ -144,6 +143,16 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * （与 `maxEventChars` 同一条转发纪律：同一棵调用树上口径一致）。
    */
   traceContent?: 'full';
+  /**
+   * 租户/业务维度归因标签（R8-P4）：落 run 根的 `labels.<key>` 属性（trace 侧无基数问题）。
+   * 与 `RunSpec.source` 正交不动：source 是框架自己写的**触发来源**审计（sync / async /
+   * schedule:<id>），labels 是宿主写的**业务维度**（tenant / plan / …）。
+   * 键值都必须是字符串（键非空），否则 run 入口抛 TypeError；可序列化（异步任务随
+   * TaskRecord 落库、续跑不丢）。
+   * ⚠️ 进 metrics 是**另一个开关**：`metricsSink({ labelKeys })` 显式点名哪些 key 上指标
+   * 标签（缺省一个都不上）—— Prometheus 标签基数爆炸是真实事故类，见该选项的注释。
+   */
+  labels?: Record<string, string>;
   /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
   recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */

@@ -9,6 +9,17 @@
 
 ### 新增
 
+- **租户归因 labels（`labels: Record<string, string>`，R8-P4）**：`createApp` 缺省 +
+  `app.run` 单次覆盖（**整体替换**不合并）+ `runAgent` 直连三层同语义。落 run 根的
+  `labels.<key>` 属性（trace 侧无基数问题；与框架自写的 `source` 触发来源审计正交）；
+  可序列化，异步任务随 TaskRecord 落库、续跑不丢；键空 / 值非字符串在 run 入口抛
+  TypeError。进 metrics 是**另一个开关**：`metricsSink({ labelKeys, maxLabelValues? })`
+  显式点名哪些键上指标标签（缺省一个都不上），每键相异值数封顶（缺省 100、
+  必须为正数），超出折叠进 `__other__`（只丢粒度不丢量），被折叠数见
+  `snapshot().droppedLabelValues` 与 `dropped_keys{kind="label:<key>"}`；四个 run 级
+  家族（`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total`）在全局
+  样本外追加带标签样本（⚠️ 开了以后 `sum(agentia_runs_total)` 会重复计数，总量用
+  不带标签的序列）。公共面新增 `RunLabelMetrics` 类型。决策见 spec §10 2026-09-27 ⑥。
 - **CLI `agentia export`：trace 落盘文件 → 训练数据集**（JSONL，一行一份
   `{ messages, meta }`；R8-P3b）—— harvest（产回归用例）的孪生。开了
   `traceContent: 'full'` 的 run 导出带真 assistant 文本的完整对话；没开的导出工具

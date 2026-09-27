@@ -71,6 +71,23 @@ export function resolveModelChain(args: {
   return chain;
 }
 
+/**
+ * 校验归因标签（R8-P4）：键必须非空、值必须是字符串（**允许空串** —— 「租户未知」
+ * 是有意义的值）。坏值在 run 入口抛 TypeError（与 resolveModelChain 同一个
+ * 「配置错响亮失败」的落点），不静默丢键。
+ */
+export function validateLabels(labels: Record<string, string> | undefined): void {
+  if (labels === undefined) return;
+  if (typeof labels !== 'object' || labels === null || Array.isArray(labels)) {
+    throw new TypeError(`labels 必须是 Record<string, string>，收到 ${JSON.stringify(labels)}`);
+  }
+  for (const [k, v] of Object.entries(labels)) {
+    if (k.trim() === '') throw new TypeError('labels 的键不能为空字符串');
+    if (typeof v !== 'string') {
+      throw new TypeError(`labels.${k} 必须是字符串，收到 ${JSON.stringify(v)}`);
+    }
+  }
+}
 
 /**
  * 生效配置快照（G3）：把本 run 实际生效的旋钮整理成 run 根的 `config.*` attributes。
@@ -130,6 +147,11 @@ export function runConfigSnapshot(
   }
   // assistant 文本记录（R8-P3a）：只在显式开启时记（缺省不记 = 没有这个键）
   if (options.traceContent === 'full') out['config.traceContent'] = 'full';
+  // 归因标签（R8-P4）：只记**键名**（值可能含租户标识，配置快照不该复制它 ——
+  // 值本体在 labels.* 属性里，想看的人去看那里）
+  if (options.labels && Object.keys(options.labels).length > 0) {
+    out['config.labels'] = Object.keys(options.labels).sort().join(',');
+  }
   if (options.resultSchema) out['config.resultSchema'] = true;
   return out;
 }

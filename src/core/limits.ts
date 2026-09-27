@@ -282,6 +282,15 @@ export const LIMIT_SEMANTICS = [
     badValue: 'throws',
     note: '同款的还有 `maxCapabilities` / `maxModels` / `maxScores` —— 都是「必须为正数」。',
   },
+  {
+    knob: 'metricsSink.maxLabelValues',
+    where: 'integrations/metrics.ts',
+    unit: 'count',
+    zero: 'invalid',
+    zeroClause: '必须为正数（0 = 一个标签值都认不下）',
+    badValue: 'throws',
+    note: '归因标签（R8-P4）的基数上限，与 `maxCapabilities` / `maxModels` / `maxScores` 同族。0 时**每个**值都折叠进 `__other__` —— 「opt-in 了标签维度却一个值都区分不开」没有正当读法，是配置错误；且这道上限刻意不可关（opt-in 挡不住「明知几千租户偏要上」，内存不变量要求每个新基数维度都有 cap）。',
+  },
 ] as const satisfies readonly LimitSemantic[];
 
 /** 表里全部旋钮的标识（用例按它建穷尽表：少一项 `typecheck:tests` 就红） */

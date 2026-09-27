@@ -279,6 +279,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `model` | 缺省模型；不给则 `AGENTIA_MODEL` env，再回落 `claude-opus-5` |
 | `fallbacks` | 缺省模型 fallback 链（可被单次 run 覆盖）：`[{ model, client? }]`，主模型本回合最终失败且错误可换（rate_limit / server / timeout / connection）时按序换环；每环独立 llm.turn span（成本归对模型），切换记 `llm.fallback` 事件。护栏：aborted 永不换、吐过字不换、每回合从主环重新起；子 agent / skill 子循环不继承。⚠️ 链环的 `client` 是进程内对象：持久化异步任务崩溃续跑后读回的是空壳（run 入口响亮抛 TypeError），跨重启仍成立的链只写 `model` |
 | `traceContent` | `'full'` = 每回合的 assistant 文本落 llm.turn span 的 `output.text` 属性（过 `maxEventChars` 同一道截断闸 —— 它管「多长」，这个管「记不记」）；缺省不记。⚠️ 体积显著增大，且模型输出从此进入要脱敏的面（出库前走 `docs/observability.md` 配方 2.4）。可被单次 run 覆盖 |
+| `labels` | 缺省归因标签（`Record<string, string>`，可被单次 run 覆盖 —— 注意是**整体替换**不是合并）：落 run 根的 `labels.<key>` 属性（trace 侧无基数问题，随便加；与框架自写的 `source` 触发来源审计正交）。键值都必须是字符串（键非空），否则 run 入口抛 `TypeError`；可序列化，异步任务随 TaskRecord 落库、续跑不丢。⚠️ 进 metrics 是**另一个开关**：`metricsSink({ labelKeys })` 显式点名哪些键上指标标签（缺省一个都不上，防 Prometheus 基数爆炸） |
 | `maxTokens` | 缺省 `max_tokens` |
 | `maxIterations` | 缺省循环上限 |
 | `retry` | 缺省模型请求重试策略（可被单次 run 覆盖）：缺省**开启**（`DEFAULT_RETRY`：maxAttempts=3、指数退避 + 抖动）；`false` 关闭 |
@@ -305,6 +306,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `model` | 单次覆盖模型 |
 | `fallbacks` | 单次覆盖模型 fallback 链（`[{ model, client? }]`）；语义同 `createApp` 的 `fallbacks` |
 | `traceContent` | 单次覆盖 assistant 文本记录开关（`'full'`）；语义同 `createApp` 的 `traceContent` |
+| `labels` | 单次覆盖归因标签（**整体替换**缺省，不是合并）；语义同 `createApp` 的 `labels` |
 | `maxTokens` | 单次覆盖 |
 | `maxIterations` | 单次覆盖 |
 | `client` | 注入 `ModelClient`（换 OpenAI 兼容端点等） |
@@ -904,6 +906,8 @@ async placeOrder(input: { sku: string }) {
 | `maxCapabilities` | 能力标签基数上限（缺省 200）：超出后新能力归入 `capability="__other__"`（防标签爆炸）；非正数抛错 |
 | `maxModels` | 模型维度基数上限（缺省 50）：超出后新模型归入 `model="__other__"` ——`model` 是 per-run 可覆盖的，上游把版本号拼进模型 id 时键会无界增长；非正数抛错 |
 | `maxScores` | 评分维度基数上限（缺省 200）：评分键是 `name@source`，eval 名带时间戳时同样无界；超出的归入 `name="__other__"`；非正数抛错 |
+| `labelKeys` | 归因标签维度（R8-P4）：**显式点名** run 根 `labels.<key>` 里哪些键上指标标签（缺省 `[]` 一个都不上）。键必须是合法 Prometheus 标签名（`/^[a-zA-Z_][a-zA-Z0-9_]*$/`），否则构造期抛错。出口形态：`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total` 四个家族在全局样本之外追加带标签样本（全局那行仍是总量）。⚠️ 开了它以后 `sum(agentia_runs_total)` 会把全局行与分行**重复计数** —— 总量用不带标签的序列 |
+| `maxLabelValues` | 每个 labelKey 的相异值数上限（缺省 100，**必须为正数**）：超出归入 `__other__`（折叠只丢粒度不丢量）；被折叠的不同值数见 `snapshot().droppedLabelValues` 与 `agentia_dropped_keys{kind="label:<key>"}`。这道上限刻意不可关 —— opt-in 挡不住「明知几千租户偏要上」，sink 内存不变量要求每个新基数维度都有 cap |
 | `buckets` | 直方图桶边界（毫秒，严格升序）；缺省 `DEFAULT_BUCKETS` |
 
 #### `MetricsSink`（`metricsSink()` 的返回值）
@@ -911,7 +915,7 @@ async placeOrder(input: { sku: string }) {
 | 成员 | 说明 |
 |---|---|
 | `export` | `TraceSink` 的实现（run 收尾投递）—— 也是接进 `sinks` 的形状 |
-| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, scores, droppedCapabilities, droppedModels, droppedScores }` |
+| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, scores, runLabels, droppedCapabilities, droppedModels, droppedScores, droppedLabelValues, exemplars }` |
 | `render` | Prometheus 文本（`/metrics` 直接回它） |
 | `flush` | 主动导出一次（`export:'otlp'` 时有意义；prometheus 模式为空操作） |
 | `stop` | 停掉定时导出（进程收尾 / 测试用） |

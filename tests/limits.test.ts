@@ -409,6 +409,13 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     return 'invalid';
   },
 
+  async 'metricsSink.maxLabelValues'() {
+    assert.throws(() => metricsSink({ maxLabelValues: 0 }), /必须为正数/);
+    assert.throws(() => metricsSink({ maxLabelValues: -1 }), /必须为正数/);
+    // 正数放行且真的生效：cap=1 时第二个相异值折叠进 __other__（见 metrics 用例的完整对账）
+    return 'invalid';
+  },
+
   async 'AsyncRunner.streamBufferEvents'() {
     // 坏值一律构造期抛 TypeError（走 AsyncRunner 公共旋钮 —— 它内部构造 TaskEventStreams）。
     // ⚠️ NaN 必须单拎出来：旧实现 `Math.max(1, NaN)` = NaN，随后 `length > NaN` 恒假

@@ -87,6 +87,11 @@ export interface RunInvocationOptions {
    * 随 TaskRecord 落库、续跑不丢 —— 与 fallbacks 环里的 client 不同。
    */
   traceContent?: 'full';
+  /**
+   * 租户/业务维度归因标签（R8-P4；语义与边界见 `RunAgentOptions.labels`）。
+   * 可序列化（字符串字典），异步任务随 TaskRecord 落库、续跑不丢。
+   */
+  labels?: Record<string, string>;
   /** 价格表覆盖/追加（$/1M tokens）；见 RunAgentOptions.priceOverrides */
   priceOverrides?: Record<string, ModelPricing>;
   /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */

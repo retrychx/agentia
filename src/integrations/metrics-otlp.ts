@@ -183,6 +183,17 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
     strAttr('kind', 'cache_creation'),
   ]);
   sumDouble(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []);
+  // 归因标签（R8-P4）：与 Prometheus 侧同四个家族，dataPoint 自带 attributes；
+  // 同名数据点收进同一个 Metric（takeMetric 的职责），这里只管逐 combo 发点
+  for (const combo of [...state.runLabels.keys()].sort()) {
+    const acc = state.runLabels.get(combo)!;
+    const attrs = acc.pairs.map(([k, v]) => strAttr(k, v));
+    sum(`${p}runs_total`, acc.runs, 'run 总数', attrs);
+    sum(`${p}runs_failed_total`, acc.failed, '失败的 run 数', attrs);
+    // 带标签的 token 点是四类之和（与 Prometheus 侧同口径：combo 标签不再拆 kind）
+    sum(`${p}tokens_total`, acc.tokens, tokensHelp, attrs);
+    sumDouble(`${p}cost_usd_total`, acc.costUsd, '累计成本估算（美元）', attrs);
+  }
   hist(
     `${p}run_duration_ms`,
     state.runStat,
@@ -230,6 +241,10 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
   gauge(`${p}dropped_keys`, state.capBudget.dropped, droppedHelp, [strAttr('kind', 'capability')]);
   gauge(`${p}dropped_keys`, state.modelBudget.dropped, droppedHelp, [strAttr('kind', 'model')]);
   gauge(`${p}dropped_keys`, state.scoreBudget.dropped, droppedHelp, [strAttr('kind', 'score')]);
+  // 归因标签每键一点（kind 取 `label:<key>`，与 Prometheus 侧同形）
+  for (const [key, budget] of state.labelBudgets) {
+    gauge(`${p}dropped_keys`, budget.dropped, droppedHelp, [strAttr('kind', `label:${key}`)]);
+  }
 
   const metrics = [...metricTable.values()];
 

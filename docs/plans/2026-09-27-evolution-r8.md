@@ -228,3 +228,21 @@ agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。
   被「全量记录的 run」用例当场抓住）；占位文本纪律与 harvest **相反**（那里是给人看的
   脚手架，这里会进训练集）。反向验证 2 变异（造占位文本 / 缺输出不补占位块）各咬死
   对应用例。structure 棘轮补账 8328 → 8639。
+- **P4 已落地（2026-09-27）**：三层同语义（`RunAgentOptions` / `AppOptions` /
+  `RunInvocationOptions` 的 `labels`，`AppOptions` 被单次覆盖时**整体替换**不合并）。
+  run 根写 `labels.<key>`，快照 `config.labels` 只记键名；入口校验（try 之外抛
+  TypeError）与 resolveModelChain 同纪律。metrics 侧 `labelKeys`（Prometheus 标签名
+  校验 + 查重）+ `maxLabelValues`（缺省 100、invalid 类、limits 真源表登记 +
+  探针）；每键一本 KeyBudget，折叠进 `__other__`。出口：四个 run 级家族追加带标签
+  样本（全局行仍在第一位 —— renderOpenMetrics 的 exemplar 精确匹配靠它）+
+  `dropped_keys{kind="label:<key>"}`（kind 取 `label:<key>` 与能力标签 `kind:name`
+  同款拼法，保住 dropped_keys 家族的单 label 同质性）。OTLP trace 导出侧零改动
+  （span attributes 本来就全量透传，`labels.*` 自动跟出去）。
+  实施中两处设计与实现互相订正：① combo 键不做「值里含 `,`/`=` 可反解」的承诺
+  —— 累加器自带 `pairs`，出口按 pairs 拼标签，combo 键只是展示形；
+  ② **不做 per-label 时长直方图**（cap × windowSize 的又一份乘法，收益不抵代价，
+  「哪个租户慢」去 trace 侧按 `labels.*` 查）—— 已写进 spec §10 ⑥。
+  门禁 `tests/engine/run-labels.test.ts` 7 条 + `tests/integrations/metrics.test.ts`
+  R8-P4 块 7 条 + limits 探针；反向验证 2 变异（摘 cap 折叠 ⇒ 折叠/reset 两条红；
+  引擎摘 labels 落根 ⇒ run-labels 3 条红）。公共面新增 `RunLabelMetrics` 类型导出
+  （api.html 计数 219 → 220）。

@@ -3597,6 +3597,41 @@ harvest 的孪生（它产 eval 用例骨架，这里产训练数据 JSONL）。
 去类型移植副本 + 逐字对拍（`packages/cli/test/export.test.mjs`）。门禁：框架侧
 `tests/eval/export.test.ts` 6 条（夹具全是真引擎跑出来的 trace）+ CLI 侧 6 条（含对拍）。
 
+### 2026-09-27 ⑥：**租户归因 labels**（R8-P4）—— trace 根随便记，进 metrics 走「opt-in + cap」双闸门
+
+动机：拿框架做 SaaS 的第一张账单是「哪个客户烧了多少钱」。三层同语义
+（`RunAgentOptions.labels` / `AppOptions.labels` / `RunInvocationOptions.labels`）。决策：
+
+1. **trace 侧无基数问题**：`labels` 落 run 根的 `labels.<key>` 属性，随便加；
+   配置快照只记**键名**（`config.labels`），值可能含租户标识不复制。
+2. **与 `RunSpec.source` 正交不动**：source 是框架自己写的**触发来源**审计
+   （sync / async / schedule:<id>，单值）；labels 是宿主写的**业务维度**（多值）。
+   不合并、不互相映射。
+3. **metrics 侧双闸门**：`metricsSink({ labelKeys })` 显式点名哪些键上指标标签
+   （缺省 `[]` 一个都不上）—— 光 opt-in 挡不住「明知几千租户偏要上」，所以每键
+   相异值数还有 `maxLabelValues`（缺省 100，**必须为正数**，limits 真源表登记），
+   超出归入 `__other__`（与 `maxCapabilities` / `maxModels` / `maxScores` 同款折叠语义：
+   只丢标签粒度不丢量）；被折叠数见 `snapshot().droppedLabelValues` 与
+   `dropped_keys{kind="label:<key>"}`。labelKeys 要过 Prometheus 标签名校验
+   （`/^[a-zA-Z_][a-zA-Z0-9_]*$/`），非法名/重复键构造期抛错。
+4. **出口形态**：`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total`
+   四个 run 级家族在全局样本（无 label，仍是总量）之外追加带标签样本
+   （Prometheus 文本与 OTLP 同口径）。⚠️ 已知查询侧坑（写进 usage-guide）：开了
+   labelKeys 后 `sum(agentia_runs_total)` 会把全局行与分行重复计数 —— 总量用不带
+   标签的序列。带标签的 token 样本是**四类之和**（combo 标签不再叉乘 kind）。
+5. **刻意不做 per-label 时长直方图**：时长维度是 cap × windowSize 的又一份乘法
+   （每个 combo 一个环形窗口 + 直方图），「哪个租户慢」用 trace 侧的 `labels.*`
+   属性查（那才是逐条的归处长处）；`runLabels` 累加器因此只有四个计数、O(1)。
+6. **入口校验同 resolveModelChain 纪律**：labels 键空 / 值非字符串在 run 入口
+   （try 之外）抛 TypeError，不收成「一条失败的 run」。空串值合法（「租户未知」
+   是有意义的值）。`AppOptions.labels` 被单次 run 覆盖时是**整体替换**不是合并
+   （合并会让「这次不带 plan」说不出口）。
+
+门禁 `tests/engine/run-labels.test.ts`（7 条）+ `tests/integrations/metrics.test.ts`
+的 R8-P4 块（7 条）；反向验证 2 变异各恰好咬死对应用例（摘掉 cap 折叠 ⇒
+`maxLabelValues=1` 折叠用例与 reset 用例红；引擎侧摘掉 labels 落根 ⇒ run-labels
+3 条红）。公共面新增 `RunLabelMetrics` 类型导出（`MetricsSnapshot.runLabels` 的值型）。
+
 ## 11. 开放项
 
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
