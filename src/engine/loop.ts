@@ -347,9 +347,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   // suspended 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
   // trace 记 ok；它与成功的区分由 stop_reason attribute 承担。
   const runStatus =
-    result.stopReason === 'suspended' || isSuccessStopReason(result.stopReason)
-      ? 'ok'
-      : 'error';
+    result.stopReason === 'suspended' || isSuccessStopReason(result.stopReason) ? 'ok' : 'error';
   recorder.setAttribute(rootId, 'stop_reason', result.stopReason);
   recorder.end(rootId, { status: runStatus, ...(result.error ? { error: result.error } : {}) });
   const trace = recorder.snapshot(runStatus);

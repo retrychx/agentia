@@ -57,7 +57,10 @@ describe('字段在场 —— 形状不变量', () => {
   });
 
   it('只有挂起出口才让 suspendedMessages / pendingApprovals 非空', () => {
-    const suspended = suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] });
+    const suspended = suspendedResult(ctxOf([userMsg('go')]), {
+      reason: 'approval',
+      pending: ['tu-1'],
+    });
     assert.notEqual(suspended.suspendedMessages, undefined);
     assert.notEqual(suspended.pendingApprovals, undefined);
     for (const r of [
@@ -92,22 +95,33 @@ describe('suspendedResult —— 挂起（等人）', () => {
   });
 
   it('待决 id 列表原样交出（内容一致）', () => {
-    assert.deepEqual(suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1', 'tu-2'] }).pendingApprovals, [
-      'tu-1',
-      'tu-2',
-    ]);
+    assert.deepEqual(
+      suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1', 'tu-2'] })
+        .pendingApprovals,
+      ['tu-1', 'tu-2'],
+    );
   });
 
   it('finalText 缺省空串；给了就用给的（挂起前那回合的文本）', () => {
-    assert.equal(suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }).finalText, '');
     assert.equal(
-      suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }, '正要调工具').finalText,
+      suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }).finalText,
+      '',
+    );
+    assert.equal(
+      suspendedResult(
+        ctxOf([userMsg('go')]),
+        { reason: 'approval', pending: ['tu-1'] },
+        '正要调工具',
+      ).finalText,
       '正要调工具',
     );
   });
 
   it('iterations / typed 透传', () => {
-    const r = suspendedResult(ctxOf([userMsg('go')], 7, { answer: 42 }), { reason: 'approval', pending: ['tu-1'] });
+    const r = suspendedResult(ctxOf([userMsg('go')], 7, { answer: 42 }), {
+      reason: 'approval',
+      pending: ['tu-1'],
+    });
     assert.equal(r.iterations, 7);
     assert.deepEqual(r.typed, { answer: 42 });
   });

@@ -89,11 +89,7 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     assert.equal(spy.calls.length, 0, '未决审批 ⇒ 工具一次都没执行');
     assert.deepEqual(t1Suspended.pendingApprovals, ['tu1'], '待决清单落库');
     assert.equal(t1Suspended.finishedAt, undefined, '挂起不是终态：finishedAt 不置');
-    assert.equal(
-      typeof t1Suspended.suspendedSince,
-      'number',
-      '挂起时刻落库（超时/审计的基准）',
-    );
+    assert.equal(typeof t1Suspended.suspendedSince, 'number', '挂起时刻落库（超时/审计的基准）');
     const tail = t1Suspended.spec.messages[t1Suspended.spec.messages.length - 1];
     assert.equal(tail.role, 'assistant', '扩展历史以含未决 tool_use 的 assistant 结尾');
     assert.ok(Array.isArray(tail.content));
@@ -537,6 +533,10 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
     const after = await store.get('task_sleeping');
     assert.equal(after?.status, 'suspended', '状态不动');
     assert.equal(after?.suspendedReason, 'timer', '原因不动');
-    assert.equal(after?.suspendedSince !== undefined, true, '挂起时刻不动（超时基准不能被这次调用重置）');
+    assert.equal(
+      after?.suspendedSince !== undefined,
+      true,
+      '挂起时刻不动（超时基准不能被这次调用重置）',
+    );
   });
 });

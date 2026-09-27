@@ -520,9 +520,7 @@ export class AsyncRunner {
         ...(d.reason !== undefined ? { reason: d.reason } : {}),
         ...(opts.decidedBy !== undefined ? { decidedBy: opts.decidedBy } : {}),
         decidedAt: now,
-        ...(rec.suspendedSince !== undefined
-          ? { requestedAt: rec.suspendedSince }
-          : {}),
+        ...(rec.suspendedSince !== undefined ? { requestedAt: rec.suspendedSince } : {}),
       };
     }
     // 惰性审批超时：人的决定先并入（先到先赢），仍空着的待决项由超时兜底成 deny
@@ -596,10 +594,7 @@ export class AsyncRunner {
     // 凭陈旧快照放行会把同一任务再派发一次。
     const fresh = await this.store.get(rec.taskId);
     const target = fresh ?? rec;
-    if (
-      target.status !== 'suspended' ||
-      !approvalExpired(target, now, this.approvalTimeoutMs)
-    ) {
+    if (target.status !== 'suspended' || !approvalExpired(target, now, this.approvalTimeoutMs)) {
       return target;
     }
     fillTimeoutDenials(target, now);
