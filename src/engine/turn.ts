@@ -33,6 +33,8 @@ import { validateJsonSchema } from '../core/schema.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
+import { createDeferRequest } from './defer.js';
+import type { DeferRequest } from './defer.js';
 import { createBudgetGuard } from './budget.js';
 import type { BudgetGuard } from './budget.js';
 import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
@@ -465,10 +467,17 @@ export function recordTurnUsage<S extends JsonSchema>(
  * - `executed`：全部执行完（results 与输入一一对应，顺序保持）；
  * - `suspended`：有需审批的 tool_use 还没有决定 ⇒ **整回合一个工具都没执行**
  *   （全有或全无，见下），`pending` 是缺决定的 tool_use_id 列表，由 loop 收尾为挂起。
+ * - `deferred`：本回合有工具请求「延后」（`ctx.deferUntil`，durable timer）⇒ 这批工具
+ *   **已经跑过但结果全部作废**（不推 tool_result），整批挂起到 `wakeAt`、醒来后重跑。
+ *   `pending` 是请求过延后的那几个 tool_use_id（`wakeAt` 取它们里最早的时刻）。
+ *   ⚠️ 与 `suspended` 的差别只有「为什么等」：审批是**执行前**缺决定（一条都没跑），
+ *   延后是**执行中**提出的（所以同批其他工具的副作用会随着重跑再来一次 —— 见 core/tool.ts
+ *   的 `deferUntil` 契约②）。
  */
 export type TurnToolsOutcome =
   | { kind: 'executed'; results: ToolResultBlockParam[] }
-  | { kind: 'suspended'; pending: string[] };
+  | { kind: 'suspended'; pending: string[] }
+  | { kind: 'deferred'; wakeAt: number; pending: string[] };
 
 /**
  * —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
@@ -511,6 +520,9 @@ export async function executeTurnTools<S extends JsonSchema>(
     ? toolUses.filter((u) => args.resultSchema !== undefined && u.name === SUBMIT_RESULT)
     : toolUses;
 
+  // 延后请求（durable timer）：本回合的收集器 —— 工具经 `ctx.deferUntil` 往它里面记目标时刻。
+  // 批跑完再判（并行下「谁先请求」是不定的，所以判据是**批级**的：有一条请求就整批挂起）。
+  const defer = createDeferRequest();
   const results = await mapWithConcurrency(
     runnable,
     args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
@@ -519,9 +531,31 @@ export async function executeTurnTools<S extends JsonSchema>(
     // 每次调用一份作用域，并行工具因此互不干扰（run 级只存一个值会被互相覆盖）。
     (use) =>
       withCurrentSpan({ traceId: args.recorder.traceId, spanId: turnId }, () =>
-        executeOneTool(ctx, turnId, use),
+        executeOneTool(ctx, turnId, use, defer),
       ),
   );
+  const wakeAt = defer.earliest();
+  if (wakeAt !== undefined) {
+    // 整批作废（不推 tool_result —— 协议要求每个 tool_use 都有配对，部分执行 + 部分挂起
+    // 会产出残缺历史）：assistant 消息（含这批未决 tool_use）在 loop 里留在历史末尾，
+    // 醒来后由续跑入口重跑它们。事件记在**本回合**的 span 上，与 approval.requested 平行。
+    const pending = defer.ids();
+    args.recorder.event(turnId, 'defer.requested', {
+      wake_at: wakeAt,
+      tool_use_ids: pending,
+      // 被丢弃的 tool_result 条数：> pending.length 说明有**没请求延后**的兄弟工具也跑过了，
+      // 它们的副作用会在醒来重跑时再来一遍（契约②的代价，见 core/tool.ts）
+      discarded: results.length,
+    });
+    if (results.length > pending.length) {
+      console.warn(
+        `[agentia] 延后请求作废整批工具结果：本回合 ${results.length} 条工具已执行，` +
+          `其中 ${results.length - pending.length} 条没有请求延后 —— 它们的副作用会在醒来重跑时重复。` +
+          '要精确控制就让模型单独调用请求延后的那个工具，或把它做成幂等读。',
+      );
+    }
+    return { kind: 'deferred', wakeAt, pending };
+  }
   return { kind: 'executed', results };
 }
 
@@ -533,6 +567,7 @@ async function executeOneTool<S extends JsonSchema>(
   ctx: LoopContext<S>,
   turnId: SpanId,
   use: ToolUseBlock,
+  defer: DeferRequest,
 ): Promise<ToolResultBlockParam> {
   const { args } = ctx;
   const tool = args.tools.find((t) => t.name === use.name);
@@ -578,6 +613,11 @@ async function executeOneTool<S extends JsonSchema>(
     maxCostUsd: args.maxCostUsd,
     toolTimeoutMs: args.toolTimeoutMs,
     approval: decision,
+    // 延后请求口（durable timer）：闭包绑死**本条的 tool_use_id** —— 「是谁请求的」
+    // 由此决定（工具只拿到一个 `(at) => void`，它不需要也不该知道自己的 id）。
+    // 取值非法（非有限 / 不在将来）当场抛 → 走下面既有的 catch，包成 is_error 的
+    // tool_result 回给模型（run 照常走，不挂起）—— 见 engine/defer.ts。
+    deferUntil: (at) => defer.request(use.id, at),
   });
   let ok = true;
   let content: unknown = '';

@@ -17,13 +17,28 @@ const OTHER = 'proc-other';
 
 describe('resume-policy —— 崩溃恢复的认领判定（从 AsyncRunner 抽出）', () => {
   it('状态不合法 ⇒ terminal；且状态**先判**（终态记录即便 ownerId 是自己也不是 own-process）', () => {
-    for (const status of ['succeeded', 'failed', 'suspended'] as const) {
+    for (const status of ['succeeded', 'failed'] as const) {
       assert.equal(
         resumeSkipReason(rec({ status }), { ownerId: ME, staleAfterMs: 0, now: 9e9 }),
         'terminal',
         status,
       );
     }
+    // 挂起单列一档（2026-09-28 ①）：一条在睡的 run **不是**终态 —— 把它报成 'terminal'
+    // 是静默说错话（这个字段的全部用途就是诊断）。它的唤醒归各自那条闸管，不归崩溃续跑。
+    assert.equal(
+      resumeSkipReason(rec({ status: 'suspended' }), { ownerId: ME, staleAfterMs: 0, now: 9e9 }),
+      'suspended',
+    );
+    assert.equal(
+      resumeSkipReason(rec({ status: 'suspended', ownerId: ME }), {
+        ownerId: ME,
+        staleAfterMs: 0,
+        now: 9e9,
+      }),
+      'suspended',
+      '顺序：挂起最优先摘出（连归属都不看 —— 它根本不是我的活）',
+    );
     assert.equal(
       resumeSkipReason(rec({ status: 'succeeded', ownerId: ME }), {
         ownerId: ME,

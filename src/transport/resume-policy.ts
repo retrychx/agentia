@@ -13,8 +13,15 @@ import type { TaskRecord } from '../store/store.js';
 
 /** 不该被我认领的原因（诊断用；命名本身也是文档） */
 export type ResumeSkipReason =
-  /** 不在 queued/running：终态没什么可续的；`suspended` 在等人，不是孤儿 */
+  /** 不在 queued/running（也不是挂起）：终态没什么可续的 */
   | 'terminal'
+  /**
+   * 挂起（`suspended`）：**不是孤儿** —— 它由各自那条闸唤醒（`approval` 等决定、
+   * `timer` 等到点），崩溃续跑语义不适用于「在等」。单列一档而不是并进 `terminal`：
+   * 一条在睡的 run 被具名成「终态」是**静默说错话**（2026-09-27 调研 §1 事实 4 点的
+   * 就是这一处），而这个字段的全部用途就是诊断 —— 说错等于没有。
+   */
+  | 'suspended'
   /** ownerId 是本进程：它一定还活着，重派只会让同一任务跑两遍 */
   | 'own-process'
   /** 他进程刚起的记录（在 `staleAfterMs` 保鲜期内）：别抢，那边还活着 */
@@ -32,18 +39,20 @@ export interface ResumeClaimOptions {
  * 能否认领这条记录：`undefined` = 可以，否则给出跳过原因。
  *
  * 判定顺序（与抽取前的 filter **逐字一致**，顺序本身有语义）：
- * 1. 状态不合法 → `terminal`（先判状态：终态记录即便 ownerId 是自己也不该被"续跑"）；
- * 2. `ownerId` 等于本进程 → `own-process`；
- * 3. 启用了保鲜期**且**记录有主 → 起跑时间（`startedAt` 退化到 `createdAt`）至今
+ * 1. 挂起 → `suspended`（先摘出来：它不是终态、也不是我的活 —— 唤醒是各自的闸的事）；
+ * 2. 状态不合法 → `terminal`（先判状态：终态记录即便 ownerId 是自己也不该被"续跑"）；
+ * 3. `ownerId` 等于本进程 → `own-process`；
+ * 4. 启用了保鲜期**且**记录有主 → 起跑时间（`startedAt` 退化到 `createdAt`）至今
  *    不足保鲜期 → `too-fresh`；边界是**严格小于**（恰好到期即可抢）。
  *
- * ⚠️ 第 3 条要求「有主」：**无主记录（ownerId === undefined）永远可抢**，不受保鲜期约束 ——
+ * ⚠️ 第 4 条要求「有主」：**无主记录（ownerId === undefined）永远可抢**，不受保鲜期约束 ——
  * 否则崩溃留下的孤儿会因为"看起来太新"而永远没人捡。
  */
 export function resumeSkipReason(
   rec: TaskRecord,
   opts: ResumeClaimOptions,
 ): ResumeSkipReason | undefined {
+  if (rec.status === 'suspended') return 'suspended';
   if (rec.status !== 'queued' && rec.status !== 'running') return 'terminal';
   if (rec.ownerId === opts.ownerId) return 'own-process';
   if (opts.staleAfterMs > 0 && rec.ownerId !== undefined) {

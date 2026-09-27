@@ -645,6 +645,10 @@ process.on('SIGTERM', async () => {
 | `inFlight` | 在飞工作量 = 正在处理的同步 run（含 SSE 流）+ 已受理未完成的异步任务（queued + running）；与 `drain()` 等的范围一致 |
 | `uptimeMs` | 本 handler 创建至今的毫秒数 |
 | `draining` | 是否已进入优雅停机 —— 负载均衡据此摘流量 |
+| `suspended` | 挂起读数（配套 6）：按原因分组的条数 + 最早的目标时刻，由下面三项组成。口径 = **本进程**看得见的记录（与 `inFlight` 同一张表）—— 跨进程部署要合并看板请自己聚合，这里不假装是全局面 |
+| `approval` | `suspended` 里：等人工决定（HITL）的挂起条数 |
+| `timer` | `suspended` 里：等一个时刻（durable timer）的挂起条数 |
+| `nextWakeAt` | `suspended` 里：最早的目标时刻（epoch ms）；一条时间挂起都没有时为 `null` —— **不是 `0`**：`0` 在 JSON 里是个合法时刻，监控端拿它算 `nextWakeAt - now` 会得到巨大的负数，看着像「早就该醒却没人醒」 |
 
 **不鉴权**（探针带不了凭据），且停机中也照回 200。非 `GET` 回 405。
 

@@ -145,6 +145,15 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     if (outcome.kind === 'suspended') {
       return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending });
     }
+    if (outcome.kind === 'deferred') {
+      // 恢复段（醒来后重跑这一批）里工具**又**请求延后：说明条件仍未成熟 ⇒ 再挂一次。
+      // 目标时刻以**本次**请求为准（不是沿用上一段的 wakeAt —— 工具看到的状态更近）。
+      return suspendedResult(ctx, {
+        reason: 'timer',
+        pending: outcome.pending,
+        wakeAt: outcome.wakeAt,
+      });
+    }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
     if (ctx.submitted) {
       // 恢复的回合里 submit_result 校验通过：直接落定（finalText 取该 assistant 消息的文本块）
@@ -205,6 +214,18 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       stopReason = 'suspended';
       finalText = textOf(message);
       return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending }, finalText);
+    }
+    if (outcome.kind === 'deferred') {
+      // 时间挂起（durable timer）：与上面同形 —— 这批工具**跑过但结果作废**
+      // （defer.requested 已记在 turn span 上），assistant 消息留在历史末尾，
+      // 醒来后由续跑入口重跑这一批。error 保持 undefined。
+      stopReason = 'suspended';
+      finalText = textOf(message);
+      return suspendedResult(
+        ctx,
+        { reason: 'timer', pending: outcome.pending, wakeAt: outcome.wakeAt },
+        finalText,
+      );
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
 
@@ -361,6 +382,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     suspendedMessages: result.suspendedMessages,
     pendingApprovals: result.pendingApprovals,
     suspendedReason: result.suspendedReason,
+    wakeAt: result.wakeAt,
   };
 }
 

@@ -30,6 +30,7 @@ const FIELDS = [
   'suspendedMessages',
   'suspendedReason',
   'typed',
+  'wakeAt',
 ].sort();
 
 const userMsg = (text: string): MessageParam => ({ role: 'user', content: text });
@@ -45,15 +46,39 @@ function httpError(status: number, message = `HTTP ${status}`): Error {
 }
 
 describe('字段在场 —— 形状不变量', () => {
-  it('四个出口都把 8 个字段写全（缺席 ≠ undefined）', () => {
+  it('四个出口都把 9 个字段写全（缺席 ≠ undefined）', () => {
     const all = [
       suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }),
+      suspendedResult(ctxOf([userMsg('go')]), {
+        reason: 'timer',
+        pending: ['tu-1'],
+        wakeAt: 1_700_000_000_000,
+      }),
       abortedResult(),
       failedResult(new Error('boom'), 2),
       finishedResult({ stopReason: 'end_turn', finalText: 'ok', iterations: 1, typed: undefined }),
     ];
     for (const r of all)
       assert.deepEqual(Object.keys(r).sort(), FIELDS, `出口 ${r.stopReason} 的字段不全`);
+  });
+
+  it('wakeAt 只在**时间挂起**时非空（等人没有时刻，非挂起更没有）', () => {
+    const timer = suspendedResult(ctxOf([userMsg('go')]), {
+      reason: 'timer',
+      pending: ['tu-1'],
+      wakeAt: 1_700_000_000_000,
+    });
+    assert.equal(timer.wakeAt, 1_700_000_000_000);
+    assert.equal(timer.suspendedReason, 'timer');
+    // 阴性对照：其余四个出口一律 undefined（字段在场）
+    for (const r of [
+      suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }),
+      abortedResult(),
+      failedResult(new Error('boom'), 2),
+      finishedResult({ stopReason: 'end_turn', finalText: 'ok', iterations: 1, typed: undefined }),
+    ]) {
+      assert.equal(r.wakeAt, undefined, `${r.stopReason}/${r.suspendedReason} 不该带目标时刻`);
+    }
   });
 
   it('只有挂起出口才让 suspendedMessages / pendingApprovals 非空', () => {

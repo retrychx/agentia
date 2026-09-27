@@ -33,6 +33,7 @@ function fakeResult(text: string): AgentRunResult {
     suspendedMessages: undefined,
     pendingApprovals: undefined,
     suspendedReason: undefined,
+    wakeAt: undefined,
   };
 }
 

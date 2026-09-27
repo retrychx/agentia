@@ -55,6 +55,7 @@ export class Run {
       finishedAt: this.finishedAt,
       error: this._result?.error,
       suspendedReason: this._result?.suspendedReason,
+      wakeAt: this._result?.wakeAt,
     };
   }
 
@@ -103,6 +104,7 @@ export class Run {
         suspendedMessages: undefined,
         pendingApprovals: undefined,
         suspendedReason: undefined,
+        wakeAt: undefined,
       };
       return;
     }

@@ -46,4 +46,9 @@ export interface RunMeta {
    * 它是 run 生命周期里**总会写进对象**的状态位，缺省在这里没有语义。
    */
   suspendedReason: SuspendedReason | undefined;
+  /**
+   * 时间挂起的目标时刻（epoch ms，仅 `suspendedReason === 'timer'` 时非空；字段在场约定同上）
+   * —— 「这条 run 什么时候该醒」是运行记录的一部分，与「在等什么」并列。
+   */
+  wakeAt: number | undefined;
 }

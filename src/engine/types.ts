@@ -312,4 +312,13 @@ export interface AgentRunResult<T = unknown> {
    * `timer` = 等一个时刻。宿主据此选闸（审批超时 / 到期唤醒）并落 TaskRecord。
    */
   suspendedReason: SuspendedReason | undefined;
+  /**
+   * 时间挂起的目标时刻（epoch ms）：`suspendedReason === 'timer'` 时在场，其余为 undefined
+   * （**字段在场**，与 `error` 同一条结果记录约定）。
+   *
+   * 宿主（`AsyncRunner`）把它落成 `TaskRecord.wakeAt` —— 进程重启后「这条在睡的 run 什么时候
+   * 该醒」只靠它（`wake-policy.ts` 的 `timerDue`）。等审批的挂起没有这个时刻（人什么时候
+   * 批就是什么时候），所以它恒为 undefined。
+   */
+  wakeAt: number | undefined;
 }
