@@ -226,7 +226,9 @@ describe('agentia export（R8-P3b：trace → 训练数据 JSONL）', { skip: SK
           ...FULL,
           traceId: 'run-mixed',
           spans: FULL.spans.map((s) =>
-            s.kind === 'llm.turn' ? { ...s, attributes: { ...s.attributes, 'output.text': undefined } } : s,
+            s.kind === 'llm.turn'
+              ? { ...s, attributes: { ...s.attributes, 'output.text': undefined } }
+              : s,
           ),
         },
       ],

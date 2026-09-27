@@ -601,7 +601,11 @@ describe('createMcpServer —— stdio（真子进程，夹具走 createApp + @T
       child.stdin.write(`${JSON.stringify(rpc(2, 'ping'))}\n`);
       for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 100));
-        assert.equal(child.exitCode, null, `关读端后 server 崩了（exit ${String(child.exitCode)}）`);
+        assert.equal(
+          child.exitCode,
+          null,
+          `关读端后 server 崩了（exit ${String(child.exitCode)}）`,
+        );
       }
     } finally {
       child.kill('SIGKILL');

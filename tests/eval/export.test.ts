@@ -68,8 +68,8 @@ describe('exportRun（R8-P3b：trace → 训练数据记录）', () => {
     assert.deepEqual(
       rec.meta.incomplete.sort(),
       ['assistant-text', 'input', 'no-final-assistant'],
-      '终端回合的 assistant 文本缺席必须标注（占位文本进训练数据是投毒）；'
-        + '末条是 user 就再标 no-final-assistant（这条样本没有 loss 目标）',
+      '终端回合的 assistant 文本缺席必须标注（占位文本进训练数据是投毒）；' +
+        '末条是 user 就再标 no-final-assistant（这条样本没有 loss 目标）',
     );
     // 工具回合的 assistant 只剩 tool_use 块；终端回合没有真文本 ⇒ 整条 assistant 不产生
     const roles = rec.messages.map((m) => m.role);
@@ -141,8 +141,11 @@ describe('exportRun（R8-P3b：trace → 训练数据记录）', () => {
     trace.spans = trace.spans.filter((s) => s.kind !== 'llm.turn');
     const rec = exportRun(trace);
     assert.equal(rec.messages.length, 1);
-    assert.deepEqual(rec.meta.incomplete, ['input', 'no-final-assistant'],
-      '只有占位 user ⇒ 这条样本没有 loss 目标，必须标出来');
+    assert.deepEqual(
+      rec.meta.incomplete,
+      ['input', 'no-final-assistant'],
+      '只有占位 user ⇒ 这条样本没有 loss 目标，必须标出来',
+    );
   });
 
   it('混合回合 + 未开 traceContent：正文缺席必须标注（此前静默）', async () => {
