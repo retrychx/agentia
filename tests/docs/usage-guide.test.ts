@@ -86,7 +86,10 @@ function ownMembers(typeName: string): Set<string> {
   for (const raw of body.split('\n')) {
     const line = raw.trim();
     if (line.startsWith('*') || line.startsWith('//')) continue;
-    const m = /^(?:readonly\s+)?(?:static\s+)?(?:get\s+)?([A-Za-z_$][\w$]*)\s*[?:(<]/.exec(line);
+    // `constructor` 与 `static` 成员不是「文档表叙述的实例成员」：前者是语法、后者挂在类上
+    // （`RunContext.current()` 是 static —— 表格标题会提它，但它不是一行成员）
+    if (line.startsWith('constructor') || line.startsWith('static ')) continue;
+    const m = /^(?:readonly\s+)?(?:get\s+)?([A-Za-z_$][\w$]*)\s*[?:(<]/.exec(line);
     if (m) out.add(m[1]);
   }
   return out;
@@ -157,29 +160,29 @@ function parseTables(md: string): Table[] {
       current = undefined;
       continue;
     }
+    // 非 `|` 行 = 表格结束（正文/空行/列表都会打断表格）。
     if (!line.startsWith('|')) {
       current = undefined;
       continue;
     }
     if (/^\|[\s:\-|]+\|$/.test(line)) continue; // 分隔行
     const first = line.slice(1).split('|')[0].trim();
-    const m = /^`([^`]+)`$/.exec(first);
-    if (!m) {
-      current = undefined;
-      continue;
-    }
-    const name = m[1].trim();
-    if (!/^[A-Za-z_$@][\w$]*$/.test(name)) {
-      current = undefined;
-      continue;
-    }
+    // 只有**纯名字列表**的首列才算成员行：`\`a\`` / `\`a\` / \`b\``（多成员同行）。
+    // 散文首列里出现的反引号词（如「`strict`（缺省）…」）不是成员，必须排除 ——
+    // 否则会把正文里的术语收成「文档写了不是导出的名字」。
+    const isList = /^`[^`]+`(?:\s*[/、,]\s*`[^`]+`)*$/.test(first);
+    if (!isList) continue; // 表头 / 散文行：跳过，**不断表**（`|` 开头就是本表的续行）
+    const names = [...first.matchAll(/`([^`]+)`/g)]
+      .map((m) => m[1]!.trim())
+      .filter((n) => /^[A-Za-z_$@][\w$]*$/.test(n));
+    if (names.length === 0) continue;
     if (!current || current.heading !== heading) {
       current = { heading, names: [] };
       tables.push(current);
     }
-    current.names.push(name.replace(/^@/, ''));
+    for (const n of names) current.names.push(n.replace(/^@/, ''));
   }
-  return tables;
+  return tables.filter((t) => t.names.length > 0);
 }
 
 const guide = readFileSync(GUIDE, 'utf8');
@@ -234,6 +237,25 @@ describe('usage-guide.md 与源码一致', () => {
       assert.ok(guide.includes(`@${dec}`), `文档应提到 @${dec}`);
       assert.ok(exported.has(dec), `@${dec} 必须是 src/index.ts 的导出`);
     }
+  });
+
+  it('反向穷尽：点名了类型的表必须把该类型的成员列全（防「加了旋钮没写文档」）', () => {
+    // 与 api.html 那条「自陈穷尽的形状必须相等」同因：**正向**核对（文档写了源码里有的）
+    // 抓不到「源码加了、文档没写」—— 2026-09-27 `metricsSink.maxLabelCombos` 就是这么
+    // 悄悄欠账的（R8-P4 加了旋钮、usage-guide 的选项表没跟上，全套测试仍然全绿）。
+    const problems: string[] = [];
+    let checked = 0;
+    for (const t of tables) {
+      const type = membershipTypeOf(t.heading);
+      if (!type) continue;
+      checked++;
+      const page = new Set(t.names);
+      const missing = [...membersOf(type)].filter((f) => !page.has(f)).sort();
+      if (missing.length > 0)
+        problems.push(`${type}（「${t.heading}」表）漏了：${missing.join(' / ')}`);
+    }
+    assert.ok(checked >= 15, `只核对了 ${checked} 张成员表，预期 ≥15（解析器可能坏了）`);
+    assert.deepEqual(problems, [], `文档没写全源码里已有的成员：\n${problems.join('\n')}`);
   });
 
   it('文档点名的类型确实存在于源码（防「文档引用了已删除的类型」）', () => {

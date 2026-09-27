@@ -330,6 +330,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
 | `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**，回给模型的 tool_result 永远完整 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
+| `sessionId` | 会话**引用**（可序列化）：单次覆盖后**记进 run 根 `session.id`**（引擎侧读它，见 `loop.ts` 的属性写入）。⚠️ 直接 `app.run` 时它**不注入历史** —— 注入要上一行的 `session: { store, id }`；「`sessionId` + runner 的 `sessionStore`」是**异步宿主**那条路（任务里只落 id，store 实例不可序列化） |
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 | `beforeFlush` | `(trace, result) => void \| Promise<void>`：**sinks 冲刷之前**的最后一笔（run 正常收尾后调一次，抛错被吞）。给「**拿到结果才判得出**的结论」用的缝 —— 典型是 `defineEval` 的 score：等 `app.run` 返回再 `attachScore`，`metricsSink` 早在导出那一刻聚完账，分数就永远进不了指标。读 trace 就够的判断不必用它，写进 sinks 里即可（见 §6 判官配方） |
 | `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `awaiting_approval` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
@@ -874,7 +875,8 @@ async placeOrder(input: { sku: string }) {
 - **模型级** —— 按模型（`llm.turn` 的 span name）归因 turn 数 / token / 成本 / 耗时，并单独给出
   `model_unpriced_turns_total`（算不出成本的 turn 数 —— **成本护栏失效的显式信号**）。
   同理，**标签基数折叠不是静默的**：`agentia_dropped_keys{kind="capability"|"model"|"score"}`
-  （恒定发三个样本，即使为 0 —— 「0 → N」这个变化本身就是要告警的信号）。
+  （恒定发三个样本，即使为 0 —— 「0 → N」这个变化本身就是要告警的信号）；开了 `labelKeys` 时
+  另按每键加 `kind="label:<key>"`、组合数封顶时加 `kind="label:combos"`（没开那几行一个都没有）。
 - **评分级** —— 来自 run 根 span 的 `score` 事件（`attachScore` 写入）：
   `agentia_score{name,source}` gauge 记**最近一次**值（分数不是累加量），`agentia_score_total{name,source}` counter 记条数；
   `snapshot().scores` 以 `name@source` 为键（source 缺省时裸 name）暴露 `{ value, count, sum }`（平均 = sum/count），
@@ -908,6 +910,7 @@ async placeOrder(input: { sku: string }) {
 | `maxScores` | 评分维度基数上限（缺省 200）：评分键是 `name@source`，eval 名带时间戳时同样无界；超出的归入 `name="__other__"`；非正数抛错 |
 | `labelKeys` | 归因标签维度（R8-P4）：**显式点名** run 根 `labels.<key>` 里哪些键上指标标签（缺省 `[]` 一个都不上）。键必须是合法 Prometheus 标签名（`/^[a-zA-Z_][a-zA-Z0-9_]*$/`），否则构造期抛错。出口形态：`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total` 四个家族在全局样本之外追加带标签样本（全局那行仍是总量）。⚠️ 开了它以后 `sum(agentia_runs_total)` 会把全局行与分行**重复计数** —— 总量用不带标签的序列 |
 | `maxLabelValues` | 每个 labelKey 的相异值数上限（缺省 100，**必须为正数**）：超出归入 `__other__`（折叠只丢粒度不丢量）；被折叠的不同值数见 `snapshot().droppedLabelValues` 与 `agentia_dropped_keys{kind="label:<key>"}`。这道上限刻意不可关 —— opt-in 挡不住「明知几千租户偏要上」，sink 内存不变量要求每个新基数维度都有 cap |
+| `maxLabelCombos` | **标签组合数**上限（缺省 200，**必须为正数**）：`maxLabelValues` 封的是**每个键的值域**，而进内存的是键的**组合**（叉乘 —— 值域 100 配 3 个键就是一百万条常驻条目，且 `droppedLabelValues` 只报每键折叠数、看不出组合已经爆了）。超限的**新组合**折进一个全 `__other__` 的桶（量照收、只丢标签粒度）；被折的组合数见 `snapshot().droppedLabelCombos` 与 `agentia_dropped_keys{kind="label:combos"}`。与 `maxLabelValues` 一样刻意不可关；单键配置（最常见）下组合数 ≈ 值数，行为不变 |
 | `buckets` | 直方图桶边界（毫秒，严格升序）；缺省 `DEFAULT_BUCKETS` |
 
 #### `MetricsSink`（`metricsSink()` 的返回值）
@@ -915,8 +918,9 @@ async placeOrder(input: { sku: string }) {
 | 成员 | 说明 |
 |---|---|
 | `export` | `TraceSink` 的实现（run 收尾投递）—— 也是接进 `sinks` 的形状 |
-| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, scores, runLabels, droppedCapabilities, droppedModels, droppedScores, droppedLabelValues, exemplars }` |
+| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, scores, runLabels, droppedCapabilities, droppedModels, droppedScores, droppedLabelValues, droppedLabelCombos, exemplars }` |
 | `render` | Prometheus 文本（`/metrics` 直接回它） |
+| `contentType` | `render()` 产物的 Content-Type（随 `export` 模式走）：内置 `/metrics` 路由读它发响应头，自己挂端点时**也该读它而不是写死** —— `0.0.4` 与 OpenMetrics 不是可互换的两种写法，拿 `0.0.4` 的头去发带 exemplar 的文本，严格的抓取端会解析失败。可选成员（兼容手写的 `MetricsSink` 实现；本工厂返回的一定带） |
 | `flush` | 主动导出一次（`export:'otlp'` 时有意义；prometheus 模式为空操作） |
 | `stop` | 停掉定时导出（进程收尾 / 测试用） |
 | `reset` | 清空累计（含能力 / 模型 / 评分三个维度，以及各自的基数配额） |
@@ -924,7 +928,7 @@ async placeOrder(input: { sku: string }) {
 - `tokens` 口径 = **四类之和**（input + output + cacheRead + cacheCreation），与 `BudgetGuard` 一致；分项在 `render()` 里以 label 给出，不会丢。
 - 分位是**窗口内精确值**（最近 rank 法），只反映最近 `windowSize` 条样本；**直方图计数是累积的**（全历史），两者语义不同、各有各的用处。
 - **内存上限** ≈ `(1 + 能力数 + 模型数) × windowSize` —— 三个维度都由基数上限封顶（`maxCapabilities` / `maxModels` / `maxScores`），长跑宿主不会被拖住。
-- 超上限的键折叠进 `__other__`：**丢的只是标签粒度，量不丢** —— `__other__` 桶照常累加，`snapshot()` 里各维度的总数仍然对得上。被折叠的**不同**键数见 `droppedCapabilities` / `droppedModels` / `droppedScores`（各自最多记账 1024 个键，满了以后是下界）。
+- 超上限的键折叠进 `__other__`：**丢的只是标签粒度，量不丢** —— `__other__` 桶照常累加，`snapshot()` 里各维度的总数仍然对得上。被折叠的**不同**键数见 `droppedCapabilities` / `droppedModels` / `droppedScores`（各自最多记账 1024 个键，满了以后是下界），归因标签维度另见 `droppedLabelValues`（按 labelKey 分键计）与 `droppedLabelCombos`（组合数上限折掉的那批）。
 **同样的数在 `/metrics` 上也看得见**（`render()`）：`agentia_dropped_keys{kind=…}` —— 只看 Prometheus
 不看 `snapshot()` 的部署不会漏掉折叠。
 - `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
