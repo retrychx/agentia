@@ -418,20 +418,27 @@ function verifyCodeReview(): Record<string, unknown> {
  * `npm run build` 出来的 `dist/main.js` + 真的读文件 + 真的以退出码收场。
  */
 function verifyEvalGate(): Record<string, unknown> {
-  execFileSync(join(repoRoot, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'], {
-    cwd: evalGateDir,
-    stdio: 'inherit',
-  });
-
-  /** 跑一次闸门（`--baseline` 指到临时文件上，仓库里那份基线全程只读） */
-  const run = (baseline?: string): { code: number; out: string } => {
-    const r = spawnSync(
-      process.execPath,
-      baseline === undefined ? ['dist/main.js'] : ['dist/main.js', '--baseline', baseline],
-      { cwd: evalGateDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
-    );
+  // 构建与运行都走**示例自己 package.json 里承诺的 script**（'npm' 的可执行名在 e2e-cli 里
+  // 已有同款先例）—— 直接调 .bin/tsc 或 node dist/main.js 等于测试脚本另算一份等价输入，
+  // 「承诺过的 script 坏了」就没人发现（本仓纪律：测产物用产物自己的命令）。
+  const npmRun = (script: string, extraArgs: string[] = []): { code: number; out: string } => {
+    const r = spawnSync('npm', ['run', script, ...extraArgs], {
+      cwd: evalGateDir,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
     return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
+  const built = npmRun('build');
+  assert(
+    built.code === 0,
+    `示例自己的 npm run build 应成功，实际 ${String(built.code)}：\n${built.out}`,
+  );
+
+  /** 跑一次闸门（`--baseline` 指到临时文件上，仓库里那份基线全程只读） */
+  const run = (baseline?: string): { code: number; out: string } =>
+    // 干净跑走示例承诺的 `check` script；带基线的变体走它透传的同一条 main
+    npmRun('check', baseline === undefined ? [] : ['--', '--baseline', baseline]);
 
   const clean = run();
   assert(
@@ -449,6 +456,22 @@ function verifyEvalGate(): Record<string, unknown> {
 
   const dir = mkdtempSync(join(tmpdir(), 'agentia-eval-gate-'));
   try {
+    // `npm run update`（= --update）是示例承诺的第三条 script —— 此前从未被真跑过。
+    // 基线指到临时文件：仓库里那份保持只读。
+    const updateBaseline = join(dir, 'updated.json');
+    const updated = npmRun('update', ['--', '--baseline', updateBaseline]);
+    assert(
+      updated.code === 0,
+      `示例自己的 npm run update 应成功，实际 ${String(updated.code)}：\n${updated.out}`,
+    );
+    const written = JSON.parse(readFileSync(updateBaseline, 'utf8')) as {
+      cases?: Record<string, boolean>;
+    };
+    assert(
+      Object.keys(written.cases ?? {}).length === 4,
+      `update 应把本次结论写成 4 条用例的新基线，实际：${JSON.stringify(Object.keys(written.cases ?? {}))}`,
+    );
+
     const base = JSON.parse(readFileSync(join(evalGateDir, 'baseline.json'), 'utf8')) as {
       cases: Record<string, boolean>;
     };

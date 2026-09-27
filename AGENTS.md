@@ -15,7 +15,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验、
 │   │                        #   RunStatus/RunMeta、Blackboard 类型族、Message 消息类型族、
 │   │                        #   超时原语 timeout.ts —— 引擎与 MCP 桥**共用一份**，见 §10 2026-09-17 ①），零依赖
-│   │                        #   limits.ts = **「限制旋钮的 0 是什么」的单一真源**（guards §1.2）：15 个旋钮
+│   │                        #   limits.ts = **「限制旋钮的 0 是什么」的单一真源**（guards §1.2）：每个旋钮
 │   │                        #   各属「不限 / 就是不做 / 立即 / 非法」四类之一，表是可执行数据；
 │   │                        #   构造期报错文案里那句「（0 = …）」插的就是表里的 zeroClause。
 │   │                        #   对账用例在 tests/limits.test.ts（穷尽表驱动，逐条驱动真实站点）——

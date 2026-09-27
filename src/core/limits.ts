@@ -228,6 +228,15 @@ export const LIMIT_SEMANTICS = [
     note: "与**同一个选项接口里**的 `maxConcurrentRuns` 同款 —— 那条写着「0 / 负数则全部 503 —— 都是配置错误，宁可在构造期响亮失败」，这条是同一形状：`readBody` 的判据是 `size > maxBytes`，0 时**任何字节**都超限 ⇒ `POST /run` / `POST /tasks` / 审批全部 413（实测 3 条 POST 全 413），服务器看着在跑却收不了任何输入。⚠️ 还挡一类事故：`Number('') === 0` —— 从**空的环境变量**读出来的配置会静默变成「拒绝一切」。要「不限」用 `Infinity`（`size > Infinity` 恒假），**别用 0**。",
   },
   {
+    knob: 'HttpHandlerOptions.maxConcurrentRuns',
+    where: 'transport/http.ts（createHttpHandler）',
+    unit: 'count',
+    zero: 'invalid',
+    zeroClause: 'Infinity = 无上限（0 = 全部 503）',
+    badValue: 'throws',
+    note: '闸门判据是 `inFlightRuns >= maxConcurrentRuns`：0 / 负数时恒真 ⇒ 每个 `POST /run` 都 503（服务器看着在跑却一个 run 都不收）；NaN 让它恒假 ⇒ 闸门静默失效。它是**存量旋钮**（校验早就有），2026-09-27 复核时发现始终没登记进这张表（文案也没走 `zeroClauseOf`），补登。',
+  },
+  {
     knob: 'SseWriterOptions.maxBufferedBytes',
     where:
       'transport/sse.ts（sseWriter）+ transport/http.ts（createHttpHandler 的 sseMaxBufferedBytes 透传）',
