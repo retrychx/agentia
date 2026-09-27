@@ -41,9 +41,10 @@
 
 - **`ModelPricing` 新增 `cacheRead` / `cacheWrite`**（缺省读 0.1×、写 1.25×；**1h 档写 2×** 由
   `priceOverrides` 表达），非法乘数（负数 / NaN）同样构造期抛错。
-- **未定价模型会「响」**：turn 上记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、
-  可挂 `onUnpricedModel` 回调 —— 此前价格表外的模型成本恒为 0，`maxCostUsd` 这条护栏
-  **静默不触发**（现在失效本身是可观测的）。
+- ~~未定价模型会「响」~~ **（订正 2026-09-27：这条不是本版新增，发布时误记）**：
+  `usage.unpriced` 事件 / 指标 `model_unpriced_turns_total` / `onUnpricedModel` 回调自
+  **v0.6.0** 起就在（#75），本窗口对它们零改动。本版真实的成本口径改动只有上面那条
+  cache 乘数与下面的图片估算。条目不删、留痕。
 - **图片块的 token 按尺寸上界估**：官方按**尺寸**计费（28×28 像素 = 1 visual token），与文件字节数
   无关；框架取「长边缩到 1568px」的上界 3136 token/块 —— 宁可高估（`maxTotalTokens` 提前拦）
   也不低估（护栏迟触发）。

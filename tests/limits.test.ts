@@ -356,6 +356,25 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     return 'invalid';
   },
 
+  async 'HttpHandlerOptions.maxConcurrentRuns'() {
+    // 闸门判据是 `inFlightRuns >= maxConcurrentRuns`：0 / 负数时恒真 ⇒ 全部 503；
+    // NaN 时恒假 ⇒ 闸门静默失效。存量旋钮，2026-09-27 补登记进表（此前没进真源）。
+    assert.throws(() => createHttpHandler(slowApp(1), { maxConcurrentRuns: 0 }), /必须为正数/);
+    assert.throws(() => createHttpHandler(slowApp(1), { maxConcurrentRuns: -1 }), /必须为正数/);
+    assert.throws(
+      () => createHttpHandler(slowApp(1), { maxConcurrentRuns: Number.NaN }),
+      /必须为正数/,
+    );
+    // 阳性对照：缺省（32）与 Infinity（无上限）都必须仍构造成功
+    assert.equal(typeof createHttpHandler(slowApp(1)), 'function', '缺省必须构造成功');
+    assert.equal(
+      typeof createHttpHandler(slowApp(1), { maxConcurrentRuns: Number.POSITIVE_INFINITY }),
+      'function',
+      'Infinity = 无上限，必须构造成功',
+    );
+    return 'invalid';
+  },
+
   async 'SseWriterOptions.maxBufferedBytes'() {
     // 判据是**写入前**的 `pending > limitBytes` ⇒ 0 时第 1 帧照写、**第 2 帧必收口**
     // （实测：closed=true / ended=true / onBackpressure 回调 1 次）—— 流活不过一帧。
@@ -496,6 +515,11 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
         'HttpHandlerOptions.maxBodyBytes',
         () => createHttpHandler(slowApp(1), { maxBodyBytes: 0 }),
         /0 = 每个带 body 的请求都 413/,
+      ],
+      [
+        'HttpHandlerOptions.maxConcurrentRuns',
+        () => createHttpHandler(slowApp(1), { maxConcurrentRuns: 0 }),
+        /0 = 全部 503/,
       ],
       [
         'SseWriterOptions.maxBufferedBytes',

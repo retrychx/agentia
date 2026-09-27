@@ -310,7 +310,7 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
     // 0 / 负数则全部 503 —— 都是配置错误，宁可在构造期响亮失败。
     // Infinity 合法（`Infinity > 0` 成立）：无上限（见选项注释）。
     throw new Error(
-      `maxConcurrentRuns 必须为正数（Infinity = 无上限），收到 ${opts.maxConcurrentRuns}`,
+      `maxConcurrentRuns 必须为正数（${zeroClauseOf('HttpHandlerOptions.maxConcurrentRuns')}），收到 ${opts.maxConcurrentRuns}`,
     );
   }
   const exposeErrors = opts.exposeErrors ?? false;
