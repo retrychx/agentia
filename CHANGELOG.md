@@ -84,6 +84,13 @@
 
 ### 变更
 
+- **挂起改成「一个状态 + 一个原因」：`awaiting_approval` → `suspended` + `suspendedReason`**
+  （spec §10 2026-09-28 ①；为 durable timer 铺路）：`RunStatus` 与 `AgentStopReason` 的成员名
+  都改成 `'suspended'`，「为什么挂起」由新字段承载 —— `'approval'`（等人工决定）/
+  `'timer'`（等一个时刻）。两条判据因此落在**原因**上：`approvalTimeoutMs` 只对 `approval`
+  成立、`approve` 对 `timer` 挂起一律 409 —— 否则一条等时刻的 run 会被「审批超时」提前叫醒
+  并重派。`TaskRecord.approvalPendingSince` 改名 `suspendedSince`（它本来就是挂起时刻）。
+  新增导出 `SuspendedReason`（`api.html` 计数 224 → 225）。**破坏性** —— 迁移见下。
 - **脱敏配方 2.4 升级**（`examples/observability` 的 `redactSink`，框架 `src/` 零改动）：
   新增内置正则预设（Bearer / JWT / AWS access key / LLM `sk-` key / 邮箱 / 手机号），
   **缺省全开**（拷走即用），`presets` 可开子集或 `false` 全关；预设命中的替换文案带类别
@@ -92,6 +99,16 @@
 - **sink 投递失败不再完全静默**：`flushSinks` 吞掉 sink 异常的纪律不变（观测不击穿业务），
   但吞之前现在会落一条 `console.warn`（文案含「trace sink」，可 grep）——「观测的观测」
   此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ②。
+
+### 迁移
+
+- **升级前停在 `awaiting_approval` 的任务记录**（`FileTaskStore` / `SqliteTaskStore` /
+  `RedisTaskStore` 里已写好的 JSON）：新代码不认这个旧值 —— 它在 `isTerminalTask` 里算「终态」、
+  `resumePending` 也按 `'terminal'` 跳过 ⇒ **那条挂起会成孤儿**（既不续跑、也不再能被审批）。
+  处置：升级前先 `approve` 收口，或把库里这些记录的 `status` 改成 `suspended` 并补
+  `suspendedReason: 'approval'`（`approvalPendingSince` → `suspendedSince` 同名改名；缺了不影响
+  超时判定 —— 基准链本来就会退到 `startedAt` / `createdAt`）。框架**不内置兼容读**：
+  `SuspendedReason` 是类型而不是别名（理由与「什么时候该补垫片」见 `docs/spec.md` §11）。
 
 ## [0.9.4] - 2026-09-26
 

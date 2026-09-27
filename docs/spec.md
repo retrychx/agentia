@@ -2007,6 +2007,12 @@ assistant 消息」的消息历史落库（`TaskRecord.spec.messages`），恢�
 因此全部消解：状态有了（`awaiting_approval`）、落的就是消息数组本身（无损）、不走
 `traceToMessages`（不经 trace 重放）。
 
+> ⚠️ **状态值改名（2026-09-28 ①）**：本节（以及本文件其他正文）出现的 `awaiting_approval`
+> 一律读作 **`suspended`**，且它的「为什么挂起」由新字段 **`suspendedReason === 'approval'`**
+> 承载；引擎 `AgentStopReason` 与 `RunStatus` 的成员名同步从 `awaiting_approval` 改成
+> `suspended`。旧→新映射、破坏面与理由见 **§10 2026-09-28 ①**。正文原样保留（体例：只增不改，
+> 改名不重写记载它当时的判断）。
+
 **② 为什么回合级全有或全无**：协议要求每个 tool_use 都有配对 tool_result。一个回合里
 **任何一个**需审批的 tool_use 没有决定 ⇒ 整回合**一个工具都不执行**、不推任何 tool_result ——
 部分执行 + 部分挂起会产出协议上残缺的历史（配不平的 tool_use），恢复时无法重放。
@@ -3728,8 +3734,67 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
 ⚠️ 实测（生产路径真跑，非单测）：挂起段 run 根 `tools.names='danger'`、续跑段 `='safe'` ——
 **跨段比对菜单版本**靠的就是这两个 attribute 的差。
 
+### 2026-09-28 ①：**挂起改成「一个状态 + 一个原因」**（`awaiting_approval` → `suspended` + `suspendedReason`）—— durable timer（候选 1）的前置
+
+背景：起草候选 1（`wakeAt` 挂起）时按 `docs/plans/2026-09-27-durable-wake-at.md` 的核证清单
+逐条读码，量出「多加一种挂起」的真实成本**不在状态机骨架，而在用 `===` 逐值点名的地方** ——
+`isTerminalTask`（`async.ts:123`）、`resume-policy.ts:47`（非 queued/running 一律报 skip 原因
+`'terminal'` ⇒ 一条在睡的 run 会被**具名成「终态」**）、`store.ts` 的淘汰白名单，再加两条只认
+`awaiting_approval` 的闸（`approvalExpired`、`approve` 的 409）。设计稿 §2 给了三个分叉
+（A 复用旧状态 / B 新增 `awaiting_wake` + 谓词 / C 一个状态 + 原因字段），**用户定案 C**。
+
+决策：
+
+1. 「挂起」拆成**一个状态 + 一个原因**：`RunStatus.suspended` 只说「它在等」，
+   `suspendedReason` 说等什么（`'approval'` 等人工决定 / `'timer'` 等一个时刻）。
+2. **引擎侧同步改名**：`AgentStopReason` 的成员也从 `awaiting_approval` 改成 `suspended`，
+   原因走结果字段。结果形状里本来就有 `suspendedMessages` —— 「suspended」是这层自己的词；
+   留着 `awaiting_approval` 会让同一条 run 在引擎与宿主两层说两种话，正是 C 要消掉的不一致。
+3. **判据落在原因上**（本条的要点，不是顺手）：`approvalExpired` 增
+   `rec.suspendedReason === 'approval'`；`approve` 对非 `approval` 挂起一律 409（文案点明原因）。
+   若只看状态：配了 `approvalTimeoutMs` 的宿主会把一条等时刻的 run 判成「审批超时」，而
+   `#expireAndResume` 紧接着就 `fillTimeoutDenials` + 重派（它没有待决项，补不出任何决定，
+   `approvalsComplete(空)` 还是 true）—— **提前叫醒 + 一次真实 run 的开销**。
+4. 落库时**原因从结果形状里取，不写死**（`rec.suspendedReason = out.result.suspendedReason`）：
+   写死成 `'approval'` 会让将来新增的原因在落库这步被悄悄改写。
+5. 字段改名：`TaskRecord.approvalPendingSince` → **`suspendedSince`**（它本来就是「挂起时刻」，
+   两个原因共用；`approval.decided` 的 `waitedMs` 与超时基准链一并沿用）。
+
+破坏面（逐条）：
+
+- `RunStatus` / `AgentStopReason` 的成员名（两个公共字面量联合）；
+- 加法：`AgentRunResult.suspendedReason`（结果形状现在 8 个字段全在场）、`RunMeta.suspendedReason`、
+  `TaskRecord.suspendedReason`、新导出 `SuspendedReason`（api.html 导出计数 224 → 225）；
+- 持久化键名：`approvalPendingSince` → `suspendedSince`；
+- ⚠️ **持久化里的旧状态值**：库里 `status: 'awaiting_approval'` 的记录在新代码里**既不是挂起
+  态、也不被 `resumePending` 认作挂起**（`isTerminalTask` / resume-policy 都按逐值判定）⇒
+  升级前停着的挂起会成**孤儿**。本版**不做兼容读**（`SuspendedReason` 是类型、不是别名），
+  迁移办法写在 CHANGELOG 的「迁移」小节；要不要补垫片见 §11。
+
+门禁（两条闸各配一个变异，都亲跑过）：
+
+- `tests/transport/approval-policy.test.ts`：夹具缺省带 `suspendedReason: 'approval'` ——
+  **挂起记录必须带原因**（夹具如实反映形状，不是可选装饰）；新增「`timer` 挂起不被审批超时
+  叫醒」**+ 阳性对照**（同一时间戳只把原因换成 `approval` ⇒ 立刻过期，证明上一条不是真空变绿）。
+- `tests/transport/approval.test.ts`：新增「`timer` 挂起 `approve` 一律 409，且不派发、状态与
+  挂起时刻不动」。
+- 变异 A（摘掉 `approvalExpired` 的原因闸）⇒ 恰好那条新用例红；变异 B（`approve` 退回只看
+  `status`）⇒ 恰好那条新用例红；两次还原后 `src/` 干净且复绿（脚本 `trap` 还原 + 还原自检）。
+- 文档守卫自动咬合（**不是「守卫过时」，是它按设计工作**）：`tests/docs/api-page.test.ts` 抓出
+  `AgentRunResult` 漏写 `suspendedReason`（「形状自陈穷尽却漏成员」）与页头导出计数 224 ≠ 225。
+- 全量 `npm test`：三套件绿（含覆盖率棘轮）。
+
+⚠️ **本条不含 `wakeAt` 本体**：时间挂起、到期续跑、挂起期可见性、drain 后不唤醒都还没做
+（`src/` 里 `timer` 目前**没有任何生产者**，只有类型与那两条闸）；本条只是候选 1 的前置。
+
 ## 11. 开放项
 
+- **挂起记录的持久化兼容读（迁移垫片要不要做）**：§10 2026-09-28 ① 把旧状态值
+  `awaiting_approval` 当陌生值处理 ⇒ 升级前停在挂起的记录成孤儿。补垫片的位置是**六个反序列化
+  点**（`fsStore` ×2 / `sqliteStore` ×3 / `redisStore` ×1），而且 `sqliteStore` 还把 `status`
+  存成了**列**（`:66`）—— 不只是读时映射，还得回写列。建议：等真有宿主拿长活 store 跨升级时
+  再做，形态是 store 侧一个 `normalizeLegacyRecord()`（读时归一 + 落库自愈）；现在只文档化，
+  不提前长出一层平时没人走的代码。
 - **菜单漂移的严格模式与结果级字段**（§10 2026-09-27 ⑧ 未做的那两件）：① `menuDrift: 'fail'`
   这类开关 —— 要动公共选项面 + `limits.ts` 真源表；② 让「续跑跑在漂移的菜单上」直接出现在
   `AgentRunResult` 上（而不是只落在 trace 属性里）—— 要动公共结果类型。现状是三处信号
