@@ -1,0 +1,199 @@
+# R8 演化候选 设计与实施（MCP 反向桥 / 租户归因 / SFT 导出 / fallback / 脱敏配方 / durable）
+
+> **状态**：**实施中**（2026-09-27 立项；同日经一轮逐条核证评审后修订 —— 见文末「修订记录」，
+> 初稿的 P1/P2/P4 三条被打回重定界）。来源是同日的三视角分析（业界成熟产品对照 /
+> AI 演化方向 / 产品化路径），用户授权「做成规划文档，然后一个个的做」。
+> 每项的落地证据（PR 号、反向验证读数、与设计的偏差）滚动记入本文末尾「实施记录」。
+
+## 定位筛子（每条候选先过这五道，不过就拒）
+
+1. **trace 一等公民**：新能力必须进 trace 记账或让 trace 更有用，绕开 `TraceSink` 出口 = 倒退。
+2. **零运行时依赖**：只用标准库直接内置；要第三方客户端的一律 duck-typed 缝 + recipe/示例。
+3. **不建后端看板 / 告警引擎 / 数据集 CMS**（对照 Langfuse/LangSmith 的刻意不做清单）。
+4. **一个第三方客户端一个包**：真到拆包时的粒度，不是「服务包」。
+5. **先查「不内建表」再写设计**：`docs/observability.md` 顶部那张表与 spec §9.3/§10 已经
+   否决过的条目（脱敏、采样、日志层、落库……）**不得在框架内重做** —— 初稿 P1 就撞在这条上
+   （见修订记录①）。⚠️ 这类越界**没有机械守卫**：`tests/docs/observability.test.ts` 只核
+   「文档 ↔ examples 导出集」，不比 `src/` —— 拦它的是读表的人，写设计稿时自己先对一遍。
+
+## 候选清单与排序
+
+| 序 | 项 | 体量 | 一句话 |
+|---|---|---|---|
+| P1 | trace 脱敏：**配方升级**（不进框架） | 小 | 配方 2.4 的示例实现补出厂预设规则与可读替换文案 |
+| P2 | 模型 fallback：**引擎级**链路 | 中 | run 级备用模型链，每次切换各开 llm.turn，成本归对模型 |
+| P3 | trace → SFT 导出 | 中 | 拆 P3a（引擎可选记 assistant 文本）+ P3b（CLI 导出） |
+| P4 | 租户归因 labels | 小中 | run 级标签进 trace 根；metrics 侧 opt-in + 基数上限 |
+| P5 | MCP 反向桥 | 大 | 把 @Tool 集合暴露成 MCP server（stdio + StreamableHTTP） |
+| P6 | durable 长时程 | 立项调研 | 天级 run：durable timer / 事件唤醒 / 版本兼容 —— **本轮不实施** |
+
+缓做：**A2A 协议适配**（协议仍在快速漂移，现在接容易接到过时版本；等收敛）。
+拒做：后端看板、DAG 可视化编辑器、swarm 编排（定位决定，见 roadmap 原则节）。
+
+## P1 trace 脱敏 —— 配方升级，**不在框架内新增模块**
+
+**为什么是配方而不是框架件**（这不是妥协，是已锁定决策）：
+
+- spec §9.3：`脱敏不在框架内 —— 那是 sink 缝外的事`（`src/core/trace.ts` 头注同款声明）；
+- spec §10 2026-09-14 ⑥：曾把「脱敏」作为空头承诺写进文档，处理方式是**删掉** ——
+  原话「删错的、不补对的」；
+- spec §9.4 用同一个理由否掉过 `samplingSink` 内置化：「示例已有实现 ⇒ 同一件事两份实现」；
+- 成品已存在：`examples/observability/src/index.ts` 的 `redactSink(opts)`
+  （深拷贝不改原 trace、按 keys+patterns 递归脱敏 attributes 与事件体），
+  `examples/complete` 已在用（sample → redact → [sqlite, log] 扇出）。
+
+**要做什么**（delta 很小，但真实）：配方 2.4 的示例实现目前要求用户从零写 `patterns`。
+升级为：示例里给一组**出厂推荐预设**（Bearer/JWT、AWS AKIA、邮箱、手机号 —— 注释写明
+「预设只是起点，合规清单是宿主自己的事」），替换文案从裸 `[REDACTED]` 改为带类别的
+`[REDACTED:email]` 形态（让「这里被改过、改的是哪类」在 trace 里可见，便于下游排查）。
+`docs/observability.md` 配方 2.4 同步，并加一句指向 spec §9.3 的「为什么不内建」。
+
+**不做什么**：`src/` 零改动；不新建 `redact-sink.ts`；`src/index.ts` 不加导出。
+
+**验收**：examples/observability 的测试与 e2e-examples 全绿（示例是 e2e 的真跑对象，
+改它就是改被测面）；observability.md 的表格不动（脱敏仍是 ❌ → 配方 2.4，这行**不改**）。
+
+## P2 模型 fallback —— 引擎级链路（不是 client 组合器）
+
+**为什么不能在 client 层做**（评审核证，初稿在此犯了两条）：
+
+1. **记账会错**：llm.turn span 的 model 与成本都取自 run spec 的 `args.model`
+   （`engine/turn.ts` 的 begin 与 `costEstimate`）。组合器在 client 层静默换厂商，
+   span 归错模型、成本按错价目表算、`usage.unpriced` 也不会响 —— 撞在本仓当作特性
+   做了很久的成本口径上，违反筛子 #1 的方式不是「少看点东西」而是「记错账」。
+2. **枚举要全**：`classifyError` 实际 7 类 —— `aborted` / `rate_limit` / `server` /
+   `api` / `timeout` / `connection` / `unknown`。初稿漏了 `timeout`（retryable: true，
+   恰恰是最该换模型的那类）与 `aborted`（用户取消 —— 不点明就会变成「用户按了取消，
+   它跑去打第二个厂商」）。
+
+**设计**：run 调用契约加可选 `fallbacks: Array<{ model: string; client?: ModelClient }>`
+（app 级缺省 + run 级覆盖，与现有 model/client 的生效层级同款）：
+
+- 每个链环节=**自己的 llm.turn span**（model 名正确 ⇒ 成本归因、unpriced 探测天然正确）；
+- 触发判定：本环节最终失败（含其内部 maxRetries 用尽）且错误类 ∈ 缺省集合
+  `{rate_limit, server, timeout, connection}` ⇒ 落下一环；`api` / `unknown` 立即抛
+  （请求本身有病，换模型无用）；`aborted` **立刻收尾，永不 fallback**；
+- **「吐过字不换」**（与 `retry.ts` retryAllowed 第四项 `!emitted` 同一护栏）：
+  本回合任何一次尝试吐过文本，失败即抛，不换环 —— 否则用户看到两段拼起来的回答；
+- 每次切换在新 turn span 上记 `llm.fallback` 事件 `{fromModel, toModel, errorType}`
+  （与既有 `llm.retry` 事件同级同形）；
+- run 生效配置快照（`engine/run-config.ts`）把 fallback 链编进 trace 根 —— 认下链的人
+  就是写进 trace 的人；spec §10 记决策。
+
+**验收**：单测（逐类错误的换/不换、吐字后不换、abort 不换、每环独立 span 与成本、
+快照编码）；反向验证（摘掉 aborted 分支 ⇒ 「取消不 fallback」用例红）；
+usage-guide + api.html；`tests/limits.test.ts` 不涉及（非数值旋钮，说明理由）。
+
+## P3 trace → SFT 导出（拆两步）
+
+**动机**：harvest 是「trace → eval 用例」，它的孪生是「trace → 训练数据」—— 配合
+score/exemplar 筛好 run，把「生产 trace → 自我改进」的环闭上。
+
+**关键事实调查结论（2026-09-27，已读码核实，评审逐字复核通过）**：trace **不记
+assistant 文本** —— llm.turn 只记 usage/事件（`engine/replay.ts:30-32` 如实声明了
+这个有损边界，spec §9.4 同款）。工具往返（tool_use 参数 / tool_result 出参）在事件里，
+可还原。⇒ 纯 trace 导出的 SFT 数据**缺 assistant 正文**，那是训练数据里最值钱的部分。
+所以拆两步：
+
+- **P3a（引擎，改语义 ⇒ spec §10 决策记录）**：可选记录 assistant 文本。
+  形状：`RunInvocationOptions` 加 opt-in 开关（如 `traceContent: 'full'`；缺省不记，
+  现状逐字不变），记进 llm.turn span 的 `output.text` 属性。**旋钮分工写清**：
+  裸旋钮 `maxEventChars`（`engine/tool-events.ts`）管「单段负载多长」（新属性过同一道
+  截断闸），新开关管「记不记」—— 不是第二个长度旋钮。⚠️ 路径别写错：`traceLimits`
+  下只有 `maxEvents`（管「多少条」），长度旋钮是裸 `maxEventChars`。
+  必须写清的代价：trace 体积显著增大（`npm run bench:trace` 跑三档给实测数进文档）
+  且模型输出从此进入「要脱敏的面」（与 P1 配方直接联动 —— 两份文档互相指）。
+- **P3b（CLI）**：`agentia export <trace.jsonl> [--min-score X] [--out file]` ——
+  按 score 过滤 run，输出 JSONL（每行一份 messages 序列）。无全量记录的 run 导出为
+  工具轨迹（assistant 文本缺席**要在导出物里标注**，不静默）；有全量记录的导出完整对话。
+  去类型移植副本纪律同 harvest/diff（CLI 侧逐字对拍守护，
+  先例：`packages/cli/test/diff.test.mjs` / `harvest.test.mjs`）。
+
+**验收**：P3a 有反向验证（摘掉开关 ⇒ 导出物无正文）+ bench 体积数进文档；
+P3b 走 CLI 套件 + e2e-cli 链条惯例。
+
+## P4 租户归因 labels
+
+**动机**：用框架做 SaaS 的人第一张账单是「哪个客户烧了多少钱」。
+
+**设计**：run 调用契约加 `labels?: Record<string, string>`（RunSpec）：
+
+- **trace 根**记 `labels.*` 属性（无基数问题，随便加）；
+- **metrics 侧 opt-in + 封顶**：`metricsSink({ labelKeys: ['tenant'], maxLabelValues? })`
+  显式声明哪些 key 上指标标签，缺省一个都不上；**每个 key 的相异值数有上限**
+  （缺省值随实现定，写进 limits 真源表 —— 它是「数量」类旋钮，0 的语义必须落地），
+  超出归入 `__other__` 桶 —— 与既有 `maxCapabilities` / `maxModels` / `maxScores`
+  的折叠语义同款（折叠只丢标签粒度不丢量）。⚠️ 光 opt-in 不够：它挡「意外爆炸」，
+  封不住「我知道有几千租户、我偏要上」—— sink 的内存不变量（上限 × 窗口 = 常驻内存
+  上界）要求每个新基数维度都有对应 cap；
+- 与既有 `RunSpec.source` 的关系：**不动也不合并**。`source` 是触发来源审计
+  （sync / async / schedule:<id>，框架自己写的单值）；`labels` 是业务维度归因
+  （tenant / plan / …，宿主写的多值）。两者正交，文档里一句话说清；
+- OTLP 出口映射成 span 属性（additive，不动既有 gen_ai.* 键）。
+
+**验收**：单测 + 反向验证（摘掉 cap ⇒ 超限折叠用例红）；limits 真源表登记新旋钮；
+usage-guide 写清基数警告；spec §10 记决策；api.html。
+
+## P5 MCP 反向桥（最大项，最后做）
+
+**动机**：生态位跃迁 —— 框架从「agent 的运行容器」变成「生态里的工具供应商」：
+`@Tool` 集合暴露成 MCP server 后，Claude Code / Cursor / 任何 MCP 宿主能直接调。
+
+**设计草案（实施前先写细化设计）**：
+
+- 范围**只到 tools**（`initialize` / `tools/list` / `tools/call`）；resources/prompts 不做。
+- 传输：stdio（CLI 场景）+ StreamableHTTP（服务场景）—— 两者都是标准库可写
+  （正向桥的连接器已是标准库实现，协议认知现成）。
+- 形状候选：`createMcpServer(app, { transport, auth? })`；tool 菜单 = 装配后的能力清单
+  （与 run 同一份，经中间件包装后的那份 —— 与 canCall 语义一致）。
+- 鉴权：HTTP 侧 token 闸（与 HTTP 宿主同纪律）；stdio 侧信任父进程。
+- 每调用 = 一个 capability span（挂在 server run 根下）—— trace 叙事不破。
+
+**验收**：`npm run e2e:mcp` 同款纪律反过来 —— 真第三方 MCP **client** 打过来跑一轮
+（离线夹具回落）；usage-guide + api.html；独立 PR。
+
+## P6 durable 长时程（本轮只立项）
+
+**动机**：agent 任务时间跨度在变长（LangGraph 1.0 主叙事）。现有崩溃续跑 + HITL 挂起
+覆盖「分钟级」；「天级」需要 durable timer（三天后继续）、外部事件唤醒（webhook 到了
+接着跑）、agent 代码版本 vs 在飞 run 的兼容策略。
+
+本轮**只做**：调研文档（对照 Temporal/Restate/DBOS 的 durable executor 模型，列出
+agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。**不写实现代码。**
+
+## 实施纪律（每项都适用）
+
+1. 新增公共导出必须登记 `src/index.ts`，官网 `api.html` 同步（反向全覆盖测试会咬）。
+2. 新行为带测试 + **反向验证**（摘掉实现 ⇒ 对应用例红，读数记进 PR 描述）。
+3. 改语义的进 `docs/spec.md` §10 决策记录；`docs/usage-guide.md` 是唯一使用者文档。
+4. CHANGELOG `[Unreleased]` 随 PR 记账，不攒到发版。
+5. 每项独立 PR；verify-all 8/8 全绿才提；CI 五个必需检查绿才合。
+6. 旋钮类新增先查 `src/core/limits.ts` 真源表要不要登记（0 的语义必须落地；
+   非数值旋钮说明不登记的理由）。
+7. **设计稿里的每条可证伪断言先在代码里核对再落笔**（行号、枚举成员、分层边、
+   既有实现是否存在）—— 本稿初稿的三条硬伤全是「没查就先写」造成的。
+
+## 修订记录
+
+**2026-09-27 ①（初稿评审修订，评审方为独立 agent，逐条核证后我已复验全部属实）**：
+
+1. **P1 重定界**：初稿要在 `src/integrations/` 新建 `redact-sink.ts` —— 与 spec §9.3 /
+   §10 2026-09-14 ⑥（「删错的、不补对的」）三重对撞，且 `examples/observability` 已有
+   成品 `redactSink`。改为「配方升级」，`src/` 零改动。附带承认：这类越界无机械守卫
+   （observability.test.ts 不比 `src/`），⇒ 定位筛子新增第 5 条。
+2. **P2 重写**：初稿是 client 组合器且「不记账」—— 实错在归因（span 的 model/成本取自
+   run spec，静默换 client = 记错账），且 `classifyError` 枚举漏了 `timeout` 与
+   `aborted`。改为引擎级 fallback 链：每环独立 llm.turn、`llm.fallback` 事件、
+   abort 永不换、吐过字不换、进 run-config 快照。
+3. **P4 补基数上限**：初稿只写 opt-in —— 与 metrics 的内存不变量（三个基数上限 × 窗口
+   才是常驻内存上界）冲突。补 `maxLabelValues` cap + `__other__` 折叠（与既有三帽同款），
+   并交代与 `RunSpec.source` 的正交关系。
+4. 小修：P3a 的旋钮路径订正（裸 `maxEventChars`，`traceLimits` 下只有 `maxEvents`）+
+   补旋钮分工；删掉初稿 P1 的「替换文案带计数」自相矛盾（示例形态里并无计数，既有实现
+   是 `[REDACTED]`，升级为 `[REDACTED:<类别>]`）；动机句删无出处的最高级表述；
+   roadmap 状态不得先于事实（初稿把 P1 标「进行中」但 `src/` 无任何对应物 —— 全部
+   回退为「待做」，状态只随已合并的 PR 推进）。
+
+## 实施记录
+
+（滚动更新：每项落地后在此记 PR 号、反向验证读数、与设计的偏差。）
