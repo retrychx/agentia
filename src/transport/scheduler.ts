@@ -188,7 +188,7 @@ export class Scheduler {
       if (isThenable(rec)) {
         void rec
           .then((r) => {
-            // awaiting_approval 也算「不再占执行资源」（在等人，不在跑）——
+            // suspended 也算「不再占执行资源」（在等人，不在跑）——
             // 不放手会让 maxInFlight 闸门永久自闭（人可能几小时后才批）
             if (!r || (r.status !== 'queued' && r.status !== 'running')) forget(taskId);
           })

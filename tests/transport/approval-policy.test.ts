@@ -15,7 +15,10 @@ import type { TaskRecord } from '../../src/store/store.js';
 const rec = (over: Partial<TaskRecord> = {}): TaskRecord =>
   ({
     taskId: 't1',
-    status: 'awaiting_approval',
+    status: 'suspended',
+    // 2026-09-28 ①：挂起记录**必须带原因**（它是状态的一部分，不是可选装饰）——
+    // 夹具缺省给 'approval'，因为本文件测的就是审批这条闸
+    suspendedReason: 'approval',
     spec: {},
     createdAt: 1_000,
     ...over,
@@ -23,24 +26,37 @@ const rec = (over: Partial<TaskRecord> = {}): TaskRecord =>
 
 describe('approval-policy —— 审批的纯判定（从 AsyncRunner 抽出）', () => {
   it('approvalExpired：timeoutMs <= 0 表示不启用（再老的挂起也不算过期）', () => {
-    const r = rec({ approvalPendingSince: 0 });
+    const r = rec({ suspendedSince: 0 });
     assert.equal(approvalExpired(r, 10 ** 12, 0), false);
     assert.equal(approvalExpired(r, 10 ** 12, -1), false);
   });
 
-  it('approvalExpired：只在 awaiting_approval 上成立（在跑 / 终态都不算）', () => {
+  it('approvalExpired：只在 suspended 上成立（在跑 / 终态都不算）', () => {
     for (const status of ['queued', 'running', 'succeeded', 'failed'] as const) {
       assert.equal(
-        approvalExpired(rec({ status, approvalPendingSince: 0 }), 10 ** 12, 1_000),
+        approvalExpired(rec({ status, suspendedSince: 0 }), 10 ** 12, 1_000),
         false,
         status,
       );
     }
-    assert.equal(approvalExpired(rec({ approvalPendingSince: 0 }), 10 ** 12, 1_000), true);
+    assert.equal(approvalExpired(rec({ suspendedSince: 0 }), 10 ** 12, 1_000), true);
   });
 
-  it('approvalExpired：基准链 approvalPendingSince → startedAt → createdAt；边界是严格大于', () => {
-    const both = { approvalPendingSince: 5_000, startedAt: 1, createdAt: 0 };
+  it('approvalExpired：**原因**必须是 approval（时间挂起不许被审批超时提前叫醒）', () => {
+    // 2026-09-28 ① 的原因闸：`approvalTimeoutMs` 是「等人工」的闸。若只看状态，
+    // 一条 reason='timer' 的睡眠 run 会被判「审批超时」，而 `#expireAndResume`
+    // 紧接着就重派 —— 提前叫醒 + 花掉一次真实 run 的开销。
+    const sleeping = rec({ suspendedReason: 'timer', suspendedSince: 0 });
+    assert.equal(approvalExpired(sleeping, 10 ** 12, 1_000), false, 'timer 挂起永不因审批超时过期');
+    // 阳性对照：同一时间戳、只把原因换成 approval ⇒ 立刻过期（证明上面那条不是真空变绿）
+    assert.equal(
+      approvalExpired(rec({ ...sleeping, suspendedReason: 'approval' }), 10 ** 12, 1_000),
+      true,
+    );
+  });
+
+  it('approvalExpired：基准链 suspendedSince → startedAt → createdAt；边界是严格大于', () => {
+    const both = { suspendedSince: 5_000, startedAt: 1, createdAt: 0 };
     assert.equal(approvalExpired(rec(both), 6_000, 1_000), false, '恰好等于不叫过期（严格大于）');
     assert.equal(approvalExpired(rec(both), 6_001, 1_000), true);
     assert.equal(
@@ -59,7 +75,7 @@ describe('approval-policy —— 审批的纯判定（从 AsyncRunner 抽出）'
 
   it('fillTimeoutDenials：只补空着的待决项，人工决定一律保留（第一次决定赢）', () => {
     const r = rec({
-      approvalPendingSince: 7_000,
+      suspendedSince: 7_000,
       pendingApprovals: ['a', 'b'],
       approvals: {
         a: { approved: true, decidedBy: 'alice', decidedAt: 7_500, requestedAt: 7_000 },

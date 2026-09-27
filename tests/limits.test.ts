@@ -179,11 +179,11 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     // 0 = 不限：挂起后不会被「超时兜底拒绝」收掉，而是一直等人
     const runner = new AsyncRunner(hitlApp(), { approvalTimeoutMs: 0 });
     const t = runner.submit('x');
-    await pollUntil(runner, t.taskId, 'awaiting_approval');
+    await pollUntil(runner, t.taskId, 'suspended');
     await sleep(250);
     assert.equal(
       (await runner.poll(t.taskId))?.status,
-      'awaiting_approval',
+      'suspended',
       '0 必须读作「不限」：挂起不该被自动拒绝',
     );
     return 'unlimited';

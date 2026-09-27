@@ -34,7 +34,7 @@ async function suspendMessages(): Promise<unknown[]> {
     client: mockClient([toolUseMsg('danger', {}, 'tu-danger')]).client,
     tools: [danger],
   });
-  assert.equal(result.stopReason, 'awaiting_approval', '前提：这一段必须挂在审批上');
+  assert.equal(result.stopReason, 'suspended', '前提：这一段必须挂在审批上');
   return result.suspendedMessages!;
 }
 

@@ -27,7 +27,7 @@ import type { TaskRecord } from '../store/store.js';
  * - GET  /tasks/<id> 轮询任务记录 → 200 TaskRecord；不存在 → 404。
  * - POST /tasks/<id>/approve  人工审批（HITL）。body
  *                    `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }`
- *                    → 200 TaskRecord；任务不存在 → 404；不在 awaiting_approval 状态 → 409；
+ *                    → 200 TaskRecord；任务不存在 → 404；不在 suspended 状态 → 409；
  *                    body 非法 → 400。**停机中仍可用**（与 GET 轮询同理由：
  *                    挂起的任务只有人能推进，停机不该连「批准」也拒掉）。
  * - GET  /healthz    健康检查 → 200 { ok, inFlight, uptimeMs, draining }；**不鉴权**

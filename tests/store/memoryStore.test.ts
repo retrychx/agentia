@@ -46,9 +46,9 @@ describe('InMemoryTaskStore 内存闸门（maxRecords）', () => {
     assert.equal(store.list().length, 50);
   });
 
-  it('awaiting_approval（HITL 挂起）同样不可淘汰：它不在跑、但也没完', () => {
+  it('suspended（HITL 挂起）同样不可淘汰：它不在跑、但也没完', () => {
     const store = new InMemoryTaskStore({ maxRecords: 2 });
-    const awaiting = rec({ status: 'awaiting_approval' });
+    const awaiting = rec({ status: 'suspended' });
     store.save(awaiting);
     store.save(rec({ status: 'succeeded' }));
     store.save(rec({ status: 'succeeded' })); // size 3 > 2 → 触发淘汰

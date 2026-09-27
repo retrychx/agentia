@@ -17,7 +17,7 @@ const OTHER = 'proc-other';
 
 describe('resume-policy —— 崩溃恢复的认领判定（从 AsyncRunner 抽出）', () => {
   it('状态不合法 ⇒ terminal；且状态**先判**（终态记录即便 ownerId 是自己也不是 own-process）', () => {
-    for (const status of ['succeeded', 'failed', 'awaiting_approval'] as const) {
+    for (const status of ['succeeded', 'failed', 'suspended'] as const) {
       assert.equal(
         resumeSkipReason(rec({ status }), { ownerId: ME, staleAfterMs: 0, now: 9e9 }),
         'terminal',

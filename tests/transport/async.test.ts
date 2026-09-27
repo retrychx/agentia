@@ -203,7 +203,7 @@ describe('AsyncRunner', () => {
     const runner = new AsyncRunner(app, { store });
 
     const t = runner.submit('x', { idempotencyKey: 'k' });
-    await waitStatus(runner, t.taskId, 'awaiting_approval');
+    await waitStatus(runner, t.taskId, 'suspended');
     await runner.approve(t.taskId, { tu1: { approved: true } });
     assert.equal((await runner.awaitTask(t.taskId)).status, 'succeeded');
 
@@ -776,7 +776,7 @@ describe('HITL × sessionStore：恢复段不重拼历史、不毒化会话', ()
 
     // 等挂起（InMemoryTaskStore 的 poll 是同步返回，可直接用 waitFor）
     await waitFor(
-      () => (runner.poll(t.taskId) as TaskRecord | undefined)?.status === 'awaiting_approval',
+      () => (runner.poll(t.taskId) as TaskRecord | undefined)?.status === 'suspended',
       '任务应挂起等审批',
     );
     await runner.approve(t.taskId, { tu1: { approved: true } });
@@ -845,7 +845,7 @@ describe('HITL 续跑时的菜单漂移（R8 候选 3 / spec §10 2026-09-27 ⑧
     const runnerA = new AsyncRunner(appA, { store });
     const t = runnerA.submit([{ role: 'user', content: '帮我做那件危险的事' }]);
     await waitFor(
-      () => (runnerA.poll(t.taskId) as TaskRecord | undefined)?.status === 'awaiting_approval',
+      () => (runnerA.poll(t.taskId) as TaskRecord | undefined)?.status === 'suspended',
       '任务应挂起等审批',
     );
     // 挂起段的签名（老菜单）—— 后面拿它与新段比：这就是「跨段比对菜单版本」的用法

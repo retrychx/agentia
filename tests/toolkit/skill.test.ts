@@ -423,11 +423,11 @@ describe('Skill 防御分支', () => {
     await assert.rejects(async () => tool.run({}, ctx), /需要 prompt 或 messages/);
   });
 
-  it('llm 子运行挂起（awaiting_approval）且 loop.error 为 undefined ⇒ 兜底 agent_error 收尾', async () => {
+  it('llm 子运行挂起（suspended）且 loop.error 为 undefined ⇒ 兜底 agent_error 收尾', async () => {
     // 反向验证：摘掉 `loop.error ??` 的兜底 ⇒ llmError 是 undefined，capability span 记成
     // error 却没有原因（「非正常收尾必带结构化 error」破缺），本用例红在 error?.type 为空。
     // 构造：skill 子循环里有一个 approval:'required' 的工具、没有任何审批决定 ⇒
-    // 子循环挂起（stopReason='awaiting_approval'，suspendedResult 的 error 恒为 undefined）——
+    // 子循环挂起（stopReason='suspended'，suspendedResult 的 error 恒为 undefined）——
     // 这是「非成功收尾 + loop.error 为 undefined」唯一能从公共面构造的形态。
     class Approving {
       @Skill({ description: 'd', tools: ['danger'] })
@@ -447,13 +447,13 @@ describe('Skill 防御分支', () => {
     const { ctx, recorder } = makeCtx(client);
     const tool = skillToTool(onlySkill(new Approving()), () => [danger]);
 
-    await assert.rejects(async () => tool.run({}, ctx), /awaiting_approval/);
+    await assert.rejects(async () => tool.run({}, ctx), /suspended/);
 
     const capability = recorder.snapshot('error').spans.find((s) => s.kind === 'capability')!;
     assert.equal(capability.status, 'error');
     // 兜底分支的产物：type='agent_error'、retryable=true，message 是那份 report
     assert.equal(capability.error?.type, 'agent_error');
     assert.equal(capability.error?.retryable, true);
-    assert.match(capability.error?.message ?? '', /awaiting_approval/);
+    assert.match(capability.error?.message ?? '', /suspended/);
   });
 });

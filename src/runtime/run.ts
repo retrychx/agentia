@@ -54,6 +54,7 @@ export class Run {
       startedAt: this.startedAt,
       finishedAt: this.finishedAt,
       error: this._result?.error,
+      suspendedReason: this._result?.suspendedReason,
     };
   }
 
@@ -70,7 +71,7 @@ export class Run {
   }
 
   /**
-   * 挂起（HITL）：从 running 进 awaiting_approval。**不是终态** —— finishedAt 不置、
+   * 挂起（HITL）：从 running 进 suspended。**不是终态** —— finishedAt 不置、
    * 不算成功也不算失败；扩展后的消息历史在 `result.suspendedMessages` 里，
    * 由异步宿主落库等待审批，决定到齐后带着它重进引擎循环。
    */
@@ -79,7 +80,7 @@ export class Run {
       throw new Error(`cannot suspend a run in status ${this._status}`);
     }
     this._result = result;
-    this._status = 'awaiting_approval';
+    this._status = 'suspended';
   }
 
   fail(error: unknown): void {
@@ -101,6 +102,7 @@ export class Run {
         typed: undefined,
         suspendedMessages: undefined,
         pendingApprovals: undefined,
+        suspendedReason: undefined,
       };
       return;
     }
@@ -213,7 +215,7 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         // 会话标识落 run 根 attribute（`session.id`）—— 多轮 run 按会话聚合的锚点
         ...(session ? { sessionId: session.id } : {}),
       });
-      if (result.stopReason === 'awaiting_approval') {
+      if (result.stopReason === 'suspended') {
         // HITL 挂起：不是终态 —— 记忆回写/会话追加维持「只成功才写」（挂起不写），
         // beforeFlush 也只在正常收尾路径调（见该选项注释）。
         // 但**照常 flushSinks**：挂起段的 trace 段落必须可观测（每段执行一棵树，

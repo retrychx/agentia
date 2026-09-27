@@ -245,7 +245,7 @@ export interface AgentTool<I = unknown, O = unknown> {
   strict?: boolean;
   /**
    * 人工审批闸（HITL）：`'required'` 时模型发起的该工具调用**不直接执行** ——
-   * 该回合挂起（`stopReason: 'awaiting_approval'`，回合级全有或全无：同一回合的
+   * 该回合挂起（`stopReason: 'suspended'`，回合级全有或全无：同一回合的
    * 其他工具也一并等待，因为协议要求每个 tool_use 都有配对 tool_result），
    * 等宿主把决定（`ApprovalDecision`，按 tool_use_id）喂回来后恢复：
    * 批准 → 正常执行（工具体内经 `ToolRunContext.approval` 读到自己的决定）；

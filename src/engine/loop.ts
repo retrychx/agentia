@@ -143,7 +143,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     // 工具事件记到父 span：被恢复的回合属于挂起段的旧 trace，本段没有对应 llm.turn
     const outcome = await executeTurnTools(ctx, args.parentSpanId ?? '', resumeUses, null);
     if (outcome.kind === 'suspended') {
-      return suspendedResult(ctx, outcome.pending);
+      return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending });
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
     if (ctx.submitted) {
@@ -202,9 +202,9 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       // HITL 挂起：assistant 消息（含未决 tool_use）已在历史里、**不推任何 tool_result**
       // （全有或全无，见 executeTurnTools 的审批闸）；approval.requested 已记在 turn span 上。
       // error 保持 undefined —— 挂起不是失败。
-      stopReason = 'awaiting_approval';
+      stopReason = 'suspended';
       finalText = textOf(message);
-      return suspendedResult(ctx, outcome.pending, finalText);
+      return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending }, finalText);
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
 
@@ -344,10 +344,10 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     result = failedResult(e, progress.iterations);
   }
 
-  // awaiting_approval 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
+  // suspended 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
   // trace 记 ok；它与成功的区分由 stop_reason attribute 承担。
   const runStatus =
-    result.stopReason === 'awaiting_approval' || isSuccessStopReason(result.stopReason)
+    result.stopReason === 'suspended' || isSuccessStopReason(result.stopReason)
       ? 'ok'
       : 'error';
   recorder.setAttribute(rootId, 'stop_reason', result.stopReason);
@@ -362,6 +362,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     typed: result.typed,
     suspendedMessages: result.suspendedMessages,
     pendingApprovals: result.pendingApprovals,
+    suspendedReason: result.suspendedReason,
   };
 }
 

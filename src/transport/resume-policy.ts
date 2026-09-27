@@ -13,7 +13,7 @@ import type { TaskRecord } from '../store/store.js';
 
 /** 不该被我认领的原因（诊断用；命名本身也是文档） */
 export type ResumeSkipReason =
-  /** 不在 queued/running：终态没什么可续的；`awaiting_approval` 在等人，不是孤儿 */
+  /** 不在 queued/running：终态没什么可续的；`suspended` 在等人，不是孤儿 */
   | 'terminal'
   /** ownerId 是本进程：它一定还活着，重派只会让同一任务跑两遍 */
   | 'own-process'

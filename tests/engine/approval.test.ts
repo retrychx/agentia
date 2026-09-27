@@ -72,8 +72,8 @@ describe('HITL 审批（引擎）', () => {
       client,
       tools: [approvalTool(spy)],
     });
-    assert.equal(result.stopReason, 'awaiting_approval');
-    assert.equal(run.status, 'awaiting_approval', 'Run 状态机：挂起不是成功也不是失败');
+    assert.equal(result.stopReason, 'suspended');
+    assert.equal(run.status, 'suspended', 'Run 状态机：挂起不是成功也不是失败');
     assert.equal(run.finishedAt, undefined, '挂起不是终态：finishedAt 不置');
     assert.equal(result.error, undefined, '挂起不带 error（不是失败）');
     assert.equal(result.trace.status, 'ok', '挂起段执行无误，trace 不算失败');
@@ -126,7 +126,7 @@ describe('HITL 审批（引擎）', () => {
       client: first.client,
       tools: [approvalTool(spy)],
     });
-    assert.equal(r1.stopReason, 'awaiting_approval');
+    assert.equal(r1.stopReason, 'suspended');
 
     // 恢复：挂起的消息历史 + 决定喂回来；模型在工具结果之后收尾。
     // ⚠️ mock 存的是 params 引用（messages 数组会被引擎继续原地 push），
@@ -220,7 +220,7 @@ describe('HITL 审批（引擎）', () => {
       client: first.client,
       tools,
     });
-    assert.equal(r1.stopReason, 'awaiting_approval');
+    assert.equal(r1.stopReason, 'suspended');
     assert.equal(danger.calls.length, 0);
     assert.equal(
       safe.calls.length,
@@ -261,7 +261,7 @@ describe('HITL 审批（引擎）', () => {
       tools,
       approvals: { tu1: { approved: true } },
     });
-    assert.equal(r2.stopReason, 'awaiting_approval');
+    assert.equal(r2.stopReason, 'suspended');
     assert.deepEqual(r2.pendingApprovals, ['tu2']);
     assert.equal(spy.calls.length, 1, 'tu1 执行了；tu2 没有');
     // 二次挂起的消息历史：…user(tool_result: tu1 的结果), assistant(tool_use: tu2)
@@ -301,7 +301,7 @@ describe('HITL 审批（引擎）', () => {
       tools: [approvalTool(spy)],
       resultSchema: RESULT_SCHEMA,
     });
-    assert.equal(r1.stopReason, 'awaiting_approval');
+    assert.equal(r1.stopReason, 'suspended');
     assert.equal(r1.typed, undefined, 'submit_result 也没提前生效');
     assert.deepEqual(r1.pendingApprovals, ['tu-danger']);
 

@@ -25,7 +25,7 @@ import type { TaskStreamEvent } from './task-events.js';
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
  *
  * - submit 即回（queued），后台驱动状态机 queued → running → succeeded/failed；
- *   工具标了 `approval: 'required'` 时 run 可在回合间挂起为 **awaiting_approval**
+ *   工具标了 `approval: 'required'` 时 run 可在回合间挂起为 **suspended**
  *   （HITL：非终态、不占并发槽、不触发 TaskSink.onFinished），`approve()` 给齐决定后恢复；
  * - **at-least-once 去重**：同一 idempotencyKey 重复 submit，若上一任务仍在
  *   queued/running/succeeded 则直接返回既有记录，不重复执行（失败可重试新任务）；
@@ -116,17 +116,17 @@ export class TaskStreamError extends Error {
 /**
  * 任务是否**已到终态**（流可以收口了）。
  *
- * ⚠️ 与 `resume-policy.ts` 那个「可续跑」的判定**刻意不同**：那里 `awaiting_approval`
+ * ⚠️ 与 `resume-policy.ts` 那个「可续跑」的判定**刻意不同**：那里 `suspended`
  * 算「不可续跑」（重启扫描不该去动它），这里是**非终态** —— 挂起在等人，人批了它会接着跑，
  * 流必须**继续开着**（关掉的话「等审批结果的前端」正好在最需要的时候断线）。
  */
 function isTerminalTask(rec: TaskRecord): boolean {
-  return rec.status !== 'queued' && rec.status !== 'running' && rec.status !== 'awaiting_approval';
+  return rec.status !== 'queued' && rec.status !== 'running' && rec.status !== 'suspended';
 }
 
 /**
  * `approve` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
- * `awaiting_approval` 状态），HTTP 宿主据此回对应响应。
+ * `suspended` 状态），HTTP 宿主据此回对应响应。
  * module 级 export —— 不进公共导出面（纯宿主内部实现细节）。
  */
 export class TaskApproveError extends Error {
@@ -189,7 +189,7 @@ export interface AsyncRunnerOptions {
    * 审批等待超时（毫秒，HITL）；缺省 0 = 不限（一直等人）。
    *
    * **惰性判定，不起定时器**：`approve` / `poll` / `resumePending` 读到一个
-   * `awaiting_approval` 任务时，若它挂起已超过该值，框架自动把**全部待决项**写成
+   * `suspended` 任务时，若它挂起已超过该值，框架自动把**全部待决项**写成
    * 「denied，reason: '审批超时'」并恢复执行（模型收到拒绝理由，可自行换路）。
    * 也就是说超时只在「有人读它」时生效 —— 没人读的任务不会自己动（进程里不养定时器，
    * 崩溃/重启也不依赖任何在飞回调）。
@@ -394,7 +394,7 @@ export class AsyncRunner {
    * 1. **先重放、后实时**：`opts.from`（= SSE 的 `Last-Event-ID` / `?from=`）之后的事件先补发，
    *    再挂实时订阅 —— 「连上时已经跑了一半」的客户端因此也能拿到完整前缀。
    * 2. **终态收口**：任务已终态 ⇒ 补发完缓冲 + 一帧 `end`，**不留**一条永远不会再产出事件的流。
-   *    挂起（`awaiting_approval`）**不是**终态：批了会接着跑，流必须开着（见 isTerminalTask）。
+   *    挂起（`suspended`）**不是**终态：批了会接着跑，流必须开着（见 isTerminalTask）。
    * 3. **跨进程不假装**：本进程没有这条流时（别的进程在跑 / 任务早于本进程），发一帧
    *    `unavailable` 后**立即收口**：终态补 `end`，非终态补 `closed`（流级收尾，不是
    *    伪造终态）—— 非终态只发 `unavailable` 就返回的话，这条 SSE 只剩心跳永远挂着。
@@ -461,13 +461,13 @@ export class AsyncRunner {
   }
 
   /**
-   * 审批一个处于 `awaiting_approval` 的任务（HITL）。
+   * 审批一个处于 `suspended` 的任务（HITL）。
    *
    * - **逐 tool_use_id 幂等**：已存在的决定不覆盖（第一次决定赢）—— 重复提交 /
    *   并发点击不会推翻已有决定，也不会让恢复段重复执行；
    * - **并发重入共享在飞那次**：同一任务的并发 approve（双击「批准」/两个审批人
    *   同时批）返回同一个 Promise —— 否则两个调用都在对方落库前读到
-   *   `awaiting_approval`、各自判「决定齐了」、**各派发一次**（同一任务重复执行，
+   *   `suspended`、各自判「决定齐了」、**各派发一次**（同一任务重复执行，
    *   与 resumePending 的闸门同一 bug 类）。被共享的那次覆盖不到的决定不丢：
    *   调用方从返回的记录看到任务仍在等待，重试即并入；
    * - 决定齐了就恢复：`status` 回 `running`、**先落库再派发**（与 `#redispatch`
@@ -503,10 +503,12 @@ export class AsyncRunner {
   ): Promise<TaskRecord> {
     const rec = await this.store.get(taskId);
     if (!rec) throw new TaskApproveError(404, `task 不存在: ${taskId}`);
-    if (rec.status !== 'awaiting_approval') {
+    if (rec.status !== 'suspended' || rec.suspendedReason !== 'approval') {
       throw new TaskApproveError(
         409,
-        `task ${taskId} 当前状态为 ${rec.status}，只有 awaiting_approval 才能审批`,
+        rec.status === 'suspended'
+          ? `task ${taskId} 的挂起原因是 ${rec.suspendedReason ?? '未知'}，只有等人工审批的挂起能审批`
+          : `task ${taskId} 当前状态为 ${rec.status}，只有挂起在等审批的任务才能审批`,
       );
     }
     const now = Date.now();
@@ -518,8 +520,8 @@ export class AsyncRunner {
         ...(d.reason !== undefined ? { reason: d.reason } : {}),
         ...(opts.decidedBy !== undefined ? { decidedBy: opts.decidedBy } : {}),
         decidedAt: now,
-        ...(rec.approvalPendingSince !== undefined
-          ? { requestedAt: rec.approvalPendingSince }
+        ...(rec.suspendedSince !== undefined
+          ? { requestedAt: rec.suspendedSince }
           : {}),
       };
     }
@@ -595,7 +597,7 @@ export class AsyncRunner {
     const fresh = await this.store.get(rec.taskId);
     const target = fresh ?? rec;
     if (
-      target.status !== 'awaiting_approval' ||
+      target.status !== 'suspended' ||
       !approvalExpired(target, now, this.approvalTimeoutMs)
     ) {
       return target;
@@ -635,7 +637,7 @@ export class AsyncRunner {
     this.#drain.signalIdle(() => this.active === 0);
   }
 
-  /** 等到任务终态；超时抛错。`awaiting_approval` 不是终态 —— 继续等（人在路上）。 */
+  /** 等到任务终态；超时抛错。`suspended` 不是终态 —— 继续等（人在路上）。 */
   async awaitTask(
     taskId: string,
     opts: { timeoutMs?: number; intervalMs?: number } = {},
@@ -663,7 +665,7 @@ export class AsyncRunner {
    * （running 视为进程中断）。返回重派数量（异步 store 下返回 Promise<number>）。
    * 幂等键去重照常生效。
    *
-   * `awaiting_approval`（HITL）**不捡**：它在等人、不是孤儿（进程没死也可能挂着）。
+   * `suspended`（HITL）**不捡**：它在等人、不是孤儿（进程没死也可能挂着）。
    * 但读到它会做**惰性超时判定**：配了 `approvalTimeoutMs` 且已超时的挂起任务
    * 自动全拒（`denied, reason: '审批超时'`）并重派。
    *
@@ -729,12 +731,12 @@ export class AsyncRunner {
    */
   #redispatch(recs: TaskRecord[], staleAfterMs: number): number | Promise<number> {
     const now = Date.now();
-    // 惰性审批超时扫描（HITL）：awaiting_approval **不捡走续跑**（它在等人，不是
+    // 惰性审批超时扫描（HITL）：suspended **不捡走续跑**（它在等人，不是
     // 孤儿 —— 崩溃续跑语义不适用于「等审批」），但读到它时顺手判超时：
     // 到点自动全拒并重派（框架补的 deny 决定先进 store，再进引擎）。
     let expired = 0;
     for (const rec of recs) {
-      if (rec.status !== 'awaiting_approval' || !approvalExpired(rec, now, this.approvalTimeoutMs))
+      if (rec.status !== 'suspended' || !approvalExpired(rec, now, this.approvalTimeoutMs))
         continue;
       expired++;
       this.#expireAndResume(rec, now);
@@ -768,7 +770,7 @@ export class AsyncRunner {
    */
   async #execute(rec: TaskRecord): Promise<void> {
     // 同步认领（在任何 await 之前）：同键并发提交的第二个 submit 立刻能看见它。
-    // 挂起（awaiting_approval）**不释放** —— 那是「等人工」，不是终态；放了会让同键再起一个新任务。
+    // 挂起（suspended）**不释放** —— 那是「等人工」，不是终态；放了会让同键再起一个新任务。
     const key = rec.idempotencyKey;
     if (key !== undefined && !this.#claims.has(key)) this.#claims.set(key, rec);
     // 同步开流（在任何 await 之前）：`GET /tasks/:id/stream` 从这一刻起可以订阅。
@@ -782,13 +784,13 @@ export class AsyncRunner {
       // 内层 finally 保证回调万一抛错（理论上被吞掉）也不泄漏在飞计数。
       try {
         // HITL：挂起不是终态 —— onFinished 的承诺是「任务达终态」，对它不开火
-        if (rec.status !== 'awaiting_approval') await this.#notifySinks(rec);
+        if (rec.status !== 'suspended') await this.#notifySinks(rec);
       } finally {
         this.active--;
         // 终态即清理 HITL 会话回写快照（挂起则保留 —— 恢复段成功后还要用它）
-        if (rec.status !== 'awaiting_approval') this.sessionInputs.delete(rec.taskId);
+        if (rec.status !== 'suspended') this.sessionInputs.delete(rec.taskId);
         // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
-        // 挂起也唤醒：等待者看一眼状态继续等（awaiting_approval 不是终态），无副作用。
+        // 挂起也唤醒：等待者看一眼状态继续等（suspended 不是终态），无副作用。
         this.#taskWaiters.notify(rec.taskId);
         // 任务流收口（挂起不算终态 —— 见 isTerminalTask 的注释：批了会接着跑，流得开着）。
         if (isTerminalTask(rec)) this.#streams.markDone(rec.taskId);
@@ -799,7 +801,7 @@ export class AsyncRunner {
         // 同键从此永远命中那条老记录）。
         if (
           key !== undefined &&
-          rec.status !== 'awaiting_approval' &&
+          rec.status !== 'suspended' &&
           this.#claims.get(key)?.taskId === rec.taskId
         ) {
           this.#claims.delete(key);
@@ -921,12 +923,12 @@ export class AsyncRunner {
             rec.runId = out.run.runId;
             rec.result = out.result;
             rec.error = out.result.error;
-            if (out.result.stopReason === 'awaiting_approval' && out.result.suspendedMessages) {
+            if (out.result.stopReason === 'suspended' && out.result.suspendedMessages) {
               // HITL 挂起：扩展后的消息历史（末尾是含未决 tool_use 的 assistant 消息）
               // 与待决清单、挂起时刻一起落库 —— approve / 惰性超时 / 重启后都靠它们。
               // 槽位照常释放（finally）、onFinished 不触发（#execute 的出口判断）、
               // finishedAt 不置（下面 finally 里按状态跳过）：它不是终态。
-              rec.status = 'awaiting_approval';
+              rec.status = 'suspended';
               // 「本轮用户输入」快照必须在 overwrite **之前**取 —— 此刻 rec.spec.messages
               // 还是原始输入；恢复段成功后由 #appendResumedSession 拿它 + finalText 补写会话。
               // 只在首个挂起段快照（!isResume）：恢复段再挂起时 spec.messages 已是
@@ -940,12 +942,16 @@ export class AsyncRunner {
               }
               rec.spec = { ...rec.spec, messages: out.result.suspendedMessages };
               rec.pendingApprovals = out.result.pendingApprovals;
-              rec.approvalPendingSince = Date.now();
+              rec.suspendedSince = Date.now();
+              // 挂起原因（2026-09-28 ①）：从结果形状里取，**不写死** ——
+              // 写死成 'approval' 会让将来新增的挂起原因在落库这一步被悄悄改写成审批。
+              rec.suspendedReason = out.result.suspendedReason;
             } else {
               rec.status = out.run.status;
               // 终态后清掉挂起痕迹（决定保留：审批记录是审计的一部分，随任务走）
               rec.pendingApprovals = undefined;
-              rec.approvalPendingSince = undefined;
+              rec.suspendedSince = undefined;
+              rec.suspendedReason = undefined;
               // HITL 恢复段 + 会话：本段没把 session 交给 run 层（见上面 callOpts 注释），
               // 会话回写由 runner 自己补 —— 口径与 run.ts 的 appendSession 一致。
               if (isResume && out.run.status === 'succeeded') {
@@ -963,7 +969,7 @@ export class AsyncRunner {
         }
       } finally {
         // HITL：挂起不是「完成」—— finishedAt 不置（等待中的任务没有结束时刻）
-        if (rec.status !== 'awaiting_approval') rec.finishedAt = Date.now();
+        if (rec.status !== 'suspended') rec.finishedAt = Date.now();
         // 落库失败不遮罩、槽位必须释放：释放放在内层 finally，即便落库实现抛错也必达
         try {
           await this.#safeSave(rec, 'outcome');

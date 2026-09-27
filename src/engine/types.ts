@@ -8,6 +8,7 @@ import type {
 } from '../core/tool.js';
 import type { SpanError, Trace, TraceContext } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
+import type { SuspendedReason } from '../core/run.js';
 
 /**
  * engine 对模型端的最小结构面（R4 多模型）：消息形态见 core/message.js 的自有类型族，
@@ -58,7 +59,7 @@ export type AgentStopReason =
    * **不是成功也不是失败**：`isSuccessStopReason` 不含它；trace 状态记 ok
    * （挂起段本身执行无误，「等人」不该被看板算成失败）；宿主据此落库而非收尾。
    */
-  | 'awaiting_approval'
+  | 'suspended'
   /** 模型/网关返回了本框架未识别的 stop_reason：保留文本，但按失败收尾 */
   | 'unknown_stop_reason'
   | 'error';
@@ -306,4 +307,9 @@ export interface AgentRunResult<T = unknown> {
    * 宿主（`AsyncRunner`）据此持久化「该批哪些 id」，HTTP 轮询方据此知道该审批什么。
    */
   pendingApprovals: string[] | undefined;
+  /**
+   * 挂起原因（`stopReason === 'suspended'` 时非空）：`approval` = 等人工决定、
+   * `timer` = 等一个时刻。宿主据此选闸（审批超时 / 到期唤醒）并落 TaskRecord。
+   */
+  suspendedReason: SuspendedReason | undefined;
 }

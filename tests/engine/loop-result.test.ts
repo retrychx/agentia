@@ -28,6 +28,7 @@ const FIELDS = [
   'pendingApprovals',
   'stopReason',
   'suspendedMessages',
+  'suspendedReason',
   'typed',
 ].sort();
 
@@ -44,9 +45,9 @@ function httpError(status: number, message = `HTTP ${status}`): Error {
 }
 
 describe('字段在场 —— 形状不变量', () => {
-  it('四个出口都把 7 个字段写全（缺席 ≠ undefined）', () => {
+  it('四个出口都把 8 个字段写全（缺席 ≠ undefined）', () => {
     const all = [
-      suspendedResult(ctxOf([userMsg('go')]), ['tu-1']),
+      suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }),
       abortedResult(),
       failedResult(new Error('boom'), 2),
       finishedResult({ stopReason: 'end_turn', finalText: 'ok', iterations: 1, typed: undefined }),
@@ -56,7 +57,7 @@ describe('字段在场 —— 形状不变量', () => {
   });
 
   it('只有挂起出口才让 suspendedMessages / pendingApprovals 非空', () => {
-    const suspended = suspendedResult(ctxOf([userMsg('go')]), ['tu-1']);
+    const suspended = suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] });
     assert.notEqual(suspended.suspendedMessages, undefined);
     assert.notEqual(suspended.pendingApprovals, undefined);
     for (const r of [
@@ -76,37 +77,37 @@ describe('字段在场 —— 形状不变量', () => {
 });
 
 describe('suspendedResult —— 挂起（等人）', () => {
-  it("stopReason 是 'awaiting_approval'，error 保持 undefined（挂起不是失败）", () => {
-    const r = suspendedResult(ctxOf([userMsg('go')]), ['tu-1']);
-    assert.equal(r.stopReason, 'awaiting_approval');
+  it("stopReason 是 'suspended'，error 保持 undefined（挂起不是失败）", () => {
+    const r = suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] });
+    assert.equal(r.stopReason, 'suspended');
     assert.equal(r.error, undefined);
   });
 
   it('历史是**拷贝**：此后改原数组不影响已挂起的结果，且不是同一引用', () => {
     const messages: MessageParam[] = [userMsg('第一段')];
-    const r = suspendedResult(ctxOf(messages), ['tu-1']);
+    const r = suspendedResult(ctxOf(messages), { reason: 'approval', pending: ['tu-1'] });
     messages.push(userMsg('挂起后宿主又塞进来的'));
     assert.equal(r.suspendedMessages?.length, 1, '挂起历史不该被后续 push 改动');
     assert.notEqual(r.suspendedMessages, messages, '必须是拷贝，不是同一条数组');
   });
 
   it('待决 id 列表原样交出（内容一致）', () => {
-    assert.deepEqual(suspendedResult(ctxOf([userMsg('go')]), ['tu-1', 'tu-2']).pendingApprovals, [
+    assert.deepEqual(suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1', 'tu-2'] }).pendingApprovals, [
       'tu-1',
       'tu-2',
     ]);
   });
 
   it('finalText 缺省空串；给了就用给的（挂起前那回合的文本）', () => {
-    assert.equal(suspendedResult(ctxOf([userMsg('go')]), ['tu-1']).finalText, '');
+    assert.equal(suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }).finalText, '');
     assert.equal(
-      suspendedResult(ctxOf([userMsg('go')]), ['tu-1'], '正要调工具').finalText,
+      suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }, '正要调工具').finalText,
       '正要调工具',
     );
   });
 
   it('iterations / typed 透传', () => {
-    const r = suspendedResult(ctxOf([userMsg('go')], 7, { answer: 42 }), ['tu-1']);
+    const r = suspendedResult(ctxOf([userMsg('go')], 7, { answer: 42 }), { reason: 'approval', pending: ['tu-1'] });
     assert.equal(r.iterations, 7);
     assert.deepEqual(r.typed, { answer: 42 });
   });

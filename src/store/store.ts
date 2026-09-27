@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
 import type { SpanError } from '../core/trace.js';
-import type { RunStatus } from '../core/run.js';
+import type { RunStatus, SuspendedReason } from '../core/run.js';
 import type { ApprovalDecision } from '../core/tool.js';
 import type { RunSpec } from '../engine/spec.js';
 
@@ -61,7 +61,13 @@ export interface TaskRecord {
    * HITL：进入挂起的时刻（epoch ms）。`approvalTimeoutMs` 的**惰性**判定与
    * `approval.decided` 事件的 `waitedMs` 都以它为基准。
    */
-  approvalPendingSince?: number | undefined;
+  suspendedSince?: number | undefined;
+  /**
+   * 挂起原因（2026-09-28 ①）：`approval` = 等人工决定、`timer` = 等一个时刻。
+   * **随记录落库**（与 `suspendedSince` 同批）：进程重启后靠它决定用哪条闸 ——
+   * 审批超时只对 `approval` 成立，到期唤醒只对 `timer` 成立。
+   */
+  suspendedReason?: SuspendedReason | undefined;
 }
 
 export interface TaskStore {
@@ -105,8 +111,8 @@ export class InMemoryTaskStore implements TaskStore {
   private evict(): void {
     for (const [taskId, rec] of this.byTask) {
       if (this.byTask.size <= this.maxRecords) break;
-      // awaiting_approval 同样不可淘汰：它不在跑、但也没完 —— 淘汰了审批决定就无家可归
-      if (rec.status === 'queued' || rec.status === 'running' || rec.status === 'awaiting_approval')
+      // suspended 同样不可淘汰：它不在跑、但也没完 —— 淘汰了审批决定就无家可归
+      if (rec.status === 'queued' || rec.status === 'running' || rec.status === 'suspended')
         continue;
       this.byTask.delete(taskId);
       if (rec.idempotencyKey && this.byKey.get(rec.idempotencyKey) === taskId) {

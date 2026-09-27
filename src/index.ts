@@ -103,7 +103,7 @@ export type {
 export { SystemPrompt } from './runtime/systemPrompt.js';
 export type { SystemPromptOptions, SystemSection } from './runtime/systemPrompt.js';
 export type { ExecuteRunOptions } from './runtime/run.js';
-export type { RunMeta, RunStatus } from './core/run.js';
+export type { RunMeta, RunStatus, SuspendedReason } from './core/run.js';
 
 // container：显式 DI
 export { Container } from './container/container.js';

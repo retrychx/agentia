@@ -108,7 +108,7 @@ export interface RunInvocationOptions {
    */
   maxEventChars?: number | false;
   /**
-   * 人工审批决定（HITL）：以 tool_use_id 为键。恢复 `awaiting_approval` 任务时由
+   * 人工审批决定（HITL）：以 tool_use_id 为键。恢复 `suspended` 任务时由
    * 异步宿主随记录传入（纯数据、可序列化，随 `TaskRecord` 落库）；手工续跑
    * 「assistant 结尾带 tool_use」的消息历史时也可直接给 `app.run`。
    */
