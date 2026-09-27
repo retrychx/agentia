@@ -808,3 +808,91 @@ describe('HITL × sessionStore：恢复段不重拼历史、不毒化会话', ()
     assert.equal(history[history.length - 1]?.role, 'assistant', '历史必须以 assistant 结尾');
   });
 });
+
+describe('HITL 续跑时的菜单漂移（R8 候选 3 / spec §10 2026-09-27 ⑧）', () => {
+  const OBJ = { type: 'object', properties: {} } as const;
+
+  it('approve 续跑时那个工具已被这次发布删掉：三处信号 + run 照常收尾（不判失败）', async () => {
+    // 生产路径真跑：两个 AppCallable 代表**两次发布**的同一应用（菜单不同），共用一个 store
+    // ⇒ 第二个 runner 就是「重启 + 发布之后」的那个进程。
+    // 与 `tests/engine/menu-drift.test.ts` 的分工：那边钉引擎的判定口径，这边钉
+    // **toolkit/宿主接线**（谁能把当前菜单交到引擎手上）—— 只动一侧不会两边都绿。
+    const danger: AgentTool = {
+      name: 'danger',
+      description: '危险操作',
+      inputSchema: OBJ,
+      approval: 'required',
+      run: () => 'done',
+    };
+    const safe: AgentTool = {
+      name: 'safe',
+      description: '安全操作',
+      inputSchema: OBJ,
+      run: () => 'safe-ok',
+    };
+    const clientA = mockClient([toolUseMsg('danger', {}, 'tu-1')]).client;
+    const clientB = mockClient([endTurnMsg('（模型自己编了个结果）')]).client;
+    const appA: AppCallable = {
+      name: 'app',
+      run: (messages, opts) => executeRun({ messages, client: clientA, tools: [danger], ...opts }),
+    };
+    const appB: AppCallable = {
+      name: 'app',
+      run: (messages, opts) => executeRun({ messages, client: clientB, tools: [safe], ...opts }),
+    };
+
+    const store = new InMemoryTaskStore();
+    const runnerA = new AsyncRunner(appA, { store });
+    const t = runnerA.submit([{ role: 'user', content: '帮我做那件危险的事' }]);
+    await waitFor(
+      () => (runnerA.poll(t.taskId) as TaskRecord | undefined)?.status === 'awaiting_approval',
+      '任务应挂起等审批',
+    );
+    // 挂起段的签名（老菜单）—— 后面拿它与新段比：这就是「跨段比对菜单版本」的用法
+    const recA = (await runnerA.poll(t.taskId))!;
+    const rootA = recA.result!.trace.spans.find((s) => s.spanId === recA.result!.trace.rootSpanId)!;
+    assert.equal(rootA.attributes['tools.names'], 'danger');
+
+    const runnerB = new AsyncRunner(appB, { store });
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...a: unknown[]) => warns.push(a.map(String).join(' '));
+    let done: TaskRecord | undefined;
+    try {
+      await runnerB.approve(t.taskId, { 'tu-1': { approved: true } });
+      done = await runnerB.awaitTask(t.taskId);
+    } finally {
+      console.warn = origWarn;
+    }
+
+    assert.equal(done?.status, 'succeeded');
+    const trace = done!.result!.trace;
+    const events = trace.spans.flatMap((s) => s.events);
+    // ① 事件（时间线 / 任务流）
+    assert.deepEqual(
+      events.filter((e) => e.name === 'menu.drift').map((e) => e.body),
+      [{ missing: ['danger'], tool_use_ids: ['tu-1'], menu_size: 1 }],
+    );
+    // ② 父 span 属性（可查询：TaskRecord.result.trace 里带得到）
+    const rootB = trace.spans.find((s) => s.spanId === trace.rootSpanId)!;
+    assert.equal(rootB.attributes['menu.drift'], 'missing:danger');
+    // 新段的签名 = 新菜单（与上面 rootA 的 'danger' 一比就知道菜单动过）
+    assert.equal(rootB.attributes['tools.names'], 'safe');
+    assert.notEqual(rootB.attributes['tools.menuHash'], rootA.attributes['tools.menuHash']);
+    // ③ console.warn（运维面立即看见）
+    assert.equal(warns.length, 1);
+    assert.match(warns[0]!, /菜单漂移/);
+    assert.match(warns[0]!, /danger/);
+
+    // 本轮取舍：**不判失败** —— run 照常收尾，那个 tool_use 走既有 unknown_tool
+    assert.equal(done!.result!.stopReason, 'end_turn');
+    assert.equal(done!.result!.error, undefined);
+    const out = events
+      .filter((e) => e.name === 'tool.output')
+      .map((e) => e.body as { errorKind?: string });
+    assert.deepEqual(
+      out.map((o) => o.errorKind),
+      ['unknown_tool'],
+    );
+  });
+});

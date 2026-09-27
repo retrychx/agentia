@@ -577,6 +577,16 @@ const REGISTRY: ReadonlyArray<Entry> = [
     key: '框架不执行模型生成的代码',
     choice: '定位决定：模型输出只成文本 / tool_result；代码执行工具的隔离是工具实现内部的事',
   },
+  {
+    // R8 候选 3（spec §10 2026-09-27 ⑧）：续跑时菜单漂移**只标记**（事件 / 属性 / console.warn），
+    // 不判失败 —— 「不判失败」是 decision 不是缺陷：挂起是合法态、改代码是发布常态。
+    // 标记本身有用例钉（pin）；严格模式是 spec §11 开放项。
+    key: '菜单漂移只**标记**、不判失败',
+    pin: {
+      file: 'tests/engine/menu-drift.test.ts',
+      marker: '工具被删 ⇒ menu.drift 事件 + 父 span 属性 + console.warn；run 仍照常收尾',
+    },
+  },
 ];
 
 const rows = parseBoundaryRows();

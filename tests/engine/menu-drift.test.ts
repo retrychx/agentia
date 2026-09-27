@@ -101,12 +101,15 @@ describe('menu-drift 纯件：签名与漂移判定', () => {
   });
 
   it('detectMenuDrift：全在册 ⇒ 空；缺的按名字去重排序、tool_use_id 逐条保留', () => {
-    const uses = [
-      { id: 'u1', name: 'ghost', input: {} },
-      { id: 'u2', name: 'alpha', input: {} },
-      { id: 'u3', name: 'ghost', input: {} },
-      { id: 'u4', name: 'beta', input: {} },
-    ] as never;
+    // 类型跟着函数签名走（不用 `as never`：那会把 `.slice` 也变成 never，实测被
+    // typecheck:tests 拦下 —— 2026-09-27）
+    type Uses = Parameters<typeof detectMenuDrift>[0];
+    const uses: Uses = [
+      { type: 'tool_use', id: 'u1', name: 'ghost', input: {} },
+      { type: 'tool_use', id: 'u2', name: 'alpha', input: {} },
+      { type: 'tool_use', id: 'u3', name: 'ghost', input: {} },
+      { type: 'tool_use', id: 'u4', name: 'beta', input: {} },
+    ];
     assert.deepEqual(detectMenuDrift(uses.slice(1, 2), [tool('alpha')]), {
       missing: [],
       toolUseIds: [],
@@ -117,7 +120,8 @@ describe('menu-drift 纯件：签名与漂移判定', () => {
   });
 
   it('detectMenuDrift：`resultSchema` 在场时隐藏的 submit_result 不算漂移（不在场则算）', () => {
-    const uses = [{ id: 'u1', name: 'submit_result', input: {} }] as never;
+    type Uses = Parameters<typeof detectMenuDrift>[0];
+    const uses: Uses = [{ type: 'tool_use', id: 'u1', name: 'submit_result', input: {} }];
     assert.deepEqual(detectMenuDrift(uses, [], { resultSchema: OBJ }).missing, []);
     assert.deepEqual(
       detectMenuDrift(uses, []).missing,
