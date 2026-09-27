@@ -41,8 +41,8 @@ export function buildObservability(opts: { dbPath: string; sampleRate: number })
       redactSink({
         // 字段级脱敏（框架只做长度截断，这层得宿主自己兜）
         keys: ['authorization', 'api_key', 'apikey', 'password', 'cookie', 'x-api-key'],
-        // 顺带遮掉手机号 / 邮箱这类 PII
-        patterns: [/1[3-9]\d{9}/g, /[\w.+-]+@[\w-]+\.[\w.]+/g],
+        // 手机号 / 邮箱 / Bearer / JWT / AWS / LLM key 由内置预设兜住（缺省全开），
+        // 这里只补预设猜不到的**业务自有形态**（示例无，故不传 patterns）
         sinks: [traces, log],
       }),
     ],

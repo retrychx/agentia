@@ -449,11 +449,54 @@ describe('配方 ② redactSink：脱敏', () => {
     assert.notEqual(out.seen[0], trace, '下游拿到的是副本');
   });
 
-  it('patterns 对字符串值生效（手机号等）', () => {
+  it('patterns 对字符串值生效（自定义规则的替换文案是裸 [REDACTED]）', () => {
     const out = recorder();
-    redactSink({ patterns: [/1[3-9]\d{9}/], sinks: [out] }).export(makeTrace());
+    // presets: false 关掉内置预设 —— 否则手机号会先被预设截走（[REDACTED:phone-cn]）
+    redactSink({ presets: false, patterns: [/1[3-9]\d{9}/], sinks: [out] }).export(makeTrace());
     const err = out.seen[0]!.spans.find((s) => s.spanId === 'tool-1')!.error!;
     assert.equal(err.message, '429 联系 [REDACTED]');
+  });
+
+  it('内置预设缺省全开：手机号/邮箱/Bearer/JWT/AWS/LLM key 都带类别标签', () => {
+    const trace = makeTrace();
+    // 把一批敏感形态塞进一个非 keys 命中的字段，验证值级（非字段级）脱敏
+    trace.spans[1]!.attributes.note =
+      'tel=13800138000 mail=a.b+c@foo-bar.com auth=Bearer abc.def-ghi_123 ' +
+      'jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk ' +
+      'aws=AKIAIOSFODNN7EXAMPLE key=sk-0123456789abcdefZZ';
+    const out = recorder();
+    redactSink({ sinks: [out] }).export(trace);
+    const note = out.seen[0]!.spans[1]!.attributes.note as string;
+    assert.equal(
+      note,
+      'tel=[REDACTED:phone-cn] mail=[REDACTED:email] auth=[REDACTED:bearer] ' +
+        'jwt=[REDACTED:jwt] aws=[REDACTED:aws-access-key] key=[REDACTED:llm-api-key]',
+      '预设应逐类命中且替换文案带类别标签',
+    );
+    // 原 trace 不动（预设也是深拷贝路径）
+    assert.ok(
+      (trace.spans[1]!.attributes.note as string).includes('13800138000'),
+      '原 trace 必须保持不变',
+    );
+  });
+
+  it('presets 可只开子集：未选中的预设不生效', () => {
+    const trace = makeTrace();
+    trace.spans[1]!.attributes.note = 'tel=13800138000 mail=a@b.com';
+    const out = recorder();
+    redactSink({ presets: ['email'], sinks: [out] }).export(trace);
+    const note = out.seen[0]!.spans[1]!.attributes.note as string;
+    assert.equal(note, 'tel=13800138000 mail=[REDACTED:email]', '只开 email 时手机号应保留');
+  });
+
+  it('数字/布尔等非字符串字段原样保留（预设只看字符串）', () => {
+    const trace = makeTrace();
+    trace.spans[1]!.attributes.count = 13800138000; // 数字形态的手机号不得被当成字符串脱敏
+    trace.spans[1]!.attributes.flag = true;
+    const out = recorder();
+    redactSink({ sinks: [out] }).export(trace);
+    assert.equal(out.seen[0]!.spans[1]!.attributes.count, 13800138000);
+    assert.equal(out.seen[0]!.spans[1]!.attributes.flag, true);
   });
 });
 

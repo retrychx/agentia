@@ -155,15 +155,34 @@ const sink = sampleSink({ rate: 0.1, sinks: [/* 下游 */] });  // 只留 10%
 import { redactSink } from '@migor/agentia-observability';
 
 const sink = redactSink({
-  keys: ['authorization', 'api_key', 'password', 'cookie'],   // 字段名（大小写不敏感子串）
-  patterns: [/1[3-9]\d{9}/, /[\w.+-]+@[\w-]+\.[\w.]+/],        // 可选：手机号 / 邮箱
+  keys: ['authorization', 'api_key', 'password', 'cookie'],   // 字段名（大小写不敏感子串，整字段抹掉）
+  patterns: [/(内部 ID 形态)/],                                 // 可选：预设猜不到的业务自有形态
+  // presets 缺省全开（见下）；传 ['email'] 只开子集，传 false 全关
   sinks: [/* 下游 */],
 });
 ```
 
+- **内置正则预设缺省全开**（拷走即用、不从零开始），替换文案带类别标签：
+
+  | 预设 | 命中形态 | 替换文案 |
+  |---|---|---|
+  | `bearer` | `Bearer <token>` | `[REDACTED:bearer]` |
+  | `jwt` | `eyJ…`.`…`.`…` 三段式 | `[REDACTED:jwt]` |
+  | `aws-access-key` | `AKIA…`（16 位） | `[REDACTED:aws-access-key]` |
+  | `llm-api-key` | `sk-…`（≥16 位） | `[REDACTED:llm-api-key]` |
+  | `email` | 邮箱 | `[REDACTED:email]` |
+  | `phone-cn` | 手机号（+86 形态） | `[REDACTED:phone-cn]` |
+
+  带类别标签是为了让「这里被改过、改的是哪类」在 trace 里**可见** —— 静默替换会让下游
+  排查误以为数据本来如此。自定义 `patterns` 的替换文案是裸 `[REDACTED]`（无类别）；
+  `keys` 命中的字段不看值、整个抹成 `[REDACTED]`（最严的一档）。
+  ⚠️ 预设只是起点：你的合规清单（内部 ID 形态、业务字段）得自己补进 `keys` / `patterns`。
 - 递归深拷贝 —— **原 trace 不被改动**（其余 sink 仍拿得到原文，便于「本地调试看原文、上报脱敏」并存）。
 - 覆盖 `span.attributes`、`span.events[].body`、`span.error.message`。
 - 放在链路上游（脱敏 → 落库/日志），保证下游拿到的都是脱敏副本。
+- **为什么不内建进框架**：spec §9.3 把脱敏划在 sink 缝外（宿主职责），§10 2026-09-14 ⑥
+  曾把它作为空头承诺写进文档、处理方式是删掉 —— 「删错的、不补对的」。这张配方就是
+  「缝外自建」的现成答案；顶部那张「不内建表」里它仍标 ❌，不要当成待办把它搬回框架。
 
 ### 2.5 组装
 

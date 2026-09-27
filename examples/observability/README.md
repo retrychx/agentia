@@ -40,7 +40,7 @@ cd examples/observability && npm install && npm run build
 | `sqliteTraceSink({ db })` | run/span 落库（`traces` / `spans` 表），`getTrace(runId)` 按 runId 检索；与 `SqliteTaskStore` 同库 |
 | `jsonLogSink(opts?)` | 一 run 一行 JSON（含 `runId`）→ 日志与 trace 双向可跳 |
 | `sampleSink({ rate, sinks })` | 按 runId 哈希确定性采样；**错误 run 永不采样掉** |
-| `redactSink({ keys?, patterns?, sinks })` | 字段名 + 正则脱敏（深拷贝，不改原 trace） |
+| `redactSink({ keys?, patterns?, presets?, sinks })` | 字段名 + 正则脱敏（深拷贝，不改原 trace）；内置预设（Bearer/JWT/AWS/LLM key/邮箱/手机号）缺省全开，`presets` 可调 |
 
 ## Grafana 看板
 

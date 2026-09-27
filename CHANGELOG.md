@@ -26,6 +26,11 @@
 
 ### 变更
 
+- **脱敏配方 2.4 升级**（`examples/observability` 的 `redactSink`，框架 `src/` 零改动）：
+  新增内置正则预设（Bearer / JWT / AWS access key / LLM `sk-` key / 邮箱 / 手机号），
+  **缺省全开**（拷走即用），`presets` 可开子集或 `false` 全关；预设命中的替换文案带类别
+  标签（`[REDACTED:email]`），自定义 `patterns` 与 `keys` 命中的仍是裸 `[REDACTED]`。
+  脱敏不内建进框架是已锁定决策（spec §9.3 / §10 2026-09-14 ⑥），这是配方层的升级。
 - **sink 投递失败不再完全静默**：`flushSinks` 吞掉 sink 异常的纪律不变（观测不击穿业务），
   但吞之前现在会落一条 `console.warn`（文案含「trace sink」，可 grep）——「观测的观测」
   此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ②。
