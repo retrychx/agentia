@@ -3678,8 +3678,62 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
 `createMcpServer` + `McpServerApp` / `McpServerOptions` / `McpServer`（api.html 计数
 220 → 224）。
 
+### 2026-09-27 ⑧：**菜单漂移不再静默**（R8 候选 3 / durable 调研 §4.1）—— 续跑时未决工具没了记三处信号，但**不判失败**
+
+动机：`docs/plans/2026-09-27-durable-execution-research.md` §4.1 实测出来的那个静默 ——
+菜单变了（删 / 改工具）之后，在飞 run 续跑时未决的 tool_use 会拿到 `unknown tool: <name>`
+当出参回给模型（`turn.ts:611`），run 照常收尾：调用方 `result.error === undefined`、
+`stopReason='end_turn'`、`finalText` 是模型自己编的收尾，**零失败信号**。G4 因此从「中」提到
+「中高（静默 ≠ 缓和）」。本条是调研文档 §6 候选 3 的落地。
+
+决策：
+
+1. **不判失败，只把它变成三处看得见。** 挂起是合法态（「挂起不是失败」是本仓口径）、改代码是
+   发布常态 —— 判失败会让「续跑」在正常迭代节奏下频繁失败；而 §4.1 的害处是「没人知道」，
+   不是「不该继续」。三处：`menu.drift` 事件（时间线；经 `onTraceEvent` 也进
+   `GET /tasks/:id/stream`，见 `tracer.event()` 的 `span.event` 记录）、父 span 属性
+   `menu.drift`（可查询：`TaskRecord.result.trace` 里就带得到）、`console.warn`（运维面立即
+   看见，与 ②「sink 失败落 warn」同款）。**严格模式（带具名 error 的收尾）本轮不做** ——
+   它要动公共选项面 + limits 真源表，记进 §11 开放项。
+2. **签名口径 = 名字 + 输入 schema**（新纯件 `engine/menu-drift.ts`）：落 run 根 `tools.names`
+   （排序、截断带省略标记）与 `tools.menuHash`（规范序列化后 sha1 截 12 位），与
+   `prompts.versions` 同一动机（质量回归定位到具体菜单版本）。规范序列化 ⇒ 与菜单顺序、schema
+   键序无关；**`description` 刻意不参与**（改文案不该让在飞 run 被标记；代价是「只改描述」我们
+   看不见 —— 有意的取舍，已钉在用例里）。用 sha1 而不是自造哈希：碰撞在这里是**静默失效**
+   （两段不同菜单判成同一段），不值得为省一个内置模块自造。
+3. **漂移判据只看名字，且判据只有一份**：`detectMenuDrift(uses, tools, { resultSchema })`。
+   ⚠️ `resultSchema` 在场时把隐藏的 `submit_result` 当**在册** —— 它从不进 `args.tools`，忘了
+   这条会把**每一次**带 resultSchema 的续跑都误报成漂移（所以由本函数收 `resultSchema` 而不是
+   让调用方传名字清单：口径只有一份）。**不看「输入还合不合法」** —— 那段输入在挂起时**也没**
+   校验过，拿它当漂移证据是误报（模型本就可以给一份不合法的入参）。
+4. **与回合内的 `unknown_tool` 刻意分开**：那个是模型幻觉（模型拿一句 unknown tool 就能自我
+   修正，走既有路径，钉在 `tests/engine/toolTiming.test.ts`）；本条只管**续跑**时名字对不上 ——
+   那是我们的部署动作把一条在飞 run 的意图作废了。两条阴性对照各钉一边（工具都在 ⇒ 零信号；
+   回合内 ⇒ 不判漂移）。
+5. **落点**：`engine/menu-drift.ts`（纯判定单源）+ `loop.ts` 两处调用（run 根记签名、续跑入口
+   报漂移）。`SUBMIT_RESULT` 随之从 `turn.ts` 导出（engine 内部，**不进公共面** —— `index.ts`
+   与 api.html 零变化）。
+
+门禁两处（分工：**引擎侧钉判定口径、传输侧钉接线**，只动一侧不会两边都绿）：
+`tests/engine/menu-drift.test.ts`（10 条：纯件 6 + 集成 4）与
+`tests/transport/async.test.ts` 的「HITL 续跑时的菜单漂移」（1 条：两个 AppCallable 代表
+**两次发布**的同一应用、共用一个 store ⇒ 第二个 runner 就是「重启 + 发布之后」的进程，走
+`submit → 挂起 → approve → 续跑` 全链）。变异电池 7 条各自咬住目标（其中 3 条同时打红两侧）：
+哈希材料去掉 schema ⇒ 2 条红（「schema 变了 ⇒ hash 变」+ 键序那条）/ 去掉 `submit_result` 在册
+判定 ⇒ 1 条 / `description` 混进签名 ⇒ 1 条 / 信号打到空 span ⇒ **两侧各 1 条** / **无条件报
+漂移 ⇒ 打红阴性对照**（这一步证明阴性对照不是真空变绿）/ 不记 `tools.names` ⇒ 1 条 /
+干脆不报漂移（回到静默）⇒ **两侧各 1 条**；还原后工作区 0 改动、两侧复绿。
+`npm test` 1319/1319，`menu-drift.ts` 覆盖率 100/100/100/100。
+
+⚠️ 实测（生产路径真跑，非单测）：挂起段 run 根 `tools.names='danger'`、续跑段 `='safe'` ——
+**跨段比对菜单版本**靠的就是这两个 attribute 的差。
+
 ## 11. 开放项
 
+- **菜单漂移的严格模式与结果级字段**（§10 2026-09-27 ⑧ 未做的那两件）：① `menuDrift: 'fail'`
+  这类开关 —— 要动公共选项面 + `limits.ts` 真源表；② 让「续跑跑在漂移的菜单上」直接出现在
+  `AgentRunResult` 上（而不是只落在 trace 属性里）—— 要动公共结果类型。现状是三处信号
+  （`menu.drift` 事件 / 父 span 属性 / `console.warn`）：够「可查询」，但调用方得主动读 trace。
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
   **宿主 / 集成接入不拆包**（gRPC / Kafka 这类只给配方 + 示例，判别规则与升级触发条件见 §10 2026-09-18 ⑪）。
   ⇒ 发布进度：v0.2.2（2026-09-14，框架包 + CLI 包，scope 为 `@migor/*`）→ v0.3.0（`.env` 一等入口）

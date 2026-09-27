@@ -9,6 +9,15 @@
 
 ### 新增
 
+- **菜单漂移不再静默（R8 候选 3，spec §10 2026-09-27 ⑧）**：挂起段之后**续跑**时，未决
+  tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架把这件事记成**三处信号** ——
+  `menu.drift` 事件（`{ missing, tool_use_ids, menu_size }`；时间线与
+  `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、
+  一条 `console.warn`。⚠️ **run 照常收尾**（不判失败：挂起是合法态、改代码是发布常态 ——
+  理由与「严格模式为什么不给」见 spec §10 2026-09-27 ⑧）。另新增 run 根 attribute
+  `tools.names` / `tools.menuHash`（装配后菜单的名字清单 + 名字与**输入 schema** 的摘要，
+  与 `prompts.versions` 同动机：质量回归能定位到具体菜单版本）。口径：判据只看名字；签名与
+  菜单顺序、schema 键序无关，`description` **不参与**。**公共 API 零变化**。
 - **MCP 反向桥（`createMcpServer`，R8-P5）**：把 app 的能力菜单（装配后、过中间件的那份）
   暴露成 MCP server —— Claude Code / Cursor / 任何 MCP 宿主能直接调你的 `@Tool`。
   传输二选一（都只用标准库）：`stdio`（换行分隔 JSON-RPC，日志只去 stderr）与
