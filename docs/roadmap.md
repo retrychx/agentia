@@ -199,6 +199,8 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   「循环位置」、落**消息历史**（assistant 结尾的未决 tool_use 即断点），恢复 = 引擎见到这种
   输入先解决这些 tool_use 再调模型；`@Tool({ approval: 'required' })` + `AsyncRunner.approve` /
   `POST /tasks/:id/approve`，回合级全有或全无、决定随任务落库、惰性超时兜底；
+  ⚠️ **状态值 2026-09-28 改名**：`awaiting_approval` → **`suspended` + `suspendedReason`**
+  （本条正文保留当年的写法；映射与理由见 spec §10 2026-09-28 ①）；
 - ~~**默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）~~ **✅ 已落地
   （2026-09-17，两个 PR：#42 自研 client + 本条类型自有化）** —— 前者 = 用 fetch 重实现
   Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），
