@@ -106,6 +106,33 @@
 - **`tool_use` 的参数同样有界**：同一类「大载荷灌进摘要器」的洞，两处各配回归用例
   （含「小参数不许被截断」的阳性对照），变异验证 4/4 咬人。
 
+### 变更 · 复审收口（2026-09-27，九条「测试没覆盖的缝」）
+
+> 来源：对 R8 五项实现（P1–P5）的逐条复审 —— 单测全绿、全链 8/8，问题全在用例之外。
+> 每条的取证与复现读数记在各自提交里；下面按模块列**行为变化**。
+
+- **MCP 反向桥三处**：① `tools/call` 现在走引擎**同一份** `inputSchema` 校验器，入参不合法
+  回 `-32602` 且方法体零调用（此前缺必填项被当成功调用，实测返回 `你好，undefined`）；
+  ② `auth` 钩子提到方法/路径判定**之前**（此前未鉴权能拿到 `405 allow: POST, DELETE` 与
+  `DELETE → 200`，与 `createHttpHandler` 的「其余先鉴权」纪律不符）；③ stdio 的 stdout
+  挂了 `error` 守卫吞 EPIPE（此前宿主先关读端会把 server 打成栈回溯 + exit 1；正向连接器
+  对子进程 stdin 一直是这么吞的）。
+- **`metricsSink` 归因标签补上第四道基数上限 `maxLabelCombos`**（缺省 200，进 limits 真源表）：
+  `maxLabelValues` 只封每个键的**值域**，而进内存的是键的**组合**（叉乘）—— 缺省 100 值域
+  配 3 个键 = 1,030,301 条常驻，且 `droppedLabelValues` 看不见它。超限的**新组合**折进一个
+  全 `__other__` 的桶（量不丢），折叠数经 `snapshot().droppedLabelCombos` 与
+  `dropped_keys{kind="label:combos"}` 可见。**单键配置（最常见）组合数 ≈ 值数 ⇒ 行为不变。**
+- **标签 combo 身份不再裸拼接**：值里出现 `,`/`=`/`\` 时会给 `\` 前缀转义 —— 此前两个不同
+  标签集能拼出同一个键（实测 `a="x,b=y",b="z"` 与 `a="x",b="y,b=z"` 并成一本账、且按前者
+  的标签渲染，后者的量被错配）。正常值（不含这三个字符）的键与展示形**逐字不变**。
+- **`agentia export` / `exportRun` 三处**：① 汇总现在**也**在 stdout 模式打（走 stderr）——
+  此前 `agentia export x.jsonl > dataset.jsonl` 静默丢坏行、而 `--out` 形态与 `report` 都会报；
+  ② `incomplete` 新增 `assistant-text` 的**整棵 trace 无正文**判据（混合回合的真文本此前静默
+  缺席却不当缺口）与 `no-final-assistant`（末条 user ⇒ 无 loss 目标）；③ 侧产物与 CLI 移植
+  副本在「trace 缺 `status` / span 缺 `attributes`」的裸 trace 上不再分叉（框架侧此前会抛）。
+  **⚠️ 迁移注意**：`meta.incomplete` 会多出 `no-final-assistant` 这个词 —— 按等值断言
+  `incomplete` 的消费方要放宽成「包含」或补上这个词。
+
 ### 变更 · 三个旋钮的 `0` 从「静默失效」改成构造期报错
 
 - **`Scheduler.every.maxInFlight: 0`**：闸门判据是 `inFlight.size >= maxInFlight`，`0` / 负数时

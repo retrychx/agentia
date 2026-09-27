@@ -138,6 +138,17 @@ describe('agentia export（R8-P3b：trace → 训练数据 JSONL）', { skip: SK
     });
   });
 
+  it('stdout 模式也报汇总（坏行不许静默；汇总走 stderr，stdout 只留产物）', () => {
+    withTmp((dir) => {
+      writeFileSync(join(dir, 't.jsonl'), `${JSON.stringify(FULL)}\nnot json\n{"x":1}\n`);
+      const r = run(['export', 't.jsonl'], dir);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim().split('\n').length, 1, 'stdout 仍只有产物行（汇总不许混进去）');
+      assert.match(r.stderr, /→ stdout/, '修前这一行不存在：stdout 模式一声不吭');
+      assert.match(r.stderr, /跳过无法解析 2 行/, '坏行数必须可见（与 --out 形态、report 同口径）');
+    });
+  });
+
   it('--min-score：没分数的 run 被排除（没判过 ≠ 及格）', () => {
     withTmp((dir) => {
       writeFileSync(
@@ -204,6 +215,20 @@ describe('agentia export（R8-P3b：trace → 训练数据 JSONL）', { skip: SK
       [
         '没有主循环回合',
         { ...FULL, traceId: 'run-empty', spans: FULL.spans.filter((s) => s.kind !== 'llm.turn') },
+      ],
+      [
+        '缺 status 的裸 trace（两侧产物必须逐字一致）',
+        { ...FULL, traceId: 'run-nostatus', status: undefined },
+      ],
+      [
+        '混合回合 + 未开 traceContent（正文缺席必须标注）',
+        {
+          ...FULL,
+          traceId: 'run-mixed',
+          spans: FULL.spans.map((s) =>
+            s.kind === 'llm.turn' ? { ...s, attributes: { ...s.attributes, 'output.text': undefined } } : s,
+          ),
+        },
       ],
     ]) {
       assert.equal(

@@ -1234,8 +1234,11 @@ agentia export trace.jsonl --ok-only --min-score 0.8 --out dataset.jsonl
 
 - 输入同 `agentia report` / `harvest`；`--min-score` 按 run 根 score 事件的最大值过滤
   （**没带分数的 run 在此过滤下被排除**：没判过 ≠ 及格）；`--ok-only` 只留 status ok。
-- 每条记录的 `meta.incomplete` 如实标注缺口（`input` = 原始输入未入 trace，首条 user
-  恒为占位；`assistant-text` = 终端回合没记到模型正文）；`meta.nestedTurns` 记略去的
+- 每条记录的 `meta.incomplete` 如实标注缺口，值是机器可 grep 的固定词：`input` = 原始输入
+  未入 trace（首条 user 恒为占位）；`assistant-text` = 模型正文缺席（终端回合没记到，
+  或**整棵 trace 一行正文都没有**且本 run 没开 `traceContent` —— 后者连混合回合的真文本
+  也拿不回来）；`no-final-assistant` = 末条是 user，**这条样本没有 loss 目标**（半截 run /
+  只剩工具往返；`--ok-only` 挡不住它 —— status ok ≠ 有终答）。`meta.nestedTurns` 记略去的
   子 agent 嵌套回合数（它们不进主线 —— 其能力出参已在主线的 tool_result 里）。
 - 缺输出的 tool_use 补 is_error 占位块（协议要求配对合法）；有输出配不上对的计数进
   `meta.droppedOutputs`，不静默丢。

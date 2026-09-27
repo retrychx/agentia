@@ -118,6 +118,11 @@ export function exportRun(trace: ExportTraceLike): ExportRecord {
   const incomplete: string[] = ['input']; // 首条 user 恒为占位（trace 不记原始输入）
   let droppedOutputs = 0;
   let tuSeq = 0;
+  // 「本 run 压根没开 traceContent」是 run 根上的 ground truth（loop.ts 写入）。它不能直接
+  // 用来标缺口（合成 / 老 trace 可能没有这个属性，却真的有正文），只在**收尾**时与
+  // 「整棵 trace 一行正文都没有」合取使用，见下面那段。
+  const textRecorded = root?.attributes?.['config.traceContent'] === 'full';
+  let anyTextRecorded = false;
 
   const messages: ExportRecord['messages'] = [{ role: 'user', content: INPUT_PLACEHOLDER }];
 
@@ -129,6 +134,7 @@ export function exportRun(trace: ExportTraceLike): ExportRecord {
     const inputs = toolEvents(turn, 'tool.input');
     const text = turn.attributes?.['output.text'];
     if (typeof text === 'string' && text !== '') {
+      anyTextRecorded = true;
       content.push({ type: 'text', text });
     } else if (inputs.length === 0 && !incomplete.includes('assistant-text')) {
       incomplete.push('assistant-text');
@@ -171,6 +177,24 @@ export function exportRun(trace: ExportTraceLike): ExportRecord {
       ).length;
       messages.push({ role: 'user', content: results });
     }
+  }
+
+  // 收尾判定（2026-09-27 ⑪）：整棵 trace 一行正文都没有、且本 run 没开 traceContent
+  // ⇒ 缺的不只是「终端回合那句话」：**混合回合**（模型先说一句再调工具）的真实正文同样
+  // 不在 trace 里，而只看「本回合有没有 tool_use」是判不出来的（那种回合按定义就是
+  // 「本来没文本」）。两条合取才成立：有正文就不标（合成 / 老 trace 也照顾到），
+  // 开了 traceContent 而没正文也不标（那是模型确实没说话，不是记录缺口）。
+  if (!anyTextRecorded && !textRecorded && !incomplete.includes('assistant-text')) {
+    incomplete.push('assistant-text');
+  }
+  // SFT 形状（2026-09-27 ⑫）：末条是 user ⇒ 这条样本**没有 loss 目标**（训练器会静默
+  // 丢掉它），而它恰恰是「run 没有终答」的形状（半截 run / 只剩工具往返）。标注出来，
+  // 别让下游以为每条都能直接用：`--ok-only` 挡不住它 —— status ok ≠ 有终答。
+  if (
+    messages[messages.length - 1]?.role === 'user' &&
+    !incomplete.includes('no-final-assistant')
+  ) {
+    incomplete.push('no-final-assistant');
   }
 
   const scores: ExportRecordMeta['scores'] = [];
@@ -293,6 +317,14 @@ export async function exportCommand(args: string[]): Promise<number> {
     );
   } else {
     process.stdout.write(body);
+    // 汇总**也**走 stderr：stdout 是产物的纪律没变，但「跳过了几行」不许静默 ——
+    // `--out` 形态会报、既有的 `report` 在 stdout 形态也报，只有这里此前一声不吭
+    // ⇒  `agentia export x.jsonl > dataset.jsonl` 静默丢数据（2026-09-27 实测）。
+    console.error(
+      `已写出 ${records.length} 条训练记录 → stdout` +
+        (filtered > 0 ? `（过滤掉 ${filtered} 条）` : '') +
+        (badLines > 0 ? `；跳过无法解析 ${badLines} 行` : ''),
+    );
   }
   return 0;
 }

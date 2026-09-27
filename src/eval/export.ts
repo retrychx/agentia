@@ -103,6 +103,11 @@ export function exportRun(trace: Trace): ExportRecord {
   const incomplete: string[] = ['input']; // 首条 user 恒为占位（trace 不记原始输入）
   let droppedOutputs = 0;
   let tuSeq = 0;
+  // 「本 run 压根没开 traceContent」是 run 根上的 ground truth（loop.ts 写入）。它不能直接
+  // 用来标缺口（合成 / 老 trace 可能没有这个属性，却真的有正文），只在**收尾**时与
+  // 「整棵 trace 一行正文都没有」合取使用，见下面那段。
+  const textRecorded = root?.attributes['config.traceContent'] === 'full';
+  let anyTextRecorded = false;
 
   const messages: MessageParam[] = [{ role: 'user', content: INPUT_PLACEHOLDER }];
 
@@ -112,8 +117,11 @@ export function exportRun(trace: Trace): ExportRecord {
     // 缺口判定：纯 tool_use 回合**本来就没文本**（引擎只在文本非空时记 output.text），
     // 不算缺口；没有 tool_use 又没有文本的回合（终端回合）缺文本才是真缺口。
     const inputs = toolEvents(turn, 'tool.input');
-    const text = turn.attributes['output.text'];
+    // ⚠️ 宽容读取（`?.`）：trace 经 JSONL / 手搓对象回来时可能没有 `attributes`
+    // 字段（类型上说必填、运行时不是）—— CLI 那份移植副本一直这么读，两侧产物必须一致。
+    const text = turn.attributes?.['output.text'];
     if (typeof text === 'string' && text !== '') {
+      anyTextRecorded = true;
       content.push({ type: 'text', text });
     } else if (inputs.length === 0 && !incomplete.includes('assistant-text')) {
       incomplete.push('assistant-text');
@@ -158,6 +166,24 @@ export function exportRun(trace: Trace): ExportRecord {
     }
   }
 
+  // 收尾判定（2026-09-27 ⑪）：整棵 trace 一行正文都没有、且本 run 没开 traceContent
+  // ⇒ 缺的不只是「终端回合那句话」：**混合回合**（模型先说一句再调工具）的真实正文同样
+  // 不在 trace 里，而只看「本回合有没有 tool_use」是判不出来的（那种回合按定义就是
+  // 「本来没文本」）。两条合取才成立：有正文就不标（合成 / 老 trace 也照顾到），
+  // 开了 traceContent 而没正文也不标（那是模型确实没说话，不是记录缺口）。
+  if (!anyTextRecorded && !textRecorded && !incomplete.includes('assistant-text')) {
+    incomplete.push('assistant-text');
+  }
+  // SFT 形状（2026-09-27 ⑫）：末条是 user ⇒ 这条样本**没有 loss 目标**（训练器会静默
+  // 丢掉它），而它恰恰是「run 没有终答」的形状（半截 run / 只剩工具往返）。标注出来，
+  // 别让下游以为每条都能直接用：`--ok-only` 挡不住它 —— status ok ≠ 有终答。
+  if (
+    messages[messages.length - 1]?.role === 'user' &&
+    !incomplete.includes('no-final-assistant')
+  ) {
+    incomplete.push('no-final-assistant');
+  }
+
   const scores: ExportRecordMeta['scores'] = [];
   for (const e of root?.events ?? []) {
     if (e.name !== 'score') continue;
@@ -174,7 +200,8 @@ export function exportRun(trace: Trace): ExportRecord {
       model: typeof root?.attributes.model === 'string' ? root.attributes.model : undefined,
       stopReason:
         typeof root?.attributes.stop_reason === 'string' ? root.attributes.stop_reason : undefined,
-      status: trace.status,
+      // `?? ''` 与 CLI 副本同款：trace 缺 status 时两侧产物必须逐字一致（对拍守着）
+      status: trace.status ?? '',
       scores,
       nestedTurns,
       droppedOutputs,

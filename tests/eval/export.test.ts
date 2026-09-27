@@ -4,7 +4,7 @@ import { runAgent, runAgentScoped } from '../../src/engine/loop.js';
 import { forwardToolContext } from '../../src/engine/forwarded.js';
 import { attachScore } from '../../src/core/trace.js';
 import type { AgentTool, ToolRunContext } from '../../src/core/tool.js';
-import { mockClient, endTurnMsg, toolUseMsg } from '../helpers.js';
+import { mockClient, endTurnMsg, toolUseMsg, U } from '../helpers.js';
 import { exportRun } from '../../src/eval/export.js';
 
 /**
@@ -67,8 +67,9 @@ describe('exportRun（R8-P3b：trace → 训练数据记录）', () => {
     const rec = exportRun(trace);
     assert.deepEqual(
       rec.meta.incomplete.sort(),
-      ['assistant-text', 'input'],
-      '终端回合的 assistant 文本缺席必须标注（占位文本进训练数据是投毒）',
+      ['assistant-text', 'input', 'no-final-assistant'],
+      '终端回合的 assistant 文本缺席必须标注（占位文本进训练数据是投毒）；'
+        + '末条是 user 就再标 no-final-assistant（这条样本没有 loss 目标）',
     );
     // 工具回合的 assistant 只剩 tool_use 块；终端回合没有真文本 ⇒ 整条 assistant 不产生
     const roles = rec.messages.map((m) => m.role);
@@ -135,11 +136,42 @@ describe('exportRun（R8-P3b：trace → 训练数据记录）', () => {
     assert.match(String(u2[0]!.content), /输出未入 trace/);
   });
 
-  it('没有主循环回合的 trace：只有占位 user，incomplete 标 input', async () => {
+  it('没有主循环回合的 trace：只有占位 user，incomplete 标 input + 无终答', async () => {
     const trace = await realTrace('full');
     trace.spans = trace.spans.filter((s) => s.kind !== 'llm.turn');
     const rec = exportRun(trace);
     assert.equal(rec.messages.length, 1);
-    assert.deepEqual(rec.meta.incomplete, ['input']);
+    assert.deepEqual(rec.meta.incomplete, ['input', 'no-final-assistant'],
+      '只有占位 user ⇒ 这条样本没有 loss 目标，必须标出来');
+  });
+
+  it('混合回合 + 未开 traceContent：正文缺席必须标注（此前静默）', async () => {
+    // 反向验证：删掉 exportRun 收尾那段合取 ⇒ 本用例红在 incomplete 里没有 'assistant-text'。
+    const mixed = {
+      id: 'm1',
+      model: 'claude-opus-5',
+      stop_reason: 'tool_use' as const,
+      usage: U,
+      content: [
+        { type: 'text', text: '我先查查天气再回答你' },
+        { type: 'tool_use', id: 'tu1', name: 'noop', input: { city: '北京' } },
+      ],
+    };
+    const r = await runAgent({
+      messages: [{ role: 'user', content: '查一下天气' }],
+      client: mockClient([mixed, endTurnMsg('北京晴')]).client,
+      tools: [noop],
+      maxIterations: 1, // 第一回合后收尾 ⇒ 没有「终端文本回合」来触发旧判据
+    });
+    const rec = exportRun(r.trace);
+    assert.ok(
+      rec.meta.incomplete.includes('assistant-text'),
+      '整棵 trace 一行正文都没有 ⇒ 混合回合的正文缺席必须标注（不能因「有 tool_use」当成本来没文本）',
+    );
+    assert.equal(
+      JSON.stringify(rec.messages).includes('我先查查天气'),
+      false,
+      '守的是「缺席被标注」，不是「正文被找回」：正文确实不在导出物里',
+    );
   });
 });
