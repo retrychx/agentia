@@ -14,7 +14,8 @@ import {
  * 2. 超预算：先 **context editing**（trimToolPairs 丢旧工具对，不额外调模型）；
  *    若裁剪后回到预算内即止。
  * 3. 仍超预算且有 summarize（compaction 摘要器）→ 压缩：旧前缀做成摘要，只留最近 keepRecent 条。
- *    距上次压缩 < compactEvery 个回合则跳过（滞回，防抖）。
+ *    距上次**成功**压缩 < compactEvery 个回合则跳过（滞回，防抖）；压缩抛错**不**记额度
+ *    （失败不该连带吃掉后面几回合的重试机会，见 beforeTurn 里的注）。
  * 4. 无 summarize 时 compaction 不可用，编辑已是上限（返回裁剪后消息）。
  *
  * summarize 未提供时 policy 不会自己调模型 —— 框架不替你造 token（spec：不主动黑名单，
@@ -78,8 +79,14 @@ export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolic
       // 2) compaction：仍超预算且有摘要器
       if (!summarize) return current;
       if (info.iteration - lastCompactAt < compactEvery) return current;
+      // ⚠️ 滞回记的是「上次**成功**压缩的回合」（2026-09-28 修）：原实现在 `compactMessages(...)`
+      // **之前**就写 `lastCompactAt` —— 摘要器走模型（429 / 超时都常见），压缩失败时额度却已被
+      // 烧掉，于是「这一回合没压成」还连带让后面 `compactEvery - 1` 个回合都不再尝试。
+      // 失败不记账 ⇒ 下一回合自然重试。代价要说清：**摘要器持续失败时每回合都会再调一次**
+      // （每次多一次失败的模型往返）；要抑制请在 `summarize` 里自己退避，别靠滞回额度兜。
+      const compacted = await compactMessages(current, { keepRecent, summarize });
       lastCompactAt = info.iteration;
-      return compactMessages(current, { keepRecent, summarize });
+      return compacted;
     },
   };
 }

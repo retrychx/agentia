@@ -233,6 +233,49 @@ describe('createMcpServer —— StreamableHTTP 协议面', () => {
     assert.equal((output.body as { errorKind?: string }).errorKind, 'threw');
   });
 
+  it('协议面之外的意外 → 200 + JSON-RPC -32603，宿主不退出（此前冒泡成 unhandled rejection）', async () => {
+    // 与上一条对照：工具**自己**抛错是「工具失败了」（回 isError，协议层仍是成功）；这里要的是
+    // **框架内部**的意外 —— 取一个真实可达的例子：菜单里某条 `inputSchema` 是个带 getter 的
+    // 对象（`validateJsonSchema` 一读就抛）。它发生在 `callTool` 之前，所以 `callTool` 里那层
+    // catch 兜不住 ⇒ 此前会一路冒泡出 async handler：unhandled rejection ⇒ Node ≥15 默认
+    // **终止进程**（stdio 那条传输有 `.catch` 兜着，只有 HTTP 这条漏了）。
+    const poison = {
+      name: 'poison_schema',
+      description: 'd',
+      inputSchema: new Proxy(
+        {},
+        {
+          get() {
+            throw new Error('schema getter 炸了');
+          },
+        },
+      ),
+      run: () => 'never',
+    } as unknown as AgentTool;
+    const s = await startHttp([hello, poison]);
+    const url = s.url as string;
+
+    const r = await post(url, rpc(7, 'tools/call', { name: 'poison_schema', arguments: {} }), {
+      // 反向验证：摘掉那个 catch ⇒ 这里不会应答（请求挂着），fetch 到点 reject ⇒ 本用例红
+      signal: AbortSignal.timeout(3000),
+    });
+    assert.equal(r.status, 200, 'JSON-RPC 的错误应答走 200（与 stdio 侧同形状）');
+    assert.deepEqual(r.body, {
+      jsonrpc: '2.0',
+      id: 7,
+      error: { code: -32603, message: '内部错误（详见服务端日志）' },
+    });
+
+    // 真正的判据：**宿主还活着** —— 同一个 server 继续服务正常请求
+    const ok = await post(
+      url,
+      rpc(8, 'tools/call', { name: 'say_hello', arguments: { name: 'x' } }),
+    );
+    assert.equal(ok.status, 200);
+    const result = (ok.body as { result: { content: Array<{ text: string }> } }).result;
+    assert.equal(result.content[0]!.text, '你好，x');
+  });
+
   it('未知 method → -32601；params 形状坏 → -32602；未知工具 → -32602', async () => {
     const s = await startHttp([hello]);
     const unknown = await post(s.url as string, rpc(1, 'resources/list', {}));

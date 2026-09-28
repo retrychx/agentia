@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawn, spawnSync } from 'node:child_process';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AsyncRunner, InMemoryTaskStore } from '../../src/index.js';
 import { FileTaskStore, InMemorySessionStore, executeRun } from '../../src/index.js';
@@ -11,6 +12,7 @@ import type { TaskRecord, TaskStore } from '../../src/index.js';
 import type { PersistFailureInfo } from '../../src/index.js';
 import { TaskInputError } from '../../src/engine/spec.js';
 import { MAX_TIMER_DELAY_MS } from '../../src/core/timeout.js';
+import { formatOwnerId, parseOwnerId } from '../../src/transport/owner-id.js';
 import { mockClient, toolUseMsg, endTurnMsg, waitFor } from '../helpers.js';
 
 /** 模拟 fsStore/sqliteStore 这类**同步** store：终态落库时同步抛错（磁盘满、库锁） */
@@ -483,6 +485,67 @@ describe('AsyncRunner', () => {
     assert.equal(store2.get('task_old')!.status, 'queued');
     assert.equal(store2.get('task_fresh')!.status, 'running', '不动的记录保持原状');
     await runner2.awaitTask('task_old');
+  });
+
+  it('resumePending({staleAfterMs})：同主机按 **pid 存活**判租约 —— 主人活着的不抢、主人没了的立刻抢', async () => {
+    // 这一条是 T2「too-fresh 是新鲜度不是租约」的端到端回归。两个方向都得走真 pid：
+    // 两条记录的 startedAt **都是「现在」**（都在保鲜期内）—— 只看时间的旧判据会把两条都放过。
+    const store = new InMemoryTaskStore();
+    const host = hostname();
+    const now = Date.now();
+    // 主人「还在」：一个真在跑的子进程（同主机、异进程）
+    const live = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    // 主人「不在」：起一个立刻退出的子进程，spawnSync 会替我们收尸 ⇒ 那个 pid 已经消失
+    const reaped = spawnSync(process.execPath, ['-e', '']);
+    assert.equal(typeof live.pid, 'number');
+    assert.equal(typeof reaped.pid, 'number');
+    const mk = (taskId: string, ownerId: string): TaskRecord => ({
+      taskId,
+      status: 'running',
+      spec: { messages: [{ role: 'user', content: 'x' }] },
+      createdAt: now,
+      startedAt: now,
+      ownerId,
+    });
+    store.save(mk('task_owned', formatOwnerId(live.pid as number, host, 'aaaaaaaa')));
+    store.save(mk('task_orphan', formatOwnerId(reaped.pid as number, host, 'bbbbbbbb')));
+    const runner = new AsyncRunner(fakeApp(), { store });
+    try {
+      // 前提：本进程写下的标识必须是**可解析的**那一套（解析不出来的话，整套租约判定
+      // 会静默退回新鲜度 —— 不报错，只是那条硬判据没了，所以在这里钉住）
+      assert.deepEqual(parseOwnerId(runner.ownerId), { pid: process.pid, host });
+      assert.equal(runner.resumePending({ staleAfterMs: 5 * 60_000 }), 1, '只认领主人不在的那条');
+      assert.equal(store.get('task_orphan')!.status, 'queued', '孤儿立刻可抢，不等保鲜期');
+      assert.equal(store.get('task_owned')!.status, 'running', '主人在 ⇒ 一条都不许动');
+      await runner.awaitTask('task_orphan');
+    } finally {
+      live.kill('SIGKILL');
+    }
+  });
+
+  it('resumePending({staleAfterMs})：异主机的记录判不了 pid ⇒ 退回保鲜期启发式', async () => {
+    // 「判不了」必须与「不在」分开：把别的机器上的记录当孤儿抢，等于每个宿主进程
+    // 都去捡同一批任务。异主机只能退回「看起来还新吗」这一档。
+    const store = new InMemoryTaskStore();
+    const now = Date.now();
+    const ownerId = formatOwnerId(process.pid, 'some-other-host.local', 'cccccccc');
+    const mk = (taskId: string, startedAt: number): TaskRecord => ({
+      taskId,
+      status: 'running',
+      spec: { messages: [{ role: 'user', content: 'x' }] },
+      createdAt: startedAt,
+      startedAt,
+      ownerId,
+    });
+    store.save(mk('task_fresh', now));
+    store.save(mk('task_stale', now - 10 * 60_000));
+    const runner = new AsyncRunner(fakeApp(), { store });
+    assert.equal(runner.resumePending({ staleAfterMs: 5 * 60_000 }), 1);
+    assert.equal(store.get('task_fresh')!.status, 'running', '判不了 ⇒ 还是按保鲜期放过它');
+    assert.equal(store.get('task_stale')!.status, 'queued');
+    await runner.awaitTask('task_stale');
   });
 
   it('resumePending：认领先落库再派发 —— 异步 store 下重复扫不会重复执行', async () => {

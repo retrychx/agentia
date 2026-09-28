@@ -3,7 +3,7 @@
  *
  * ## 为什么需要它
  *
- * §7 是一张 **77 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
+ * §7 是一张 **88 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
  * 的唯一依据 —— 也是仓库里**最厚的一张对外承诺表**。
  *
  * 而它此前**零守卫**，且是被解析器**结构性**排除的：`usage-guide.test.ts` 的 `parseTables`
@@ -127,7 +127,7 @@ type Entry =
   | { key: string; gap: string; candidate: string };
 
 /**
- * 登记表（77 条，与 §7 的行一一对应）。
+ * 登记表（88 条，与 §7 的行一一对应）。
  *
  * `pin` 的 `marker` 是目标用例 `it(...)` 标题里的**一段原文**（或脚本里的原文），
  * A3 会逐条断言它在场 —— 引用一条其实不相关的用例会当场红。
@@ -606,6 +606,48 @@ const REGISTRY: ReadonlyArray<Entry> = [
       marker: '工具被删 ⇒ menu.drift 事件 + 父 span 属性 + console.warn；run 仍照常收尾',
     },
   },
+  // ---- 2026-09-28 ⑫：外部深评剩余五条 P1 收口带来的六条新边界 ----
+  {
+    key: '能力引用**成环 ⇒ 装配期抛错**（2026-09-28）',
+    pin: {
+      file: 'tests/toolkit/capability-refs.test.ts',
+      marker: '自引用（整片引用自己所在的 provider）→ createApp 抛错，文案给出环的路径',
+    },
+  },
+  {
+    key: '多进程共库：续跑认领靠**租约**，不靠时间（2026-09-28）',
+    pin: {
+      file: 'tests/transport/async.test.ts',
+      marker:
+        'resumePending({staleAfterMs})：同主机按 **pid 存活**判租约 —— 主人活着的不抢、主人没了的立刻抢',
+    },
+  },
+  {
+    key: '`ownerId` 是**内部标识**，别解析它',
+    pin: {
+      file: 'tests/transport/owner-liveness.test.ts',
+      marker: '旧格式（没有 @host）⇒ 判不了：不知道是哪台机器写的',
+    },
+  },
+  {
+    key: '租约判定的两个**残留风险**：只晚捡、不抢错（2026-09-28）',
+    gap: '「PID 复用 / 僵尸进程会被判成主人在」这半句没有任何用例能证伪（要么真造一个撞号 pid，要么探 /proc —— mac 上不存在）',
+    candidate: 'tests/transport/owner-liveness.test.ts',
+  },
+  {
+    key: '`beforeTurn` 抛错 ⇒ 本回合降级，不判死 run（2026-09-28）',
+    pin: {
+      file: 'tests/engine/policy.test.ts',
+      marker: '策略抛错 → run 照常跑完，且 run 根留下 context.policy_failed（出声不静默）',
+    },
+  },
+  {
+    key: '压缩失败**不烧**滞回额度（2026-09-28）',
+    pin: {
+      file: 'tests/engine/policy.test.ts',
+      marker: '压缩失败不烧滞回额度：下一回合仍会重试（滞回记的是「上次成功」）',
+    },
+  },
 ];
 
 const rows = parseBoundaryRows();
@@ -615,7 +657,7 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
   it('解析器没退化：§7 至少有 70 行（解析崩了会红，而不是空转绿）', () => {
     assert.ok(
       rows.length >= 70,
-      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 77 行）`,
+      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 88 行）`,
     );
   });
 
@@ -696,7 +738,9 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
     for (const e of REGISTRY) {
       if ('choice' in e) assert.ok(e.choice.length >= 8, `「${e.key}」的 choice 理由太短`);
     }
-    // 当前读数（2026-09-26 首版）：pin 38 / choice 9 / gap 30
+    // 当前读数（2026-09-28 ⑫ 更新）：pin 47 / choice 10 / gap 31 = 88 行。
+    // 首版（2026-09-26）是 38 / 9 / 30 = 77 —— 上面 §7 里那几个「88 行」的数字与这段都要
+    // 一起改：它们是**读数**，写死在注释里就是为了让「表长大了而没人发现」在 review 时可见。
   });
 
   // ---------- A1：标识符不悬空 ----------

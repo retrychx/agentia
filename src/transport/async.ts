@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import type { MessageParam } from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
@@ -20,6 +21,8 @@ import { summarizeSuspended, timerDue } from './wake-policy.js';
 import type { SuspendedEntry, SuspendedSummary } from './wake-policy.js';
 import { DrainGate } from './drain-gate.js';
 import { resumeSkipReason } from './resume-policy.js';
+import { formatOwnerId } from './owner-id.js';
+import { ownerAlive } from './owner-liveness.js';
 import { TaskWaiters } from './task-waiters.js';
 import { TaskEventStreams } from './task-events.js';
 import type { TaskStreamEvent } from './task-events.js';
@@ -282,9 +285,18 @@ export interface AsyncRunnerOptions {
 /** resumePending 的启动扫描选项 */
 export interface ResumePendingOptions {
   /**
-   * 他进程任务的「保鲜期」（毫秒）；缺省 0 = 不判断，一律重派（重启即续跑）。
-   * > 0 时跳过 startedAt/createdAt 距今不足该值的他进程记录 —— 那些任务大概
-   * 正在别的进程里跑着，抢过来会重复执行。0 适合单进程部署（旧语义）。
+   * 他进程任务的判定开关；缺省 0 = 不判断，一律重派（重启即续跑，单进程旧语义）。
+   *
+   * `> 0` 时按**两档**判他进程的记录（判据在 `resume-policy.ts`，这里只说取舍）：
+   * ① 记录里的主机名是本机 ⇒ **问 pid 还在不在**（`owner-liveness.ts`）——
+   *    「主人在」的直接证据：**在的绝不抢**（不管它起跑多久），**不在的立刻可抢**
+   *    （不等保鲜期，崩溃孤儿不会饿死）；
+   * ② 判不了（异主机 / 升级前写下的旧格式 ownerId / 自定义串）⇒ 退回本参数名义上的
+   *    那件事：`startedAt`（退化到 `createdAt`）距今不足该值就当他还在跑、先别抢。
+   *
+   * ⚠️ ②只是**启发式**（「记录看起来还新」），不是租约：单进程部署建议 0；多进程共库
+   * 时它只是「问不到 pid」时的兜底，别再指望它单独把「重复执行」挡住。
+   * 阈值取值要大于「一个进程从启动到跑满一条记录」的合理时间，否则长跑会被抢。
    */
   staleAfterMs?: number;
 }
@@ -300,8 +312,19 @@ export interface AppCallable {
 
 export class AsyncRunner {
   readonly store: TaskStore;
-  /** 本进程标识：写进认领的 TaskRecord.ownerId，供 resumePending 区分他我 */
+  /**
+   * 本进程标识：写进认领的 `TaskRecord.ownerId`，供 resumePending 区分他我。
+   *
+   * 形状 `p<pid>@<host>-<8位十六进制>`（真源见 `owner-id.ts`）。为什么带主机名与 pid：
+   * 光有时间判不出「主人还在不在」（`staleAfterMs` 是**新鲜度**不是**租约**），
+   * 而「同主机 + pid 还在」是能直接问操作系统的**直接证据**（见 `owner-liveness.ts`）。
+   */
   readonly ownerId: string;
+  /**
+   * 本机主机名（构造期取一次）。**同一个值**既写进 `ownerId`、也用于「同主机吗」的判定 ——
+   * 两处各自取一次就可能不一致（hostname 在进程存活期间是可能被改的），判定会因此静默失效。
+   */
+  readonly #host = hostname();
   private readonly client: ModelClient | undefined;
   private readonly sessionStore: AsyncRunnerOptions['sessionStore'];
   private readonly concurrency: number;
@@ -400,7 +423,7 @@ export class AsyncRunner {
         `approvalTimeoutMs 必须为 ≥ 0 的有限数（${zeroClauseOf('AsyncRunner.approvalTimeoutMs')}），收到 ${opts.approvalTimeoutMs}`,
       );
     }
-    this.ownerId = `p${process.pid}-${randomUUID().slice(0, 8)}`;
+    this.ownerId = formatOwnerId(process.pid, this.#host, randomUUID().slice(0, 8));
   }
 
   /**
@@ -1208,8 +1231,9 @@ export class AsyncRunner {
    *
    * 多进程共用一个 store 时靠 `ownerId` 区分他我：
    * - 本进程的记录一律跳过（它还在本进程内存里跑，重派 = 跑两遍）；
-   * - `staleAfterMs > 0` 时，startedAt/createdAt 距今不足该值的他进程记录也跳过
-   *   （大概正被那个进程执行）。缺省 0 = 不判断、一律重派（单进程旧语义）。
+   * - `staleAfterMs > 0` 时启动他进程判定：**同主机就问 pid 还在不在**（在的不抢、
+   *   不在的立刻抢），问不到（异主机 / 旧格式 ownerId）才退回保鲜期启发式。
+   *   缺省 0 = 不判断、一律重派（单进程旧语义）。判定分级与边界见 `resume-policy.ts`。
    */
   resumePending(opts: ResumePendingOptions = {}): number | Promise<number> {
     // 重入闸：**并发**调用共享同一次扫描的结果，而不是各自再扫一遍。
@@ -1305,10 +1329,13 @@ export class AsyncRunner {
       // 只算**真接管**的那些（drain / 已在飞 ⇒ 不算）—— 返回值是「推进了几条」的承诺
       if (this.#wakeDue(rec, now)) woken++;
     }
-    // 认领判定外移到 resume-policy.ts：跳过原因具名化（terminal / own-process / too-fresh），
-    // 每条规则与边界都由那份纯函数的单测钉住
+    // 认领判定外移到 resume-policy.ts：跳过原因具名化（terminal / suspended / own-process /
+    // owner-alive / too-fresh），每条规则与边界都由那份纯函数的单测钉住
+    const alive = (id: string): boolean | undefined => this.#ownerLiveness(id);
     const pending = recs.filter(
-      (r) => resumeSkipReason(r, { ownerId: this.ownerId, staleAfterMs, now }) === undefined,
+      (r) =>
+        resumeSkipReason(r, { ownerId: this.ownerId, staleAfterMs, now, ownerAlive: alive }) ===
+        undefined,
     );
 
     const claims: Promise<void>[] = [];
@@ -1326,6 +1353,16 @@ export class AsyncRunner {
     }
     if (claims.length === 0) return pending.length + expired + woken;
     return Promise.all(claims).then(() => pending.length + expired + woken);
+  }
+
+  /**
+   * 「这条记录的主人还活着吗」—— 绑上本机主机名后的 pid 存活判定（见 `owner-liveness.ts`）。
+   *
+   * 只被 `#redispatch` 用，且只在 `staleAfterMs > 0` 时真正被问到（那道闸在 resume-policy
+   * 里，单源；缺省 0 = 不看他进程，与升级前逐字一致）。判定不写库、不改状态 —— 纯读数。
+   */
+  #ownerLiveness(ownerId: string): boolean | undefined {
+    return ownerAlive(ownerId, this.#host);
   }
 
   /**

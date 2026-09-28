@@ -5,10 +5,10 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { createHttpHandler, HttpException } from '../../src/index.js';
-import { AsyncRunner } from '../../src/index.js';
+import { AsyncRunner, executeRun } from '../../src/index.js';
 import type { AppCallable, HttpHandler } from '../../src/index.js';
 import type { AgentRunResult } from '../../src/index.js';
-import { waitFor } from '../helpers.js';
+import { mockClient, toolUseMsg, waitFor } from '../helpers.js';
 
 /**
  * Phase B（宿主硬化）：B1 鉴权缝 + B2 优雅停机 / 健康检查。
@@ -597,6 +597,116 @@ describe('B2 优雅停机（drain）', () => {
         'drain 强制关流必须同时 abort 对应 run —— 只 close 的话 res.end() 让 writableEnded 变 true，onClose 守卫永不触发，run 在后台继续烧 token',
       );
     } finally {
+      await close(server);
+    }
+  });
+
+  it('缺省（timeoutMs 0 = 不限）也要能收口：活连接不享受无限窗口（此前 drain 永不返回）', async () => {
+    // 顺序陷阱（2026-09-28 修）：强制收口 SSE 原先排在「等在飞 run 收尾」**之后** —— 而
+    // 「run 自己不结束」的流**只有收口能结束它** ⇒ 缺省（不限）时 `waitUntil(..., Infinity)`
+    // 永不返回、也永不报 false，SIGTERM 的容器只能在宽限期后被 SIGKILL 硬切。
+    let started!: () => void;
+    const begun = new Promise<void>((r) => {
+      started = r;
+    });
+    let runSignal: AbortSignal | undefined;
+    const app: AppCallable = {
+      name: 'streamer',
+      async run(_messages, opts) {
+        opts?.onText?.('片段');
+        runSignal = opts?.signal;
+        started();
+        await new Promise<void>((resolve) =>
+          opts?.signal?.addEventListener('abort', () => resolve()),
+        );
+        return { run: { runId: 'r-sse-open', status: 'failed' }, result: fakeResult('片段') };
+      },
+    };
+    const { server, base, handler } = await listen(app);
+    try {
+      const res = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: JSON.stringify({ text: 'hi' }),
+      });
+      assert.equal(res.status, 200);
+      const textPromise = res.text();
+      await begun;
+
+      // 上界只为「修之前不会挂死测试」：判据是它**真的返回了**、且如实报「没排空干净」
+      const verdict = await Promise.race([
+        handler.drain(),
+        new Promise((r) => setTimeout(() => r('hang'), 2000)),
+      ]);
+      assert.equal(
+        verdict,
+        false,
+        '切了在飞的 run ⇒ 不算排空干净（回 true 等于把「切了」说成「等干净了」）；返回值若是 hang，说明 drain 又死锁了',
+      );
+      assert.equal(runSignal?.aborted, true, '收口必须同时 abort 对应 run');
+      await textPromise;
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('只关掉旁观者的长连（/tasks/<id>/stream）不算「切了工作」：drain 仍报排空干净', async () => {
+    // 与上一条互为反面：`openSse` 里两种流语义不同（`OpenSseHandle.cutsRun`）。旁观者流被收口
+    // **不损失任何工作**（任务没被 abort、照常在等审批）⇒ 把它算进「没排干净」是另一种说错话。
+    //
+    // 用一条**挂起**（等人工审批）的任务：它不挡 drain（挂起不占执行资源，槽位已释放），
+    // 而它的旁观者流会一直开着（非终态流不 markDone）⇒ 正好把两种流分开来验。
+    const { client } = mockClient([toolUseMsg('danger', {}, 'tu1')]);
+    const hitl: AppCallable = {
+      name: 'hitl',
+      run: (messages, opts) =>
+        executeRun({
+          messages,
+          client,
+          tools: [
+            {
+              name: 'danger',
+              description: '危险操作',
+              inputSchema: { type: 'object', properties: {} },
+              approval: 'required',
+              run: () => 'done',
+            },
+          ],
+          ...opts,
+        }),
+    };
+    const { server, base, handler } = await listen(hitl);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      await fetch(`${base}/tasks`, { method: 'POST', body: JSON.stringify({ input: 'go' }) });
+      // 挂起后槽位释放（inFlight 归 0）——这就是「挂起不挡 drain」的那条
+      await waitFor(() => handler.runner.inFlight === 0, '任务应已挂起并释放槽位');
+      const recs = await handler.runner.list();
+      assert.equal(recs.length, 1);
+      const taskId = recs[0]!.taskId;
+
+      const streamRes = await fetch(`${base}/tasks/${taskId}/stream`);
+      assert.equal(streamRes.status, 200);
+      reader = streamRes.body!.getReader();
+      // 先收到一帧 ⇒ 服务端已把这条流登记进 openSse（登记在 streamTask 之前）+ 订阅已生效
+      const first = await reader.read();
+      assert.equal(first.done, false, '挂起任务的旁观者流应先收到重放的帧');
+
+      const drained = await handler.drain(); // 缺省 = 不限；挂起不挡它
+      assert.equal(drained, true, '旁观者流被关 ≠ 切了工作 ⇒ 仍报排空干净');
+
+      const ended = await Promise.race([
+        (async () => {
+          for (;;) {
+            const { done } = await reader!.read();
+            if (done) return 'closed' as const;
+          }
+        })(),
+        new Promise((r) => setTimeout(() => r('open' as const), 500)),
+      ]);
+      assert.equal(ended, 'closed', 'drain 收口了这条长连（否则它会靠心跳永远挂着）');
+    } finally {
+      await reader?.cancel().catch(() => undefined);
       await close(server);
     }
   });

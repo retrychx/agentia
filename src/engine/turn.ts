@@ -285,12 +285,26 @@ export async function checkTurnEntry<S extends JsonSchema>(
       return { stopReason: 'budget_exceeded', error: budgetError(args, over) };
     }
   }
-  // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）
+  // 发送前给上下文策略一个机会（编辑/压缩预算超限的历史）。
+  //
+  // ⚠️ 必须包 try/catch（2026-09-28 修）：`beforeTurn` 里可能**走网络**（compaction 的
+  // `summarize` 是模型调用），一次 429 / 超时就抛 —— 不接的话整条 run 以「请求失败」收尾，
+  // 而上下文压缩对一条 run 而言是**尽力而为**的优化、不是前置条件（代价是历史偏长，不该是 run 死掉）。
+  // 降级 = 本回合原样放行，**且出声**（否则「历史一直很长」没人知道为什么，只看到 token 慢慢涨）。
   if (args.contextPolicy) {
-    const next = await args.contextPolicy.beforeTurn(messages, {
-      iteration,
-      model: args.model,
-    });
+    let next: MessageParam[] | undefined;
+    try {
+      next = await args.contextPolicy.beforeTurn(messages, {
+        iteration,
+        model: args.model,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (args.parentSpanId) {
+        args.recorder.event(args.parentSpanId, 'context.policy_failed', { iteration, message });
+      }
+      console.warn('[agentia:engine] contextPolicy.beforeTurn 失败，本回合不压缩:', message);
+    }
     if (next && next !== messages) {
       if (args.parentSpanId) {
         args.recorder.event(args.parentSpanId, 'context.budget', {
