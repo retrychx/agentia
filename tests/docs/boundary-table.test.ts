@@ -193,6 +193,18 @@ const REGISTRY: ReadonlyArray<Entry> = [
     choice: '采样刻意不内建（配方见 observability.md 2.3）；被采样掉的 trace 在框架内仍完整记账',
   },
   {
+    key: '`approve` 只收**待决的** id（多一个 → 400 整批拒）',
+    pin: {
+      file: 'tests/transport/approve-limits.test.ts',
+      marker: '多出来的 id ⇒ 整批拒（400），记录**一字不动**（不写进 approvals、状态不变）',
+    },
+  },
+  {
+    key: '`TaskRecord.approvals` 有界但**不清**',
+    choice:
+      '有意为之的取舍：键集被 pendingApprovals 钉死 ⇒ 天然有界（**不加**常量上限 —— 那会是永远触发不到的死代码）；终态也不清 —— 审批记录是审计的一部分',
+  },
+  {
     key: '缺省内存 store 不淘汰',
     gap: '「不淘汰」与 maxRecords 的对照没有用例钉住',
     candidate: 'tests/store/memoryStore.test.ts',

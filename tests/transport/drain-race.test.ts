@@ -11,10 +11,11 @@ import type { AgentRunResult, AppCallable, TaskRecord } from '../../src/index.js
  * 往返的窗口，`drain()` 若在这个窗口里完成（`active === 0` 于是返回），那条被推进的任务
  * 就会在**停机完成之后**才开跑 —— 部署进程已经在退出的路上。
  *
- * 已修的只有「到期唤醒」那一支（`#wakeDueInner` 里的 `if (this.#drain.isDraining) return target`）。
- * 本文件的用例把「三支」这个集合钉住：`approve` / `signalTask` 两支今天**没有**那道闸 ——
- * 同一个窗口、同一条后果。所以先红的那两条就是本轮的缺陷，第三条是**阳性对照**
- * （证明「不派发」这件事本身可观测、不是靠任务本来就跑不起来蒙对的）。
+ * ⚠️ 一版修完就发现「三支」这个清单本身是**靠枚举维护**的：外部深评（2026-09-28）指出还有
+ * **第四条**（`#expireAndResume` 的审批超时兜底，由 `poll()` 驱动 —— 而停机中允许轮询）与
+ * **第五条**（`resumePending` 的认领循环）。根因不是漏写一行，是七个派发点散在各处、闸靠人记。
+ * ⇒ 结构性修法：所有「先落库再派发」的点收成唯一入口 `#dispatch()`（闸只在那里判一次，
+ * 源码级守卫用例钉「`#execute(` 只许出现在 `#dispatch` 里」）。本文件因此覆盖**五条**路径。
  *
  * 修法（与 wakeDue 一字不差）：窗口过后若已在停机，就**不派发** —— 状态已落库成
  * `running`，记录留给下次启动的 `resumePending()` 认领（at-least-once 兜底，
@@ -102,5 +103,57 @@ describe('drain 竞态 —— 三条恢复路径的闸要对齐', () => {
     assert.equal(runner.resumePending(), 0, '到期也不叫醒（#wakeDue 的闸）');
     await sleep(50);
     assert.equal(runs.count, 0, '没有派发');
+  });
+
+  it('审批超时兜底（**第四条路径**）：drain 完成之后，轮询也不许把它推进起来', async () => {
+    // 外部深评（2026-09-28）抓到的第四条：`#expireAndResume`（审批超时自动全拒并恢复）与
+    // `approve` 是**不同触发源、同一形状**（填决定 → 落库成 running → 派发），由 poll() 的
+    // 惰性闸驱动 —— 而「停机中照常可轮询」是 HTTP 宿主的明确承诺（health check / LB 探针）。
+    const runs = { count: 0 };
+    const store = new InMemoryTaskStore();
+    await store.save(
+      suspended('task_exp', {
+        suspendedReason: 'approval',
+        pendingApprovals: ['tu1'],
+        suspendedSince: Date.now() - 60_000, // 早就过了审批超时
+      }),
+    );
+    const runner = new AsyncRunner(probeApp(runs), { store, approvalTimeoutMs: 1 });
+    assert.equal(await runner.drain({ timeoutMs: 500 }), true, '挂起任务不挡排空');
+
+    await runner.poll('task_exp'); // 停机窗口里这一次轮询就够（探针实证：不修就跑了 1 次）
+    await sleep(50);
+    assert.equal(
+      runs.count,
+      0,
+      'drain 已完成 ⇒ 兜底恢复也不许派发（drain 说「排空干净」就得是真话）',
+    );
+    assert.equal(
+      (await store.get('task_exp'))?.status,
+      'running',
+      '决定已落库（超时兜底 = 全拒），记录留给下次启动认领',
+    );
+  });
+
+  it('resumePending 的认领循环：drain 完成之后也不许派发（同名第五条）', async () => {
+    const runs = { count: 0 };
+    const store = new InMemoryTaskStore();
+    // 「他进程崩溃留下的孤儿」：状态必须是 queued/running —— resume-policy 对 `suspended`
+    // 具名跳过（「在等」不是「孤儿」，唤醒是各自那条闸的事）；ownerId 不是本进程 ⇒ 会被认领。
+    await store.save({
+      taskId: 'task_orphan',
+      status: 'running',
+      ownerId: 'p99999-deadbeef',
+      startedAt: Date.now() - 60_000,
+      createdAt: Date.now() - 60_000,
+      spec: { messages: [{ role: 'user', content: 'x' }], options: {}, source: 'async' },
+    } as TaskRecord);
+    const runner = new AsyncRunner(probeApp(runs), { store });
+    assert.equal(await runner.drain({ timeoutMs: 500 }), true, '挂起任务不挡排空');
+
+    runner.resumePending();
+    await sleep(50);
+    assert.equal(runs.count, 0, 'drain 已完成 ⇒ 认领循环也不许派发');
+    assert.equal((await store.get('task_orphan'))?.status, 'queued', '认领已落库，留给下次启动');
   });
 });
