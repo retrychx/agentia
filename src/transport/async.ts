@@ -686,20 +686,27 @@ export class AsyncRunner {
    * 到期唤醒（durable timer）：读到一条**在睡且到点**的挂起 ⇒ 认领 + 重派，醒来后重跑那一批。
    *
    * 与 `#expireAndResume` 逐条同形（进在飞闸、重读一遍、先落库再派发），理由一字不差；
-   * 只有两处不同，都写在下面：drain 之后不唤（配套 5）、以及不填任何决定（时间挂起没有待决项）。
+   * 三处不同，都写在下面：drain 之后不唤（配套 5）、不填任何决定（时间挂起没有待决项）、
+   * 以及**返回值**（见下）。
+   *
+   * @returns 是否真的接管了这次唤醒 —— decline 时 `false`。`resumePending` 的返回值是
+   * 「我推进了几条」，把没推进的算进去就是谎报（drain 之后每次扫描都报「唤醒了 N 条」，
+   * 而它们一条都没动）。⚠️ 审批那条（`#expireAndResume`）的计数口径略宽（在飞也计入），
+   * 那是既有行为、本批不动它。
    */
-  #wakeDue(rec: TaskRecord, now: number): void {
+  #wakeDue(rec: TaskRecord, now: number): boolean {
     // 配套 5（drain 后不唤醒）：停机是「不再往前推」，与 submit 在 drain 后回 503 同一条纪律。
     // 不设这道闸，一条天级的 sleeping run 会在停机窗口里被叫起来接着跑 —— 部署卡在它身上。
     // （重启后由新进程的首次 resumePending 唤醒：那时停机窗口早过去了。）
-    if (this.#drain.isDraining) return;
-    if (this.inflightWakes.has(rec.taskId)) return;
+    if (this.#drain.isDraining) return false;
+    if (this.inflightWakes.has(rec.taskId)) return false;
     const run = this.#wakeDueInner(rec, now).finally(() => {
       this.inflightWakes.delete(rec.taskId);
     });
     this.inflightWakes.set(rec.taskId, run);
     // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
     run.catch(() => undefined);
+    return true;
   }
 
   async #wakeDueInner(rec: TaskRecord, now: number): Promise<TaskRecord> {
@@ -857,8 +864,8 @@ export class AsyncRunner {
     let woken = 0;
     for (const rec of recs) {
       if (!timerDue(rec, now)) continue;
-      woken++;
-      this.#wakeDue(rec, now);
+      // 只算**真接管**的那些（drain / 已在飞 ⇒ 不算）—— 返回值是「推进了几条」的承诺
+      if (this.#wakeDue(rec, now)) woken++;
     }
     // 认领判定外移到 resume-policy.ts：跳过原因具名化（terminal / own-process / too-fresh），
     // 每条规则与边界都由那份纯函数的单测钉住
