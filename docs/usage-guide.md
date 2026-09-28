@@ -1451,6 +1451,61 @@ class DeployTools {
 
 **已知边界**（也收录在 §7）：见 §7 表的「审批」相关行。
 
+#### 时间挂起（睡到某个时刻，durable timer）
+
+与「人工审批」是**同一套挂起骨架的两种原因**：审批 = 执行**前**等一个人的决定，
+时间挂起 = 执行**中**等一个时刻到来。差别决定了用法：
+
+- 审批由**宿主**在执行前给决定（`approval: 'required'` 的工具，`args.approvals` 里没有决定
+  就整回合挂起、一个工具都不跑）；
+- 时间挂起由**工具自己**在跑的时候提出来 —— 所以那个回合的工具**已经跑过了**（见下面的整批语义）。
+
+```ts
+import type { AgentTool } from '@migor/agentia';
+
+const waitForBatch: AgentTool = {
+  name: 'fetch_daily_report',
+  description: '取当天的批处理报表（没跑完就到明天早上再问）',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  async run(_input, ctx) {
+    const due = await nextBatchWindow();          // 你自己的判据（外部系统回填 / 限流窗口 / 收盘）
+    if (due.getTime() > Date.now()) {
+      ctx!.deferUntil(due);                       // 「现在还不是时候，T 之后再问我」
+      return 'deferred';                          // 返回值会被丢弃（见整批语义）
+    }
+    return await fetchReport();
+  },
+};
+```
+
+宿主侧（`AsyncRunner`）：引擎把该回合收尾成 `stopReason: 'suspended'` +
+`suspendedReason: 'timer'` + 目标时刻，任务落库为 `status: 'suspended'`、`wakeAt` 进
+`TaskRecord`（**活得比进程久**）。到点由 `resumePending()` / `poll()` 的**惰性**扫描唤醒
+（与审批超时同一套纪律：不起定时器、不养在飞回调），醒来后**重跑那一批**工具、拿到结果接着跑。
+
+三条要写进心里的：
+
+1. **时刻必须是将来**：`deferUntil` 传非有限数或 `≤ 现在` 会**当场抛 TypeError** ——
+   该条 `tool_result` 记 `is_error`、run 照常往前走（模型能看到「时刻必须在将来」并自己换路）。
+   这不是苛刻：允许过去时刻就等于允许「醒来 → 再请求同一个过去时刻」**自己打转**。
+2. **整批语义（副作用会重复）**：挂起是回合级的（协议要求每个 `tool_use` 都有配对
+   `tool_result`），所以同回合**已经执行完**的其他工具会在醒来后**重跑**一遍。框架把它
+   变成看得见的：trace 记 `defer.requested`（`{ wake_at, tool_use_ids, discarded }`），
+   真有兄弟工具被作废时落一条 `console.warn`。**要精确控制就让模型单独调这个工具，或者把它
+   做成幂等读。** 同回合多条请求取**最早**的那个时刻。
+3. **停机与可见性**：`drain()` 之后**不再唤醒**睡着的 run（停机 = 不再往前推，否则部署要等一条
+   天级任务）；重启后由新进程的首次 `resumePending()` 唤醒。`GET /healthz` 的
+   `suspended: { approval, timer, nextWakeAt }` 就是运维要看的那半（口径 = **本进程**看得见的
+   记录；无时间挂起时 `nextWakeAt` 是 `null`，不是 `0`）。
+
+**没有 `cancel` API**：今天要「叫停一条在睡的 run」，靠宿主自己 `abort` 在飞请求 + 不再唤醒它
+（取消语义是独立一件，见 spec §10 2026-09-28 ② 决策 6）。对一条 `timer` 挂起调 `approve()`
+会回 409（原因不对，不是状态不对）。
+
+**已知边界**：`resumePending()` 是 **O(全表)** 扫描（挂起数上量后每次重启/每轮扫描都要读全表；
+触发条件与候选实现见设计稿 §6）；`wakeAt` 到点后**必须有人读**才会醒（没人调
+`resumePending()` / `poll()` 的宿主里，任务不会自己动 —— 与审批超时同一条纪律）。
+
 #### 内容护栏
 
 和「多租户配额」同一个形状：策略千差万别（正则 / 分类模型 / 外部审核 API），框架硬编码必错，**只给缝**。

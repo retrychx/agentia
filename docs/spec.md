@@ -3786,6 +3786,82 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
 
 ⚠️ **本条不含 `wakeAt` 本体**：时间挂起、到期续跑、挂起期可见性、drain 后不唤醒都还没做
 （`src/` 里 `timer` 目前**没有任何生产者**，只有类型与那两条闸）；本条只是候选 1 的前置。
+→ **该待办已于同日 ② 补上**（见下一条）。
+
+### 2026-09-28 ②：**时间挂起本体落地**（`ctx.deferUntil` + 到期唤醒 + 配套 5/6）—— `timer` 从此有生产者
+
+背景：上一条（①）把「挂起」拆成「一个状态 + 一个原因」，但那条末尾如实记着「`src/` 里 `timer`
+**没有任何生产者**」。本条补上生产者与它下游的三件事（设计稿 `docs/plans/2026-09-27-durable-wake-at.md`
+§3 + §4 配套 5/6；**定案：状态分叉 C + 请求方形态 ①**）。
+
+决策：
+
+1. **请求方形态 = 工具侧请求延后**（设计稿 §3 形态 ①）：`ToolRunContext.deferUntil(at: number | Date)`。
+   不做 run 级「先睡一会儿再开跑」—— 那与既有 `transport/scheduler.ts`（定时起新 run）是同一个
+   东西的第二种拼法。真实用途：等批处理作业、等限流窗口、等收盘、等外部系统回填。
+2. **时刻必须是将来，非法值当场抛**（`engine/defer.ts::resolveWakeAt`）：非有限数、`at <= now`
+   一律 TypeError，走既有「工具抛错 ⇒ is_error 的 tool_result」路径（run 照常往前走，不挂起）。
+   为什么必须响亮：让 `at <= now` 成立的话，到期扫描会立刻唤醒、重跑、工具再请求同一个过去时刻
+   —— **一条自己打转的 run**（不烧钱，但 store / trace / 判据全在空转，且永不收尾）。
+3. **整批语义**：挂起是回合级的（协议要求每个 tool_use 都有配对 tool_result）⇒ 延后请求
+   **作废本回合这批工具的全部结果**，醒来后**重跑这一批**（与审批续跑同形）。代价是同回合
+   已执行完的兄弟工具会再跑一遍（副作用重复）—— 这一条**不靠口头约定**：写进
+   `ToolRunContext.deferUntil` 的契约注释、trace 的 `defer.requested{discarded}` 计数，
+   并在真有兄弟工具被作废时落一条 `console.warn`。要精确控制就让模型单独调它，或做成幂等读。
+4. **一个回合只能有一个时刻**：同回合多条请求取**最早**的那个（早醒可补救，晚醒白等）。
+5. **两条闸按原因分开**（承接 ① 的口径）：到期判据落在新纯件 `transport/wake-policy.ts` 的
+   `timerDue`（状态 + **原因** + `wakeAt <= now`）。缺 `wakeAt` 时**不**退化到 `createdAt`
+   （这里与 `approvalExpired` 的取舍相反）—— 「不知道它什么时候醒」与「现在就该醒」是两件事，
+   猜错的方向是**提前开跑**，代价是真实副作用。
+6. **配套 5（排空）**：`drain()` 之后**不唤醒**（与「submit 在 drain 后回 503」同纪律：停机 =
+   不再往前推）。不设这道闸，停机窗口里一条天级的 sleeping run 会被叫起来接着跑 —— 部署卡在
+   它身上；重启后由新进程的首次 `resumePending` 唤醒（那时窗口早过去了）。
+   **`cancel` API 本批不给**：它要新增公共面（`runner.cancel(taskId)`）、定义「取消一个正在跑的
+   工具」的中止语义、并决定取消算不算新终态 —— 是**独立一件**，与 `wakeAt` 无因果关系。
+   文档只如实写「取消靠宿主自己 abort 在飞请求 + 不唤醒」，不留一句「用户可以取消」。
+7. **配套 6（可见性）**：`AsyncRunner.suspendedSummary` + `GET /healthz` 的
+   `suspended: { approval, timer, nextWakeAt }`。口径 = **本进程**看得见的记录（与 `inFlight`
+   同一张表 —— 不假装是全局面）；读数由三条纪律维护：进挂起登记 / 离开挂起除名 /
+   **每次 `resumePending` 扫描按 store 重建**（扫描本来就 list 了全表，把「漏了某个出口」从
+   永久漂移降级成下次扫描前的偏差）。`/healthz` **不查 store**：探针是秒级频率，而 `list()`
+   要把每条记录的完整 trace 取出来 —— 代价比它回答的问题大。无时间挂起时 `nextWakeAt` 给
+   **`null` 而不是 `0`**（`0` 在 JSON 里是合法时刻，监控端算 `nextWakeAt - now` 会得到巨大负数，
+   看着像「早就该醒却没人醒」）。
+8. **两处顺手修掉**（都是 ① 的核证清单点过名的）：① `resume-policy` 给挂起单列 skip 原因
+   `'suspended'`（此前被报成 `'terminal'` —— 「在等」被具名成「终态」是静默说错话，而这个字段
+   的全部用途就是诊断）；② `isResume` 判据补上 `suspendedSince`（原先只看 `approvals`，而
+   timer 挂起醒来时**没有任何决定** ⇒ 恢复段被当成首次执行：会话历史重复 prepend、恢复段 trace
+   不 link 上一段、成功后把含未决 tool_use 的扩展历史写回会话）。
+9. **与候选 3 的交界**：醒来走的是**同一条续跑入口** ⇒ `detectMenuDrift` 自动生效（睡着的这段
+   时间里那个工具被删掉，醒来时三处漂移信号照出），不另起一套判据。
+
+兼容面（**全部是加法，无破坏性**）：`ToolRunContext.deferUntil`、`AgentRunResult.wakeAt`
+（结果形状现在 **9 个字段**全在场）、`RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`、
+`AsyncRunner.suspendedSummary`；新 trace 事件 `defer.requested{wake_at, tool_use_ids, discarded}`。
+
+门禁（**9 条变异逐条亲跑**，全部被**具名**用例抓住；`trap` 还原 + 还原自检 + 复绿）：
+
+- `tests/engine/defer.test.ts`：`resolveWakeAt`（将来性 + 非有限数的响亮拒绝，带阳性对照）
+  + 回合级收集器（多条取最早、同一条重复请求取更早）+ 引擎侧四例：整批挂起（工具**真跑过**、
+  结果作废、`defer.requested` 带 `discarded`）、醒来重跑那一批（`tool_result` 真进了下一次请求）、
+  醒来仍未成熟 ⇒ 以**本次**请求再挂一次、非法时刻 ⇒ is_error 不挂起（含台账 `errorKind: 'threw'`）。
+- `tests/transport/wake-policy.test.ts`：`timerDue` 三条边界（到点即醒 / 只在挂起且原因是 timer /
+  缺 `wakeAt` 永不到点）+ `summarizeSuspended`（空集给 `null` 不给 `0`；只有等审批时不退化）。
+- `tests/transport/durable-timer.test.ts`：宿主侧七例 —— 睡下时落库与读数进位、未到点不捡而到点
+  唤醒并重跑、drain 后不唤醒（附「新进程照常唤醒」对照）、审批超时不误伤 timer（附「换成
+  `approval` 就被兜底」对照）、`/healthz` 的 `suspended` 段、与候选 3 的交界（醒来时
+  `menu.drift` 事件 + run 根属性照出）、session 与链路口径（会话只一份 / link 上一段 / 不被
+  工具块毒化）。
+- ⚠️ **一处用例自己的缺陷被变异电池抓出并当场修掉**：`timerDue` 的「原因」夹具原先写
+  `suspendedReason: 'approval', wakeAt: undefined` —— 摘掉原因判据的变异**一条红都没有**
+  （缺时刻那一条也在拦 ⇒ 等于没钉住原因这一半）。改成带一个过去的 `wakeAt`（宿主手写 /
+  旧版本记录可能出现的形状）后立刻变红。这条记在这里是因为它正说明**变异电池不能省**：
+  用例绿不等于判据被钉住。
+- 一处**实现缺陷**被新用例抓出：`#wakeDue` 原先不返回「是否真接管」，`drain` 之后每次扫描都把
+  没唤醒的算进 `resumePending()` 的返回值（谎报「推进了 N 条」）—— 改成返回 boolean。
+  计数口径与审批那条（`#expireAndResume` 在飞也计入）**刻意不完全对齐**，差异写在方法头注里。
+- 模拟「时间到了」用**倒填 `wakeAt`**，不睡墙钟：真等会把「调度慢」误判成「唤醒坏了」
+  （CI 满载下最难查的那类红）。
 
 ## 11. 开放项
 

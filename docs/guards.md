@@ -69,6 +69,8 @@
 
 | `packages/cli/test/dev-child.test.mjs` | `killTree` 的**三平台分派**与「分派必须经计划函数」：`none`（无 pid）/ win32 `taskkill /pid N /T /F` / 其余平台对**进程组**发信号；且 `process.platform` 在 `dev-child.ts` 的**代码**里只出现一次（就是那一处注入） | `killPlanFor(platform, pid, signal)` 是收平台参数的**纯函数**（计划里存**正** pid，取负是执行器的事）；用例只测纯判定 —— **绝不真调 `killTree()`**（它会真发信号杀进程）；另有源码级接线断言（含「剥注释后计数」，否则文件里解释「为什么抽」的注释会把自己误命中）。**反向验证过 4 条（2026-09-26，各恰好点名那条）**：① win32 分派去掉 `/T` ⇒ **恰好 1 条**（`win32 → taskkill，且必须带 /T`）；② 执行器里写回一句 `if (process.platform === 'sunos')`（绕开计划函数）⇒ **恰好 1 条**（`process.platform 在代码里只出现一次`）；③ POSIX 分支把 `-plan.pid` 写成 `plan.pid` ⇒ **恰好 1 条**（接线那条）；④ win32 的 `args` 少一项 ⇒ **恰好 1 条**。复原后 sha256 逐字节一致 | win32 上只杀直接子进程 ⇒ `npx tsx` 的孙进程留成孤儿（「整棵树」的承诺失效）。⚠️ 旧形状下这条分支**在任何平台都跑不到**：它直接读 `process.platform`，而 CI 是 ubuntu、macOS 走 POSIX 分支 ⇒ 差别不在勤奋，在**接口形状**（同目录 `native-pick.ts` 收平台参数、因此有十几条平台用例） |
 
+| `tests/engine/defer.test.ts` · `tests/transport/wake-policy.test.ts` · `tests/transport/durable-timer.test.ts`（**时间挂起**，2026-09-28 ②） | durable timer 的五条承诺：延后时刻必须是**将来**（非法值 ⇒ is_error 的 tool_result，**不**挂起）、延后请求**作废整批**并在醒来后重跑那一批、**到点才唤醒**（缺 `wakeAt` 不退化到 `createdAt`；原因必须是 `timer`，等人工的挂起带过去时刻也不许被捞走）、`drain()` 之后**不唤醒**、`/healthz` 的 `suspended` 按原因分组且空队列给 `null` 不给 `0` | 引擎侧走真循环（`executeRun` + mockClient），宿主侧走真引擎 + 真 HTTP；「时间到了」用**倒填 `wakeAt`** 模拟（不睡墙钟 —— 真等会把「调度慢」误判成「唤醒坏了」）。**9 条变异逐条亲跑全部被具名用例抓住** + `trap` 还原 + 还原自检 + 复绿。⚠️ 变异电池当场抓出**用例自己的缺陷**：`timerDue` 的「原因」夹具原先写 `wakeAt: undefined`，摘掉原因判据**一条红都没有**（缺时刻那一条也在拦）⇒ 改成带过去的 `wakeAt` 才钉住；另抓出一处实现缺陷（`#wakeDue` 不返回「是否真接管」，drain 之后谎报「推进了 N 条」） | 一条在睡的 run 被提前叫醒（`approvalTimeoutMs` 误伤 / 缺时刻退化）＝ 停机窗口卡死或副作用提前发生；读数恒 0 ＝ 运维看不见「几条在睡」；`isResume` 只认 `approvals` ⇒ 醒来时会话历史翻倍、恢复段 trace 断链、会话被 tool 块毒化 |
+
 ### 1.4 文档与发布面
 
 | 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |

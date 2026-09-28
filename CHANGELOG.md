@@ -9,6 +9,27 @@
 
 ### 新增
 
+- **时间挂起（durable timer，spec §10 2026-09-28 ②）**：工具可以在**执行期**调
+  `ctx.deferUntil(at)` 说「现在还不是时候，T 之后再问我」—— 引擎把该回合收尾成挂起
+  （`stopReason: 'suspended'` + `suspendedReason: 'timer'` + 目标时刻 `wakeAt`），
+  到点由宿主续跑并**重跑这一批**工具。用途：等批处理作业、等限流窗口、等外部系统回填。
+  - ⏱️ **时刻必须是将来**：非有限数或 `at <= now` 当场抛 `TypeError`（该条 `tool_result`
+    记 is_error、run 照常往前走，**不**挂起）—— 允许过去时刻会让「醒来 → 再请求同一个过去
+    时刻」自己打转。同回合多条请求取**最早**的那个。
+  - ⚠️ **整批语义**：挂起是回合级的（协议要求每个 `tool_use` 都有配对 `tool_result`），
+    所以同回合**已经执行完**的其他工具会在醒来后**重跑**（副作用重复）。框架把它变成看得见的：
+    trace 记 `defer.requested { wake_at, tool_use_ids, discarded }`，真有兄弟工具被作废时
+    落一条 `console.warn`。要精确控制就让模型单独调它，或把它做成幂等读。
+  - 🩺 **可见性**：`GET /healthz` 新增 `suspended: { approval, timer, nextWakeAt }`
+    （本进程口径，与 `inFlight` 同一张表；无时间挂起时 `nextWakeAt` 是 `null` 不是 `0`），
+    另有 `AsyncRunner.suspendedSummary`。
+  - 🛑 **停机**：`drain()` 之后**不再唤醒**睡着的 run（停机 = 不再往前推）；重启后由新进程的
+    首次 `resumePending` 唤醒。**不提供 `cancel` API**：取消靠宿主自己 abort 在飞请求 + 不唤醒
+    （独立立项，见 spec §10 2026-09-28 ② 决策 6）。
+  - 新增字段（**全部加法，无破坏性**）：`ToolRunContext.deferUntil`、`AgentRunResult.wakeAt`、
+    `RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`。另顺手修两处：
+    `resumePending` 跳过挂起记录时的原因不再是 `'terminal'` 而是 `'suspended'`（诊断不说错话）；
+    时间挂起醒来时的续跑段**不再**重复注入会话历史、且 trace 会 link 上一段 run。
 - **菜单漂移不再静默（R8 候选 3，spec §10 2026-09-27 ⑧）**：挂起段之后**续跑**时，未决
   tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架把这件事记成**三处信号** ——
   `menu.drift` 事件（`{ missing, tool_use_ids, menu_size }`；时间线与
