@@ -34,9 +34,7 @@ function stub(body: string, contentType: string): void {
 
 /** 事件数组 → SSE 报文（`[DONE]` 原样写） */
 function sse(events: Array<unknown | '[DONE]'>): string {
-  return events
-    .map((e) => `data: ${e === '[DONE]' ? '[DONE]' : JSON.stringify(e)}\n\n`)
-    .join('');
+  return events.map((e) => `data: ${e === '[DONE]' ? '[DONE]' : JSON.stringify(e)}\n\n`).join('');
 }
 
 // —— 上游**没给** usage 的四种响应 ——
@@ -129,7 +127,9 @@ const openaiJsonWithUsage = () =>
 
 async function anthropicFinal(body: string, contentType: string) {
   stub(body, contentType);
-  return createAnthropicClient({ apiKey: 'k', maxRetries: 0 }).messages.stream(PARAMS).finalMessage();
+  return createAnthropicClient({ apiKey: 'k', maxRetries: 0 })
+    .messages.stream(PARAMS)
+    .finalMessage();
 }
 
 async function openaiFinal(body: string, contentType: string, stream: boolean) {
