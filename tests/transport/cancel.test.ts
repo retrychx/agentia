@@ -241,6 +241,13 @@ describe('cancel —— 排队的任务：绝不起跑', () => {
       'cancelled',
       '状态没被谁覆盖回 queued',
     );
+    // ⚠️ 这一条必须放在**收尾之后**：重复通知发生在「那趟 #execute 拿到槽位」时，
+    // 而那时才轮到它的 finally 跑 —— 只断言 cancel 返回那一刻会漏掉它（变异电池抓到过：零红）
+    assert.equal(
+      sinkCalls.filter((s) => s === 'cancelled').length,
+      1,
+      'onFinished 对这条取消只开火一次（两处都记账就会是两次）',
+    );
   });
 });
 
