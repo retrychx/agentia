@@ -1,4 +1,5 @@
 import type { McpCore, McpServer } from './mcp-server.js';
+import { frameLimitText, MAX_FRAME_CHARS } from '../core/line-framing.js';
 
 /**
  * Agentia —— MCP 反向桥的 **stdio 传输**（2026-09-28 自 `mcp-server.ts` 切出，
@@ -24,8 +25,39 @@ export function startStdioTransport(core: McpCore): McpServer {
   });
   let buf = '';
   let closed = false;
+  /**
+   * 正在丢弃一条**超限行**（2026-09-28 外部深评 S6）。
+   *
+   * 宿主（或任何写 stdin 的一方）吐了一条超过分帧上限、且至今没有换行的「报文」——
+   * 不做处理就是 `buf` 无界增长 ⇒ 先 OOM。这里**不静默吞**：回一条协议错（说清是超限），
+   * 然后丢弃字节直到下一个换行 —— 那是唯一能重新对齐帧边界的地方（丢掉半截行之后，
+   * 剩下的字节是完整的下一帧，照常派发）。
+   */
+  let oversized = false;
   const onData = (chunk: string): void => {
-    buf += chunk;
+    // 先归位：上一块把我们带进了「丢弃超限行」的状态，处理完再谈攒缓冲
+    let rest = chunk;
+    for (;;) {
+      if (oversized) {
+        const nl = rest.indexOf('\n');
+        if (nl < 0) return; // 还在那条超长行里，继续丢
+        oversized = false;
+        rest = rest.slice(nl + 1);
+        continue; // 换行之后的这段可能又超限，回环再判
+      }
+      if (buf.length + rest.length > MAX_FRAME_CHARS) {
+        // 丢弃已攒的（含超限尾块）并重新同步 —— 报文边界已丢，这些字节拼不回一条合法报文
+        buf = '';
+        oversized = true;
+        // 协议侧定义形状：传输层只说「这条超限了」（与下面坏 JSON 那条同一处置口径）
+        process.stdout.write(
+          `${JSON.stringify(core.rpcError(null, -32700, `报文超过分帧上限（${frameLimitText()}），已丢弃`))}\n`,
+        );
+        continue;
+      }
+      buf += rest;
+      break;
+    }
     for (;;) {
       const nl = buf.indexOf('\n');
       if (nl < 0) break;

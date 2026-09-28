@@ -8,7 +8,7 @@
  *
  * 行为由 env 决定（一个文件覆盖全部分支，免得为每个场景再开一个进程脚本）：
  *
- *   FAKE_MCP_MODE      normal | split | logline | noinit | die | iserror | badtools | stubborn | silentcall | rpcerror
+ *   FAKE_MCP_MODE      normal | split | logline | noinit | die | iserror | badtools | stubborn | silentcall | rpcerror | hugeline
  *     normal    正常握手 + tools/list + tools/call
  *     split     tools/list 响应**分两个 chunk** 下发（间隔 15ms）⇒ 验攒包
  *     logline   tools/list 之前先往 stdout 写一行非 JSON 日志 ⇒ 验忽略它
@@ -21,6 +21,9 @@
  *               pending 簿记被回收，「活着但不回包」的 server 不会造成无界泄漏
  *     rpcerror  tools/call 回 `{ error: {...} }` 形态的 JSON-RPC 错误 ⇒ 验 waiter 走 reject
  *               （区别于 iserror：那是 result 里的协议层失败标记，这是 JSON-RPC 层的错误帧）
+ *     hugeline  往 stdout 写一条**不带换行**的巨型报文（9 MiB > 8 MiB 分帧上限，S6）——
+ *               验连接器自己封顶并拒绝在途请求。不做这一条的话，对端吐一个不换行的日志行
+ *               就是 `buf` 无界增长（先 OOM 再谈协议）。
  *   FAKE_MCP_LOG_FILE 若设，收到的每个 method 追加一行（测试据此断言握手顺序 / 只握手一次）
  *   FAKE_MCP_PID_FILE 若设，启动时写入自己的 pid（测试据此断言 close() 返回时进程真没了）
  */
@@ -33,6 +36,12 @@ const PID_FILE = process.env.FAKE_MCP_PID_FILE;
 if (PID_FILE) writeFileSync(PID_FILE, String(process.pid));
 // 挂上监听器即覆盖 Node 的默认 SIGTERM 行为 ⇒ 进程不会因此退出（close() 必须升级到 SIGKILL）
 if (MODE === 'stubborn') process.on('SIGTERM', () => {});
+if (MODE === 'hugeline') {
+  // 一条「报文」9 MiB 且**全程没有换行**：分帧缓冲若没有上限就是无界增长。
+  // 之后什么都不做（不回应任何请求）—— 连接器必须在读侧自己封顶。
+  process.stdout.write('x'.repeat(9 * 1024 * 1024));
+  setInterval(() => {}, 1000); // 吊住进程，别自己退出（否则测的是「对端走了」而不是「超限」）
+}
 
 const send = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result });

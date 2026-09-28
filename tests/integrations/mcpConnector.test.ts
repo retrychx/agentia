@@ -911,3 +911,11 @@ describe('StreamableHTTP：响应形态防御（与 stdio 侧同款，HTTP 侧�
     await assert.rejects(() => connector.callTool('get-time', {}), /不是合法 JSON/);
   });
 });
+
+describe('S6：分帧上限 —— 对端吐一条不带换行的巨型「报文」', () => {
+  it('连接器自己封顶并拒绝在途请求（不是无界攒 buffer、也不是静默挂着）', async () => {
+    const c = stdio('hugeline');
+    // 上限是 8 MiB 码元、对端吐 9 MiB 且不换行 ⇒ 必须在读侧被拦下
+    await assert.rejects(() => c.listTools(), /分帧上限/);
+  });
+});

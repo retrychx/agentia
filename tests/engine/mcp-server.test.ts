@@ -11,6 +11,7 @@ import { createStdioMcpConnector } from '../../src/integrations/mcp.js';
 import type { AgentTool, ModelClient, ToolRunContext } from '../../src/core/tool.js';
 import type { Span, Trace, TraceSink } from '../../src/core/trace.js';
 import { DEFAULT_PROTOCOL_VERSION } from '../../src/integrations/mcp.js';
+import { MAX_FRAME_CHARS } from '../../src/core/line-framing.js';
 
 /**
  * MCP 反向桥（`createMcpServer`，R8-P5）的测试。
@@ -659,6 +660,67 @@ describe('createMcpServer —— stdio（真子进程，夹具走 createApp + @T
         if (child.exitCode !== null || child.signalCode !== null) r(undefined);
         else child.once('close', r);
       });
+    }
+  });
+});
+
+describe('S6：分帧上限 —— 宿主往 stdin 写一条不带换行的巨型报文', () => {
+  it('回一条协议错并**重新同步**到下一个换行（其后的请求照常被应答，不是一路丢下去）', async () => {
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, ['--import', 'tsx', FIXTURE], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+
+    const lines: string[] = [];
+    let buf = '';
+    let settle: () => void = () => {};
+    const answered = new Promise<void>((r) => {
+      settle = r;
+    });
+    child.stdout!.setEncoding('utf8');
+    child.stdout!.on('data', (chunk: string) => {
+      buf += chunk;
+      for (;;) {
+        const nl = buf.indexOf('\n');
+        if (nl < 0) break;
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.trim() === '') continue;
+        lines.push(line);
+        if (line.includes('"id":7')) settle();
+      }
+    });
+    // 子进程没了之后的 EPIPE 是被测对象的症状，别让测试自己炸
+    child.stdin!.on('error', () => {});
+
+    try {
+      // 一条 (上限 + 1 KiB) 且**全程没有换行**的「报文」：分帧缓冲若不封顶就是无界增长。
+      // 对端不必是恶意方 —— stdout 混进一条不换行的日志行就够（连接器那边同一形态）。
+      child.stdin!.write('x'.repeat(MAX_FRAME_CHARS + 1024));
+      child.stdin!.write('\n'); // 唯一能重新对齐帧边界的地方
+      // 换行之后这条是**完整的一帧**：重新同步必须继续服务
+      child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'ping' })}\n`);
+
+      await Promise.race([
+        answered,
+        new Promise((_r, rej) =>
+          setTimeout(() => rej(new Error('30s 内没等到应答 —— 说明超限之后服务没恢复')), 30_000),
+        ),
+      ]);
+
+      const parsed = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+      const errFrame = parsed.find((m) => m.error) as
+        | { error: { code: number; message: string } }
+        | undefined;
+      assert.ok(errFrame, `必须回一条错误帧（不许静默丢），实际收到：${lines.join(' | ')}`);
+      assert.equal(errFrame.error.code, -32700, '走传输层既有的「这条帧不可用」码');
+      assert.match(String(errFrame.error.message), /分帧上限/, '文案要说清是超限，不是坏 JSON');
+
+      const answeredFrame = parsed.find((m) => m.id === 7);
+      assert.ok(answeredFrame, '重新同步之后那条请求必须被正常应答');
+      assert.ok(!answeredFrame.error, 'ping 不该得到错误应答');
+    } finally {
+      child.kill('SIGKILL');
     }
   });
 });

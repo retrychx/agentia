@@ -1458,3 +1458,28 @@ describe('R8-P4 归因标签（labelKeys → 指标标签）', () => {
     assert.equal(sink.snapshot().droppedLabelValues.tenant, 0);
   });
 });
+
+describe('E3：上游没回报 usage 的 turn（S2）', () => {
+  it('model_usage_missing_turns_total 与 unpriced 分开出；snapshot 同名可见；没这条时一行都不发', () => {
+    const t = richTrace();
+    // 在 llm.turn span 上加一条引擎会记的 usage.missing 事件（`engine/turn.ts` 的出口）
+    t.spans[1]!.events.push({ time: 1, name: 'usage.missing', body: { model: 'claude-opus-5' } });
+
+    const m = metricsSink();
+    m.export(t);
+    const txt = m.render();
+    assert.match(txt, /^agentia_model_usage_missing_turns_total\{model="claude-opus-5"\} 1$/m);
+    assert.equal(m.snapshot().models['claude-opus-5']!.usageMissingTurns, 1);
+    assert.equal(
+      m.snapshot().models['claude-opus-5']!.unpricedTurns,
+      0,
+      '两条信号分开数：这个 turn 的模型有定价',
+    );
+
+    // 反向：没有 usage.missing 事件的 trace（richTrace 原样）一行都不发 ——
+    // 与 dropped_keys 那种「恒定发三行」不同，这条是**有才发**
+    const clean = metricsSink();
+    clean.export(richTrace());
+    assert.doesNotMatch(clean.render(), /usage_missing_turns_total/);
+  });
+});

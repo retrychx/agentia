@@ -47,6 +47,35 @@ export type RunStatus =
 export type SuspendedReason = 'approval' | 'timer';
 
 /**
+ * `RunStatus` → 「是不是终态」的**唯一真源**（2026-09-28 外部深评 S1）。
+ *
+ * 为什么要有它：这个判定此前**散在三处各写一遍**，而且写法不同——
+ * `transport/async.ts` 的 `isTerminalTask` 是 `status !== 'queued' && …`（负向枚举
+ * 非终态），`store/redisStore.ts` 施加 TTL 时压根判都不判（于是**挂起中也照样过期**：
+ * 一条在等审批的任务，TTL 一到记录就没了，「批了它」的决定无家可归 —— 与
+ * `InMemoryTaskStore.evict` 里那句「suspended 不可淘汰」正好相反）。谁都没错，
+ * 合起来是错的：**同一事实的两份读数**。
+ *
+ * 形状取**穷尽的分类表**而不是负向枚举：往 `RunStatus` 加成员而不在这里表态 ⇒
+ * `tsc` 报缺属性（`TS2741`，与 `stop-reason.ts` 的分类表同款）。负向枚举会让新成员
+ * **静默变成「终态」**——那正是「挂起中的任务被当成跑完了」那类 bug 的来源。
+ */
+const TERMINAL_STATUS: Record<RunStatus, boolean> = {
+  queued: false,
+  running: false,
+  // 挂起**不是**终态：批了（或睡到点）它会接着跑
+  suspended: false,
+  succeeded: true,
+  failed: true,
+  cancelled: true,
+};
+
+/** 该状态是否已到终态（不会再变）。判定只此一处 —— 别在调用点重写。 */
+export function isTerminalStatus(status: RunStatus): boolean {
+  return TERMINAL_STATUS[status];
+}
+
+/**
  * run 事件（2026-09-28 ⑥，run 事件投入口）：外部系统投给一条**挂起** run 的一条输入
  * （`AsyncRunner.signalTask` / `POST /tasks/:id/events`；审批是它的特例）。
  *

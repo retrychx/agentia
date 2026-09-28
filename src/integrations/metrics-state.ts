@@ -1,6 +1,6 @@
 import { capabilityKindOf } from '../core/trace.js';
 import type { SpanId, Trace, TraceId } from '../core/trace.js';
-import { TOOL_OUTPUT_EVENT } from '../core/trace.js';
+import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
 /**
@@ -34,6 +34,12 @@ export interface ModelMetrics {
   costUsd: number;
   /** 成本估不出来的 turn 数（模型不在价格表内，且未用 priceOverrides 覆盖）*/
   unpricedTurns: number;
+  /**
+   * 上游**没回报 usage** 的 turn 数（2026-09-28 外部深评 S2）。
+   * 与 `unpricedTurns` 是两件事：那个是「模型不在价格表里」，这个是「上游没给计量」——
+   * 两者都会让成本**看起来**是 0，但排障方向不同（换模型 vs 查端点/网关）。
+   */
+  usageMissingTurns: number;
   latencyP50: number;
   latencyP95: number;
 }
@@ -306,6 +312,7 @@ export interface ModelAcc {
   tokens: number;
   costUsd: number;
   unpricedTurns: number;
+  usageMissingTurns: number;
   stat: DurationStat;
 }
 
@@ -538,6 +545,7 @@ export class MetricsState {
           tokens: 0,
           costUsd: 0,
           unpricedTurns: 0,
+          usageMissingTurns: 0,
           stat: new DurationStat(this.opts.windowSize, this.opts.buckets),
         };
         acc.turns++;
@@ -554,6 +562,9 @@ export class MetricsState {
         this.models.set(model, acc);
         // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）—— 能力指标的另一路数据源
         for (const e of span.events) {
+          // 上游没报计量的回合（S2）：与 unpriced **分开数** —— 那个是「模型没定价」，
+          // 这个是「上游没给读数」，排障方向不同
+          if (e.name === USAGE_MISSING_EVENT) acc.usageMissingTurns++;
           if (e.name !== TOOL_OUTPUT_EVENT) continue;
           const body = e.body as Record<string, unknown> | null;
           if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
@@ -590,6 +601,7 @@ export class MetricsState {
         tokens: acc.tokens,
         costUsd: acc.costUsd,
         unpricedTurns: acc.unpricedTurns,
+        usageMissingTurns: acc.usageMissingTurns,
         latencyP50: acc.stat.percentile(0.5),
         latencyP95: acc.stat.percentile(0.95),
       };

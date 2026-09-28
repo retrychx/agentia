@@ -1,3 +1,4 @@
+import { isTerminalStatus } from '../core/run.js';
 import { parseTaskRecord } from './record.js';
 import type { TaskRecord, TaskStore } from './store.js';
 
@@ -11,7 +12,9 @@ import type { TaskRecord, TaskStore } from './store.js';
  * 存储模型（prefix 缺省 'agentia:'）：
  * - `${prefix}task:<taskId>` → 整行记录 JSON（save = SET 覆写，last-wins）；
  * - `${prefix}idem:<idempotencyKey>` → taskId（同键重提覆写，byIdempotency last-wins）。
- * 两者都按 `ttlSeconds`（若设）过期（SET 覆写 + EXPIRE 刷新窗口），见该选项。
+ * 两者都按 `ttlSeconds`（若设）过期（SET 覆写 + EXPIRE 刷新窗口），见该选项 ——
+ * 但**只有终态记录真的拿到窗口**：非终态覆写会把窗口抹掉（挂起中的任务不能被 TTL 吃掉，
+ * 见 `save` 的注释）。
  *
  * 语义对照 FileTaskStore / SqliteTaskStore：save 覆写、byIdempotency 取最近、
  * clear 清空本前缀全部 key。差异在 list 序：Redis 本身无序，按 createdAt
@@ -130,10 +133,20 @@ export class RedisTaskStore implements TaskStore {
 
   async save(rec: TaskRecord): Promise<void> {
     const json = JSON.stringify(rec);
+    // TTL 只加在**终态**记录上（2026-09-28 外部深评 S1）。此前无条件加：一条在等审批的
+    // 任务，TTL 一到记录就没了 —— 那条「批了它」的决定无家可归（`InMemoryTaskStore.evict`
+    // 里那句「suspended 不可淘汰」是同一条道理，两处此前读数相反）。
+    // ⚠️ 机制是 `SET` 的语义：不带选项的 `SET` **清除**既有 TTL ⇒ 非终态的每次覆写都把
+    // 先前那条窗口抹掉、记录回到「永不过期」，直到进终态才第一次拿到窗口。
+    // 代价如实记：一条**永远等不到**审批的挂起记录会永久驻留（批不批是人的事，
+    // store 无从判死）—— 与内存 store 同款取舍，清理属部署层职责。
+    const expires = isTerminalStatus(rec.status);
     // 写入顺序是 load-bearing（AsyncRunner 的延迟幂等去重依赖它）：先记录、后幂等索引
-    await this.write(this.taskKey(rec.taskId), json);
+    await this.write(this.taskKey(rec.taskId), json, expires);
     if (rec.idempotencyKey) {
-      await this.write(this.idemKey(rec.idempotencyKey), rec.taskId);
+      // 幂等索引与记录**同生共死**：非终态时索引若先过期，同一键重提会绕过去重、
+      // 把一条在跑的任务再跑一遍（比「记录丢了」更坏的后果）
+      await this.write(this.idemKey(rec.idempotencyKey), rec.taskId, expires);
     }
   }
 
@@ -150,10 +163,11 @@ export class RedisTaskStore implements TaskStore {
    * **没有 TTL 的键**（多活一条本该到期的记录），不会损坏数据。TTL 只是查询窗口，用这个
    * 窗口换「两家客户端都真的生效」，是本 store 有意的取舍（见 spec §10）。
    */
-  private async write(key: string, value: string): Promise<void> {
+  private async write(key: string, value: string, expires: boolean): Promise<void> {
     await this.client.set(key, value);
-    // 每次覆写都刷新 TTL：任务的查询窗口从「最后一次状态推进」起算，而不是创建时刻
-    if (this.applyTtl) await this.applyTtl(key);
+    // 只有终态记录拿到查询窗口（非终态：无选项的 SET 已把既有 TTL 清掉 ⇒ 永不过期）。
+    // 窗口从**进入终态那次写**起算 —— 既不是创建时刻，也不是每次状态推进（见 save）。
+    if (expires && this.applyTtl) await this.applyTtl(key);
   }
 
   async get(taskId: string): Promise<TaskRecord | undefined> {

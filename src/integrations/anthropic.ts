@@ -6,7 +6,7 @@ import type {
   ToolUseBlock,
 } from '../core/message.js';
 import { textOf } from '../core/text.js';
-import { resolveMaxRetries } from './adapter-options.js';
+import { resolveMaxRetries, statusOfStreamError } from './adapter-options.js';
 import { sseLines } from '../core/sse.js';
 import { assertTimerDelay, backoffMs, interruptibleSleep } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
@@ -142,7 +142,7 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
               // —— 同一事件走流式路径却是带 status 的可重试错误，两本账。
               if (body.error) {
                 throw new AnthropicApiError(
-                  statusOfStreamError(body.error.type),
+                  statusOfStreamError({ type: body.error.type }),
                   `Anthropic 非流式响应携带错误（${body.error.type ?? 'unknown'}）：` +
                     (body.error.message ?? JSON.stringify(body).slice(0, 300)),
                 );
@@ -156,7 +156,10 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
                   'Anthropic 非流式响应缺 content 数组；响应无可用补全，按上游故障处理',
                 );
               }
-              const message = body;
+              // usage 缺失（端点没回计量）也要如实标出来 —— 别让 0 冒充读数（S2）
+              const message: Message = body.usage
+                ? body
+                : { ...body, usage: { input_tokens: 0, output_tokens: 0, unreported: true } };
               // 分隔符 `''`：回落的原文本来就是一整段，拼回去要与流式累积的文本逐字一致
               const full = textOf(message, '');
               if (full) for (const cb of textCallbacks) cb(full);
@@ -419,6 +422,9 @@ async function readAnthropicStream(
   let stopReason: string | null = null;
   let stopSequence: string | null = null;
   let usage: RawUsage = {};
+  // 上游**到底报没报** usage：空对象（没报）与「报了全 0」是两回事 ——
+  // 前者要如实标 `unreported`，别让 0 冒充读数（2026-09-28 外部深评 S2）
+  let sawUsage = false;
 
   for await (const line of sseLines(body)) {
     if (!line.startsWith('data:')) continue; // 忽略 event: / 注释 / 空行
@@ -435,6 +441,7 @@ async function readAnthropicStream(
         started = true;
         id = event.message?.id ?? '';
         model = event.message?.model ?? '';
+        if (event.message?.usage) sawUsage = true;
         usage = { ...event.message?.usage };
         break;
       }
@@ -501,7 +508,10 @@ async function readAnthropicStream(
         if (d?.stop_sequence !== undefined) stopSequence = d.stop_sequence;
         // message_delta 的 usage 是累计口径（output_tokens 为累计值，cache 计量在此回报）。
         // 走 mergeUsage 而非浅合并：显式 null 不得清掉 message_start 已拿到的真实值。
-        if (event.usage) usage = mergeUsage(usage, event.usage);
+        if (event.usage) {
+          sawUsage = true;
+          usage = mergeUsage(usage, event.usage);
+        }
         break;
       }
       case 'error': {
@@ -509,7 +519,7 @@ async function readAnthropicStream(
         // run 结论与真实相反（openai.ts 处理过同款形态）
         const err = event.error ?? {};
         throw new AnthropicApiError(
-          statusOfStreamError(err.type),
+          statusOfStreamError({ type: err.type }),
           `Anthropic 流内错误（${err.type ?? 'unknown'}）：${err.message ?? payload.slice(0, 300)}`,
         );
       }
@@ -585,30 +595,14 @@ async function readAnthropicStream(
       output_tokens: usage.output_tokens ?? 0,
       cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
       cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+      // 上游全程没给 usage ⇒ 上面四个 0 是**替身值**，如实标出来（S2）
+      ...(sawUsage ? {} : { unreported: true as const }),
     },
   } as Message;
 }
 
-/** 流内 error 事件的类型 → HTTP status（让引擎的错误分类与重试语义照常工作） */
-function statusOfStreamError(type: string | undefined): number {
-  switch (type) {
-    case 'rate_limit_error':
-      return 429;
-    case 'overloaded_error':
-      return 529;
-    // 4xx 档（与 openai.ts 的 statusOfStreamError 同口径 —— 那边把
-    // invalid_request / authentication / permission / model_not_found 一律归 400，
-    // 不细分 401/403/404）：这些是**改配置才有救**的病因，归 500 + retryable 会让
-    // 引擎白重试三轮，且 trace 记成 server —— 排障方向被带偏。
-    case 'invalid_request_error':
-    case 'authentication_error':
-    case 'permission_error':
-    case 'not_found_error':
-      return 400;
-    default:
-      return 500;
-  }
-}
+// 「流内 error → HTTP status」的判定在 `adapter-options.ts`（与 openai.ts **共用一份**，
+// 2026-09-28 外部深评 S3：此前两份实现靠注释互相喊话对齐）—— 别在这里再写一份。
 
 /** tool_use 的 input 是分片拼出的 JSON 字符串；非法时原样交给下游 schema 校验（同 openai.ts） */
 function parseToolInput(raw: string): unknown {

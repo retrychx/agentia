@@ -7,6 +7,35 @@
 
 ## [Unreleased]
 
+### 修复 · 四条「静默失效」收口（2026-09-28 ㉒）
+
+来源：`DEEP-AUDIT-VERIFIED-2026-09-28.md` 的 P2 表（`S1` / `S2` / `S3` / `S6`），
+逐条在当前 `main` 上复核后动刀。四条同一族：**错了 / 算不出 / 超限了，却没有任何信号**。
+
+- **redis store 的 TTL 不再吃掉非终态记录**（`store/redisStore.ts`，**行为变更**）：
+  此前 `applyTtl` 不看状态，一条**等审批中**（`suspended`）的任务会在 TTL 到点时从 redis 里消失 ——
+  「批了它」的决定无家可归（`approve` 404）；而内存 store 的淘汰逻辑里明写着 `suspended` 不可淘汰
+  （同一事实的两处读数方向相反）。现在「终态」判定单源到 `core/run.ts` 的 `isTerminalStatus`
+  （穷尽分类表：加成员不表态 ⇒ `tsc` 报缺属性），只有**终态**记录才拿到查询窗口（非终态覆写靠不带选项的
+  `SET` 清除既有 TTL），幂等索引与记录同生共死。**代价如实**：永远等不到审批的挂起记录会永久驻留
+  （批不批是人的事，store 无从判死）—— 与内存 store 同款取舍，清理属部署层职责。
+- **上游没回报 usage 时不再静默填 0**（`integrations/anthropic.ts` / `integrations/openai.ts` /
+  `engine/turn.ts`）：`?? 0` 让「端点不回 usage」（或忽略 `stream_options.include_usage`）与
+  「真的只花了 0」在数值上无法区分，于是 `maxCostUsd` 这条成本护栏**静默失效**。现在四条响应路径
+  （流式 / 非流式 × 两条适配器）都标 `MessageUsage.unreported`，引擎在 llm.turn span 上记
+  `usage.missing` 事件，报告出 `usageMissingTurns` / `usageMissingModels`、指标出
+  `agentia_model_usage_missing_turns_total`（render + OTLP 两出口）。与 `usage.unpriced`（模型不在
+  价格表里）**分开计数**：后果都是「成本看起来是 0」，但一个要换模型、一个要查端点/网关。
+- **`statusOfStreamError` 收成一份**（`integrations/adapter-options.ts`）：原本两条适配器各写一份、
+  靠注释互相喊话对齐 —— 合并时发现它们**早就不一致**（`not_found_error` 一侧 400 另一侧 500，
+  等于把「模型名错了」记成 `server`）。新增 `tests/integrations/stream-error-parity.test.ts`：
+  一张表跑两条真适配器 + 真 SSE，两行 `wasDivergent` 标出分歧点。
+- **两条 MCP 桥的分帧缓冲加上限**（`core/line-framing.ts`，`MAX_FRAME_CHARS` = 8M 码元）：
+  `buf += chunk` 遇到「不带换行的巨型行」就是无界增长（先 OOM 再谈协议；MCP server 往 stdout
+  混日志本来就常见）。连接器侧超限即拒绝全部在途请求并终止子进程；反向桥侧回一条协议错、
+  丢弃到下一个换行**重新对齐**（其后的帧照常派发）。
+
+
 ### 文档 · 外部深评的 5 份报告入库 + 逐条落地盘点（2026-09-28 ⑲）
 
 **改了「复核报告不随仓提交」这个惯例**：那轮外部深评产出的 5 份报告**原文逐字入库**到

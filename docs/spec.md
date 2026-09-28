@@ -4994,6 +4994,87 @@ system prompt 与 tools schema 同样进请求、却不在这个数里。选**�
 （正常路径逐字未变：`finish()` 只在 `running` 后调、工厂都是同步的 —— 全仓 grep 过）。
 P2 账：26 行 = **15 已落地 / 10 未做 / 1 有意为之**。
 
+### 2026-09-28 ㉒：**四条「静默失效」收口**（外部深评 S1 / S2 / S3 / S6）
+
+接 `docs/reviews/2026-09-28/README.md` §2.2 的 `S1` / `S2` / `S3` / `S6`。四条同族：**都是
+「错了 / 算不出 / 超限了，却没有任何信号」**。修法各只有一句话：**让「不知道」与 `0` 在类型上分开**（S2）、
+**让同一事实只有一份读数**（S1 / S3）、**让无界的地方有界且出口说话**（S6）。
+
+**S1 · redis 的 TTL 不再吃掉非终态记录（⛔ 行为变更）**
+
+`applyTtl` 此前**不看 status**：一条在等审批（`suspended`）的任务，TTL 一到记录就从 redis 里消失 ——
+那条「批了它」的决定**无家可归**（`approve` 404），而 `InMemoryTaskStore.evict` 里明写着
+「`suspended` 不可淘汰」（**同一事实的两处读数，方向相反**）。现在判定收进 `core/run.ts`：
+
+- `TERMINAL_STATUS: Record<RunStatus, boolean>` + `isTerminalStatus()` —— **穷尽分类表**形状
+  （与 `stop-reason.ts` 的分类表同款）：往 `RunStatus` 加成员而不表态 ⇒ `tsc` 报缺属性（`TS2741`）。
+  负向枚举（原来的 `status !== 'queued' && …`）会让新成员**静默变成「终态」** ——
+  那正是「挂起中的任务被当成跑完了」这类 bug 的来源。
+- `redisStore.save` **只在终态**施加 TTL；非终态覆写靠 `SET`（不带选项）**清除**既有 TTL ⇒
+  记录与幂等索引都活过整个等待窗口。幂等索引与记录**同生共死**（索引若先过期，同键重提会绕过去重、
+  把一条在跑的任务再跑一遍 —— 比「记录丢了」更坏）。
+- **代价如实**：一条**永远等不到**审批的挂起记录会永久驻留（批不批是人的事，store 无从判死）——
+  与内存 store 跳过 `suspended` 是同款取舍，清理属部署层职责。
+
+**S2 · 上游没回报 usage 不再静默恒 0**（四条里最贵的一条：它让 `maxCostUsd` 静默失效）
+
+`acc.usage?.prompt_tokens ?? 0` —— `0` 与「不知道」在数值上无法区分，于是端点不回 usage
+（或忽略流式请求里已经发出去的 `stream_options.include_usage`）时 token/成本**恒 0**，
+护栏看起来一切正常。四条响应路径都改（流式 / 非流式 × 两条适配器），并把信号一路送到读得见的地方：
+
+- `MessageUsage.unreported?: true` —— 「这几个 0 是替身值，不是读数」写进类型；
+- `engine/turn.ts` 在 llm.turn span 上记 `usage.missing`；事件名**单源到 `core/trace.ts`**
+  （与 `tool.input` / `tool.output` 同一条纪律：写它的层与按名字过滤的层不许各写一份字面量）；
+- 报告 `usageMissingTurns` / `usageMissingModels`、指标 `agentia_model_usage_missing_turns_total`
+  （**render 与 OTLP 两个出口都要有** —— 只补一个，按文档把 `metricsSink` 接到 `/metrics` 的部署
+  就看不见，而「OPTL 那半有」这件事本身不会报错）；
+- **与 `usage.unpriced` 刻意分开**：那个是「模型不在价格表里」（换模型），这个是「上游没给读数」
+  （查端点 / 网关）。两者后果都是「成本看起来是 0」，但**排障方向不同** —— 混成一条就是把人带偏。
+
+**S3 · `statusOfStreamError` 两份 → 一份（合并时发现它们**早就**不一致）**
+
+判定原本在 `anthropic.ts` / `openai.ts` 各写一份，一致性靠两边注释里「与那边同口径」互相喊话 ——
+注释不会在被改的那一刻失败。收进 `adapter-options.ts` 时按词表**并集**处理，并用
+`tests/integrations/stream-error-parity.test.ts`（一张表跑**两条真适配器 + 真 SSE**）把结果钉住：
+其中 `not_found_error` 与 `model_not_found` 两行是**合并前真实分歧**（同一病因，一侧 400、另一侧 500，
+后者把「模型名错」记成 `server`，排障方向被带偏）。用例给这两行打了 `wasDivergent` 标记 ——
+免得后人以为这种对称是天然的。
+
+**S6 · 两条 MCP 桥的分帧缓冲有上限**
+
+`buf += chunk` 之后按 `\n` 切帧 —— 对端一直吐**不带换行**的字节就是无界增长（先 OOM 再谈协议），
+而这**不是罕见输入**：MCP server 往 stdout 混日志本来就常见，而「一条不换行的日志行」正是这形态。
+`core/line-framing.ts` 给两侧**同一个** `MAX_FRAME_CHARS`（8M 码元，单位口径与取值理由写在注释里）：
+
+- **连接器**（读子进程 stdout）：超限 ⇒ 丢弃缓冲、一次性拒绝全部在途请求、**终止子进程** ——
+  帧边界已经丢了，再读下去既救不回那条「一行」，也答不出任何在途请求。
+- **反向桥**（读宿主 stdin）：超限 ⇒ 回一条协议错**并丢弃到下一个换行重新对齐** ——
+  其后的完整帧照常派发。用例把「重新同步」也钉住了：不同时守它，很容易退化成「一路丢到天荒地老」。
+
+**验证**
+
+- S1：`tests/store/redisStore.test.ts` 新增一档（queued / running / suspended 都**不得**带 TTL；
+  suspended → succeeded 才落窗口）。**变异：把终态闸摘成 `expires = true` ⇒ 恰好那条红**，
+  还原后 `sha256` 逐字节一致。
+- S2：`tests/integrations/usage-missing.test.ts`（8 条 = 四条路径 × 正反）+
+  `tests/engine/turn-usage-missing.test.ts`（3 条，含「未定价 + 有计量 ⇒ 只发 `usage.unpriced`」）+
+  `report.test.ts` / `metrics.test.ts` 各一条聚合。**变异：摘掉 openai 流式的 `unreported` 标记 ⇒
+  恰好适配器那条红；摘掉引擎的事件 ⇒ 恰好引擎那条红**（两条独立，不互相遮蔽）。
+- S3：`tests/integrations/stream-error-parity.test.ts` 10 条。**变异：从词表里删掉 `not_found` ⇒
+  恰好 `not_found_error → 400` 那条红**（证明那行真有牙齿，不是装饰）。
+- S6：`tests/integrations/mcpConnector.test.ts` + `tests/engine/mcp-server.test.ts` 各一条
+  （夹具新增 `hugeline` 模式：9 MiB 且不换行）。**变异：摘掉反向桥那条「超限回协议错」⇒ 恰好那条红**。
+- 全链：`build` / `biome ci . --error-on-warnings` / `typecheck` / `typecheck:types` / `typecheck:tests`
+  全绿；`npm test` 三套件全绿。
+- **文档门禁当场抓到我一次**：`ModelReport` 加字段后 `tests/docs/api-page.test.ts` 报
+  「形状没有「…」（= 自陈穷尽）却漏了源码里的 `usageMissingTurns`」—— 这正是它该管的事
+  （源码形状 ↔ 文档自陈），修的是文档不是断言。
+
+**射程如实**：S1 是**行为变更**（TTL 语义：查询窗口从「最后一次状态推进」改成「进入终态那一刻」）——
+对**终态记录**逐字不变，变的只有非终态那一档（此前它们**不该**被 TTL 吃掉）。S2 / S3 / S6 对
+正常路径逐字不变（S3 只在合并前两侧**本来就不一致**的两行上给了不同结论；S6 只在上限被越过时生效）。
+P2 账：26 行 = **19 已落地 / 6 未做 / 1 有意为之**。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

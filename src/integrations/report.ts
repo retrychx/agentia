@@ -1,6 +1,6 @@
 import { capabilityKindOf } from '../core/trace.js';
 import type { Trace, Usage } from '../core/trace.js';
-import { TOOL_OUTPUT_EVENT } from '../core/trace.js';
+import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
 /**
@@ -59,6 +59,11 @@ export interface ModelReport {
   costUsd: number | null;
   /** 算不出成本的 turn 数（模型不在价格表内） */
   unpricedTurns: number;
+  /**
+   * 上游**没回报 usage** 的 turn 数（2026-09-28 外部深评 S2）。
+   * 与 `unpricedTurns` 分开记：两者都让成本像 0，但一个要换模型、一个要查端点/网关。
+   */
+  usageMissingTurns: number;
   durationMs: DurationReport;
   durations: number[];
 }
@@ -75,6 +80,8 @@ export interface RunReport {
   capabilities: CapabilityReport[];
   /** 价格表外、成本算不出来的模型（成本护栏失效的显式信号） */
   unpricedModels: string[];
+  /** 上游没回报 usage 的模型（成本**看似**为 0 的另一来源 —— 与上面那条分开） */
+  usageMissingModels: string[];
   /** 参与合并的 run 数（单条报告为 1） */
   runs: number;
 }
@@ -129,6 +136,7 @@ export function buildRunReport(trace: Trace): RunReport {
 
   const models = new Map<string, ModelReport>();
   const unpriced = new Set<string>();
+  const usageMissing = new Set<string>();
 
   for (const span of trace.spans) {
     if (span.kind === 'capability') {
@@ -155,12 +163,20 @@ export function buildRunReport(trace: Trace): RunReport {
         tokensTotal: 0,
         costUsd: null,
         unpricedTurns: 0,
+        usageMissingTurns: 0,
         durationMs: { total: 0, max: 0, p50: 0, p95: 0 },
         durations: [],
       };
       models.set(model, m);
     }
     m.turns++;
+    // 上游没报 usage 的回合（S2）：成本会是 0，但那**不是**「便宜」——
+    // 与 unpriced 分开数（那个是「模型不在价格表里」）
+    for (const e of span.events) {
+      if (e.name !== USAGE_MISSING_EVENT) continue;
+      m.usageMissingTurns++;
+      usageMissing.add(model);
+    }
     if (span.usage) {
       addUsage(m.tokens, span.usage);
       if (span.usage.costEstimate != null) m.costUsd = (m.costUsd ?? 0) + span.usage.costEstimate;
@@ -215,6 +231,7 @@ export function buildRunReport(trace: Trace): RunReport {
     models: modelReports,
     capabilities: capabilityReports,
     unpricedModels: [...unpriced].sort(),
+    usageMissingModels: [...usageMissing].sort(),
     runs: 1,
   };
 }
@@ -229,11 +246,13 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
     models: [],
     capabilities: [],
     unpricedModels: [],
+    usageMissingModels: [],
     runs: reports.length,
   };
   const capabilities = new Map<string, CapabilityAcc>();
   const models = new Map<string, ModelReport>();
   const unpriced = new Set<string>();
+  const usageMissing = new Set<string>();
 
   for (const r of reports) {
     total.durationMs += r.durationMs;
@@ -248,6 +267,7 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
           tokensTotal: 0,
           costUsd: null,
           unpricedTurns: 0,
+          usageMissingTurns: 0,
           durationMs: { total: 0, max: 0, p50: 0, p95: 0 },
           durations: [],
         };
@@ -257,6 +277,7 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
       addUsage(acc.tokens, m.tokens);
       if (m.costUsd != null) acc.costUsd = (acc.costUsd ?? 0) + m.costUsd;
       acc.unpricedTurns += m.unpricedTurns;
+      acc.usageMissingTurns += m.usageMissingTurns;
       acc.durations.push(...m.durations);
     }
     for (const u of r.capabilities) {
@@ -275,6 +296,7 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
       if (u.costUsd != null) acc.costUsd = (acc.costUsd ?? 0) + u.costUsd;
     }
     for (const m of r.unpricedModels) unpriced.add(m);
+    for (const m of r.usageMissingModels) usageMissing.add(m);
   }
 
   total.capabilities = [...capabilities.entries()].map(([capability, a]) => ({
@@ -294,6 +316,7 @@ export function mergeRunReports(reports: readonly RunReport[]): RunReport {
     durationMs: durationReport(m.durations),
   }));
   total.unpricedModels = [...unpriced].sort();
+  total.usageMissingModels = [...usageMissing].sort();
   return total;
 }
 
