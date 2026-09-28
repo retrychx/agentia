@@ -1,4 +1,5 @@
 import type { Trace, TraceSink } from '../core/trace.js';
+import { zeroClauseOf } from '../core/limits.js';
 import { MetricsState } from './metrics-state.js';
 import type { MetricsSnapshot } from './metrics-state.js';
 import { renderOpenMetrics, renderPrometheus } from './metrics-render.js';
@@ -220,27 +221,39 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   }
   const windowSize = opts.windowSize ?? DEFAULT_WINDOW;
   if (!(windowSize > 0)) {
-    throw new Error(`metricsSink: windowSize 必须为正数，收到 ${opts.windowSize}`);
+    throw new Error(
+      `metricsSink: windowSize 必须为正数（${zeroClauseOf('metricsSink.windowSize')}），收到 ${opts.windowSize}`,
+    );
   }
   const maxCapabilities = opts.maxCapabilities ?? DEFAULT_MAX_CAPABILITIES;
   if (!(maxCapabilities > 0)) {
-    throw new Error(`metricsSink: maxCapabilities 必须为正数，收到 ${opts.maxCapabilities}`);
+    throw new Error(
+      `metricsSink: maxCapabilities 必须为正数（${zeroClauseOf('metricsSink.maxCapabilities')}），收到 ${opts.maxCapabilities}`,
+    );
   }
   const maxModels = opts.maxModels ?? DEFAULT_MAX_MODELS;
   if (!(maxModels > 0)) {
-    throw new Error(`metricsSink: maxModels 必须为正数，收到 ${opts.maxModels}`);
+    throw new Error(
+      `metricsSink: maxModels 必须为正数（${zeroClauseOf('metricsSink.maxModels')}），收到 ${opts.maxModels}`,
+    );
   }
   const maxScores = opts.maxScores ?? DEFAULT_MAX_SCORES;
   if (!(maxScores > 0)) {
-    throw new Error(`metricsSink: maxScores 必须为正数，收到 ${opts.maxScores}`);
+    throw new Error(
+      `metricsSink: maxScores 必须为正数（${zeroClauseOf('metricsSink.maxScores')}），收到 ${opts.maxScores}`,
+    );
   }
   const maxLabelValues = opts.maxLabelValues ?? DEFAULT_MAX_LABEL_VALUES;
   if (!(maxLabelValues > 0)) {
-    throw new Error(`metricsSink: maxLabelValues 必须为正数，收到 ${opts.maxLabelValues}`);
+    throw new Error(
+      `metricsSink: maxLabelValues 必须为正数（${zeroClauseOf('metricsSink.maxLabelValues')}），收到 ${opts.maxLabelValues}`,
+    );
   }
   const maxLabelCombos = opts.maxLabelCombos ?? DEFAULT_MAX_LABEL_COMBOS;
   if (!(maxLabelCombos > 0)) {
-    throw new Error(`metricsSink: maxLabelCombos 必须为正数，收到 ${opts.maxLabelCombos}`);
+    throw new Error(
+      `metricsSink: maxLabelCombos 必须为正数（${zeroClauseOf('metricsSink.maxLabelCombos')}），收到 ${opts.maxLabelCombos}`,
+    );
   }
   const labelKeys: string[] = [];
   for (const k of opts.labelKeys ?? []) {

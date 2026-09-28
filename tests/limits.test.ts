@@ -22,7 +22,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { AsyncRunner, executeRun } from '../src/index.js';
+import { AsyncRunner, createBudgetGuard, executeRun } from '../src/index.js';
 import type { AgentTool, AppCallable, Trace } from '../src/index.js';
 import { LIMIT_SEMANTICS, type LimitKnob, type ZeroMeaning } from '../src/core/limits.js';
 import { interruptibleSleep, withTimeout, TIMED_OUT } from '../src/core/timeout.js';
@@ -522,6 +522,56 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     assert.equal(one.has('t2'), true, '保留条数内的终态流必须还在');
     return 'disabled';
   },
+  // ── 0 = 立即触发（第一次记账就撞线）─────────────────────────────────────
+  async 'BudgetGuardOptions.maxTotalTokens'() {
+    const guard = createBudgetGuard({ maxTotalTokens: 0 });
+    const usage = (inputTokens: number) => ({
+      totalUsage: { inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    });
+    // 0 用量的那一笔**不**撞线（判据是严格大于）—— 这条同时钉住「0 不是「一进来就失败」」
+    assert.equal(guard.check(usage(0)), null, '0 用量不该撞线（严格大于）');
+    assert.equal(
+      guard.check(usage(1)),
+      'tokens',
+      '0 必须读作「第一次记账就超预算」；读成「不限」这里会是 null',
+    );
+    return 'immediate';
+  },
+
+  async 'BudgetGuardOptions.maxCostUsd'() {
+    const guard = createBudgetGuard({ maxCostUsd: 0 });
+    const usage = (costEstimate: number) => ({
+      totalUsage: {
+        inputTokens: 1,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costEstimate,
+      },
+    });
+    assert.equal(guard.check(usage(0)), null, '零成本不该撞线');
+    assert.equal(
+      guard.check(usage(0.001)),
+      'cost',
+      '0 必须读作「第一笔成本就超」；读成「不限」这里会是 null',
+    );
+    return 'immediate';
+  },
+  // ── 0 = 非法配置（基数封顶；0 让所有条目折进同一个桶）───────────────────
+  async 'metricsSink.maxCapabilities'() {
+    assert.throws(() => metricsSink({ maxCapabilities: 0 }), /必须为正数/);
+    return 'invalid';
+  },
+
+  async 'metricsSink.maxModels'() {
+    assert.throws(() => metricsSink({ maxModels: 0 }), /必须为正数/);
+    return 'invalid';
+  },
+
+  async 'metricsSink.maxScores'() {
+    assert.throws(() => metricsSink({ maxScores: 0 }), /必须为正数/);
+    return 'invalid';
+  },
 };
 
 describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards §2 待守形状①）', () => {
@@ -537,7 +587,7 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
     });
   }
 
-  it('构造期报错文案里的「0 = …」取自同一张表（不是各写一份）', () => {
+  it('构造期报错文案里的「0 = …」取自同一张表（不是各写一份）', async () => {
     // 这条守的是「单源」本身：文案与表若各写一份，改了表文案不会跟着改
     const cases: Array<[LimitKnob, () => unknown, RegExp]> = [
       [
@@ -589,12 +639,85 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
         () => sseWriter(stalledRes(), { maxBufferedBytes: 0 }),
         /0 = 流活不过一帧/,
       ],
+      // 下面 8 条是 2026-09-28 外部深评 C4 补的：它们都声明了 `badValue: 'throws'`，
+      // 却一直没有对账 case（**表说「有构造期校验」，而校验文案里有没有那句「0 = …」没人核**）。
+      [
+        'AsyncRunner.concurrency',
+        () => new AsyncRunner(slowApp(1), { concurrency: 0 }),
+        /0 = 没有 worker/,
+      ],
+      ['withTimeout.ms', () => withTimeout(Promise.resolve(1), Number.NaN), /非正 = 不设超时/],
+      ['interruptibleSleep.ms', () => interruptibleSleep(Number.NaN), /非正 = 不睡/],
+      [
+        'createAnthropicClient.timeout',
+        () => createAnthropicClient({ timeout: 0 }),
+        /不设 = 不限；0 = 非法/,
+      ],
+      ['metricsSink.windowSize', () => metricsSink({ windowSize: 0 }), /0 = 窗口里什么都没有/],
+      [
+        'metricsSink.maxLabelValues',
+        () => metricsSink({ maxLabelValues: 0 }),
+        /0 = 一个标签值都认不下/,
+      ],
+      [
+        'metricsSink.maxLabelCombos',
+        () => metricsSink({ maxLabelCombos: 0 }),
+        /0 = 一个标签组合都认不下/,
+      ],
+      [
+        'TaskEventStreams.retainTerminal',
+        () => new TaskEventStreams({ retainTerminal: -1 }),
+        /0 = 不留终态流/,
+      ],
+      // 这三条是同一天补登进表时**被 A4 逼出来**的（第一次跑就红 —— 正是它该做的事）
+      [
+        'metricsSink.maxCapabilities',
+        () => metricsSink({ maxCapabilities: 0 }),
+        /0 = 一个能力都认不下/,
+      ],
+      ['metricsSink.maxModels', () => metricsSink({ maxModels: 0 }), /0 = 一个模型都认不下/],
+      ['metricsSink.maxScores', () => metricsSink({ maxScores: 0 }), /0 = 一个分数都认不下/],
     ];
     for (const [knob, run, expected] of cases) {
       const clause = LIMIT_SEMANTICS.find((s) => s.knob === knob)?.zeroClause ?? '';
       assert.match(clause, expected, `表里 ${knob} 的 zeroClause 应含 ${String(expected)}`);
-      assert.throws(run, new RegExp(clause.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      const re = new RegExp(clause.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      // 坏值在**同步**站点上表现为 throw，在 **async** 站点上表现为 rejection（`withTimeout` 是
+      // `async function`：`assertTimerDelay` 的 RangeError 包在返回的 promise 里）—— 两种都要认，
+      // 而且都要「真的炸了」才算数（原来只 `assert.throws`：async 站点会被记成
+      // 「Missing expected exception」，那不是「没炸」，是「炸在了另一条通道上」）。
+      let syncError: unknown;
+      let pending: Promise<unknown> | undefined;
+      try {
+        const out = run();
+        if (out instanceof Promise) pending = out;
+        else syncError = new Error('没有抛错（同步站点）');
+      } catch (e) {
+        syncError = e;
+      }
+      if (pending) {
+        await assert.rejects(pending, re, `${knob}：async 站点应以 rejection 报出同一句文案`);
+      } else {
+        assert.match(
+          String((syncError as Error | undefined)?.message),
+          re,
+          `${knob}：文案要对上表`,
+        );
+      }
     }
+
+    // A4 · **单向穷尽**（2026-09-28 外部深评 C4 的正是这条）：每个声明「坏值抛错」的旋钮都必须
+    // 有一条 case。原先这里是个 `Array`：新增一个 throws 旋钮却忘了对账，**不会有任何东西红**
+    // —— 「表说它有构造期校验」与「文案真的与表同源」之间没有任何机器守着（与 #164 那条
+    // 「枚举靠人记」是同一类失效模式）。列表内不允许多余项：case 引用一个不存在的 knob 会在
+    // 上面 for 里以 clause 为空串的形式当场红。
+    const throwing = LIMIT_SEMANTICS.filter((s) => s.badValue === 'throws').map((s) => s.knob);
+    const covered = new Set(cases.map(([knob]) => knob));
+    assert.deepEqual(
+      throwing.filter((k) => !covered.has(k)),
+      [],
+      '这些旋钮声明了 badValue: throws，却没有对账 case —— 文案与表可能已经漂开',
+    );
   });
 
   it('探针与表一一对应（运行期互查 —— tsx 不做类型检查，Record 的编译期守卫生效不到这里）', () => {

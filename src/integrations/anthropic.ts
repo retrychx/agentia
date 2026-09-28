@@ -10,6 +10,7 @@ import { resolveMaxRetries } from './adapter-options.js';
 import { sseLines } from '../core/sse.js';
 import { assertTimerDelay, backoffMs, interruptibleSleep } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
+import { zeroClauseOf } from '../core/limits.js';
 
 /**
  * Agentia —— 默认 ModelClient：Anthropic Messages API（手写 fetch + SSE，不再包装厂商 SDK）。
@@ -95,7 +96,7 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
     // NaN / Infinity 会被 setTimeout 钳到 1ms（每个请求立即「超时」），0 / 负数同理无意义 ——
     // 响亮抛错，不静默生效（与 AsyncRunner 对 runTimeoutMs 的构造期校验同款）。
     throw new Error(
-      `createAnthropicClient：timeout 必须为正的有限毫秒数（不设 = 不限），收到 ${String(options.timeout)}`,
+      `createAnthropicClient：timeout 必须为正的有限毫秒数（${zeroClauseOf('createAnthropicClient.timeout')}），收到 ${String(options.timeout)}`,
     );
   }
   // 上界（2026-09-28）：「正的有限数」还不够 —— 超过 2^31-1ms（约 24.86 天）的延迟
