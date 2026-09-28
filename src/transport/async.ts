@@ -378,8 +378,12 @@ export class AsyncRunner {
         // unhandledRejection（Node ≥15 默认终止宿主进程）。这里只做「查不到既有记录」
         // 处理，拒绝即视为无记录，交 #execute 的去重兜底。
         existing.catch(() => undefined);
-      } else if (existing && existing.status !== 'failed') {
-        return { ...existing }; // at-least-once 去重：不重复执行
+      } else if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') {
+        // at-least-once 去重：不重复执行。`failed` 被刻意排除（失败后同键重提要真跑）；
+        // `cancelled` 同理 —— 排队被取消的任务**一次都没跑过**，同键再提交若直接认回
+        // 那条 cancelled 记录，这次提交就被静默吞掉（且与 #executeInner 只采纳
+        // `succeeded` 的异步路径不一致：同一件事两种 store 两种结局）。
+        return { ...existing };
       }
     }
     const rec: TaskRecord = {
@@ -498,11 +502,13 @@ export class AsyncRunner {
    *   同一份契约）。等它真落库再返回：不等的话调用方拿到的是 `status` 仍为 running 的快照，
    *   「取消了但状态还在跑」比不返回更误导。
    * - **queued**（还没起跑）：落终态；`#executeInner` 拿到槽位后会**重读**再判，
-   *   所以被取消的排队任务**绝不起跑**（这条是本次实现顺带补上的洞）。记账交给那一趟
-   *   `#execute` 的 finally —— 它此刻正活着（在等槽位）。
+   *   所以被取消的排队任务**绝不起跑**（这条是本次实现顺带补上的洞）。记账由本方法
+   *   自己做；那一趟还活着的 `#execute`（在等槽位）靠 `#cancelSettled` 在 finally 里
+   *   跳过它那一份（否则 onFinished 两次）。
    * - **suspended**（两种原因都算）：落终态 —— 两条唤醒闸都 gate 在 `status === 'suspended'`
-   *   上，「不唤醒」因此是翻转状态的**推论**，不需要第二处标志。它没有活着的 `#execute`，
-   *   所以记账（sinks / 事件流 / 认领释放 / 等待者 / 会话清理）由本方法自己做。
+   *   上，「不唤醒」因此是翻转状态的**推论**，不需要第二处标志。它没有活着的 `#execute`
+   *   （挂起时那趟就走完了），所以记账（sinks / 事件流 / 认领释放 / 等待者 / 会话清理）
+   *   由本方法自己做 —— 也因此它**不进** `#cancelSettled`（没有消费者，加了就是泄漏）。
    *
    * 状态按**意图**落，不按机制落：超时的收尾语义**不变**（仍是 `failed` + `error.type` 为
    * `'timeout'`），取消带 `error = abortedError()`（取消不是失败，但原因要可查）。
@@ -539,6 +545,11 @@ export class AsyncRunner {
     }
     // queued / suspended：没有在飞 run（或它还没起跑），直接落终态 —— 记账由本方法做完，
     // 等槽位那趟 #execute 的 finally 靠 `#cancelSettled` 跳过它那一份（否则 onFinished 两次）。
+    // ⚠️ `#cancelSettled` 只为 **queued** 而存（它有活着的、在等槽位的 #execute 来消费）；
+    // suspended 的那趟 #execute 早在挂起时就走完了，条目加进去永远没人摘（泄漏）。
+    // 既知边界（多进程）：他进程取消本进程**排队中**的任务时，本进程的 execute finally
+    // 在自己的 `#cancelSettled` 里查不到 ⇒ onFinished 会双发（cancel 进程一次 + owner 一次）。
+    const wasQueued = rec.status === 'queued';
     rec.status = 'cancelled';
     rec.error = abortedError();
     rec.finishedAt = Date.now();
@@ -551,7 +562,7 @@ export class AsyncRunner {
     this.#unmarkSuspended(taskId);
     const saved = this.#safeSave(rec, 'outcome');
     this.#cancels.delete(taskId);
-    this.#cancelSettled.add(taskId);
+    if (wasQueued) this.#cancelSettled.add(taskId);
     const finish = (): TaskRecord => {
       this.#taskWaiters.notify(taskId);
       this.#streams.markDone(taskId);
@@ -882,6 +893,11 @@ export class AsyncRunner {
     }
     // 离开挂起态（读数纪律②）—— 落库成功之后才算醒来
     this.#unmarkSuspended(target.taskId);
+    // drain 竞态收口：#wakeDue 的 drain 闸判在「进入」时，这里隔着两个 store 往返的窗口 ——
+    // drain 若在这窗口内完成（active===0 返回），被唤醒的任务会在停机**完成之后**才开跑。
+    // 此刻状态已落库成 running：不派发，记录留给下次启动的 resumePending 认领
+    // （at-least-once 兜底，与「先落库再派发」的崩窗同形）。
+    if (this.#drain.isDraining) return target;
     void this.#execute(target);
     return target;
   }
@@ -1166,6 +1182,10 @@ export class AsyncRunner {
         rec.startedAt = Date.now();
         await this.store.save(rec);
 
+        // 取消意图在收尾判定里要用两次：正常出口（`#cancels.has`）与**异常出口**
+        // （拒绝式认 signal 的宿主 —— abort 后 reject，包 fetch 类客户端的常见写法）。
+        // ⚠️ 必须声明在 try **之外**：`let` 是块级作用域，写在 try 里 catch 看不到它。
+        let cancelIntent = false;
         try {
           // 会话注入（C4 的异步通道）：sessionId 是可序列化的引用，store 实例由
           // runner 持有 —— 执行前在这里换成 RunAppOptions.session。resumed 记录
@@ -1296,13 +1316,22 @@ export class AsyncRunner {
             // 正常收尾（没有源中止）时主动摘除挂在各源上的监听器 —— 宿主级共享
             // signal 是长寿的，不摘会按任务数累积（MaxListenersExceededWarning）
             releaseCombinedSignal(combined);
-            // 在飞句柄与取消意图一起摘掉：意图只在**这次 run** 的收尾判定里有用（见下面那处）
+            // 在飞句柄与取消意图一起摘掉：意图只在**这次 run** 的收尾判定里有用（见下面那处）。
+            // ⚠️ 意图的取值要留给 catch（`Set.delete` 返回布尔）：拒绝式认 signal 的宿主
+            // 走的就是 catch —— 在这里丢掉意图，取消就会被记成 failed（正是要治的病）。
             this.#runAborts.delete(rec.taskId);
-            this.#cancels.delete(rec.taskId);
+            cancelIntent = this.#cancels.delete(rec.taskId);
           }
         } catch (e) {
-          rec.error = classifyError(e);
-          rec.status = 'failed';
+          // 意图先到 ⇒ cancelled（与「结果说成功、取消先到」同一条「意图赢」规则）——
+          // 覆盖「abort 后 reject」的宿主路径；无意图的异常照旧是 failed。
+          if (cancelIntent) {
+            rec.status = 'cancelled';
+            rec.error = abortedError();
+          } else {
+            rec.error = classifyError(e);
+            rec.status = 'failed';
+          }
         }
       } finally {
         // HITL：挂起不是「完成」—— finishedAt 不置（等待中的任务没有结束时刻）

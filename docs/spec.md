@@ -3884,6 +3884,13 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
   计数口径与审批那条（`#expireAndResume` 在飞也计入）**刻意不完全对齐**，差异写在方法头注里。
 - 模拟「时间到了」用**倒填 `wakeAt`**，不睡墙钟：真等会把「调度慢」误判成「唤醒坏了」
   （CI 满载下最难查的那类红）。
+- **同日复审补记（drain 竞态窗口）**：`#wakeDue` 的 drain 闸判在「进入」时，而
+  `#wakeDueInner` 落库与派发之间还有两个 store 往返的窗口 —— drain 在这窗口内完成
+  （active===0 返回 true）的话，被唤醒的任务会在停机**完成之后**才开跑。已修：落库之后、
+  派发之前再判一次 `isDraining`，停机则**不派发**（状态已落库 running，留给下次启动的
+  `resumePending` 认领 —— at-least-once 兜底，与「先落库再派发」的崩窗同形）。
+  回归用例用可控闸把窗口撑开（save 挂起 → drain 完成 → 放开 ⇒ 不得派发）；
+  变异（摘掉复判）恰好咬死该用例。
 
 ### 2026-09-28 ③：**旧记录的读时归一**（迁移垫片）—— 六个读回点收成唯一入口
 
@@ -3988,6 +3995,18 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
   已改成变异它；③ 改成 sinks 之后 M23 **仍然零红**，第二层原因是**断言的时点**：重复通知发生在
   「那趟等槽位的 `#execute` 拿到槽位」时，而断言写在 cancel 返回那一刻（那时它还拿不到槽位）——
   处置是把断言挪到**收尾之后**，并在用例里写清「它为什么必须在那儿」。
+
+**同日复审补记**（外部复核抓到，全部已修 + 各补一条回归用例）：① submit 的幂等去重白名单
+漏了 `cancelled` —— 排队取消的任务一次都没跑过，同键重提却认回那条 cancelled 记录
+（静默吞掉）；修为 `failed` / `cancelled` 都不挡重提。② 「拒绝式认 signal」的宿主
+（abort 后 **reject**，包 fetch 类客户端的常见写法）走 catch 出口落 `failed` +
+`error.type: 'unknown'` —— 正是本 API 要治的病；修为意图布尔在 finally 摘除前取出
+（`Set.delete` 的返回值）、catch 里据此落 cancelled。⚠️ 实现时踩了一课：`let` 写在
+try 块里 catch 看不到（块级作用域），首轮写成那样直接 ReferenceError —— 被既有阳性对照
+用例当场抓住。③ `#cancelSettled` 原先对 suspended-cancel 也登记，而挂起任务没有活着的
+`#execute` 来消费 ⇒ 每取消一条挂起任务漏一条（无界增长）；修为只为 queued 登记，
+并在注释里登记多进程下他进程取消本进程排队任务会双发 onFinished 的既知边界。
+变异复验：摘白名单 ⇒ 「同键重提」红；catch 恒 failed ⇒ 「拒绝式认 signal」红。
 - 一处**用例缺口**是本轮自己盘出来的：「取消必须带结构化原因」那条兜底只在「宿主返回的
   `result` 是成功形状」时生效，而原先没有这一类宿主 ⇒ 摘掉它一条红都没有。补了那类宿主
   （「半认」signal：abort 后返回、但返回成功形状）之后 M22 才咬得住。

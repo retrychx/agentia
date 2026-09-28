@@ -419,3 +419,67 @@ describe('AsyncRunner 时间挂起（durable timer）', () => {
     }
   });
 });
+
+/**
+ * drain 竞态收口（2026-09-28 复审发现）：`#wakeDue` 的 drain 闸判在「进入」时，
+ * 而 `#wakeDueInner` 落库与派发之间还有两个 store 往返的窗口 —— drain 若在这窗口内
+ * 完成（active===0 返回 true），被唤醒的任务会在停机**完成之后**才开跑。
+ * 本条用可控闸把窗口撑开，钉住「落库之后、派发之前再判一次」。
+ */
+describe('drain 与到期唤醒的竞态窗口', () => {
+  it('drain 在唤醒落库的窗口内完成 ⇒ 不派发（记录留 running，给下次启动的 resumePending 认领）', async () => {
+    const spy = { calls: 0 };
+    const gate: Gate = { at: Date.now() + 3_600_000 };
+    const { app } = timerApp(
+      [toolUseMsg('wait_for_batch', {}, 'tu1'), endTurnMsg('到位了')],
+      spy,
+      gate,
+    );
+    const inner = new InMemoryTaskStore();
+    // 可控闸：唤醒路径那一步 save（suspended → running、且 wakeAt 还在）挂起，等我们放开。
+    // 其它 save（queued / 挂起时的 suspended）照常过 —— 闸只卡「唤醒落库」这一步。
+    let saveHeld = false;
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((r) => {
+      releaseSave = r;
+    });
+    const store: import('../../src/index.js').TaskStore = {
+      save: (rec) => {
+        if (rec.status === 'running' && rec.wakeAt !== undefined && !saveHeld) {
+          saveHeld = true;
+          return saveGate.then(() => inner.save(rec));
+        }
+        return inner.save(rec);
+      },
+      get: (id) => inner.get(id),
+      list: () => inner.list(),
+      byIdempotency: (key) => inner.byIdempotency(key),
+      clear: () => inner.clear(),
+    };
+    const runner = new AsyncRunner(app, { store });
+    const t = runner.submit('睡到明天');
+    await waitStatus(runner, t.taskId, 'suspended');
+    await backdate(runner, t.taskId, 1_000);
+
+    assert.equal(runner.resumePending(), 1, '唤醒被接管（派发异步进行，此刻卡在 save 闸上）');
+    const pollDeadline = Date.now() + 2_000;
+    while (!saveHeld && Date.now() < pollDeadline) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(saveHeld, '前置：唤醒路径真的走到了「落库 running」这一步');
+
+    assert.equal(
+      await runner.drain({ timeoutMs: 500 }),
+      true,
+      '在飞为零（唤醒还卡在闸上）⇒ drain 完成',
+    );
+    releaseSave();
+    await new Promise((r) => setTimeout(r, 50)); // 给 #wakeDueInner 走完「闸后那一段」
+
+    assert.equal(spy.calls, 1, 'drain 完成之后不许再派发（工具没被叫第二遍）');
+    const rec = await runner.store.get(t.taskId);
+    assert.equal(
+      rec?.status,
+      'running',
+      '状态已落库成 running：不派发不是丢任务 —— 下次启动的 resumePending 会认领它',
+    );
+  });
+});
