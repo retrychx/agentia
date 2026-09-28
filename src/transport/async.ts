@@ -708,6 +708,12 @@ export class AsyncRunner {
     if (complete) {
       // 离开挂起态（读数纪律②）：决定齐了这就是「醒来」那一刻
       this.#unmarkSuspended(taskId);
+      // drain 竞态收口（与 #wakeDueInner 同款，2026-09-28 复审第二轮）：这道闸判在「进入」
+      // 时，这里隔着两个 store 往返的窗口 —— drain 若在这窗口内完成（active===0 返回），
+      // 被推进的任务会在停机**完成之后**才开跑。此刻状态已落库成 running：不派发，
+      // 记录留给下次启动的 resumePending 认领（at-least-once 兜底，与「先落库再派发」
+      // 的崩窗同形）。决定在记录里，不丢 —— 放行的是「重新排期」，不是「吞掉」。
+      if (this.#drain.isDraining) return { ...rec };
       void this.#execute(rec);
     }
     return { ...rec };
@@ -788,6 +794,9 @@ export class AsyncRunner {
     await this.store.save(rec);
     // 离开挂起态（读数纪律②）：事件到了这就是「醒来」那一刻 —— 与 approve 的决定齐了同形
     this.#unmarkSuspended(taskId);
+    // drain 竞态收口（与上面的 approve 同款、与 #wakeDueInner 同款）：窗口里完成停机 ⇒
+    // 不派发，事件留在 pendingEvents 上，下次启动的 resumePending 认领时注入。
+    if (this.#drain.isDraining) return { ...rec };
     void this.#execute(rec);
     return { ...rec };
   }
