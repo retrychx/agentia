@@ -41,6 +41,16 @@
   - `SqliteTaskStore` 额外把派生列 `status` 拉回与 json 一致 —— 否则外部/DBA 的
     `SELECT status, count(*) FROM tasks GROUP BY status` 会**继续**报旧值。
   - 归一失败/坏 JSON 的取舍与各 store 既有口径一致；本改动**无公共 API 变化**。
+- **取消 API（spec §10 2026-09-28 ④）**：`AsyncRunner.cancel(taskId)` 与 `POST /tasks/<id>/cancel`
+  —— 在跑的**真中断**、在睡的**不再醒**、在排队的**绝不起跑**，落库 `status: 'cancelled'`
+  （**新状态**，与 `failed` 分开：取消不是失败）。
+  - 机制是同一条 abort signal，差别在**意图**：`runTimeoutMs` 超时仍然落 `failed`
+    （`error.type === 'timeout'`）；取消带 `error.type === 'aborted'`。
+  - **不假装**：在跑的 run 不在本进程、或宿主不认 `signal`（2s 宽限内没收尾）⇒
+    `TaskCancelError(409)`，记录一个字节不动。
+  - 顺带补一个洞：排队期间被取消的任务原先**照样会跑**（认领处不重判状态）。
+  - 另：`awaitTask` 的终态集合改成 `isTerminalTask`（原先手写两值 ⇒ 新终态被漏掉，
+    症状是「取消后一直等到超时」）。
 - **菜单漂移不再静默（R8 候选 3，spec §10 2026-09-27 ⑧）**：挂起段之后**续跑**时，未决
   tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架把这件事记成**三处信号** ——
   `menu.drift` 事件（`{ missing, tool_use_ids, menu_size }`；时间线与

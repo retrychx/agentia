@@ -3931,6 +3931,65 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
   另一处断言上（唯一入口那条也断言了原因；幂等那条正是「不删旧键 ⇒ 永不幂等」的证据）。
   处置是**把真红补进期望**，不是放宽期望 —— 读变异读数时「红在别处」要读进去，别直接当成锚点没选准。
 
+### 2026-09-28 ④：**`cancel` API**（durable 配套 5 的另一半）—— 取消是一个状态，不是「失败」
+
+背景：配套 5 当初明确「`cancel` 今天不存在，独立一件」。核证到两条关键事实：
+① **引擎侧早有取消出口**（`stopReason: 'aborted'` + `abortedError()`，`loop-result.ts` 的注释
+写着「已取消 —— 带结构化 error（**取消不是失败**，但原因要可查）」），但**宿主把它落成
+`failed`**（`async.ts` 的 `rec.status = out.run.status`）—— 缺的不是机制，是「这个动作 +
+说实话的状态」；② `awaitTask` 的终态集合是**手写两值**（`succeeded | failed`），加新终态而不改
+它 ⇒ 取消后等待**静默挂到超时**（症状像「取消没生效」，且不是编译错误）。
+
+决策：
+
+1. **落库状态：新增 `RunStatus.cancelled`**（设计稿 §2 分叉取 B；加法变更，非破坏性）。
+   状态按**意图**落、不按**机制**落 —— 同一条 abort signal 有三个来源（调用方传入 /
+   `runTimeoutMs` / 取消），反推不出「谁按的」；超时的收尾语义**不变**（仍是 `failed` +
+   `error.type === 'timeout'`）。`isTerminalTask` / 淘汰白名单 / `resume-policy` 三处**自动**
+   正确（新状态非 queued/running/suspended ⇒ 终态），**必须一起改**的只有 `awaitTask` 那一处。
+2. **三种「在服」状态的语义**都由 `AsyncRunner.cancel` 一处实现：
+   `running` ⇒ 中止在飞 signal 并等它真收尾（尊重 signal 的 client 是**真中断**，token 不再烧）；
+   `queued` ⇒ 落终态，且认领处**重读一遍**再判（被取消的排队任务**绝不起跑**）；
+   `suspended`（两种原因）⇒ 落终态即「不唤醒」（两条唤醒闸都 gate 在 `status === 'suspended'`
+   上，翻转是推论，不需要第二处标志）。
+3. **顺带补一个真洞**：`#executeInner` 拿到槽位后原先**不重判状态**、直接写 `running` ⇒
+   排队期间被取消的任务**照样会跑**（记录说 cancelled、副作用真发生 —— 最坏的一种谎）。
+   判据**只挡终态**（写成「状态不等于 queued」会把 approve / 到期唤醒 / 崩溃重投三条**先置
+   running 再派发**的恢复路径全挡死）；store 读取失败**不改变既有行为**（那道闸只负责
+   「明知已终态就别跑」，不把读取故障升级成「任务起不来」）。
+4. **无法真中断 ⇒ 如实说，不假装**（两种情形都抛 `TaskCancelError(409)`）：
+   在跑的 run **不在本进程**（没有句柄可中断）；或宿主**不认 `signal`**（宽限 `CANCEL_GRACE_MS`
+   = 2s 内没收尾 ⇒ 撤回意图 + 409）。与 `runTimeoutMs` 对同样情形的「放弃等待」**刻意不同**：
+   超时是宿主自己定的预算，取消是人手按的动作，骗人的代价不一样。
+5. **记账归属说定**（`#cancelSettled`）：cancel 自己收尾过的任务，那趟等槽位的 `#execute` 的
+   finally 只做在飞递减 / 等待者 / 排空通知，不重复 sinks / 流收口 / 会话清理 / 认领释放 ——
+   否则 `onFinished` 触发两次。
+6. **路由**：`POST /tasks/<id>/cancel`（照 `approve` 那套排法：先鉴权、方法检查先于解码 ⇒
+   `GET` 回 405 + `Allow: POST`、`DELETE /tasks/%zz/cancel` 回 405 而不是 400）；
+   404 / 409 由 `TaskCancelError` 映射。**停机中仍可用**（停机窗口正是最想取消在飞任务的时候）。
+
+兼容面（**加法，无破坏性**）：`RunStatus` 多一个成员（导出**计数不变**）、
+`AsyncRunner.cancel`、`POST /tasks/<id>/cancel`。`TaskCancelError` 是 module 级导出
+（**不进**公共导出面，与 `TaskApproveError` 同款）。
+
+门禁与变异（**6 条变异逐条亲跑**，`tests/transport/cancel.test.ts` 11 例）：
+
+- 用例：在跑那条走**真引擎**（工具挂在 `ctx.signal` 上，断言 `stopReason: 'aborted'` +
+  `status: 'cancelled'` + `error.type: 'aborted'` + 槽位释放 + `onFinished` 恰一次）；
+  排队那条钉「一次都没跑」；两种挂起各一条（timer 那条还断言读数除名 + 两条路都不唤醒）；
+  409/404（且记录一个字节不动）；`awaitTask` 立刻返回；HTTP 四条路由判据（含 405 的 `Allow`）
+  + 停机中受理；两条**阳性对照**（不取消照常跑 / `runTimeoutMs` 仍落 `failed`）。
+- 变异 M19（落库不按意图判）/ M20（认领不重判）/ M21（终态集合退回两值）/
+  M22（不补结构化原因）/ M23（sinks 那道闸失效）/ M24（路由顺序）。
+- ⚠️ 两处如实记录：① 首轮 M19/M24 被判 BAD 是**我的期望写漏了**（多出来的红落在同一条性质的
+  另一条用例上 —— 处理是把真红补进期望，不是放宽期望）；② 首轮 M23 变异的是 finally 里那几个
+  **幂等**操作（流收口 / 认领释放 / 会话清理），它们与 cancel 自己做过的重复执行无害 ⇒
+  **结构性无症状**，不红是正当的；真正有基因的是 sinks 那道闸（`onFinished` 两次），
+  已改成变异它。
+- 一处**用例缺口**是本轮自己盘出来的：「取消必须带结构化原因」那条兜底只在「宿主返回的
+  `result` 是成功形状」时生效，而原先没有这一类宿主 ⇒ 摘掉它一条红都没有。补了那类宿主
+  （「半认」signal：abort 后返回、但返回成功形状）之后 M22 才咬得住。
+
 ## 11. 开放项
 
 - **菜单漂移的严格模式与结果级字段**（§10 2026-09-27 ⑧ 未做的那两件）：① `menuDrift: 'fail'`
