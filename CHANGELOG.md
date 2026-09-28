@@ -259,6 +259,25 @@
     `src/transport/http.ts` 的 `sse.event('…')`，帧一搬家就误红（帧一条没少）—— 改成扫整个
     `src/transport/` 目录。断言方向是「文档提到的 ⊆ 实现 emit 的」，所以扫宽不会假绿。
 
+- **MCP 反向桥拆成三件 —— `createMcpServer` 441 → 47 行**：`src/engine/mcp-server.ts`
+  **564 → 409 行**，最大单函数 `createMcpServer` **441 → 47 行**（拆分前占全文 78%）。
+  先例是正向桥按传输分文件，于是：
+  - `mcp-server.ts` = **协议 + 执行 + 装配**：顶层的 `rpcError` / `rpcResult` / `dispatch`
+    （报文分派，两传输共用）/ `callTool`（执行一次 `tools/call`、造一棵 trace）—— 拆前它们是
+    441 行闭包里的无名块。`createMcpServer` 只余「读选项 → 造 core → 按 `opts.transport` 挑传输」。
+  - `mcp-server-stdio.ts`（新，72 行）= stdio 传输：stdin/stdout 换行分隔 JSON-RPC，
+    `process.stdout` 的 EPIPE 必须吞（对端走了的次生现象）。
+  - `mcp-server-http.ts`（新，199 行）= StreamableHTTP 传输：POST 收 JSON-RPC、GET→405、
+    DELETE→200、`initialize` 发 `mcp-session-id`、客户端断连中止本次工具调用的 `signal`。
+  - **无环是构造性的（不照抄正向桥）**：协议与执行经 `McpCore` **注入**给传输，传输只从
+    `mcp-server.ts` 取**类型**。正向桥的 `mcp.ts ↔ mcp-stdio.ts` 是**真实的值环**（靠 ESM 函数
+    提升侥幸无恙）；反向桥刻意做成注入式单向。
+  - **「为什么留在 engine」复核仍成立**：本文件需 engine 侧 4 个值 + integrations 侧 2 个值，
+    而 integrations 只许依赖 core ⇒ engine 是唯一能同时够到两边的层（搬走会造出越权边与环）。
+  - **不再往下拆传输**（反例）：`startHttpTransport` 172 行 / `startStdioTransport` 57 行属
+    「一个宿主的生命周期」，该是一个协作者，且比正向桥同位函数（265 / 235 行）更瘦。
+  - **行为零变化**：MCP 反向桥单测 22/22 全过，`npm run e2e:mcp:server` 全绿。
+
 ### 迁移
 
 - **升级前停在 `awaiting_approval` 的任务记录**（`FileTaskStore` / `SqliteTaskStore` /

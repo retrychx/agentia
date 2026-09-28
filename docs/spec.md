@@ -4288,6 +4288,30 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
      断言方向是「文档提到的 ⊆ 实现 emit 的」，扫宽只会更宽松地通过，不会假绿。
      教训与 §10 ⑦ 那次同类：**守卫盯着会变的东西，就会在每次无辜的重构上误红**，
      而误红的结局通常是人去放宽它。
+2. **MCP 反向桥拆成三件 —— `createMcpServer` 441 → 47 行**（文件 564 → 409 行；
+   + `mcp-server-stdio.ts` 72 行 + `mcp-server-http.ts` 199 行）。
+   先例是**正向桥按传输分文件**（`integrations/mcp.ts` + `mcp-stdio.ts` + `mcp-http.ts`）——
+   反向桥此前把协议（`rpcError`/`rpcResult`/`dispatch`）、执行（`callTool`）、两条传输全塞进
+   441 行的 `createMcpServer` 闭包。拆后本文件留**协议 + 执行 + 装配**（都是顶层函数，闭包里的
+   无名块各得一名），两条传输各居其文件、各自是「一个宿主的生命周期」的一种。
+   - **关键设计是「注入式单向」而不是「照抄正向桥」**：协议与执行经 `McpCore`
+     （`dispatch`/`rpcError`/`trackCall`/`untrackCall`/`abortAll`）**注入**给传输，传输只从
+     `mcp-server.ts` 取**类型**。正向桥那条 `mcp.ts ↔ mcp-stdio.ts` 是**真实的值环**
+     （桥 re-export 连接器、连接器反向 import 桥的共享 helper），靠 ESM 函数提升与调用时机
+     **侥幸**无恙；反向桥的无环是**构造性**的 —— 这恰是第 4 件（文件级无环守卫）想固化的事。
+   - **「它为什么留在 engine」复核结论：仍然成立**，且这次以**真实 import 面**为据：
+     本文件需要 engine 侧 4 个值（`TraceRecorder` / `classifyError` / `buildToolRunContext` /
+     `tool-events` 载荷）+ integrations 侧 2 个值（`DEFAULT_PROTOCOL_VERSION` /
+     `createAnthropicClient`）；而 `integrations` 只许依赖 `core`、`transport` 够不到
+     `integrations` ⇒ **engine 是唯一能同时够到两边的层**。搬进 `integrations` 需要一条
+     `integrations → engine`（越权），并与既有 `engine → integrations` 成环。
+   - ⚠️ **顺带订正 AGENTS.md 一条失真文案**：原文说 `engine → integrations` 这条边「仅为取
+     默认 ModelClient」，实测用途至少两处（`loop.ts` 取 client + `mcp-server.ts` 取
+     `DEFAULT_PROTOCOL_VERSION`）。已在 `mcp-server.ts` 头注按实况改写。
+   - **不再往下拆传输**（这是个**反例**，写出来防止「见大就拆」）：`startHttpTransport`
+     172 行、`startStdioTransport` 57 行 —— 按判据属「一个宿主的完整生命周期」，
+     **该是一个协作者**；且比正向桥的同位函数**更瘦**（`createStreamableHttpMcpConnector`
+     265 行 / `createStdioMcpConnector` 235 行）。再拆只是把生命周期切碎，不产生新边界。
 
 ## 11. 开放项
 

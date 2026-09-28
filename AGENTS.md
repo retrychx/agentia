@@ -45,7 +45,17 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   mcp-server.ts = MCP 反向桥（R8-P5：app 菜单暴露成 MCP server，
 │   │                        #   stdio + StreamableHTTP 只用标准库；落 engine 是因为 integrations 只许
 │   │                        #   依赖 core 装不下 TraceRecorder。每次 tools/call 一棵 trace 进 sinks，
-│   │                        #   抛错 → isError，与正向桥方向对称）
+│   │                        #   抛错 → isError，与正向桥方向对称）。**两个传输各居其文件**
+│   │                        #   （2026-09-28，与正向桥同款排布）：本文件留**协议 + 执行 + 装配**
+│   │                        #   （顶层的 rpcError/rpcResult/dispatch/callTool；createMcpServer 只做装配，
+│   │                        #   441 → 47 行）；传输构造（宿主生命周期）在 mcp-server-stdio.ts /
+│   │                        #   mcp-server-http.ts。⚠️ 协议与执行经 `McpCore` **注入**给传输 ——
+│   │                        #   传输只从本文件取**类型**，所以无环是**构造性**的（正向桥那条
+│   │                        #   `mcp.ts ↔ mcp-stdio.ts` 是**真实的值环**，靠 ESM 函数提升侥幸无恙，别照搬）
+│   │                        #   mcp-server-stdio.ts = stdio 传输：stdin/stdout 换行分隔 JSON-RPC，
+│   │                        #   `process.stdout` 的 EPIPE 必须吞（对端走了的次生现象，不是根因）
+│   │                        #   mcp-server-http.ts = StreamableHTTP 传输：POST 收 JSON-RPC、GET→405、
+│   │                        #   DELETE→200、`initialize` 发 mcp-session-id、客户端断连中止本次 signal
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
