@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { createAnthropicClient } from '../../src/index.js';
 import { AnthropicApiError } from '../../src/integrations/anthropic.js';
 import { classifyError } from '../../src/index.js';
+import { MAX_TIMER_DELAY_MS } from '../../src/core/timeout.js';
 import { waitFor } from '../helpers.js';
 
 /**
@@ -105,16 +106,22 @@ describe('createAnthropicClient（默认 ModelClient 工厂）', () => {
     assert.equal(typeof client.messages.stream, 'function');
   });
 
-  it('timeout 非法值构造期抛错（NaN/Infinity 会被 setTimeout 钳到 1ms，等于每请求立即超时）', () => {
-    // 反向验证：摘掉构造期校验 ⇒ 四个值全不抛，本用例红。
+  it('timeout 非法值构造期抛错（NaN/Infinity/超 2^31-1ms 会被 setTimeout 钳到 1ms，等于每请求立即超时）', () => {
+    // 反向验证：摘掉构造期校验 ⇒ 这些值全不抛，本用例红。
     // 与 AsyncRunner 对 runTimeoutMs 的校验同款（要「不限」就不传 timeout）。
-    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    // 最后一条是 2026-09-28 补的上界：`timeout: 30 天` 此前**合法**，但 composeSignal
+    // 的 setTimeout 会把它钳到 1ms ⇒ 每个请求立即超时 —— 配置合法、行为相反。
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, MAX_TIMER_DELAY_MS + 1]) {
       assert.throws(
         () => createAnthropicClient({ apiKey: 'sk-test', timeout: bad }),
-        /timeout/,
+        /timeout|定时器延迟上限/,
         `timeout=${String(bad)} 必须构造期抛错`,
       );
     }
+    // 阳性对照：边界内合法（构造期不触网，只校验）
+    assert.doesNotThrow(() =>
+      createAnthropicClient({ apiKey: 'sk-test', timeout: MAX_TIMER_DELAY_MS }),
+    );
   });
 
   it('请求落在 {baseURL}/v1/messages，带 x-api-key / anthropic-version / stream:true，signal 不进 body', async () => {

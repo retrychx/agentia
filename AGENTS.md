@@ -14,7 +14,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── src/
 │   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验、
 │   │                        #   RunStatus/RunMeta、Blackboard 类型族、Message 消息类型族、
-│   │                        #   超时原语 timeout.ts —— 引擎与 MCP 桥**共用一份**，见 §10 2026-09-17 ①），零依赖
+│   │                        #   超时原语 timeout.ts —— 引擎与 MCP 桥**共用一份**，见 §10 2026-09-17 ①；
+│   │                        #   `MAX_TIMER_DELAY_MS`（≈24.86 天）也在这里单源 —— 超过它的 setTimeout
+│   │                        #   会被 Node 静默钳到 1ms，所以旋钮走 `assertTimerDelay`（拒）、
+│   │                        #   外部数据（`Retry-After`）走 `clampTimerDelay`（夹），见 §10 2026-09-28 ⑪），零依赖
 │   │                        #   limits.ts = **「限制旋钮的 0 是什么」的单一真源**（guards §1.2）：每个旋钮
 │   │                        #   各属「不限 / 就是不做 / 立即 / 非法」四类之一，表是可执行数据；
 │   │                        #   构造期报错文案里那句「（0 = …）」插的就是表里的 zeroClause。

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { AsyncRunner, executeRun } from '../../src/index.js';
+import { AsyncRunner, executeRun, InMemoryTaskStore } from '../../src/index.js';
 import type { AgentTool, AppCallable, AgentRunResult } from '../../src/index.js';
 import { TaskCancelError } from '../../src/transport/async.js';
 import { createHttpHandler } from '../../src/transport/http.js';
@@ -325,6 +325,116 @@ describe('cancel —— 挂起的任务：不唤醒（两种原因都算）', ()
       '已取消的任务不能再被审批推进（approve 的 409 闸）',
     );
     assert.equal(spy.calls, 0, '没有被审批放行');
+  });
+});
+
+describe('cancel —— 409 文案：区分「本进程已受理未起跑」与「真不在本进程」', () => {
+  /**
+   * 同一条 409 判据（`status === 'running'` 且没有在飞句柄）下藏着**两种**情形，
+   * 原文案一律说「不在本进程」—— 对第一种是说反话（2026-09-28 外部复核）。
+   * 两条用例各覆盖判据的一支，缺一条就会有半边永远不被执行。
+   */
+  it('记录在本进程之外（多进程 / 上一世遗留的 running）：说「不在本进程」', async () => {
+    const store = new InMemoryTaskStore();
+    const spy = { calls: 0 };
+    const { client } = mockClient([toolUseMsg('slow', {}, 's1')]);
+    // 挂在 signal 上的慢工具 ⇒ 任务一直停在 running，直到被取消（与上面 engineApp 同一条纪律：
+    // 宿主测试走真引擎，别用假 app 漏掉引擎与宿主的交界）
+    const app: AppCallable = {
+      name: 'hang',
+      run: (messages, opts) =>
+        executeRun({ messages, client, tools: [abortAwareTool(spy)], ...opts }),
+    };
+    // 「进程 A」提交占住槽位 ⇒ 记录落成 running、ownerId 是 A 的
+    const a = new AsyncRunner(app, { store, concurrency: 1 });
+    const t = a.submit('占住');
+    await waitStatus(a, t.taskId, 'running');
+
+    // 「进程 B」共享同一 store：它手里没有 A 的句柄，也没推进过这条任务
+    const b = new AsyncRunner(app, { store });
+    await assert.rejects(
+      async () => b.cancel(t.taskId),
+      (e: unknown) => {
+        assert.ok(e instanceof TaskCancelError && e.status === 409, '仍是 409（不假装成功）');
+        assert.match((e as Error).message, /不在本进程/, '这一支才是真的「不在本进程」');
+        return true;
+      },
+      'B 有记录但没有句柄 ⇒ 只能如实说「不在本进程」',
+    );
+
+    // 阳性对照：A 自己取消成功（有句柄）—— 证明上面那条 409 不是「功能没实现」
+    assert.equal((await a.cancel(t.taskId)).status, 'cancelled');
+  });
+
+  it('恢复路径卡在并发槽位上（本进程已受理、尚未起跑）：说「已在本进程受理」，不说反话', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const slowTool: AgentTool = {
+      name: 'slow',
+      description: '占住唯一槽位',
+      inputSchema: OBJ,
+      run: async () => {
+        await gate;
+        return 'ok';
+      },
+    };
+    const dangerTool: AgentTool = {
+      name: 'danger',
+      description: '需审批',
+      inputSchema: OBJ,
+      approval: 'required',
+      run: () => 'done',
+    };
+    const { client: slowClient } = mockClient([
+      toolUseMsg('slow', {}, 's1'),
+      endTurnMsg('慢的做完了'),
+    ]);
+    const { client: hitlClient } = mockClient([
+      toolUseMsg('danger', {}, 'tu1'),
+      endTurnMsg('批完继续'),
+    ]);
+    const app: AppCallable = {
+      name: 'multi',
+      run: (messages, opts) =>
+        JSON.stringify(messages[0] ?? '').includes('慢')
+          ? executeRun({ messages, client: slowClient, tools: [slowTool], ...opts })
+          : executeRun({ messages, client: hitlClient, tools: [dangerTool], ...opts }),
+    };
+    const runner = new AsyncRunner(app, { concurrency: 1 });
+
+    const hitl = runner.submit('等我批');
+    await waitStatus(runner, hitl.taskId, 'suspended');
+    const slow = runner.submit('慢任务'); // concurrency=1 ⇒ 它占住唯一槽位
+    await waitStatus(runner, slow.taskId, 'running');
+
+    // approve ⇒ 恢复路径**先**把状态置 running、再 #dispatch；而 #runAborts 要到
+    // 拿到并发槽位才登记。槽位还在慢任务手里 ⇒ 这一瞬它是「running 但没有句柄」，
+    // 且**明明在本进程**。
+    await runner.approve(hitl.taskId, { tu1: { approved: true } });
+
+    await assert.rejects(
+      async () => runner.cancel(hitl.taskId),
+      (e: unknown) => {
+        assert.ok(
+          e instanceof TaskCancelError && e.status === 409,
+          '闸不放开（放开会让 onFinished 双发）',
+        );
+        assert.match(
+          (e as Error).message,
+          /已在本进程受理/,
+          '它在本进程排队，就该这么写 —— 说「不在本进程」是反话',
+        );
+        assert.doesNotMatch((e as Error).message, /不在本进程/, '不许再说反话');
+        return true;
+      },
+    );
+
+    release();
+    await runner.awaitTask(slow.taskId, { timeoutMs: 5_000 });
+    const done = await runner.awaitTask(hitl.taskId, { timeoutMs: 5_000 });
+    assert.equal(done.status, 'succeeded', '槽位空出来后它照常跑完（409 没把状态弄坏）');
   });
 });
 

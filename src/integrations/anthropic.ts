@@ -8,7 +8,7 @@ import type {
 import { textOf } from '../core/text.js';
 import { resolveMaxRetries } from './adapter-options.js';
 import { sseLines } from '../core/sse.js';
-import { backoffMs, interruptibleSleep } from '../core/timeout.js';
+import { assertTimerDelay, backoffMs, interruptibleSleep } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -46,8 +46,10 @@ export interface AnthropicClientOptions {
    * 单次请求超时（毫秒）。缺省不给（中止由引擎的 signal 管，见 `ModelClient` 契约）；
    * 给了就用超时信号与 params.signal 合成（任一触发即中止）。超时按连接错误处理（可重试）。
    *
-   * 必须为**正的有限数**（构造期校验，与 AsyncRunner 对 `runTimeoutMs` 的校验同款）：
-   * NaN / Infinity 会被 `setTimeout` 钳到 1ms —— 每个请求立即「超时」，静默全挂。
+   * 必须为**正的有限数、且不超过 Node 定时器上限**（构造期校验，与 AsyncRunner 对
+   * `runTimeoutMs` 的校验同款）：NaN / Infinity / 超过 `2^31-1`ms 的延迟都会被 `setTimeout`
+   * 钳到 1ms（Node 只在 stderr 留一行 `TimeoutOverflowWarning`，没人会看到）——
+   * 于是每个请求立即「超时」，看起来像上游全挂。
    * ⚠️ 校验只挡非法配置，**不改超时的既有行为**：client 层超时经合成信号中止请求、
    * 自身不再重试，抛出的 `TimeoutError`（DOMException）由引擎归 `timeout` 一类账。
    */
@@ -96,6 +98,10 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
       `createAnthropicClient：timeout 必须为正的有限毫秒数（不设 = 不限），收到 ${String(options.timeout)}`,
     );
   }
+  // 上界（2026-09-28）：「正的有限数」还不够 —— 超过 2^31-1ms（约 24.86 天）的延迟
+  // Node 不会遵守（stderr 一行警告 + 钳到 1ms）⇒「30 天超时」变成「每个请求立即超时」。
+  // 上限单源在 core/timeout.ts（composeSignal 直喂 setTimeout 的正是这个值）。
+  if (timeoutMs !== undefined) assertTimerDelay(timeoutMs, 'createAnthropicClient 的 timeout');
 
   return {
     messages: {

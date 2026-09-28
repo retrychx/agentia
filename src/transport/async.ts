@@ -10,7 +10,7 @@ import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { abortedError } from '../engine/turn.js';
-import { TimeoutError } from '../core/timeout.js';
+import { assertTimerDelay, TimeoutError } from '../core/timeout.js';
 import { zeroClauseOf } from '../core/limits.js';
 import { composeTraceEvents } from '../core/trace.js';
 import type { TraceRecordEvent } from '../core/trace.js';
@@ -316,6 +316,21 @@ export class AsyncRunner {
   /** 任务终态等待表（见 task-waiters.ts）：仅覆盖本进程写终态，他进程写靠兜底轮询 */
   readonly #taskWaiters = new TaskWaiters();
   /**
+   * 本进程**已受理并正在推进**的任务（= `#execute` 的存活区间）。
+   *
+   * 只为 `cancel` 的文案存在：命中「`status === 'running'` 但在飞句柄表里没有」时，
+   * 区分「**本进程排队未起跑**」与「**真不在本进程**」——
+   * - 四条恢复路径（approve / 到期唤醒 / 事件投递 / 崩溃重投）都**先**把状态置 `running`
+   *   再 `#dispatch`，而 `#runAborts` 要到 `#slots.acquire()` 之后才登记 ⇒ 中间整个窗口
+   *   里 `status` 已是 running、句柄却还没有。原文案一律说「不在本进程」，
+   *   对同进程排队的那条是**说反话**（2026-09-28 外部复核抓到）。
+   * - 本集合与 `#runAborts` 的**差集**恰好就是「已受理、未起跑」（见 `#cancel`）。
+   *
+   * ⚠️ **纯诊断**：不参与任何正确性判定，也不影响 409 闸本身（那道闸不放开 ——
+   * 放开会让等槽位那趟 `#execute` 的 finally 双发 `onFinished`，正是 spec §10 的变异 M23）。
+   */
+  readonly #executions = new Set<string>();
+  /**
    * 每任务的记账事件流（见 task-events.ts）：`GET /tasks/:id/stream` 的重放 + 实时推送。
    * 纯记账件，独立于 store / 槽位 —— 所以在 855 行的类里单独抽一个文件。
    */
@@ -373,6 +388,11 @@ export class AsyncRunner {
         `runTimeoutMs 必须为 ≥ 0 的有限数（${zeroClauseOf('AsyncRunner.runTimeoutMs')}），收到 ${opts.runTimeoutMs}`,
       );
     }
+    // 上界（2026-09-28）：「≥0 且有限」还不够 —— 超过 2^31-1ms（约 24.86 天）的延迟
+    // Node **不会遵守**（stderr 一行 TimeoutOverflowWarning + 钳到 1ms），于是「配 30 天
+    // 超时」变成「每个任务立即超时失败」，静默且与配置相反。上限单源与五处站点共用：
+    // 这一句就是 scheduler.ts 注释里承诺过的「async.ts 同款防线」（此前那句话与实现不符）。
+    assertTimerDelay(this.runTimeoutMs, 'AsyncRunner 的 runTimeoutMs');
     this.approvalTimeoutMs = opts.approvalTimeoutMs ?? 0;
     if (!Number.isFinite(this.approvalTimeoutMs) || this.approvalTimeoutMs < 0) {
       // 同 runTimeoutMs：非有限数会让「已挂起多久」的比较静默失效或立即超时
@@ -565,6 +585,12 @@ export class AsyncRunner {
    * 不做静默 no-op：已终态 ⇒ `TaskCancelError(409)`（状态不对要说出来），不存在 ⇒ 404。
    * 边界（如实写在这里）：`running` 的 run **不在本进程**（多进程部署 / 上一世留下的 running）
    * 时抛 409 —— 本进程没有句柄可中断，改状态假装取消只会在那条 run 跑完时被覆盖回去。
+   *
+   * ⚠️ 同一个 409 判据下还有**第二种**情形（2026-09-28 外部复核）：任务已在本进程受理、
+   * 但还没走到 `#runAborts` 登记（在等并发槽位，或恢复路径刚写完 `running` 尚未派发完）。
+   * 它**不是**「不在本进程」—— 原文案一律那么说，对这一类是说反话。两种情形分开措辞
+   * （见 `#cancel` 的判据），但**闸不放开**：放开会让等槽位那趟 `#execute` 的 finally
+   * 双发 `onFinished`（spec §10 的变异 M23）。
    */
   cancel(taskId: string): MaybePromise<TaskRecord> {
     const found = this.store.get(taskId);
@@ -581,9 +607,19 @@ export class AsyncRunner {
     if (rec.status === 'running' && !inflight) {
       // 「假装取消」是这里最坏的选项：那条 run 还活着，跑完会把状态覆盖回去
       // （调用方以为成功了，实际什么都没发生）。要说出来。
+      // ⚠️ 但这两类情形**必须分开说**（2026-09-28 外部复核）：`#executions` 是
+      // 「本进程已受理并正在推进」的集合，与 `#runAborts`（已登记在飞句柄）的差集
+      // 就是「**已受理、未起跑**」。四条恢复路径先置 `running` 再 `#dispatch`、
+      // 而句柄要到拿到槽位才登记 ⇒ 中间整个窗口都会落进这个差集 —— 对它说
+      // 「不在本进程」是反话。调用方据此区分「稍后重试」与「得去找那个进程」。
+      const acceptedHere = this.#executions.has(taskId);
       throw new TaskCancelError(
         409,
-        `task ${taskId} 正在运行但不在本进程，本进程无法中断它（多进程部署见 spec §10 2026-09-28 ④）`,
+        acceptedHere
+          ? `task ${taskId} 已在本进程受理，但尚未起跑（正在等并发槽位 / 走恢复前置）—— ` +
+              `此刻取消无法与那条在等槽位的执行路径安全收口（会重复记账），暂不支持；` +
+              `请待它起跑后再取消，或先降低并发压力`
+          : `task ${taskId} 正在运行但不在本进程，本进程无法中断它（多进程部署见 spec §10 2026-09-28 ④）`,
       );
     }
     // 意图先记下：在飞那条路要靠它把 aborted 的收尾落成 cancelled（否则落成 failed）
@@ -1305,6 +1341,9 @@ export class AsyncRunner {
     // 同步开流（在任何 await 之前）：`GET /tasks/:id/stream` 从这一刻起可以订阅。
     // 复用语义见 task-events.ts —— HITL 恢复 / 崩溃重投是**同一个任务**，序号接着走。
     this.#streams.open(rec.taskId);
+    // 「本进程已受理」的起点（同步段，与 #streams.open 同处）：cancel 的 409 文案据此
+    // 区分「排队未起跑」与「真不在本进程」。终点是整个 #execute 退出的 finally。
+    this.#executions.add(rec.taskId);
     this.active++;
     try {
       await this.#executeInner(rec);
@@ -1343,6 +1382,9 @@ export class AsyncRunner {
         // 挂起也唤醒：等待者看一眼状态继续等（suspended 不是终态），无副作用。
         this.#taskWaiters.notify(rec.taskId);
         this.#notifyDrained();
+        // 「本进程已受理」的终点（与 #execute 同寿）。删在最后：此前若 cancel 挤进来，
+        // 它看到的仍是「本进程在推进这条」，文案不会突然改口。
+        this.#executions.delete(rec.taskId);
       }
     }
   }

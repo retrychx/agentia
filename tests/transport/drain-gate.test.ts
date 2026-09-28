@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { DrainGate } from '../../src/transport/drain-gate.js';
+import { MAX_TIMER_DELAY_MS } from '../../src/core/timeout.js';
 
 /** 排空微任务/宏任务队列（不依赖真时钟） */
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -106,5 +107,27 @@ describe('DrainGate —— 优雅停机的等待闸（从 AsyncRunner 抽出）'
     idle = true;
     gate.signalIdle(() => idle);
     assert.deepEqual(await Promise.all([r1, r2]), [true, true]);
+  });
+
+  it('等待预算的坏值：NaN / 超上限拒绝（否则「等 30 天」静默变成「1ms 后说没排空」）', async () => {
+    // 超上限的预算会被 setTimeout 钳到 1ms ⇒ waitForIdle 立刻返回 false，
+    // 而 `false` 对宿主的语义是「本进程此后不再推进任何任务、必须退出」（见类头注释）
+    // —— 静默拿到它代价很高，所以在闸口就拒。
+    const over = new DrainGate();
+    await assert.rejects(
+      () => over.waitForIdle(() => false, MAX_TIMER_DELAY_MS + 1),
+      /超过 Node 定时器延迟上限/,
+    );
+    assert.equal(over.isDraining, true, '校验失败也必须先把停机态立住 —— 否则新单还会被接进来');
+    assert.equal(over.waiterCount, 0, '拒绝得早于挂起 ⇒ 不留下永远无人唤醒的等待者');
+
+    const nan = new DrainGate();
+    await assert.rejects(() => nan.waitForIdle(() => false, Number.NaN), /不能是 NaN/);
+    assert.equal(nan.isDraining, true);
+    assert.equal(nan.waiterCount, 0);
+
+    // 阳性对照：非正仍是「一直等」（既有语义），空载下立刻 true、且不抛
+    const zero = new DrainGate();
+    assert.equal(await zero.waitForIdle(() => true, 0), true);
   });
 });
