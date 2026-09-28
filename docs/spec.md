@@ -3734,6 +3734,14 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
 ⚠️ 实测（生产路径真跑，非单测）：挂起段 run 根 `tools.names='danger'`、续跑段 `='safe'` ——
 **跨段比对菜单版本**靠的就是这两个 attribute 的差。
 
+**2026-09-28 复审补记两条**：① **次序收口** —— 续跑入口的漂移检测原先排在 abort 判定
+**之前**：一条已取消的续跑（不会再跑任何工具）也照发 `menu.drift` 事件 + `console.warn`，
+纯噪音。已改为 abort 判定先行；变异（次序换回）恰好咬死「已取消的续跑不发漂移信号」用例
+（另有阳性对照：未取消的同款续跑照发）。② **措辞订正** —— `menuSignature` 的注释原先写
+「签名覆盖 schema ⇒ 能被两段签名比出来」，易被读成续跑时**自动**比；实际比对是**离线的**
+（跨段 hash 对比由人/外部工具做，代码里没有任何一处自动比两段签名），注释已点明。
+「签名变了自动报」若要做，是把两段 hash 的比对接进续跑入口 —— 动公共信号面，留给后续立项。
+
 ### 2026-09-28 ①：**挂起改成「一个状态 + 一个原因」**（`awaiting_approval` → `suspended` + `suspendedReason`）—— durable timer（候选 1）的前置
 
 背景：起草候选 1（`wakeAt` 挂起）时按 `docs/plans/2026-09-27-durable-wake-at.md` 的核证清单
@@ -3884,6 +3892,19 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
   计数口径与审批那条（`#expireAndResume` 在飞也计入）**刻意不完全对齐**，差异写在方法头注里。
 - 模拟「时间到了」用**倒填 `wakeAt`**，不睡墙钟：真等会把「调度慢」误判成「唤醒坏了」
   （CI 满载下最难查的那类红）。
+- **同日复审补记（drain 竞态窗口）**：`#wakeDue` 的 drain 闸判在「进入」时，而
+  `#wakeDueInner` 落库与派发之间还有两个 store 往返的窗口 —— drain 在这窗口内完成
+  （active===0 返回 true）的话，被唤醒的任务会在停机**完成之后**才开跑。已修：落库之后、
+  派发之前再判一次 `isDraining`，停机则**不派发**（状态已落库 running，留给下次启动的
+  `resumePending` 认领 —— at-least-once 兜底，与「先落库再派发」的崩窗同形）。
+  回归用例用可控闸把窗口撑开（save 挂起 → drain 完成 → 放开 ⇒ 不得派发）；
+  变异（摘掉复判）恰好咬死该用例。
+- **同日复审补记（defer 吃掉 abort）**：回合内「工具请求延后」与「run 被中止」
+  （runTimeoutMs 到点 / cancel）同时成立时，原先 deferred 分支先返回 ⇒ run 挂成 timer，
+  **取消/超时的意图被吃掉**（timer 到点会自己醒接着跑 —— 审批挂起要人来推、且 cancel
+  能翻转 suspended，timer 没有这下一棒）。已修：deferred 分支先判 `signal.aborted`，
+  abort 赢（落 `aborted` + 结构化 error，不产生挂起历史）。变异（摘掉该判定）恰好咬死
+  `defer.test.ts` 的「defer × abort」用例。
 
 ### 2026-09-28 ③：**旧记录的读时归一**（迁移垫片）—— 六个读回点收成唯一入口
 
@@ -3988,9 +4009,50 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
   已改成变异它；③ 改成 sinks 之后 M23 **仍然零红**，第二层原因是**断言的时点**：重复通知发生在
   「那趟等槽位的 `#execute` 拿到槽位」时，而断言写在 cancel 返回那一刻（那时它还拿不到槽位）——
   处置是把断言挪到**收尾之后**，并在用例里写清「它为什么必须在那儿」。
+
+**同日复审补记**（外部复核抓到，全部已修 + 各补一条回归用例）：① submit 的幂等去重白名单
+漏了 `cancelled` —— 排队取消的任务一次都没跑过，同键重提却认回那条 cancelled 记录
+（静默吞掉）；修为 `failed` / `cancelled` 都不挡重提。② 「拒绝式认 signal」的宿主
+（abort 后 **reject**，包 fetch 类客户端的常见写法）走 catch 出口落 `failed` +
+`error.type: 'unknown'` —— 正是本 API 要治的病；修为意图布尔在 finally 摘除前取出
+（`Set.delete` 的返回值）、catch 里据此落 cancelled。⚠️ 实现时踩了一课：`let` 写在
+try 块里 catch 看不到（块级作用域），首轮写成那样直接 ReferenceError —— 被既有阳性对照
+用例当场抓住。③ `#cancelSettled` 原先对 suspended-cancel 也登记，而挂起任务没有活着的
+`#execute` 来消费 ⇒ 每取消一条挂起任务漏一条（无界增长）；修为只为 queued 登记，
+并在注释里登记多进程下他进程取消本进程排队任务会双发 onFinished 的既知边界。
+变异复验：摘白名单 ⇒ 「同键重提」红；catch 恒 failed ⇒ 「拒绝式认 signal」红。
 - 一处**用例缺口**是本轮自己盘出来的：「取消必须带结构化原因」那条兜底只在「宿主返回的
   `result` 是成功形状」时生效，而原先没有这一类宿主 ⇒ 摘掉它一条红都没有。补了那类宿主
   （「半认」signal：abort 后返回、但返回成功形状）之后 M22 才咬得住。
+
+### 2026-09-28 ⑤：到期索引（候选 7②）的**工作量级实测** —— 先量，结论随 store 分岔
+
+背景：候选 7② 的原话是「`resumePending` 的扫描 O(全表)，**上量之后才现形**」。既然「上量」
+是个数字，本条目先把它量出来（`scripts/bench-resume-scan.ts`，可重跑）——不先长一层平时没人走的索引。
+
+实测（单机空载、单次读数，看量级不看小数；N = 记录总数，其中 1/10 是 `suspended` 带未来 `wakeAt`）：
+
+- **file store**：`load`（重启时的全表 JSON 解析）**0.9 / 5.5 / 54.0 ms**、`resume` **0.9 / 1.3 / 9.9 ms**
+  @ N = 100 / 1k / 10k。⚠️ 读数口径：它的记录**在内存里** ⇒ `list()` 只是返回 Map 的快照，
+  真正贵的是构造期 load；所以这一侧「每轮扫描」很便宜。
+- **sqlite（`:memory:`，`list()` 每次是真查询）**：`list` **0.7 / 5.2 / 113.0 ms**、
+  `resume` **52.4 / 8.0 / 117.1 ms** @ 同上。
+
+结论（**分岔**，不是一刀切）：
+
+- file store 上一轮扫描在 **10ms** 量级 ⇒ **不值得先做**（提前做等于给一条平时没人走的路径付利息）；
+- sqlite / redis 这类「`list()` 是真查询」的 store，10k 记录上一轮 ~**117 ms**，且随 N 线性增长
+  （100k ⇒ 秒级）⇒ 宿主把 `resumePending` 跑在秒级间隔时，这是一笔可观的固定开销 ⇒ **值得做**。
+- **触发条件**（写进 §11）：store 的 `list()` 是真查询 **且** N ≳ 10k **且** 宿主扫描间隔 ≲ 1s。
+
+形态（**未做，待定案**）：store 侧**可选** `listDue?(before)` + runner 缺省回退 `list()`（加法，不破
+自定义 store）。⚠️ sqlite 那边还有一处要单独拍：`wakeAt` 今天在 **json** 里 ⇒ 要么用 `json_extract`
+（不动 schema、依赖 JSON1），要么新加 `wake_at` **列** —— 后者与 ③ 刚建好的「派生列 + 读时自愈」
+是同一类取舍（多一份真源，就多一处要维护一致）。
+
+⚠️ 本基准的边界如实写：单进程单连接、`:memory:`、没有多进程锁等待；**redis 那条路没有量**
+（形态与 file 同类，但 `list()` 是 SCAN）。**要拍板 7② 之前**：sqlite 的数字够了（它是最贵的一侧），
+但别把 file 的数当全局证据。
 
 ## 11. 开放项
 

@@ -341,3 +341,41 @@ describe('时间挂起（引擎侧）', () => {
     assert.equal(wait.calls, 2);
   });
 });
+
+/**
+ * abort 优先于 defer（2026-09-28 复审收口）：同回合里「工具请求延后」与「run 被中止」
+ * 同时发生时，意图是**停** —— 挂成 timer 会到点自己醒来接着跑，等于把取消/超时吃掉。
+ * （审批挂起不同：它要人来推、不会自己醒，且 cancel 能翻转 suspended —— 所以这条判据
+ * 只在 deferred 分支上。）
+ */
+describe('defer × abort：同回合撞车时 abort 赢', () => {
+  it('工具请求延后的同一回合 signal 触发 ⇒ 以 aborted 收尾（不落 timer 挂起）', async () => {
+    const ac = new AbortController();
+    const spy = { calls: 0 };
+    const tool: AgentTool = {
+      name: 'wait_for_batch',
+      description: '请求延后，然后 run 被中止',
+      inputSchema: OBJ,
+      run: (_input, ctx) => {
+        spy.calls++;
+        ctx!.deferUntil!(Date.now() + 3_600_000);
+        ac.abort(); // 同一回合内：延后请求与中止同时成立（如 runTimeoutMs 到点 / cancel）
+        return 'deferred';
+      },
+    };
+    const { result } = await executeRun({
+      messages: [{ role: 'user', content: 'hi' }],
+      client: mockClient([toolUseMsg('wait_for_batch', {}, 'tu1'), endTurnMsg('不该走到')]).client,
+      tools: [tool],
+      signal: ac.signal,
+    });
+    assert.equal(
+      result.stopReason,
+      'aborted',
+      'defer 不许吃掉 abort —— timer 会自己醒，取消/超时的意图必须赢',
+    );
+    assert.equal(result.error?.type, 'aborted');
+    assert.equal(result.suspendedMessages, undefined, '不是挂起：没有挂起历史');
+    assert.equal(spy.calls, 1, '工具跑过一次（defer 是它提出来的），但 run 没睡下去');
+  });
+});

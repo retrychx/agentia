@@ -228,3 +228,39 @@ describe('续跑时的菜单漂移（把静默变可见）', () => {
     assert.equal('tools.menuHash' in a2, false);
   });
 });
+
+describe('漂移检测的次序（2026-09-28 复审收口）', () => {
+  it('已取消的续跑：abort 判定先于漂移检测 —— 不发 menu.drift 事件、不 console.warn', async () => {
+    // 一条已取消的续跑不会再跑任何工具，菜单对不对得上它都不在乎 —— 先发漂移信号是纯噪音。
+    const messages = (await suspendMessages()) as never[];
+    const ac = new AbortController();
+    ac.abort();
+    const { warnings, value } = await captureWarn(() =>
+      runAgent({
+        messages,
+        model: 'm',
+        client: mockClient([endTurnMsg('不该走到')]).client,
+        tools: [], // danger 不在菜单 —— 若检测先跑，这里一定会发漂移信号
+        signal: ac.signal,
+      }),
+    );
+    assert.equal(value.stopReason, 'aborted');
+    assert.equal(warnings.length, 0, '已取消的续跑不该发漂移告警');
+    assert.equal(eventsOf(value.trace.spans, 'menu.drift').length, 0, 'trace 里也不该有漂移事件');
+  });
+
+  it('阳性对照：未取消的同款续跑**照常**发漂移信号（防「检测被顺手删了」蒙混）', async () => {
+    const messages = (await suspendMessages()) as never[];
+    const { warnings, value } = await captureWarn(() =>
+      runAgent({
+        messages,
+        model: 'm',
+        client: mockClient([endTurnMsg('收尾')]).client,
+        tools: [],
+      }),
+    );
+    assert.equal(value.stopReason, 'end_turn');
+    assert.equal(warnings.length, 1, '未取消 ⇒ 漂移告警照发');
+    assert.match(warnings[0]!, /菜单漂移/);
+  });
+});

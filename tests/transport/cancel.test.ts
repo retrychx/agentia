@@ -482,3 +482,109 @@ async function waitStatusRecord(
     return rec;
   })();
 }
+
+/**
+ * 复审收口（2026-09-28 对 #157 的复审补的三格）：
+ * ① 拒绝式认 signal（abort 后 **reject**，包 fetch 类客户端的常见写法）—— 意图已在，
+ *    catch 出口也得按意图落 cancelled（此前这路落 failed + error.type 'unknown'）；
+ * ② 幂等去重白名单漏了 `cancelled` —— 排队取消的任务一次都没跑过，同键重提却认回
+ *    那条 cancelled 记录 = 这次提交被静默吞掉；
+ * ③ 挂起任务取消的记账恰好一次（`#cancelSettled` 只为 queued 而存 —— suspended 没有
+ *    活着的 #execute 消费它）。
+ */
+describe('cancel —— 复审补的三格（2026-09-28）', () => {
+  it('拒绝式认 signal（abort 后 reject）⇒ 仍落 cancelled + error.type aborted，不落 failed/unknown', async () => {
+    const app: AppCallable = {
+      name: 'reject-on-abort',
+      run: (_messages, opts) =>
+        new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () => reject(new Error('This operation was aborted')),
+            { once: true },
+          );
+        }),
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('取消我');
+    await waitStatus(runner, t.taskId, 'running');
+    const rec = await runner.cancel(t.taskId);
+    assert.equal(rec.status, 'cancelled', 'reject 也是「认了 signal」：意图是取消');
+    assert.equal(rec.error?.type, 'aborted', '取消的结构化原因（不是 classifyError 的 unknown）');
+    assert.equal((await runner.poll(t.taskId))?.status, 'cancelled', '落库的也是 cancelled');
+  });
+
+  it('同键重提一条 cancelled 任务 ⇒ 是一条新任务且**真跑**（去重不把「被取消的」当「已有」）', async () => {
+    let releaseBlocker!: () => void;
+    const blocker = new Promise<void>((r) => {
+      releaseBlocker = r;
+    });
+    const ran: string[] = [];
+    const app: AppCallable = {
+      name: 'counting',
+      run: async (messages) => {
+        const tag = typeof messages[0]?.content === 'string' ? messages[0].content : '';
+        if (tag === '占位') await blocker; // 占住唯一槽位，让「正事」停在 queued
+        ran.push(tag);
+        return {
+          run: { runId: `r-${tag}`, status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
+      },
+    };
+    const runner = new AsyncRunner(app, { concurrency: 1 });
+    const holder = runner.submit('占位');
+    await waitStatus(runner, holder.taskId, 'running');
+
+    const x1 = runner.submit('正事', { idempotencyKey: 'k' });
+    assert.equal(x1.status, 'queued', '前置：正事卡在排队（槽位被占）');
+    const cancelled = await runner.cancel(x1.taskId);
+    assert.equal(cancelled.status, 'cancelled');
+
+    const x2 = runner.submit('正事', { idempotencyKey: 'k' });
+    assert.notEqual(x2.taskId, x1.taskId, '同键重提必须开新任务（认回 cancelled 那条 = 静默吞掉）');
+    releaseBlocker();
+    const done = await runner.awaitTask(x2.taskId);
+    assert.equal(done.status, 'succeeded');
+    assert.deepEqual(ran, ['占位', '正事'], '重提的那条真跑了；x1 一次都没跑');
+  });
+
+  it('取消一条 suspended：onFinished 恰好一次（记账只由 cancel 做，没有第二处）', async () => {
+    const spy = { calls: 0, script: [toolUseMsg('wait', {}, 'tu1'), endTurnMsg('不该走到')] };
+    const { client } = mockClient(spy.script);
+    const deferTool: AgentTool = {
+      name: 'wait',
+      description: '睡到明天',
+      inputSchema: OBJ,
+      run: (_input, ctx) => {
+        spy.calls++; // 工具体被调一次（run() 的调用计数没用上，用这个钉「没醒第二次」）
+        ctx!.deferUntil!(Date.now() + 3_600_000);
+        return 'deferred';
+      },
+    };
+    const app: AppCallable = {
+      name: 'suspender',
+      run: (messages, opts) => executeRun({ messages, client, tools: [deferTool], ...opts }),
+    };
+    const sinkCalls: string[] = [];
+    const runner = new AsyncRunner(app, {
+      taskSinks: [
+        {
+          onFinished: (rec) => {
+            sinkCalls.push(rec.status);
+          },
+        },
+      ],
+    });
+    const t = runner.submit('睡到明天');
+    await waitStatus(runner, t.taskId, 'suspended');
+
+    const rec = await runner.cancel(t.taskId);
+    assert.equal(rec.status, 'cancelled');
+    assert.deepEqual(sinkCalls, ['cancelled'], 'onFinished 恰好一次（双发就是记账记了两份）');
+    // 挂起的取消没有活着的 #execute —— 它不会再来第二笔；给事件循环一个 tick 兜底
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(sinkCalls, ['cancelled']);
+    assert.equal(spy.calls, 1, '取消后不会被唤醒再跑');
+  });
+});
