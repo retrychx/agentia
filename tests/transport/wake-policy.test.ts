@@ -34,9 +34,13 @@ describe('wake-policy —— 到期唤醒的纯判定', () => {
   });
 
   it('timerDue：**原因**必须是 timer（等审批的挂起没有到点这回事）', () => {
+    // ⚠️ 这条夹具**必须带一个过去的 wakeAt**：只写 `wakeAt: undefined` 的话，「摘掉原因判据」
+    // 的变异照样返回 false（缺时刻那一条也在拦），用例就等于没钉住原因这一半 —— 变异电池
+    // 跑出来的真事（第一版就是这么写的：那条变异当时**一条红都没有**）。
     assert.equal(
-      timerDue(rec({ suspendedReason: 'approval', wakeAt: undefined }), 10 ** 12),
+      timerDue(rec({ suspendedReason: 'approval', wakeAt: 1 }), 10 ** 12),
       false,
+      '等人工的挂起即使带着一个过去的 wakeAt（宿主手写 / 旧版本记录），也不许被到期扫描捞走',
     );
     // 阳性对照：同一条记录只把原因换成 timer、并给出时刻 ⇒ 立刻到点。
     // 没有这个对照，上面那句可能是靠「时间挂起永远不到点」蒙对的（真空变绿）
