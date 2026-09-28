@@ -243,7 +243,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `description` | 同 `@Tool` |
 | `schema` | 主 agent 填给子 agent 的任务入参 schema |
 | `name` | 缺省取方法名 |
-| `system` | 子 agent 的角色提示：`string` / `SystemPrompt` / `(task) => SystemParam` |
+| `system` | 子 agent 的角色提示：`string` / `SystemPrompt` / `(task) => SystemParam`。⚠️ 前两形态会**自动追加**一句运行提示（「你运行在独立上下文，全部中间过程不外传；你的最终回复将作为报告原样交回主 agent」），**函数形态不会** —— 要这句提示请在函数里自己拼 |
 | `tools` | 子 agent 可调工具：**provider token 列表**，或 `'<token>/<能力名>'` 能力级路径 |
 | `model` | 子 agent 自己的模型 |
 | `maxTokens` | 同上 |

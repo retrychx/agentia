@@ -200,6 +200,22 @@
     **我的算术错**（逐行数出来是 8 / 17+1），且 ⑲ 的索引表**漏了整行 `K6`**（三态 `system` 的差异）。
     索引表已补齐并逐行改成可数的状态，详见 `spec.md` §10 ⑳ 的订正段。**本批之后的 P2 账：
     26 行 = 12 已落地 / 13 未做 / 1 有意为之。**
+- **runtime / container / 文档三处「静默给错东西」收口**（外部深评 K3 / K4 / K6，⛔ **行为变更**）：
+  - **K3 · `Run.finish()` 补守卫**：`start()` / `suspend()` 都有守卫，`finish()` 没有 ⇒
+    对一条**挂起中**的 run 调它会**静默翻成终态**（挂起带着 `suspendedMessages` 等审批/唤醒，
+    翻掉之后宿主的恢复路径再也接不上，零信号）。`Run` 是公开导出 ⇒ 这是对外承诺。
+    顺带把 `cancelled` 的**可达性**写进类型注：进程内 `Run` 到不了它（取消表现为
+    `stopReason: 'aborted'` ⇒ 记 `failed`），它由宿主（`TaskRecord.status`）落 ——
+    同一份联合类型两个消费者、可达集不同，是有意的，但此前没写在类型上。
+  - **K4 · async 工厂不再被静默当成值**：容器**同步**解析，`useFactory` 写成 `async` ⇒
+    返回的 Promise 被**原样缓存成「值」**，下游注入到 Promise 本身（首次属性访问全 `undefined`、
+    零报错、`tsc` 看不出）。现在在 `cache.set` **之前**检测 thenable 并抛 `TypeError`，
+    文案给出两条出路（装配前 await 好再用 `useValue`；或包一层 `useValue: { promise }`）。
+    检测器**就地写**（`container` 是纯叶子，`layering.test.ts` 里 `container: []`）、
+    **覆盖三个分支**（只查工厂等于把同类错留在另两处）。逃逸口配了测试。
+  - **K6 · 三态 `system` 的差异进 `usage-guide`**（纯文档）：`string` / `SystemPrompt` 两形态
+    会自动追加 `REPORT_HINT`，**函数形态不追加**（有意 —— 返回值由使用者全权决定），
+    但使用者此前读不到这个差异。
 
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /

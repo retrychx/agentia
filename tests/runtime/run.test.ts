@@ -15,6 +15,27 @@ describe('Run 生命周期', () => {
     assert.equal(run.runId, run.recorder.traceId);
   });
 
+  it('finish 也有守卫：挂起中 / 未开跑的 run 收尾会响亮抛错（外部深评 K3）', () => {
+    // 挂起**不是终态**（它带着 suspendedMessages 等审批/唤醒）。以前 finish 没守卫 ⇒
+    // 一条挂起中的 run 被静默翻成 failed：store 里看起来「已结束」，宿主再也接不回恢复路径。
+    const suspended = new Run();
+    suspended.start();
+    suspended.suspend({ stopReason: 'suspended' } as never);
+    assert.equal(suspended.status, 'suspended');
+    assert.throws(
+      () => suspended.finish({ stopReason: 'end_turn' } as never),
+      /cannot finish a run in status suspended/,
+    );
+    assert.equal(suspended.status, 'suspended', '抛错之后状态不许被改动');
+
+    // queued：还没 start()，拿结果来收尾同样是调用方用错
+    const queued = new Run();
+    assert.throws(
+      () => queued.finish({ stopReason: 'end_turn' } as never),
+      /cannot finish a run in status queued/,
+    );
+  });
+
   it('executeRun 成功路径：finish 映射 stopReason → 状态', async () => {
     const { client } = mockClient([endTurnMsg('done')]);
     const { run, result } = await executeRun({

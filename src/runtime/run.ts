@@ -65,7 +65,20 @@ export class Run {
     this.startedAt = Date.now();
   }
 
+  /**
+   * 收尾（进终态）。守卫与 `start()` / `suspend()` **同款**（外部深评 K3）。
+   *
+   * ⚠️ 以前它没有守卫：对一条**挂起中**的 run 调 `finish()` 会**静默把它翻成终态** ——
+   * 而挂起不是终态（它带着 `suspendedMessages` 等审批/唤醒，宿主的恢复路径正是靠它接回来的），
+   * 翻掉之后那条 run 在 store 里看起来「已结束」，恢复路径再也接不上，且**没有任何信号**。
+   * `Run` 是公开导出（`src/index.ts`）⇒ `finish` 是**对外承诺**，不设防等于让使用者自己踩。
+   *
+   * 判据只认 `running`：`queued` 的 run 还没开跑（`start()` 未调），拿结果去收尾同样是调用方用错。
+   */
   finish(result: AgentRunResult): void {
+    if (this._status !== 'running') {
+      throw new Error(`cannot finish a run in status ${this._status}`);
+    }
     this._result = result;
     this.finishedAt = Date.now();
     this._status = isSuccessStopReason(result.stopReason) ? 'succeeded' : 'failed';
