@@ -233,6 +233,14 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
     if (acc.unpricedTurns > 0) {
       sum(`${p}model_unpriced_turns_total`, acc.unpricedTurns, '未定价 turn 数', attrs);
     }
+    if (acc.usageMissingTurns > 0) {
+      sum(
+        `${p}model_usage_missing_turns_total`,
+        acc.usageMissingTurns,
+        '上游未回报 usage 的 turn 数',
+        attrs,
+      );
+    }
     hist(`${p}model_duration_ms`, acc.stat, '模型往返耗时（毫秒）', attrs);
   }
   for (const key of [...state.scores.keys()].sort()) {

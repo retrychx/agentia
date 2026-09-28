@@ -277,3 +277,40 @@ describe('G1 mergeRunReports：capability 的 tokens 合并分支（report.ts 27
     assert.equal(writer.calls, 2);
   });
 });
+
+describe('S2：上游没回报 usage 的 turn 单独计数（与 unpriced 分开）', () => {
+  /** 有计量、成本算得出（0），但上游**没给读数** —— 记了 usage.missing 事件的那一档 */
+  const missingSpan = () =>
+    span({
+      spanId: 'llm-missing',
+      kind: 'llm.turn',
+      name: 'm-unreported',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costEstimate: 0,
+      },
+      events: [{ time: 1, name: 'usage.missing', body: { model: 'm-unreported' } }],
+    });
+
+  it('buildRunReport：usageMissingTurns 与 usageMissingModels 都记上，且**不**混进 unpriced', () => {
+    const r = buildRunReport(traceWith([missingSpan()]));
+    const m = r.models.find((x) => x.model === 'm-unreported');
+    assert.ok(m, '模型归因必须在');
+    assert.equal(m.usageMissingTurns, 1, '上游没给读数 ⇒ 单独一档');
+    assert.equal(m.unpricedTurns, 0, '模型有定价，不该记成未定价（两条排障方向不许搅在一起）');
+    assert.deepEqual(r.usageMissingModels, ['m-unreported']);
+    assert.deepEqual(r.unpricedModels, [], 'unpricedModels 必须是空的 —— 它是另一本账');
+  });
+
+  it('mergeRunReports：跨 run 累加、模型取并集', () => {
+    const merged = mergeRunReports([
+      buildRunReport(traceWith([missingSpan()])),
+      buildRunReport(traceWith([missingSpan()])),
+    ]);
+    assert.equal(merged.models.find((x) => x.model === 'm-unreported')!.usageMissingTurns, 2);
+    assert.deepEqual(merged.usageMissingModels, ['m-unreported']);
+  });
+});

@@ -944,7 +944,7 @@ async placeOrder(input: { sku: string }) {
 - 超上限的键折叠进 `__other__`：**丢的只是标签粒度，量不丢** —— `__other__` 桶照常累加，`snapshot()` 里各维度的总数仍然对得上。被折叠的**不同**键数见 `droppedCapabilities` / `droppedModels` / `droppedScores`（各自最多记账 1024 个键，满了以后是下界），归因标签维度另见 `droppedLabelValues`（按 labelKey 分键计）与 `droppedLabelCombos`（组合数上限折掉的那批）。
 **同样的数在 `/metrics` 上也看得见**（`render()`）：`agentia_dropped_keys{kind=…}` —— 只看 Prometheus
 不看 `snapshot()` 的部署不会漏掉折叠。
-- `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
+- `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；**上游没回报 usage** 时另计入 `usageMissingTurns` 并记 `usage.missing` 事件 —— 那种情况下成本会**看起来**是 0（`maxCostUsd` 因此不可用），与「模型没定价」是两件事、分开计数（指标侧 `agentia_model_unpriced_turns_total` / `agentia_model_usage_missing_turns_total` 各一条）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
 
 #### 调用树面板（`agentia dev` 的本地面板 / 官网 Playground）
 

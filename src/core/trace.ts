@@ -48,6 +48,18 @@ export interface SpanError {
 export const TOOL_INPUT_EVENT = 'tool.input';
 export const TOOL_OUTPUT_EVENT = 'tool.output';
 
+/**
+ * 「上游**没回报 usage**」事件名（2026-09-28 外部深评 S2）。
+ *
+ * 为什么也单源在这里：与上面那两条同一理由 —— 名字是跨层契约。写它的是
+ * `engine/turn.ts`，按名字数的是 `integrations/report.ts` 与 `metrics-state.ts`。
+ * 手写三遍 ⇒ 一处改名就是**静默归零**（报表说「没有缺失」，而 trace 里明明有）。
+ *
+ * 语义：该回合的上游响应**没有**带 token 计量，于是 `MessageUsage` 里那几个 `0` 是
+ * **替身值**（不是读数）—— 成本估算会把它读成「真的花了 0」，`maxCostUsd` 因此静默失效。
+ */
+export const USAGE_MISSING_EVENT = 'usage.missing';
+
 /** 工具 I/O 事件名的联合 —— `eval/export.ts` 的工具事件过滤器按它取参数 */
 export type ToolIoEventName = typeof TOOL_INPUT_EVENT | typeof TOOL_OUTPUT_EVENT;
 

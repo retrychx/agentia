@@ -51,7 +51,11 @@ interface Case {
 
 const CASES: Case[] = [
   { type: 'rate_limit_error', status: 429, why: '限流：可重试，引擎要认出它才谈得上退避' },
-  { type: 'insufficient_quota', status: 429, why: '配额耗尽：同一档（此时重试也救不了，但分类一致）' },
+  {
+    type: 'insufficient_quota',
+    status: 429,
+    why: '配额耗尽：同一档（此时重试也救不了，但分类一致）',
+  },
   { type: 'overloaded_error', status: 529, why: '上游过载：5xx 可重试，保留 529 便于分开数' },
   { type: 'invalid_request_error', status: 400, why: '改配置才有救 ⇒ 400，引擎不得白重试' },
   { type: 'context_length_exceeded', status: 400, why: '上下文超限：改配置才有救' },

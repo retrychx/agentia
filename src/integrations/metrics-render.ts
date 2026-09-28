@@ -203,6 +203,7 @@ export function renderPrometheus(state: MetricsState, p: string): string {
     const modelTokens: string[] = [];
     const modelCosts: string[] = [];
     const unpriced: string[] = [];
+    const usageMissing: string[] = [];
     const durations: string[] = [];
     const durationQuantiles: string[] = [];
     for (const model of modelNames) {
@@ -214,6 +215,8 @@ export function renderPrometheus(state: MetricsState, p: string): string {
       modelCosts.push(`${p}model_cost_usd_total${l} ${acc.costUsd}`);
       if (acc.unpricedTurns > 0)
         unpriced.push(`${p}model_unpriced_turns_total${l} ${acc.unpricedTurns}`);
+      if (acc.usageMissingTurns > 0)
+        usageMissing.push(`${p}model_usage_missing_turns_total${l} ${acc.usageMissingTurns}`);
       durations.push(...histogramSamples(`${p}model_duration_ms`, acc.stat, l));
       durationQuantiles.push(
         `${p}model_duration_ms_last{model="${mv}",quantile="0.5"} ${acc.stat.percentile(0.5)}`,
@@ -239,6 +242,18 @@ export function renderPrometheus(state: MetricsState, p: string): string {
           'counter',
           '算不出成本的 turn 数（模型不在价格表内）',
           unpriced,
+        ),
+      );
+    }
+    // S2：上游没回报 usage ⇒ 成本看起来是 0（`maxCostUsd` 静默失效）。这条与 unpriced
+    // **分开**发：两者都让成本像 0，但一个是换模型、一个是查端点/网关。
+    if (usageMissing.length > 0) {
+      out.push(
+        family(
+          `${p}model_usage_missing_turns_total`,
+          'counter',
+          '上游未回报 usage 的 turn 数（成本会看起来是 0，护栏因此不可用）',
+          usageMissing,
         ),
       );
     }
