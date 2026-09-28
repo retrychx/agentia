@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
+import { parseTaskRecord } from './record.js';
 import type { TaskRecord, TaskStore } from './store.js';
 
 /**
@@ -54,8 +55,9 @@ export class FileTaskStore implements TaskStore {
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
-        const rec = JSON.parse(line) as TaskRecord;
-        if (!rec || typeof rec.taskId !== 'string') continue;
+        // 解析 + 旧形状读时归一都在唯一入口里（src/store/record.ts）
+        const rec = parseTaskRecord(line);
+        if (!rec) continue;
         this.byTask.set(rec.taskId, rec);
         if (rec.idempotencyKey) this.byKey.set(rec.idempotencyKey, rec.taskId);
       } catch {
@@ -76,8 +78,9 @@ export class FileTaskStore implements TaskStore {
     const tail = raw.slice(cut);
     let complete = false;
     try {
-      const rec = JSON.parse(tail) as TaskRecord | null;
-      complete = !!rec && typeof rec.taskId === 'string';
+      // 只探「这半截是不是一条完整记录」：解析结果丢掉（归一由上面的 load 循环做，
+      // 那才是记录真正入内存的地方）
+      complete = parseTaskRecord(tail) !== undefined;
     } catch {
       complete = false;
     }

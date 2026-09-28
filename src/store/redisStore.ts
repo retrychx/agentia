@@ -1,3 +1,4 @@
+import { parseTaskRecord } from './record.js';
 import type { TaskRecord, TaskStore } from './store.js';
 
 /**
@@ -215,8 +216,9 @@ function escapeGlob(s: string): string {
 function parseRecord(raw: string | null): TaskRecord | undefined {
   if (!raw) return undefined;
   try {
-    const rec = JSON.parse(raw) as TaskRecord;
-    return rec && typeof rec.taskId === 'string' ? rec : undefined;
+    // 解析 + 旧形状读时归一都在唯一入口里（src/store/record.ts）；本函数只负责
+    // 「坏了就跳过」这条取舍
+    return parseTaskRecord(raw);
   } catch {
     return undefined;
   }
