@@ -36,8 +36,10 @@ export interface RunInvocationOptions {
   idempotencyKey?: string;
   /**
    * **记账的数量上限**（spec §9.4 的答案里「让少记了数据可数」那一半）：整条 trace 的
-   * 事件总数上限，超限即停止记账并在交付时于 run 根写一笔 `trace.truncated`
-   * （`{ droppedEvents, limit }`）—— 缺口位置可预测（尾巴）、且有计数 ⇒ 可解释。
+   * 事件总数上限，超限即停止记账并在 run 根留**两笔** `trace.truncated` ——
+   * 起点标记 `{ limit }`（断点在这里）+ 收尾摘要 `{ droppedEvents, limit }`（丢了多少）
+   * —— 缺口位置可预测（尾巴）、且有计数 ⇒ 可解释。两笔**同时**进交付的 trace 与增量流
+   * （见 `TraceLimits`：折叠契约在截断下无例外成立）。
    *
    * 与 `maxEventChars`（单个事件**正文长度**）正交：一个管「多长」、一个管「多少」，
    * 各有各的家，两个都「不设 = 不限」。缺省**不设** —— 全量记账是本框架的承诺，

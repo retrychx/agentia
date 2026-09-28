@@ -31,27 +31,70 @@ describe('traceLimits.maxEvents（事件总量闸）', () => {
     );
   });
 
-  it('超限即停止记账，并写一笔带计数的 trace.truncated（不静默）', () => {
+  it('超限即停止记账，并在 run 根留两笔 trace.truncated（起点标记 + 收尾摘要，不静默）', () => {
     const r = new TraceRecorder({ maxEvents: 3 });
     fill(r, 10);
     const trace = r.snapshot('ok');
     const events = trace.spans[0]!.events;
-    const trunc = events.find((e) => e.name === 'trace.truncated');
-    assert.ok(trunc, '超限了却没有截断摘要 —— 使用者会以为 trace 是完整的');
-    assert.deepEqual(trunc.body, { droppedEvents: 7, limit: 3 }, '计数与实际丢弃数对不上');
+    const marks = events.filter((e) => e.name === 'trace.truncated');
+    assert.equal(marks.length, 2, '截断该留两笔：起点标记（位置）+ 收尾摘要（计数）');
+    assert.deepEqual(marks[0]!.body, { limit: 3 }, '起点标记只带上限 —— 断点在这里');
+    assert.deepEqual(marks[1]!.body, { droppedEvents: 7, limit: 3 }, '收尾摘要带最终计数');
     assert.equal(events.filter((e) => e.name === 'x').length, 3, '上限没生效');
+    assert.equal(events.length, 5, 'maxEvents 管的是**记录**事件（3 条 x）—— 两笔簿记不占配额');
+  });
+
+  it('增量出口：截断在两条缝上都看得见（起点标记 + 收尾摘要，P3-1 / 复核 §4）', () => {
+    const r = new TraceRecorder({ maxEvents: 3 });
+    const seen: Array<{ seq: number; name?: string; body?: unknown }> = [];
+    r.subscribe((e) => {
+      seen.push({
+        seq: e.seq,
+        ...(e.type === 'span.event' ? { name: e.event.name, body: e.event.body } : {}),
+      });
+    });
+    fill(r, 10); // 第 4 条起丢弃
+    // 交付（收尾摘要在这一刻派出去）—— 先交付再断言，否则看到的是「还没派摘要」的中途状态
+    const root = r.snapshot('ok').spans[0]!;
+
+    const marks = seen.filter((e) => e.name === 'trace.truncated');
+    assert.equal(
+      marks.length,
+      2,
+      '起点标记与收尾摘要各派一次（逐笔派 = 用事件洪水汇报「事件太多」）',
+    );
+    // seq 纪律：起点标记是一次记账动作，占号 —— begin(1) + 3 条 x ⇒ 它落在 seq 5
+    assert.equal(
+      marks[0]!.seq,
+      5,
+      '起点标记没落在第一笔丢弃那一刻（或没占号 ⇒ 订阅早晚会序号错位）',
+    );
+    assert.deepEqual(marks[0]!.body, { limit: 3 }, '起点标记带的是上限（位置信号）');
+    assert.equal(
+      seen.filter((e) => e.name === 'x' && e.seq > marks[0]!.seq).length,
+      0,
+      '起点标记之后仍有记录事件流出 —— 「停止记账」在增量出口没生效',
+    );
+    // 收尾摘要（最终计数）**也要派**：此前它只写在交付的 trace 上 ⇒ 折回的树会少一笔
+    // （只要设了 maxEvents 且真截断，「按 seq 折回逐字等于 snapshot」就是假的）
+    assert.deepEqual(marks[1]!.body, { droppedEvents: 7, limit: 3 }, '收尾摘要没走增量出口');
+    assert.ok(marks[1]!.seq > marks[0]!.seq, '收尾摘要必须晚于起点标记（顺序即折回的顺序）');
+    // 两条缝同一份载荷：交付的 trace 上也是这两笔
+    assert.deepEqual(
+      root.events.filter((e) => e.name === 'trace.truncated').map((e) => e.body),
+      [{ limit: 3 }, { droppedEvents: 7, limit: 3 }],
+    );
   });
 
   it('maxEvents: 0 = 一条都不记，但计数是全部（0 是有意义的值）', () => {
     const r = new TraceRecorder({ maxEvents: 0 });
     fill(r, 4);
-    const trace = r.snapshot('ok');
-    const events = trace.spans[0]!.events;
+    const events = r.snapshot('ok').spans[0]!.events;
     assert.equal(events.filter((e) => e.name === 'x').length, 0);
-    assert.deepEqual(events.find((e) => e.name === 'trace.truncated')?.body, {
-      droppedEvents: 4,
-      limit: 0,
-    });
+    assert.deepEqual(
+      events.filter((e) => e.name === 'trace.truncated').map((e) => e.body),
+      [{ limit: 0 }, { droppedEvents: 4, limit: 0 }],
+    );
   });
 
   it('闸门只影响事件，不影响 span 与 usage 记账（token 计量走 span 字段）', () => {
@@ -117,11 +160,12 @@ describe('traceLimits.maxEvents（事件总量闸）', () => {
     });
     assert.equal(result.stopReason, 'end_turn');
     const all = result.trace!.spans.flatMap((s) => s.events);
-    const trunc = all.find((e) => e.name === 'trace.truncated');
-    assert.ok(trunc, '应用级 traceLimits 没生效（事件一个都没被挡住）');
+    const marks = all.filter((e) => e.name === 'trace.truncated');
+    assert.equal(marks.length, 2, '应用级 traceLimits 没生效（事件一个都没被挡住）');
+    const summary = marks.find((e) => 'droppedEvents' in (e.body as Record<string, unknown>))!;
     assert.ok(
-      (trunc.body as { droppedEvents: number }).droppedEvents > 0,
-      '丢弃计数为 0 —— 计数与实际不符',
+      (summary.body as { droppedEvents: number }).droppedEvents > 0,
+      '收尾摘要的丢弃计数为 0 —— 计数与实际不符',
     );
   });
 });

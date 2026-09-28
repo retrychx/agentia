@@ -156,4 +156,42 @@ describe('drain 竞态 —— 三条恢复路径的闸要对齐', () => {
     assert.equal(runs.count, 0, 'drain 已完成 ⇒ 认领循环也不许派发');
     assert.equal((await store.get('task_orphan'))?.status, 'queued', '认领已落库，留给下次启动');
   });
+
+  it('拒绝要出声（不静默）：停机窗口里被拒的派发打一条 warn —— 且只有一条', async () => {
+    // PR #164 复核 §1：这里的拒绝此前是一条裸 `return` —— 运维只看到一个停在 `running` 的
+    // 任务，无从解释它为什么不跑（而 `drain()` 此刻已给宿主加了「必须退出」的义务）。
+    // 停机窗口里可能有很多条记录被拒，但它们的原因**完全相同** ⇒ 只报一条。
+    // 拦 console.warn 的写法与 tests/runtime/sinks.test.ts 同款。
+    const runs = { count: 0 };
+    const store = new InMemoryTaskStore();
+    await store.save(
+      suspended('task_warn', { suspendedReason: 'approval', pendingApprovals: ['tu1'] }),
+    );
+    await store.save({
+      taskId: 'task_orphan_warn',
+      status: 'running',
+      ownerId: 'p99999-deadbeef',
+      startedAt: Date.now() - 60_000,
+      createdAt: Date.now() - 60_000,
+      spec: { messages: [{ role: 'user', content: 'x' }], options: {}, source: 'async' },
+    } as TaskRecord);
+    const runner = new AsyncRunner(probeApp(runs), { store });
+    assert.equal(await runner.drain({ timeoutMs: 500 }), true, '挂起任务不挡排空');
+
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(' '));
+    try {
+      // 两条不同的恢复路径（approve = 第三条；resumePending 认领 = 第五条）
+      await runner.approve('task_warn', { tu1: { approved: true } });
+      await runner.resumePending({ staleAfterMs: 0 });
+    } finally {
+      console.warn = origWarn;
+    }
+
+    assert.equal(warnings.length, 1, `停机窗口里的拒绝只该报一条（实际 ${warnings.length} 条）`);
+    assert.match(warnings[0]!, /停机中/, '文案含「停机中」字样（可 grep）');
+    assert.match(warnings[0]!, /drain\(\)/, '文案要点名宿主的义务：drain() 之后退出');
+    assert.equal(runs.count, 0, '出声归出声 —— 仍然一条都不许派发');
+  });
 });

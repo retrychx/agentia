@@ -17,8 +17,10 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
  * 口径与已知边界：
  * - 只扫**带点前缀**（task./stream./trace./text./run.）的反引号词 ⇒ 无点的 `error` 帧
  *   不在射程内（太泛，误报多）；它由 http.ts 侧的实现测试守。
- * - `trace.truncated` 是 **run 根的 attribute**（`tracer` 度量闸超限时的记账），
- *   **不是** SSE 帧 ⇒ 显式排除。哪天它真成了帧名，把排除项删掉即可。
+ * - `trace.truncated` 是 **run 根的 trace 事件名**（`traceLimits.maxEvents` 超限时的簿记：
+ *   起点标记 + 收尾摘要两笔，见 tracer.ts），**不是** SSE 帧名 —— 它会作为 **`trace.event`
+ *   帧体**里的 `event.name` 流经 SSE，但帧名本身不是它 ⇒ 显式排除。（2026-09-28 订正：
+ *   此前写成「run 根的 attribute」，两处都不准 —— 它是事件不是属性。）
  * - 单向（文档 ⇒ 实现）：文档不许写实现里没有的帧。反向（新帧必须写文档）由人评审守 ——
  *   自动做会误伤「内部帧不该进使用者文档」的正当取舍。
  */
@@ -29,7 +31,8 @@ describe('SSE 帧名：文档 ⇐ 实现（单向，文档不许说谎）', () =
 
   /**
    * 不是 SSE 帧的名字（见文件头）：
-   * - `trace.truncated` 是 run 根的 attribute（tracer 度量闸超限时的记账）；
+   * - `trace.truncated` 是 run 根的 **trace 事件名**（`traceLimits.maxEvents` 超限时的簿记：
+   *   起点标记 + 收尾摘要两笔；它以 `trace.event` 帧体的形式流经 SSE，但本身不是帧名）；
    * - `task.event` 是**续跑段 run 根的 trace 事件名**（2026-09-28 ⑥ 事件投入口的留痕），
    *   与 SSE 的 `task.end` 帧同名族但不是帧 —— 它由 engine/loop.ts 的 recorder.event 发出。
    */
