@@ -4743,6 +4743,52 @@ task-events / anthropic / async）141/141 绿，`npm test` 三套件全过。
 （覆盖率棘轮只降不升才红，删掉未覆盖的死代码只会让分子分母同时变好）、以及上面那组
 「零调用点 + 无文档引用」的**读数**。
 
+### 2026-09-28 ⑱：**OTLP 导出不再每次 flush 白算分位**（外部深评 S4）
+
+**报告说的**（`DEEP-AUDIT-VERIFIED-2026-09-28.md` 的 S4 行）：`integrations/metrics-otlp.ts:78`
+每次 flush 调 `snapshot()`，「为每条 run / 能力 / 模型各排一次 1024 窗口」，而 **OTLP 侧根本不用分位**；
+建议「让 `snapshot()` 的分位可选，或 OTLP 用一个不算分位的视图」。
+
+**核实结果：症状对、量级对，修法错。** 三点读数（**自己的**）：
+
+- 报告对「OTLP 不用分位」的判据是 `grep latencyP50\|latencyP95 src/integrations/metrics-otlp.ts` 为空
+  —— 复核成立。但再往前走一步读数更硬：本文件对 state 的读法**全是公开面**（`runs` / `failed` / `costUsd`
+  三个标量 + `tokens` / `runStat` / `runLabels` / `capabilities` / `models` / `scores` / 两个 exemplar
+  都是**直接遍历公开 map**），它调 `snapshot()` **只**为了拿那三个标量 —— 而那三个**本身就是
+  `MetricsState` 的公开字段**。所以问题不是「需要一个不算分位的视图」，是**这次调用根本不该存在**。
+- 报告写「200 能力 + 50 模型」是配置**上限**口径；按 `snapshot()` 自身的遍历计数（capabilities +
+  models + runLabels + run 各一次）是 30 个组合 —— 与「白算约 250 次排序」同量级、方向一致（**没推翻它**，
+  只是把口径说准）。
+- 数字（新增 `npm run bench:otlp`，满 1024 窗口 / 30 个组合）：单个 p50+p95 **233.8 µs**、
+  `snapshot()` 整体 **5929.6 µs**、`buildOtlpPayload()` **41.6 µs** ⇒ **白算 99.3%**，且**每个 flush
+  都付一次**（与 flush 频率成正比、与采集端是否真的消费无关）。报告**没量化**这一步 —— 本仓的规矩是量。
+
+**修法与它为什么不选报告的两条**：删掉那次 `state.snapshot()`，三个标量改直读 `state.runs` /
+`state.failed` / `state.costUsd`。
+- 不做「分位可选」：那是**给一个不该存在的调用加开关** —— 开关的每一档都要有人维护、有人测，
+  而这里没有一档是需要它的（OTLP 要的分位永远是 0 个）。
+- 不做「OTLP 专用的不算分位视图」：那是**同一笔依赖的第二份形状**，从此 OTLP 与 Prometheus 各有一个
+  「state 读面」，漂移只是时间问题（本仓在 `limits.ts` / `tool-events.ts` 上反复吃过「两份口径」的亏）。
+
+**依赖方向（比省下这 5.9 ms 更根本）**：删掉调用后 OTLP **不再依赖 `MetricsSnapshot`**（Prometheus 侧
+渲染的产物）这个类型形状，只依赖 `MetricsState` 的公开读面。这也顺带解释了它原本「看起来」
+需要 snapshot：那个形状里恰好写着这三个标量。
+
+**守卫**：`tests/architecture/otlp-no-snapshot.test.ts`，**行为级**而非源码扫描 —— 被守的源码注释里
+**本来就写着 `state.snapshot()`**（说明为什么不许调它），靠遮蔽器区分「注释里的」与「代码里的」，
+等于把守卫的成败押在遮蔽器的正确性上（本仓在 `tool-event-names.test.ts` 上已为这类遮蔽器付过一次代价）。
+判据只有一条：**把 `state.snapshot` 换成会抛的桩，再跑导出路径**。
+- 阳性对照「这枚雷真的会炸」：没有它，「不抛」可以在桩没装上时成立（**真空变绿**）。
+- 值断言 + 「改字段后 payload 跟着变」：防「不抛，但读的是自带副本 / 常量」。
+
+**变异两条**（具名复红，还原后 `sha256` 逐字节一致）：① 把 `state.snapshot()` 加回去 ⇒
+「装了桩之后照样出全量 payload」+「三个标量真的从公开字段读」两条红（文案即桩的
+`OTLP 导出路径调了 state.snapshot()`）；② 把 `state.runs` 改成常量 `0` ⇒ **恰好**「三个标量真的
+从公开字段读」那一条红。
+
+**射程如实**：**无行为变更**（payload 逐字段不变）；HTTP / 宿主侧一行未动；不做分位可达性的任何改造。
+基准 `scripts/bench-otlp-snapshot.ts`（`npm run bench:otlp`）与 `bench:trace` **同档、不进 CI**。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
