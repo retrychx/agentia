@@ -76,12 +76,12 @@ engine/stop-reason.ts` **仍为空**；`S3` = `statusOfStreamError` **仍有两�
 | `T5` | 队列无深度上限、无背压信号 | ✅ **已落地** | #173：`maxQueued` + `TaskQueueFullError` ⇒ HTTP **503 + `Retry-After`**（判据是「真正在排队的深度」，不是「已受理未持槽数」） |
 | `T6` | 初始 `save` 不 await 就派发 | ❌ **未做**（P3，低危） | `async.ts:592` 仍 `const saved = this.store.save(rec);`（不 await）。报告已自行降级：redis 单连接命令 FIFO ⇒ 写序有保证 |
 | `T7` | 挂起任务视为不占资源 | 🔒 **有意为之**（代码未动） | `scheduler.ts:191-192` 的作者注释仍在岗（「不放手会让 `maxInFlight` 永久自闭」）；报告自己改写性质为「代价已认」 |
-| `S1` | redis TTL 无差别过期（挂起记录也消失） | ❌ **未做**（文档那半已落地） | `redisStore.ts:156` `applyTtl` **仍无条件**（不看 status）；但报告指出的「`usage-guide` 全文无 `ttlSeconds` 说明」**已补**（`usage-guide.md:505`） |
-| `S2` | 端点不给 usage ⇒ token/成本恒 0 且静默 | ❌ **未做** | `openai.ts:585-587` 仍 `acc.usage?.prompt_tokens ?? 0`，**无** `unpriced` / `usage.missing` 通道 |
-| `S3` | `statusOfStreamError` 两份、一致只靠注释 | ❌ **未做** | 仍是两份（`anthropic.ts:593` / `openai.ts:424`）。`adapter-options.ts` 已存在，只是没收它 |
+| `S1` | redis TTL 无差别过期（挂起记录也消失） | ✅ **已落地**（⛔ 行为变更） | #180：终态判定单源到 `core/run.ts` 的 `TERMINAL_STATUS` 分类表（`isTerminalStatus`，加成员不表态 ⇒ `tsc` 报缺成员）；`redisStore.save` **只在终态**施加 TTL —— 非终态覆写靠不带选项的 `SET` 清除既有窗口 ⇒ 在跑/排队/**挂起**的记录都活过整个等待窗口，幂等索引与记录同生共死。代价如实：永远等不到审批的挂起记录会永久驻留（与内存 store 跳过 `suspended` 同款取舍）。变异：摘掉终态闸（`expires = true`）⇒ 恰好那条红 |
+| `S2` | 端点不给 usage ⇒ token/成本恒 0 且静默 | ✅ **已落地** | #180：`MessageUsage.unreported` 标出「上游没给」（四条路径：流式/非流式 × 两条适配器）；引擎记 `usage.missing` 事件（名字单源 `core/trace.ts`）；报告 `usageMissingTurns`/`usageMissingModels` + 指标 `agentia_model_usage_missing_turns_total`（render + OTLP 双出口）。与 `usage.unpriced` **分开计数**（一个换模型、一个查端点）。变异：摘标记 / 摘事件 ⇒ 各自恰好那条红 |
+| `S3` | `statusOfStreamError` 两份、一致只靠注释 | ✅ **已落地** | #180：判定收进 `adapter-options.ts` 一份（词表取**并集**）—— 合并时发现两侧**早就不一致**（`not_found_error` / `model_not_found` 各是一侧 400、另一侧 500）。新用例 `stream-error-parity.test.ts` 一张表跑两条真适配器 + 真 SSE，两行 `wasDivergent` 标出分歧点。变异：删掉 `not_found` ⇒ 恰好那行红 |
 | `S4` | 每次 flush 白算分位 | ✅ **已落地** | #176：**删掉那次 `state.snapshot()`**（三个标量直读公开字段）。⚠️ 与报告建议的两条（「分位可选」/「不算分位的视图」）**都不同**，理由见 `spec.md` §10 ⑱；实测白算 **99.3%**（`npm run bench:otlp`） |
 | `S5` | `compact()` / `close()` 在 store 接口之外 | ❌ **未做** | `store.ts` 接口仍只有 `save/get/byIdempotency/list/listDue?/clear` |
-| `S6` | `mcp-stdio.ts` stdout 缓冲无上限 | ❌ **未做** | 仍 `buf += chunk` 后按 `\n` 切分，无长度上限 |
+| `S6` | `mcp-stdio.ts` stdout 缓冲无上限 | ✅ **已落地** | #180：`core/line-framing.ts` 的 `MAX_FRAME_CHARS`（8M 码元）**两条桥共用**。连接器侧超限 ⇒ 丢弃缓冲 + 拒绝全部在途请求 + 终止子进程；反向桥侧超限 ⇒ 回一条协议错并丢弃到下一个换行**重新对齐**（其后的帧照常派发）。夹具新增 `hugeline` 模式（9 MiB 不换行）。变异：摘掉反向桥的错误帧 ⇒ 恰好那条红 |
 | `K1` | 嵌套树共用一份 `RunContext` / 一块黑板 | ❌ **未做** | `context.ts:17` 单例 ALS + `run.ts:198` 唯一调用点（报告读数仍准确）；报告倾向的「先补文档写明不隔离」在 `spec.md` **也没有** |
 | `K2` | 加第五类能力要改多处、无编译期护栏 | ❌ **未做** | 无 `toolkit/capability-slice.ts`，无 `CAPABILITY_KINDS` 注册表 |
 | `K3` | `Run.finish()` 无守卫（`suspended` 后可静默翻终态） | ✅ **已落地**（⛔ 行为变更） | #179：`finish()` 补守卫（与 `start()` / `suspend()` 同款）；顺带把 `cancelled` 的**可达性**写进类型注（进程内 `Run` 到不了它 —— 取消表现为 `stopReason: 'aborted'` ⇒ 记 `failed`，它由宿主落）。变异：摘掉守卫 ⇒ 恰好那条红 |
@@ -89,7 +89,8 @@ engine/stop-reason.ts` **仍为空**；`S3` = `statusOfStreamError` **仍有两�
 | `K5` | 记忆回写全量读改写、无 CAS / 体积上限 | ❌ **未做** | `run.ts:367` `flushMemory` 仍 last-write-wins |
 | `K6` | 三态 `system` 的隐性差异没进使用者文档 | ✅ **已落地**（只改文档） | #179：`usage-guide` 的 `system` 行写明「`string` / `SystemPrompt` 两形态自动追加运行提示，**函数形态不追加**」 |
 
-**P2 合计：15 条已落地 / 10 条未做 / 1 条「有意为之」（代码未动、性质已认）—— 共 26 行。
+**P2 合计：19 条已落地 / 6 条未做 / 1 条「有意为之」（代码未动、性质已认）—— 共 26 行。
+（2026-09-28 第二次更新：`K3` / `K4` / `K6` 落地，见 `spec.md` §10 ㉑；第三次更新：`S1` / `S2` / `S3` / `S6` 落地，见 §10 ㉒。）**
 （2026-09-28 第二次更新：`K3` / `K4` / `K6` 落地，见 `spec.md` §10 ㉑。）**
 
 > ⚠️ **本表的两处订正（2026-09-28，`spec.md` §10 ⑳ 有完整说明）**：① 汇总行原先写「11 已落地 / 14 未做」——
@@ -139,10 +140,11 @@ engine/stop-reason.ts` **仍为空**；`S3` = `statusOfStreamError` **仍有两�
 
 ## 4. 下一轮从哪接
 
-1. **P2 表还有 10 条未做**（`T4` / `T6` / `S1`–`S3` / `S5` / `S6` / `K1` / `K2` / `K5`）。按「会不会真咬人」排序，
-   先看：`S2`（端点不给 usage ⇒ 成本静默恒 0，连「算不出」的信号都没有）、`K5`（记忆回写全量读改写、
-   无版本号 ⇒ 并发 run 共用 keys 时 lost update）、`K1`（嵌套树共用一块黑板 —— 报告倾向「先补文档写明不隔离」）、
-   `T4`（非终态流的**表项**不被回收，判据见本表该行）。
+1. **P2 表还有 6 条未做**（`T4` / `T6` / `S5` / `K1` / `K2` / `K5`）。按「会不会真咬人」排序，
+   先看：`K5`（记忆回写全量读改写、无版本号 ⇒ 并发 run 共用 keys 时 lost update）、
+   `T4`（非终态流的**表项**不被回收 —— 判据见本表该行，**要收的是表项不是条数**）、
+   `K1`（嵌套树共用一块黑板 —— 报告倾向「先补文档写明不隔离」）、`K2`（加第五类能力要改多处、
+   无编译期护栏 —— 这批里唯一的结构工程，建议单独一轮）。
 2. `DEEP-AUDIT-2026-09-28.md` §3.2 / §3.4 那两节（验证手段盘点 / 四层验证策略）**从未被动过**，
    它是本仓质量门禁的下一步来源。
 3. 每落地一条，回来改 §2 的表 —— 详见 §0 的三条约定。
