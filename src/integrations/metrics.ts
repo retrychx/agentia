@@ -13,6 +13,7 @@ export type {
   ExemplarSnapshot,
   ModelMetrics,
   ScoreMetrics,
+  RunLabelMetrics,
   MetricsSnapshot,
 } from './metrics-state.js';
 export { MetricsExportError } from './metrics-otlp.js';
@@ -118,6 +119,42 @@ export interface MetricsSinkOptions {
    * 条数 / 总和照常累加，被折叠的不同评分维度数见 `snapshot().droppedScores`。
    */
   maxScores?: number;
+  /**
+   * 归因标签维度（R8-P4）：**显式点名** run 根 `labels.<key>` 里的哪些键上指标标签，
+   * 缺省 `[]`（一个都不上 —— run 根属性照样记，只是不进指标）。
+   * 键必须是合法的 Prometheus 标签名（`/^[a-zA-Z_][a-zA-Z0-9_]*$/`），否则构造期抛错。
+   *
+   * 出口形态：`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total`
+   * 四个家族在全局样本之外**追加**带标签的样本（如 `runs_total{tenant="acme"}`）——
+   * 全局样本仍在（不带标签的那行就是总量）。⚠️ 查询侧注意：开了 labelKeys 后
+   * `sum(agentia_runs_total)` 会把全局行与分行**重复计数**，总量用不带标签的序列。
+   *
+   * ⚠️ 每个键的相异**值**数受 `maxLabelValues` 封顶，超出归入 `__other__`（折叠只丢
+   * 标签粒度不丢量，与 maxModels 同款）。光 opt-in 挡不住「我知道有几千租户、
+   * 我偏要上」—— sink 的内存不变量（上限 × 窗口 = 常驻内存上界）要求每个新基数
+   * 维度都有 cap，所以这道上限不可关。
+   */
+  labelKeys?: readonly string[];
+  /**
+   * 每个 labelKey 的相异值数上限（缺省 100，**必须为正数**）。
+   * 超出后新值归入 `__other__`；被折叠的不同值数见 `snapshot().droppedLabelValues`。
+   */
+  maxLabelValues?: number;
+  /**
+   * **标签组合数**上限（缺省 200，**必须为正数**）。
+   *
+   * 为什么需要它：`maxLabelValues` 封的是**每个键的值域**，而进内存的是键的组合 ——
+   * 组合数是叉乘（`(maxLabelValues+1)^labelKeys.length`），缺省值域 100 配 3 个键就是
+   * 一百万条常驻条目，且 `droppedLabelValues` 只报每键的折叠数、看不出组合已经爆了
+   * （2026-09-27 ⑧ 实测的静默失效）。这道上限与 `maxCapabilities` / `maxModels` /
+   * `maxScores` 同款：超限后**新的组合**折叠进一个全 `__other__` 的桶（量照收，只丢
+   * 标签粒度），被折叠的组合数见 `snapshot().droppedLabelCombos` 与
+   * `agentia_dropped_keys{kind="label:combos"}`。**不可关** —— 内存不变量要求每个新
+   * 基数维度都有 cap，opt-in 挡不住「明知有几千租户偏要上」。
+   *
+   * 单键配置（最常见）下组合数 ≈ 值数，这道上限不改变行为。
+   */
+  maxLabelCombos?: number;
   /** 时长直方图的桶边界（毫秒，升序）；缺省见 DEFAULT_BUCKETS */
   buckets?: readonly number[];
 }
@@ -151,6 +188,20 @@ const DEFAULT_MAX_CAPABILITIES = 200;
 const DEFAULT_MAX_MODELS = 50;
 /** 评分维度 = `name@source`，一个应用的 eval 个数是有限的，默认与能力同宽 */
 const DEFAULT_MAX_SCORES = 200;
+/**
+ * 归因标签每个键的相异值上限缺省 100（R8-P4）：比模型键宽（租户天然比模型多），
+ * 又足够小 —— 真有几千租户的部署应该靠 `__other__` 折叠 + droppedLabelValues 报警发现，
+ * 而不是把 Prometheus 与 sink 内存一起打爆
+ */
+const DEFAULT_MAX_LABEL_VALUES = 100;
+/**
+ * 标签**组合数**缺省上限。取 200 而不是与 `maxLabelValues` 同值（100）：单键配置下
+ * 组合数 ≈ 值数（100 < 200，行为不变），多键配置才是它的用武之地 —— 上限是
+ * 「上限 × 窗口 = 常驻内存」这条不变量里缺的那一角，宁可给够正常用量也不要紧到误折。
+ */
+const DEFAULT_MAX_LABEL_COMBOS = 200;
+/** Prometheus 标签名的合法形状（labelKeys 的构造期校验按它） */
+const LABEL_NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 /** 缺省时长桶（毫秒）：覆盖"工具几十毫秒 → run 几十秒"的常见区间 */
 export const DEFAULT_BUCKETS: readonly number[] = [
   25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000,
@@ -183,6 +234,26 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   if (!(maxScores > 0)) {
     throw new Error(`metricsSink: maxScores 必须为正数，收到 ${opts.maxScores}`);
   }
+  const maxLabelValues = opts.maxLabelValues ?? DEFAULT_MAX_LABEL_VALUES;
+  if (!(maxLabelValues > 0)) {
+    throw new Error(`metricsSink: maxLabelValues 必须为正数，收到 ${opts.maxLabelValues}`);
+  }
+  const maxLabelCombos = opts.maxLabelCombos ?? DEFAULT_MAX_LABEL_COMBOS;
+  if (!(maxLabelCombos > 0)) {
+    throw new Error(`metricsSink: maxLabelCombos 必须为正数，收到 ${opts.maxLabelCombos}`);
+  }
+  const labelKeys: string[] = [];
+  for (const k of opts.labelKeys ?? []) {
+    if (typeof k !== 'string' || !LABEL_NAME_RE.test(k)) {
+      throw new Error(
+        `metricsSink: labelKeys 必须是合法的 Prometheus 标签名（/^[a-zA-Z_][a-zA-Z0-9_]*$/），收到 ${JSON.stringify(k)}`,
+      );
+    }
+    if (labelKeys.includes(k)) {
+      throw new Error(`metricsSink: labelKeys 有重复的键 ${JSON.stringify(k)}`);
+    }
+    labelKeys.push(k);
+  }
   const labelMode = opts.labelMode ?? 'capability';
   const buckets = opts.buckets ?? DEFAULT_BUCKETS;
   for (let i = 1; i < buckets.length; i++) {
@@ -202,6 +273,9 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
     maxScores,
     labelMode,
     buckets,
+    labelKeys,
+    maxLabelValues,
+    maxLabelCombos,
   });
 
   const snapshot = (): MetricsSnapshot => state.snapshot();

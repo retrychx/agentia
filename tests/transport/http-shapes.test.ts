@@ -56,10 +56,10 @@ describe('toHttpBody —— 出站形状（JSON 与 SSE 的 run.end 共用）', 
   });
 
   it('status 取 run 状态机、stopReason 取 result（两个来源不同，不能反推）', () => {
-    // 挂起：run 状态是 awaiting_approval（不是终态），stopReason 同名字但语义更宽
+    // 挂起：run 状态是 suspended（不是终态），stopReason 同名字但语义更宽
     assert.equal(
-      toHttpBody(runOut({ status: 'awaiting_approval', stopReason: 'awaiting_approval' })).status,
-      'awaiting_approval',
+      toHttpBody(runOut({ status: 'suspended', stopReason: 'suspended' })).status,
+      'suspended',
     );
     // 非正常收尾：run 记 failed，stopReason 是具体原因 —— 反推会丢掉原因，或把挂起判成失败
     const failed = toHttpBody({

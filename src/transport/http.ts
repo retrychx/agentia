@@ -27,10 +27,10 @@ import type { TaskRecord } from '../store/store.js';
  * - GET  /tasks/<id> 轮询任务记录 → 200 TaskRecord；不存在 → 404。
  * - POST /tasks/<id>/approve  人工审批（HITL）。body
  *                    `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }`
- *                    → 200 TaskRecord；任务不存在 → 404；不在 awaiting_approval 状态 → 409；
+ *                    → 200 TaskRecord；任务不存在 → 404；不在 suspended 状态 → 409；
  *                    body 非法 → 400。**停机中仍可用**（与 GET 轮询同理由：
  *                    挂起的任务只有人能推进，停机不该连「批准」也拒掉）。
- * - GET  /healthz    健康检查 → 200 { ok, inFlight, uptimeMs, draining }；**不鉴权**
+ * - GET  /healthz    健康检查 → 200 { ok, inFlight, uptimeMs, draining, suspended }；**不鉴权**
  *                    （探针不该带凭据）。停机中仍回 200（进程活着），就绪与否看 draining。
  *
  * 方法不符 405；路径不符 404；body 非法 JSON 400。runner 缺省内部 new AsyncRunner(app)。
@@ -121,6 +121,21 @@ export interface HealthResponse {
   uptimeMs: number;
   /** 是否已进入优雅停机（drain 之后）—— 负载均衡据此摘流量 */
   draining: boolean;
+  /**
+   * 挂起读数（配套 6）：按原因分组的条数 + 最早的目标时刻。
+   *
+   * 口径 = **本进程**看得见的记录（与 `inFlight` 同一张表）—— 多进程部署要合并看板请自己
+   * 聚合，这里不假装是全局面。值直接来自 `runner.suspendedSummary`（**不查 store**：
+   * `/healthz` 是秒级频率的探针端点，全表反序列化的代价比它回答的问题大得多）。
+   */
+  suspended: {
+    /** 等人工决定（HITL）的条数 */
+    approval: number;
+    /** 等一个时刻（durable timer）的条数 */
+    timer: number;
+    /** 最早的目标时刻（epoch ms）；一条时间挂起都没有 ⇒ `null`（不是 `0`） */
+    nextWakeAt: number | null;
+  };
 }
 
 /**
@@ -393,6 +408,8 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
             inFlight: inFlightRuns + runner.inFlight,
             uptimeMs: Date.now() - startedAt,
             draining,
+            // 挂起读数（配套 6）：在飞 ≠ 在等 —— 「几条在睡、最早什么时候醒」是运维要看的那半
+            suspended: runner.suspendedSummary,
           } satisfies HealthResponse);
           return;
         }

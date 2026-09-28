@@ -8,6 +8,7 @@ import type {
 } from '../core/tool.js';
 import type { SpanError, Trace, TraceContext } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
+import type { SuspendedReason } from '../core/run.js';
 
 /**
  * engine 对模型端的最小结构面（R4 多模型）：消息形态见 core/message.js 的自有类型族，
@@ -15,6 +16,24 @@ import type { RetryOptions } from './retry.js';
  * 定义在 core/tool.js 并从此处转导出。
  */
 export type { ModelClient } from '../core/tool.js';
+
+/**
+ * 模型 fallback 链的一环（R8-P2）：主环节失败且可换时，按数组序落下一环。
+ *
+ * - `client` 缺省 = 本次 run 的 client（**同端点换模型**是主用例：主模型 429/超时 →
+ *   备用模型）；要给别的厂商才显式传另一个 `ModelClient`。
+ * - 换环判定与重试判定共用 `classifyError` 的 `retryable` 位（rate_limit / server /
+ *   timeout / connection 才换；api/unknown 是请求本身有病，换了也没用；aborted 永不换）。
+ * - ⚠️ `client` 是进程内对象：走持久化 store 的异步任务在崩溃续跑后读回的是
+ *   反序列化空壳 —— run 入口会响亮抛 TypeError（鸭子类型校验），不静默拿死 client 发请求。
+ *   要跨重启仍成立的链请只写 `model`（client 由宿主/runner 级配置兜住）。
+ */
+export interface ModelFallbackLink {
+  /** 备用模型 id（必填，空字符串在 run 入口抛 TypeError） */
+  model: string;
+  /** 该环用的 client；缺省复用本次 run 的 client */
+  client?: ModelClient;
+}
 
 export type AgentStopReason =
   /** 模型自然结束（含 stop_sequence：命中 stop 序列同样是正常收尾） */
@@ -40,7 +59,7 @@ export type AgentStopReason =
    * **不是成功也不是失败**：`isSuccessStopReason` 不含它；trace 状态记 ok
    * （挂起段本身执行无误，「等人」不该被看板算成失败）；宿主据此落库而非收尾。
    */
-  | 'awaiting_approval'
+  | 'suspended'
   /** 模型/网关返回了本框架未识别的 stop_reason：保留文本，但按失败收尾 */
   | 'unknown_stop_reason'
   | 'error';
@@ -102,6 +121,39 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   maxIterations?: number;
   /** 注入 client（缺省经 createAnthropicClient() 创建，读 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL env）；多模型见 ModelClient */
   client?: ModelClient;
+  /**
+   * 模型 fallback 链（R8-P2）：主模型本回合**最终**失败（含其 maxRetries 用尽）且错误
+   * 可换（`classifyError` 的 retryable 类：rate_limit / server / timeout / connection）时，
+   * 按数组序换下一环重试本回合。每一环开自己的 llm.turn span（model 名正确 ⇒ 成本归因
+   * 与 `usage.unpriced` 探测天然对），切换在新 span 上记 `llm.fallback` 事件
+   * `{ from, to, errorType }`。三条护栏：`aborted` 永不换（用户取消不是故障）；
+   * 本回合**吐过字不换**（与 retry 的「吐过字不重试」同一护栏，否则会拼出两段回答）；
+   * **每回合从主环重新起**（fallback 是单回合韧性，不把后续回合钉在备用模型上）。
+   * 子 agent / skill 子循环**不继承**本链（它们的 model/client 由能力层显式给）。
+   */
+  fallbacks?: ModelFallbackLink[];
+  /**
+   * 记录 assistant 文本进 trace（R8-P3a）：`'full'` = 每回合的模型文本落 llm.turn span 的
+   * `output.text` 属性（引擎文本口径：多块 `\n` 连接；过 `maxEventChars` 同一道截断闸 ——
+   * 那个管「多长」，这个管「记不记」）。缺省不记（现状逐字不变：llm.turn 只记
+   * usage/事件，见 `engine/replay.ts` 的有损边界声明）。纯 tool_use 回合不记（无文本块）。
+   *
+   * ⚠️ 两个代价，开了就要认：① trace 体积显著增大（模型正文进树）；
+   * ② 模型输出从此进入「要脱敏的面」—— 出库前走脱敏配方（`docs/observability.md` §2.4）。
+   * 主要消费者：trace → 训练数据导出与逐字复盘。透传给子 agent / skill 子循环
+   * （与 `maxEventChars` 同一条转发纪律：同一棵调用树上口径一致）。
+   */
+  traceContent?: 'full';
+  /**
+   * 租户/业务维度归因标签（R8-P4）：落 run 根的 `labels.<key>` 属性（trace 侧无基数问题）。
+   * 与 `RunSpec.source` 正交不动：source 是框架自己写的**触发来源**审计（sync / async /
+   * schedule:<id>），labels 是宿主写的**业务维度**（tenant / plan / …）。
+   * 键值都必须是字符串（键非空），否则 run 入口抛 TypeError；可序列化（异步任务随
+   * TaskRecord 落库、续跑不丢）。
+   * ⚠️ 进 metrics 是**另一个开关**：`metricsSink({ labelKeys })` 显式点名哪些 key 上指标
+   * 标签（缺省一个都不上）—— Prometheus 标签基数爆炸是真实事故类，见该选项的注释。
+   */
+  labels?: Record<string, string>;
   /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
   recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */
@@ -255,4 +307,18 @@ export interface AgentRunResult<T = unknown> {
    * 宿主（`AsyncRunner`）据此持久化「该批哪些 id」，HTTP 轮询方据此知道该审批什么。
    */
   pendingApprovals: string[] | undefined;
+  /**
+   * 挂起原因（`stopReason === 'suspended'` 时非空）：`approval` = 等人工决定、
+   * `timer` = 等一个时刻。宿主据此选闸（审批超时 / 到期唤醒）并落 TaskRecord。
+   */
+  suspendedReason: SuspendedReason | undefined;
+  /**
+   * 时间挂起的目标时刻（epoch ms）：`suspendedReason === 'timer'` 时在场，其余为 undefined
+   * （**字段在场**，与 `error` 同一条结果记录约定）。
+   *
+   * 宿主（`AsyncRunner`）把它落成 `TaskRecord.wakeAt` —— 进程重启后「这条在睡的 run 什么时候
+   * 该醒」只靠它（`wake-policy.ts` 的 `timerDue`）。等审批的挂起没有这个时刻（人什么时候
+   * 批就是什么时候），所以它恒为 undefined。
+   */
+  wakeAt: number | undefined;
 }

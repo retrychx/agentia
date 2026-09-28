@@ -1,4 +1,5 @@
 import type { MessageParam } from '../core/message.js';
+import { truncateWithMark } from '../core/json.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import type {
   AgentTool,
@@ -13,11 +14,14 @@ import { withCurrentSpan } from './span-scope.js';
 import type { AgentLoopResult } from './loop-result.js';
 import { abortedResult, failedResult, finishedResult, suspendedResult } from './loop-result.js';
 import { tailToolUses, textOfParam } from './resume-input.js';
+import { detectMenuDrift, menuSignature } from './menu-drift.js';
 import {
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_MAX_TOKENS,
   resolveDefaultModel,
+  resolveModelChain,
   runConfigSnapshot,
+  validateLabels,
 } from './run-config.js';
 import type { RetryOptions } from './retry.js';
 import { TraceRecorder } from './tracer.js';
@@ -98,6 +102,40 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   // （不发请求、零花费）。
   const resumeUses = tailToolUses(ctx.messages);
   if (resumeUses.length > 0) {
+    // 菜单漂移（R8 候选 3 / durable 调研 §4.1 + §6 候选 3）：**续跑**时未决 tool_use 引用的
+    // 工具在当前菜单里找不到了 —— 上一段与这一段跑在不同的代码版本上（删了 / 改名了一个工具）。
+    // 这与回合内「模型编了个不存在的工具名」不同类：那个模型拿一句 `unknown tool` 就能自我
+    // 修正（既有路径，钉在 tests/engine/toolTiming.test.ts）；这个是**我们的部署动作**把一条
+    // 在飞 run 的意图作废了 —— 而它此前**完全静默**（run 照常收尾、调用方零信号，见 spec §10 ⑧）。
+    //
+    // 动作（本轮立项的取舍，理由写在 spec §10）：**不改 run 的成败** —— 挂起是合法态、改代码
+    // 是发布常态，判失败会让「续跑」在正常迭代节奏下频繁失败。但把它变成三处看得见：
+    //   ① `menu.drift` 事件（时间线；经 onTraceEvent 也进 `GET /tasks/:id/stream`）
+    //   ② 父 span 属性 `menu.drift`（可查询：`TaskRecord.result.trace` 里就带得到）
+    //   ③ `console.warn`（运维面立即看见，与「sink 失败落 warn」同款，见 spec §10 2026-09-27 ②）
+    // 「严格失败」若要做，是把这里换成带具名 error 的收尾 —— 那要动公共选项面 + limits 真源表，
+    // 留给后续决策，别在这里先斩后奏。
+    const drift = detectMenuDrift(resumeUses, args.tools, { resultSchema: args.resultSchema });
+    if (drift.missing.length > 0) {
+      const where = args.parentSpanId ?? '';
+      args.recorder.event(where, 'menu.drift', {
+        missing: drift.missing,
+        tool_use_ids: drift.toolUseIds,
+        menu_size: args.tools.length,
+      });
+      if (where) {
+        args.recorder.setAttribute(
+          where,
+          'menu.drift',
+          `missing:${truncateWithMark(drift.missing.join(','), 200)}`,
+        );
+      }
+      console.warn(
+        `[agentia] 续跑时菜单漂移：未决工具在当前菜单里不存在（${drift.missing.join(', ')}）` +
+          '—— 这条 run 是上一段代码版本留下的；这些 tool_use 会以 "unknown tool" 回给模型、' +
+          'run 照常收尾（trace 上记了 menu.drift 事件与属性）。要按原样续跑就把它们加回菜单。',
+      );
+    }
     // 已取消：不执行任何工具（副作用不该在取消后发生），按 aborted 收尾
     if (args.signal?.aborted) {
       return abortedResult();
@@ -105,7 +143,16 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     // 工具事件记到父 span：被恢复的回合属于挂起段的旧 trace，本段没有对应 llm.turn
     const outcome = await executeTurnTools(ctx, args.parentSpanId ?? '', resumeUses, null);
     if (outcome.kind === 'suspended') {
-      return suspendedResult(ctx, outcome.pending);
+      return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending });
+    }
+    if (outcome.kind === 'deferred') {
+      // 恢复段（醒来后重跑这一批）里工具**又**请求延后：说明条件仍未成熟 ⇒ 再挂一次。
+      // 目标时刻以**本次**请求为准（不是沿用上一段的 wakeAt —— 工具看到的状态更近）。
+      return suspendedResult(ctx, {
+        reason: 'timer',
+        pending: outcome.pending,
+        wakeAt: outcome.wakeAt,
+      });
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
     if (ctx.submitted) {
@@ -130,7 +177,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       break;
     }
 
-    const { turnId, message, aborted } = await streamTurn(ctx);
+    const { turnId, message, aborted, model: modelUsed } = await streamTurn(ctx);
     if (aborted || !message) {
       stopReason = 'aborted';
       error = abortedError();
@@ -139,7 +186,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     }
     ctx.progress.iterations++;
 
-    recordTurnUsage(ctx, turnId, message);
+    recordTurnUsage(ctx, turnId, message, modelUsed);
 
     // 成本硬管控（C1）：本回合 usage 已落账 → 立刻判一次（超限会触发 onExceed 记事件）。
     // 结果**留到「循环是否还要继续」确定后再用**：
@@ -164,9 +211,21 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       // HITL 挂起：assistant 消息（含未决 tool_use）已在历史里、**不推任何 tool_result**
       // （全有或全无，见 executeTurnTools 的审批闸）；approval.requested 已记在 turn span 上。
       // error 保持 undefined —— 挂起不是失败。
-      stopReason = 'awaiting_approval';
+      stopReason = 'suspended';
       finalText = textOf(message);
-      return suspendedResult(ctx, outcome.pending, finalText);
+      return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending }, finalText);
+    }
+    if (outcome.kind === 'deferred') {
+      // 时间挂起（durable timer）：与上面同形 —— 这批工具**跑过但结果作废**
+      // （defer.requested 已记在 turn span 上），assistant 消息留在历史末尾，
+      // 醒来后由续跑入口重跑这一批。error 保持 undefined。
+      stopReason = 'suspended';
+      finalText = textOf(message);
+      return suspendedResult(
+        ctx,
+        { reason: 'timer', pending: outcome.pending, wakeAt: outcome.wakeAt },
+        finalText,
+      );
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
 
@@ -227,6 +286,13 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   }
   // 会话标识（R7 thread 维度）：多轮 run 按 session 聚合；OTLP 侧映射 gen_ai.conversation.id
   if (options.sessionId) recorder.setAttribute(rootId, 'session.id', options.sessionId);
+  // 归因标签（R8-P4）：labels.* 落 run 根（trace 侧无基数问题；进 metrics 是
+  // metricsSink 的 labelKeys 那道显式开关 —— 两套纪律在各自的注释里互相指）
+  if (options.labels) {
+    for (const [k, v] of Object.entries(options.labels)) {
+      recorder.setAttribute(rootId, `labels.${k}`, v);
+    }
+  }
   // 入站链路（spec §9.2 跨进程关联）：把「谁触发了这次 run」记成 run 根的一条 link。
   // 与 `traceId == runId` 共存 —— 上游是被**链接**而不是被继承成父 span，所以本 run
   // 的树永远自洽（上游采样掉/已结束都不影响），因果关系仍然可查。见 core/trace.ts。
@@ -236,6 +302,15 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
       ...(options.traceContext.spanId ? { spanId: options.traceContext.spanId } : {}),
     });
   }
+  // 菜单版本化（R8 候选 3）：名字清单（人读、有界）+ 摘要（比对）。
+  // 与 `prompts.versions` 同一动机 —— 质量回归要能定位到具体菜单版本；摘要覆盖 schema，
+  // 所以「工具还在、签名变了」也算漂移。**只在 run 根记**：子循环走 `runAgentScoped`
+  // （不开 run 根、不设根属性），所以不会把子菜单覆写到根上。
+  if (options.tools && options.tools.length > 0) {
+    const { names, hash } = menuSignature(options.tools);
+    recorder.setAttribute(rootId, 'tools.names', names);
+    recorder.setAttribute(rootId, 'tools.menuHash', hash);
+  }
   // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
   // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
   // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。
@@ -243,14 +318,23 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     recorder.setAttribute(rootId, k, v);
 
   const progress = { iterations: 0 };
+  // fallback 链（R8-P2）在 **try 之外**解析 + 校验：坏环 / 死 client（持久化反序列化的
+  // 空壳）是调用方的配置错，必须在 run 入口响亮抛 TypeError —— 放进 try 会被
+  // failedResult 收成「一条失败的 run」，配置错就这样被记成了运行失败（静默降级的一种）。
+  const client = options.client ?? createAnthropicClient();
+  const model = resolveDefaultModel(options.model);
+  const modelChain = resolveModelChain({ model, client, fallbacks: options.fallbacks });
+  // 归因标签（R8-P4）同一条入口校验纪律：配置错响亮抛，不收成失败的 run
+  validateLabels(options.labels);
   let result: AgentLoopResult<SchemaType<S>>;
   try {
     // run 根作用域（spec §9.2 出站传播）：循环内任何地方（工具 / 子能力 / 中间件）都读得到
     // 「我正处在哪个 span」—— 更内层的作用域由 turn / skill / subagent 逐层收窄。
     result = await withCurrentSpan({ traceId: recorder.traceId, spanId: rootId }, () =>
       agentLoop<S>({
-        client: options.client ?? createAnthropicClient(),
-        model: resolveDefaultModel(options.model),
+        client,
+        model,
+        modelChain,
         maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
         maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
         system: options.system,
@@ -270,6 +354,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
         toolTimeoutMs: options.toolTimeoutMs,
         maxToolConcurrency: options.maxToolConcurrency,
         maxEventChars: options.maxEventChars,
+        traceContent: options.traceContent,
         priceOverrides: options.priceOverrides,
         onUnpricedModel: options.onUnpricedModel,
         approvals: options.approvals,
@@ -280,12 +365,10 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     result = failedResult(e, progress.iterations);
   }
 
-  // awaiting_approval 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
+  // suspended 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
   // trace 记 ok；它与成功的区分由 stop_reason attribute 承担。
   const runStatus =
-    result.stopReason === 'awaiting_approval' || isSuccessStopReason(result.stopReason)
-      ? 'ok'
-      : 'error';
+    result.stopReason === 'suspended' || isSuccessStopReason(result.stopReason) ? 'ok' : 'error';
   recorder.setAttribute(rootId, 'stop_reason', result.stopReason);
   recorder.end(rootId, { status: runStatus, ...(result.error ? { error: result.error } : {}) });
   const trace = recorder.snapshot(runStatus);
@@ -298,6 +381,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     typed: result.typed,
     suspendedMessages: result.suspendedMessages,
     pendingApprovals: result.pendingApprovals,
+    suspendedReason: result.suspendedReason,
+    wakeAt: result.wakeAt,
   };
 }
 
@@ -330,6 +415,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars */
   maxEventChars?: number | false | undefined;
+  /** opt-in 记录 assistant 文本（R8-P3a）；同 RunAgentOptions.traceContent（由转发机制透传下来） */
+  traceContent?: 'full' | undefined;
   /** 价格表覆盖（F1）：由发起它的能力从 ToolRunContext.priceOverrides 透传 */
   priceOverrides?: Record<string, ModelPricing> | undefined;
   /** 未定价模型回调（F2）：由发起它的能力透传 */
@@ -347,6 +434,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   return agentLoop<S>({
     client: opts.client ?? createAnthropicClient(),
     model: resolveDefaultModel(opts.model),
+    // 不传 modelChain：子 agent 子循环**不继承**主 run 的 fallback 链（R8-P2 的有意边界 ——
+    // 子循环的 model/client 由能力层显式给，跨厂商的链继承下来会让子 agent 悄悄换厂商）
     maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
     maxIterations: opts.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     system: opts.system,
@@ -362,6 +451,7 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     toolTimeoutMs: opts.toolTimeoutMs,
     maxToolConcurrency: opts.maxToolConcurrency,
     maxEventChars: opts.maxEventChars,
+    traceContent: opts.traceContent,
     priceOverrides: opts.priceOverrides,
     onUnpricedModel: opts.onUnpricedModel,
     maxTotalTokens: opts.maxTotalTokens,

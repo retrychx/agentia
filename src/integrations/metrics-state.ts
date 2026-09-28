@@ -47,6 +47,25 @@ export interface ScoreMetrics {
   sum: number;
 }
 
+/** 归因标签维度的 run 级指标（R8-P4；`snapshot().runLabels[key]`，key 为 `k=v` 逗号连） */
+export interface RunLabelMetrics {
+  runs: number;
+  failed: number;
+  /** 四类 token 之和（与 run 级 tokens 口径一致） */
+  tokens: number;
+  /** 累计成本估算（美元）；未定价的 run 不计入（与全局 costUsd 同口径） */
+  costUsd: number;
+}
+
+/**
+ * runLabels 的内部累加器：比快照形状多带一份 `pairs`（渲染/出口按它拼标签，
+ * 不从 combo 键反解 —— 值里含 `,`/`=` 时反解会碎）。
+ */
+export interface RunLabelAcc extends RunLabelMetrics {
+  /** 已过完各自 KeyBudget 的 `[key, value]` 对（顺序 = 配置的 labelKeys 顺序） */
+  pairs: readonly (readonly [string, string])[];
+}
+
 /**
  * exemplar 槽位内容：指向「哪条 run」的最小引用（traceId + 根 spanId + 记账时刻）。
  * 内部存**原始 id**，hex 投影（`wireTraceId` / `wireSpanId`）在各自出口做（单一真源在 core/trace.ts）。
@@ -102,6 +121,17 @@ export interface MetricsSnapshot {
   /** 因 `maxScores` 上限被归入 `__other__` 的不同评分维度数 */
   droppedScores: number;
   /**
+   * 归因标签维度（R8-P4）：`metricsSink({ labelKeys })` 显式点名的键才有 —— 缺省为空对象
+   * （一个都不上）。key 为 `k=v` 逗号连（如 `tenant=acme,plan=pro`，值里的 `,`/`=`/`\`
+   * 经转义）；每个键的相异值数受 `maxLabelValues` 封顶，**组合数**受 `maxLabelCombos`
+   * 封顶（超出的组合折叠进一个全 `__other__` 的桶），两处折叠都只丢标签粒度、不丢量。
+   */
+  runLabels: Record<string, RunLabelMetrics>;
+  /** 每个已配置 labelKey 被 `maxLabelValues` 折叠的不同值数（只含配置了的键） */
+  droppedLabelValues: Record<string, number>;
+  /** 被 `maxLabelCombos` 折叠的不同标签组合数（未配置 labelKeys 时恒 0） */
+  droppedLabelCombos: number;
+  /**
    * exemplar（指标 → trace 的桥，2026-09-27）：只跟踪价值最高的两个槽位 ——
    * 失败 counter 的「最近一次」与 run 时长 histogram 的「最慢一次」。
    * 不做 per-能力/per-模型：基数上限封的是标签，挡不住「每键一个槽位」的扩散。
@@ -111,8 +141,26 @@ export interface MetricsSnapshot {
   // 量级，报警够用）。要精确值就得为无界键空间留一本无界的账 —— 与设上限的初衷相反。
 }
 
-/** 超过基数上限后新键的兜底标签（能力 / 模型 / 评分三个维度共用） */
+/** 超过基数上限后新键的兜底标签（能力 / 模型 / 评分 / 标签组合四个维度共用） */
 const OTHER_LABEL = '__other__';
+
+/**
+ * 标签 combo 的**身份**：`k=v` 逗号连，但值里的 `,` / `=` / `\` 先转义。
+ *
+ * 为什么不能裸拼：这个字符串同时是 Map 的 identity（不只是展示形）。裸拼时
+ * `[a='x,b=y', b='z']` 与 `[a='x', b='y,b=z']` 都拼成 `a=x,b=y,b=z` —— 两个不同的
+ * 标签集并进同一本账，且 `pairs` 只留第一次那份 ⇒ 后者的量被挂在前者的标签下
+ * （2026-09-27 ⑧ 实测）。转义之后正常值（不含这三个字符的）拼法与展示形**逐字不变**，
+ * 只有病态值才多出反斜杠，而那是它唯一的无歧义写法。
+ *
+ * 渲染侧不复用它 —— 那边的标签逐键从 `pairs` 出来（Prometheus 只要求转义值里的
+ * `"` 与 `\`），所以这里多出来的转义不会漏进指标文本。
+ */
+const labelCombo = (pairs: readonly (readonly [string, string])[]): string =>
+  pairs.map(([k, v]) => `${k}=${escCombo(v)}`).join(',');
+
+/** `,` / `=` / `\` 三个字符按 `\` 前缀转义（键是合法标签名，用不到，但转义对两者都做） */
+const escCombo = (s: string): string => s.replace(/[\\,=]/g, (c) => `\\${c}`);
 
 /**
  * 折叠计数最多记这么多个**不同**键（每个维度各一本）。计数只用于报警「基数爆了」，
@@ -322,6 +370,23 @@ export class MetricsState {
   readonly capBudget: KeyBudget;
   readonly modelBudget: KeyBudget;
   readonly scoreBudget: KeyBudget;
+  /**
+   * 归因标签维度（R8-P4）：combo 键（`k=v` 逗号连，值经转义）→ 累加器。
+   * 与上面三个维度不同：这里**没有** per-combo 时长窗口（时长直方图 × 标签组合的内存
+   * 是 cap × windowSize 的另一份乘法，收益不抵代价），只有四个计数。
+   * ⚠️ 键是 `labelCombo()` 的产物：值里的 `,` / `=` / `\` 会被转义 —— 裸拼接会让
+   * 两个不同的标签集拼出同一个键（2026-09-27 ⑧ 实测：`a="x,b=y",b="z"` 与
+   * `a="x",b="y,b=z"` 撞成一个键 ⇒ 后者被并进前者的账、还按前者的标签渲染）。
+   */
+  readonly runLabels = new Map<string, RunLabelAcc>();
+  /** 每个配置的 labelKey 一本基数配额（构造时按 labelKeys 建齐） */
+  readonly labelBudgets = new Map<string, KeyBudget>();
+  /**
+   * combo 键空间的配额（R8-P4 补课，2026-09-27 ⑧）：**组合数**才是真正的基数维度 ——
+   * 每键一本配额只封住值域，combo 是叉乘（`(maxLabelValues+1)^labelKeys.length`），
+   * 缺省 100 键域 + 3 键就是一百万条常驻条目，而 `droppedLabelValues` 一行都看不见它。
+   */
+  readonly comboBudget: KeyBudget;
 
   constructor(
     private readonly opts: {
@@ -331,12 +396,22 @@ export class MetricsState {
       maxScores: number;
       labelMode: 'capability' | 'kind' | 'none';
       buckets: readonly number[];
+      /** 归因标签键（已过 metrics.ts 的形状校验；空数组 = 维度整个关掉） */
+      labelKeys: readonly string[];
+      /** 每个 labelKey 的相异值上限（构造期已保证正数） */
+      maxLabelValues: number;
+      /** combo（标签组合）数上限（构造期已保证正数） */
+      maxLabelCombos: number;
     },
   ) {
     this.runStat = new DurationStat(opts.windowSize, opts.buckets);
     this.capBudget = new KeyBudget(opts.maxCapabilities);
     this.modelBudget = new KeyBudget(opts.maxModels);
     this.scoreBudget = new KeyBudget(opts.maxScores);
+    for (const key of opts.labelKeys) {
+      this.labelBudgets.set(key, new KeyBudget(opts.maxLabelValues));
+    }
+    this.comboBudget = new KeyBudget(opts.maxLabelCombos);
   }
 
   private newCapability(): CapabilityAcc {
@@ -400,6 +475,35 @@ export class MetricsState {
         acc.sum += body.value;
         this.scores.set(key, acc);
       }
+    }
+
+    // —— 归因标签（R8-P4）：只在显式配置了 labelKeys 时记账。值从 run 根的
+    // `labels.<key>` 属性读（loop.ts 写入），缺键/非字符串一律按 '' 计（观测宽容读取，
+    // 不击穿业务）；每个值先过它那一键的 KeyBudget，超限折叠进 `__other__`。
+    if (this.opts.labelKeys.length > 0 && rootSpan) {
+      const perKey: [string, string][] = [];
+      for (const key of this.opts.labelKeys) {
+        const raw = rootSpan.attributes[`labels.${key}`];
+        const value = typeof raw === 'string' ? raw : '';
+        perKey.push([key, this.labelBudgets.get(key)!.take(value)]);
+      }
+      // combo 数上限（2026-09-27 ⑧）：每键配额只封住值域，**组合数**是叉乘、才是真正的
+      // 基数维度（缺省 100 值域 × 3 键 = 一百万）。超限后**新的**组合全折进一个桶，
+      // 量照收、只丢标签粒度 —— 与另外三道上限同款，且折叠发生必须可见
+      // （`snapshot().droppedLabelCombos` / `dropped_keys{kind="label:combos"}`）。
+      const rawCombo = labelCombo(perKey);
+      const kept = this.comboBudget.take(rawCombo);
+      const pairs: [string, string][] =
+        kept === rawCombo
+          ? perKey
+          : this.opts.labelKeys.map((key) => [key, OTHER_LABEL] as [string, string]);
+      const combo = kept === rawCombo ? rawCombo : labelCombo(pairs);
+      const acc = this.runLabels.get(combo) ?? { runs: 0, failed: 0, tokens: 0, costUsd: 0, pairs };
+      acc.runs++;
+      if (trace.status === 'error') acc.failed++;
+      acc.tokens += u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
+      if (u.costEstimate != null) acc.costUsd += u.costEstimate;
+      this.runLabels.set(combo, acc);
     }
 
     for (const span of trace.spans) {
@@ -499,6 +603,19 @@ export class MetricsState {
       const { name, source } = scoreLabels(key);
       scoreOut[source === '' ? name : `${name}@${source}`] = { ...acc };
     }
+    const runLabelOut: Record<string, RunLabelMetrics> = {};
+    for (const [combo, acc] of this.runLabels) {
+      runLabelOut[combo] = {
+        runs: acc.runs,
+        failed: acc.failed,
+        tokens: acc.tokens,
+        costUsd: acc.costUsd,
+      };
+    }
+    const droppedLabelValues: Record<string, number> = {};
+    for (const key of this.opts.labelKeys) {
+      droppedLabelValues[key] = this.labelBudgets.get(key)!.dropped;
+    }
     return {
       runs: this.runs,
       failed: this.failed,
@@ -510,6 +627,9 @@ export class MetricsState {
       capabilities: capabilityOut,
       models: modelOut,
       scores: scoreOut,
+      runLabels: runLabelOut,
+      droppedLabelValues,
+      droppedLabelCombos: this.comboBudget.dropped,
       droppedCapabilities: this.capBudget.dropped,
       droppedModels: this.modelBudget.dropped,
       droppedScores: this.scoreBudget.dropped,
@@ -546,8 +666,11 @@ export class MetricsState {
     this.capabilities.clear();
     this.models.clear();
     this.scores.clear();
+    this.runLabels.clear();
     this.capBudget.reset();
     this.modelBudget.reset();
     this.scoreBudget.reset();
+    for (const budget of this.labelBudgets.values()) budget.reset();
+    this.comboBudget.reset();
   }
 }

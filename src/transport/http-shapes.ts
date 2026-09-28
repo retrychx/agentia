@@ -45,7 +45,7 @@ export function toHttpBody(out: {
 }): RunHttpResponse {
   return {
     runId: out.run.runId,
-    // status 取 **run 状态机**的口径（它才知道 awaiting_approval 不是终态），
+    // status 取 **run 状态机**的口径（它才知道 suspended 不是终态），
     // 不从 stopReason 反推 —— 两者语义不同，反推会把挂起当成失败
     status: out.run.status,
     stopReason: out.result.stopReason,

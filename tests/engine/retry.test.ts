@@ -9,7 +9,8 @@ import {
   retryAllowed,
 } from '../../src/engine/retry.js';
 import type { RetryOptions } from '../../src/engine/retry.js';
-import { classifyError } from '../../src/index.js';
+import { classifyError, runAgent } from '../../src/index.js';
+import type { ModelClient } from '../../src/index.js';
 
 describe('RetryOptions 归一（resolveRetry）', () => {
   it('undefined → 缺省开启，填入缺省值', () => {
@@ -162,5 +163,59 @@ describe('retryAllowed —— 重试闸（从 streamTurn 的行内合取抽出�
 
   it('**已吐出文本 ⇒ 一律不重试**（重复输出护栏：吐出去的字收不回来）', () => {
     assert.equal(retryAllowed(cfg, 1, 'retryable', true), false, '这一条压过其余三项');
+  });
+});
+
+/**
+ * 引擎侧（`turn.ts` 的重试循环）：**退避等待期间被取消**。
+ *
+ * 为什么单独钉：上面 `sleep(ms, signal)` 的纯件有取消用例（「中止立即 reject」），
+ * 但**引擎怎么接住那声 reject** 没有被覆盖 —— `turn.ts` 在它外面套了 try/catch
+ * ⇒ `aborted = true; break`，run 以 `stopReason='aborted'` 收尾。把那个 catch 拿掉，
+ * 这声 AbortError 会从 run 里冒出去：调用方拿到的是**抛错**，而不是「被取消」这个
+ * 结构化结论（本仓口径：取消也是结论，不是异常 — 见 loop-result 的四个具名出口）。
+ *
+ * 确定性：退避设 5000ms、50ms 时 abort。取消没被接住的话，这条要么等满 5s（超时红）、
+ * 要么把 AbortError 抛出来（断言当场红）—— 两种都可见，不靠调度运气。
+ */
+describe('引擎侧：退避等待期间被取消（turn.ts 的重试循环）', () => {
+  /** 每次 finalMessage 都抛的同款必失败 client（把 run 送进退避窗口） */
+  function alwaysFail(err: unknown): ModelClient {
+    return {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            throw err;
+          },
+        }),
+      },
+    };
+  }
+
+  it('退避中 abort ⇒ 立刻以 aborted 收尾（不等满退避，也不把 AbortError 抛出去）', async () => {
+    const ac = new AbortController();
+    const retryAttempts: number[] = [];
+    const started = Date.now();
+    const pending = runAgent({
+      messages: [{ role: 'user', content: 'hi' }],
+      client: alwaysFail(Object.assign(new Error('429 too many'), { status: 429 })),
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 5000,
+        maxDelayMs: 5000,
+        jitter: 0,
+        onRetry: (info) => retryAttempts.push(info.attempt),
+      },
+      signal: ac.signal,
+    });
+    setTimeout(() => ac.abort(), 50);
+    const result = await pending;
+    const elapsed = Date.now() - started;
+
+    assert.deepEqual(retryAttempts, [1], '应当已安排好第 1 次重试退避（否则没踩到那个窗口）');
+    assert.ok(elapsed < 2000, `退避期间取消必须立刻收尾，实际等了 ${elapsed}ms（退避是 5000ms）`);
+    assert.equal(result.stopReason, 'aborted');
+    assert.equal(result.error?.type, 'aborted', '取消是结构化结论，不是抛出去的异常');
   });
 });

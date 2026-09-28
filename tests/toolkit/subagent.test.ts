@@ -366,7 +366,7 @@ describe('子 agent 防御分支', () => {
     );
   });
 
-  it('子运行挂起（awaiting_approval）且 loop.error 为 undefined ⇒ 兜底 agent_error 收尾', async () => {
+  it('子运行挂起（suspended）且 loop.error 为 undefined ⇒ 兜底 agent_error 收尾', async () => {
     // 与 skill 同款兜底分支：子循环里 approval:'required' 的工具无决定 ⇒ 挂起
     // （suspendedResult 的 error 恒为 undefined）⇒ `loop.error ??` 兜底必须给出结构化原因。
     const danger: AgentTool = {
@@ -380,12 +380,12 @@ describe('子 agent 防御分支', () => {
     const { ctx, recorder } = makeCtx(client);
     const tool = subagentToTool(researcherCapability({ tools: ['danger'] }), () => [danger]);
 
-    await assert.rejects(async () => tool.run({ task: 't' }, ctx), /awaiting_approval/);
+    await assert.rejects(async () => tool.run({ task: 't' }, ctx), /suspended/);
 
     const capability = recorder.snapshot('error').spans.find((s) => s.kind === 'capability')!;
     assert.equal(capability.status, 'error');
     assert.equal(capability.error?.type, 'agent_error');
     assert.equal(capability.error?.retryable, true);
-    assert.match(capability.error?.message ?? '', /awaiting_approval/);
+    assert.match(capability.error?.message ?? '', /suspended/);
   });
 });

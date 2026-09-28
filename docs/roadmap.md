@@ -199,6 +199,8 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   「循环位置」、落**消息历史**（assistant 结尾的未决 tool_use 即断点），恢复 = 引擎见到这种
   输入先解决这些 tool_use 再调模型；`@Tool({ approval: 'required' })` + `AsyncRunner.approve` /
   `POST /tasks/:id/approve`，回合级全有或全无、决定随任务落库、惰性超时兜底；
+  ⚠️ **状态值 2026-09-28 改名**：`awaiting_approval` → **`suspended` + `suspendedReason`**
+  （本条正文保留当年的写法；映射与理由见 spec §10 2026-09-28 ①）；
 - ~~**默认 client 自研化 + 公共类型自有化**（让 `@anthropic-ai/sdk` 真正可选）~~ **✅ 已落地
   （2026-09-17，两个 PR：#42 自研 client + 本条类型自有化）** —— 前者 = 用 fetch 重实现
   Anthropic Messages（SSE / `cache_control` 缓存断点 / `tool_use` / `strict` / thinking），
@@ -319,14 +321,28 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
 > **设计稿与逐项验收口径在 `docs/plans/2026-09-27-evolution-r8.md`**（单一真源，含定位筛子
 > 与实施纪律），这里只登记清单与状态。
 
-- P1 trace 脱敏 —— 待做（已重定界：**配方 2.4 升级**，不进框架 —— spec §9.3 / §10
-  2026-09-14 ⑥ 已锁定「脱敏不在框架内」，且 `examples/observability` 已有成品 `redactSink`）
-- P2 模型 fallback —— 待做（已重定界：**引擎级** fallback 链，每环独立 llm.turn 保证
-  成本归因正确；client 层组合器会记错账，评审否决）
-- P3 trace → SFT 导出（拆 P3a 引擎可选记 assistant 文本 + P3b CLI 导出）—— 待做
-- P4 租户归因 labels（含 metrics 侧 `maxLabelValues` 基数上限 —— 光 opt-in 封不住内存不变量）—— 待做
-- P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— 待做
-- P6 durable 长时程 —— 只立项调研（Temporal/Restate 对照 + 差距清单），本轮不写实现
+- P1 trace 脱敏 —— ✅ 已落地（2026-09-27）：配方 2.4 升级（内置预设缺省全开 +
+  带类别标签的替换文案），**src/ 零改动**（不内建是已锁定决策，spec §9.3 / §10 2026-09-14 ⑥）
+- P2 模型 fallback —— ✅ 已落地（2026-09-27）：引擎级 fallback 链，每环独立 llm.turn
+  （成本归因正确）+ `llm.fallback` 事件 + run 入口校验；决策见 spec §10 2026-09-27 ③
+- P3 trace → SFT 导出 —— ✅ 全部落地（2026-09-27）：P3a `traceContent: 'full'`（spec §10
+  当日 ④）+ P3b `agentia export`（trace → 训练数据 JSONL，spec §10 当日 ⑤）
+- P4 租户归因 labels —— ✅ 已落地（2026-09-27）：run 根 `labels.*` 属性（三层同语义）
+  + metrics 侧 `labelKeys` opt-in + `maxLabelValues` 基数上限（limits 真源表登记）；
+  决策见 spec §10 2026-09-27 ⑥
+- P5 MCP 反向桥（@Tool 集合暴露成 MCP server）—— ✅ 已落地（2026-09-27）：`createMcpServer`
+  （stdio / StreamableHTTP，只用标准库；每次 tools/call 一棵 trace 进 sinks）；
+  决策见 spec §10 2026-09-27 ⑦
+- P6 durable 长时程 —— ✅ 调研交付（2026-09-27）：`docs/plans/2026-09-27-durable-execution-research.md`
+  （Temporal/Restate/DBOS 对照 + 差距清单 G1-G5 + 最小语义增量候选四条；**不写实现**，
+  动代码前回 spec §10 立项）
+  - **候选 1（`wakeAt` 时间挂起）+ 配套 5/6 —— ✅ 已落地（2026-09-28 ②）**：工具侧
+    `ctx.deferUntil(at)` 请求延后、到点唤醒并重跑那一批、`drain()` 后不唤醒、
+    `/healthz` 的 `suspended` 读数（按原因分组 + 最早到期时刻）。决策与门禁见
+    spec §10 2026-09-28 ②；设计稿 `docs/plans/2026-09-27-durable-wake-at.md`。
+  - **候选 2（事件唤醒）/ 候选 3（取消 API）/ 候选 7②（到期索引）—— 仍未做**：
+    前两条各有独立立项前提（事件入口 / 公共面与中止语义），候选 7② 的触发条件见调研
+    §6 与设计稿 §6（`#redispatch` 目前仍是 O(全表)，挂起量上量后再做 store 侧 `listDue`）。
 - 缓：A2A 协议适配（协议漂移中）；拒：后端看板 / DAG 编辑器 / swarm 编排（定位）
 
 ## 原则（约束所有 R）

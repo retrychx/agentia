@@ -277,6 +277,9 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `modules` | 能力包（`defineModule({ providers, middleware })`），模块级先注册、应用级可覆盖同 token |
 | `discover` | 能力目录路径：**一个目录或一组目录**（数组顺序即装配顺序，典型是四分类目录）。给出后 `createApp` 返回 `Promise<AgentApp>`；数组里任一目录不存在会**报错**（显式给出的搜索路径不该静默落空） |
 | `model` | 缺省模型；不给则 `AGENTIA_MODEL` env，再回落 `claude-opus-5` |
+| `fallbacks` | 缺省模型 fallback 链（可被单次 run 覆盖）：`[{ model, client? }]`，主模型本回合最终失败且错误可换（rate_limit / server / timeout / connection）时按序换环；每环独立 llm.turn span（成本归对模型），切换记 `llm.fallback` 事件。护栏：aborted 永不换、吐过字不换、每回合从主环重新起；子 agent / skill 子循环不继承。⚠️ 链环的 `client` 是进程内对象：持久化异步任务崩溃续跑后读回的是空壳（run 入口响亮抛 TypeError），跨重启仍成立的链只写 `model` |
+| `traceContent` | `'full'` = 每回合的 assistant 文本落 llm.turn span 的 `output.text` 属性（过 `maxEventChars` 同一道截断闸 —— 它管「多长」，这个管「记不记」）；缺省不记。⚠️ 体积显著增大，且模型输出从此进入要脱敏的面（出库前走 `docs/observability.md` 配方 2.4）。可被单次 run 覆盖 |
+| `labels` | 缺省归因标签（`Record<string, string>`，可被单次 run 覆盖 —— 注意是**整体替换**不是合并）：落 run 根的 `labels.<key>` 属性（trace 侧无基数问题，随便加；与框架自写的 `source` 触发来源审计正交）。键值都必须是字符串（键非空），否则 run 入口抛 `TypeError`；可序列化，异步任务随 TaskRecord 落库、续跑不丢。⚠️ 进 metrics 是**另一个开关**：`metricsSink({ labelKeys })` 显式点名哪些键上指标标签（缺省一个都不上，防 Prometheus 基数爆炸） |
 | `maxTokens` | 缺省 `max_tokens` |
 | `maxIterations` | 缺省循环上限 |
 | `retry` | 缺省模型请求重试策略（可被单次 run 覆盖）：缺省**开启**（`DEFAULT_RETRY`：maxAttempts=3、指数退避 + 抖动）；`false` 关闭 |
@@ -301,6 +304,9 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 |---|---|
 | `system` | 单次覆盖 system（volatile 段建议每 run 重建） |
 | `model` | 单次覆盖模型 |
+| `fallbacks` | 单次覆盖模型 fallback 链（`[{ model, client? }]`）；语义同 `createApp` 的 `fallbacks` |
+| `traceContent` | 单次覆盖 assistant 文本记录开关（`'full'`）；语义同 `createApp` 的 `traceContent` |
+| `labels` | 单次覆盖归因标签（**整体替换**缺省，不是合并）；语义同 `createApp` 的 `labels` |
 | `maxTokens` | 单次覆盖 |
 | `maxIterations` | 单次覆盖 |
 | `client` | 注入 `ModelClient`（换 OpenAI 兼容端点等） |
@@ -324,12 +330,13 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
 | `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**，回给模型的 tool_result 永远完整 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
+| `sessionId` | 会话**引用**（可序列化）：单次覆盖后**记进 run 根 `session.id`**（引擎侧读它，见 `loop.ts` 的属性写入）。⚠️ 直接 `app.run` 时它**不注入历史** —— 注入要上一行的 `session: { store, id }`；「`sessionId` + runner 的 `sessionStore`」是**异步宿主**那条路（任务里只落 id，store 实例不可序列化） |
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 | `beforeFlush` | `(trace, result) => void \| Promise<void>`：**sinks 冲刷之前**的最后一笔（run 正常收尾后调一次，抛错被吞）。给「**拿到结果才判得出**的结论」用的缝 —— 典型是 `defineEval` 的 score：等 `app.run` 返回再 `attachScore`，`metricsSink` 早在导出那一刻聚完账，分数就永远进不了指标。读 trace 就够的判断不必用它，写进 sinks 里即可（见 §6 判官配方） |
-| `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `awaiting_approval` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
+| `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `suspended` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
 
 返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`；
-`stopReason === 'awaiting_approval'`（HITL 挂起）时另有 `suspendedMessages`（完整消息历史，末尾是含未决 tool_use 的 assistant 消息）与 `pendingApprovals`（待决 tool_use_id 列表），未挂起时两者为 `undefined`。
+`stopReason === 'suspended'`（挂起：等人工审批 / 等一个时刻）时另有 `suspendedMessages`（完整消息历史，末尾是含未决 tool_use 的 assistant 消息）、`pendingApprovals`（待决 tool_use_id 列表）与 `suspendedReason`（`'approval'` / `'timer'`），未挂起时三者皆为 `undefined`。
 
 ---
 
@@ -576,7 +583,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重、直接返回既有记录（**同步 store** 当场判定；**异步 store** 下只保证**同进程内并发提交**不重复执行，跨进程与终态后重提仍是 at-least-once —— 见 §7「同键去重的能力边界」） |
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
 | `GET /tasks/:id/stream` | — | **任务进度流（SSE）**：先在 `id:` 里给流序号，逐帧下发 `trace.event`（body 即 `TraceRecordEvent`），终态发 `task.end` 并关闭。断线重连带 `Last-Event-ID`（或 `?from=<序号>`）即可续订 —— 只补该序号之后的事件。缓冲超限先发一帧 `stream.truncated{droppedBefore}`；别的进程在跑的任务发 `stream.unavailable` 后收口（**不假装实时**）。任务不存在 → 404；方法不对 → 405。⚠️ 它的读者是**旁观者**：背压/断开只收口这条流，**不中止任务** |
-| `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；不在 `awaiting_approval` 状态 → 409；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
+| `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；**挂起原因不是 `approval`**（含未挂起）→ 409；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
 | `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
 | `GET /metrics` | — | 200 指标文本（Content-Type 跟 sink 的 `contentType` 走：缺省 `text/plain; version=0.0.4`，`export:'openmetrics'` 的 sink 发 `application/openmetrics-text`）；**需在 `createHttpHandler` 里传 `metrics`**，**不鉴权**（与 `/healthz` 同档），停机中也回 |
 
@@ -638,6 +645,10 @@ process.on('SIGTERM', async () => {
 | `inFlight` | 在飞工作量 = 正在处理的同步 run（含 SSE 流）+ 已受理未完成的异步任务（queued + running）；与 `drain()` 等的范围一致 |
 | `uptimeMs` | 本 handler 创建至今的毫秒数 |
 | `draining` | 是否已进入优雅停机 —— 负载均衡据此摘流量 |
+| `suspended` | 挂起读数（配套 6）：按原因分组的条数 + 最早的目标时刻，由下面三项组成。口径 = **本进程**看得见的记录（与 `inFlight` 同一张表）—— 跨进程部署要合并看板请自己聚合，这里不假装是全局面 |
+| `approval` | `suspended` 里：等人工决定（HITL）的挂起条数 |
+| `timer` | `suspended` 里：等一个时刻（durable timer）的挂起条数 |
+| `nextWakeAt` | `suspended` 里：最早的目标时刻（epoch ms）；一条时间挂起都没有时为 `null` —— **不是 `0`**：`0` 在 JSON 里是个合法时刻，监控端拿它算 `nextWakeAt - now` 会得到巨大的负数，看着像「早就该醒却没人醒」 |
 
 **不鉴权**（探针带不了凭据），且停机中也照回 200。非 `GET` 回 405。
 
@@ -868,7 +879,8 @@ async placeOrder(input: { sku: string }) {
 - **模型级** —— 按模型（`llm.turn` 的 span name）归因 turn 数 / token / 成本 / 耗时，并单独给出
   `model_unpriced_turns_total`（算不出成本的 turn 数 —— **成本护栏失效的显式信号**）。
   同理，**标签基数折叠不是静默的**：`agentia_dropped_keys{kind="capability"|"model"|"score"}`
-  （恒定发三个样本，即使为 0 —— 「0 → N」这个变化本身就是要告警的信号）。
+  （恒定发三个样本，即使为 0 —— 「0 → N」这个变化本身就是要告警的信号）；开了 `labelKeys` 时
+  另按每键加 `kind="label:<key>"`、组合数封顶时加 `kind="label:combos"`（没开那几行一个都没有）。
 - **评分级** —— 来自 run 根 span 的 `score` 事件（`attachScore` 写入）：
   `agentia_score{name,source}` gauge 记**最近一次**值（分数不是累加量），`agentia_score_total{name,source}` counter 记条数；
   `snapshot().scores` 以 `name@source` 为键（source 缺省时裸 name）暴露 `{ value, count, sum }`（平均 = sum/count），
@@ -900,6 +912,9 @@ async placeOrder(input: { sku: string }) {
 | `maxCapabilities` | 能力标签基数上限（缺省 200）：超出后新能力归入 `capability="__other__"`（防标签爆炸）；非正数抛错 |
 | `maxModels` | 模型维度基数上限（缺省 50）：超出后新模型归入 `model="__other__"` ——`model` 是 per-run 可覆盖的，上游把版本号拼进模型 id 时键会无界增长；非正数抛错 |
 | `maxScores` | 评分维度基数上限（缺省 200）：评分键是 `name@source`，eval 名带时间戳时同样无界；超出的归入 `name="__other__"`；非正数抛错 |
+| `labelKeys` | 归因标签维度（R8-P4）：**显式点名** run 根 `labels.<key>` 里哪些键上指标标签（缺省 `[]` 一个都不上）。键必须是合法 Prometheus 标签名（`/^[a-zA-Z_][a-zA-Z0-9_]*$/`），否则构造期抛错。出口形态：`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total` 四个家族在全局样本之外追加带标签样本（全局那行仍是总量）。⚠️ 开了它以后 `sum(agentia_runs_total)` 会把全局行与分行**重复计数** —— 总量用不带标签的序列 |
+| `maxLabelValues` | 每个 labelKey 的相异值数上限（缺省 100，**必须为正数**）：超出归入 `__other__`（折叠只丢粒度不丢量）；被折叠的不同值数见 `snapshot().droppedLabelValues` 与 `agentia_dropped_keys{kind="label:<key>"}`。这道上限刻意不可关 —— opt-in 挡不住「明知几千租户偏要上」，sink 内存不变量要求每个新基数维度都有 cap |
+| `maxLabelCombos` | **标签组合数**上限（缺省 200，**必须为正数**）：`maxLabelValues` 封的是**每个键的值域**，而进内存的是键的**组合**（叉乘 —— 值域 100 配 3 个键就是一百万条常驻条目，且 `droppedLabelValues` 只报每键折叠数、看不出组合已经爆了）。超限的**新组合**折进一个全 `__other__` 的桶（量照收、只丢标签粒度）；被折的组合数见 `snapshot().droppedLabelCombos` 与 `agentia_dropped_keys{kind="label:combos"}`。与 `maxLabelValues` 一样刻意不可关；单键配置（最常见）下组合数 ≈ 值数，行为不变 |
 | `buckets` | 直方图桶边界（毫秒，严格升序）；缺省 `DEFAULT_BUCKETS` |
 
 #### `MetricsSink`（`metricsSink()` 的返回值）
@@ -907,8 +922,9 @@ async placeOrder(input: { sku: string }) {
 | 成员 | 说明 |
 |---|---|
 | `export` | `TraceSink` 的实现（run 收尾投递）—— 也是接进 `sinks` 的形状 |
-| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, scores, droppedCapabilities, droppedModels, droppedScores }` |
+| `snapshot` | `{ runs, failed, latencyP50, latencyP95, tokens, costUsd, capabilities, models, scores, runLabels, droppedCapabilities, droppedModels, droppedScores, droppedLabelValues, droppedLabelCombos, exemplars }` |
 | `render` | Prometheus 文本（`/metrics` 直接回它） |
+| `contentType` | `render()` 产物的 Content-Type（随 `export` 模式走）：内置 `/metrics` 路由读它发响应头，自己挂端点时**也该读它而不是写死** —— `0.0.4` 与 OpenMetrics 不是可互换的两种写法，拿 `0.0.4` 的头去发带 exemplar 的文本，严格的抓取端会解析失败。可选成员（兼容手写的 `MetricsSink` 实现；本工厂返回的一定带） |
 | `flush` | 主动导出一次（`export:'otlp'` 时有意义；prometheus 模式为空操作） |
 | `stop` | 停掉定时导出（进程收尾 / 测试用） |
 | `reset` | 清空累计（含能力 / 模型 / 评分三个维度，以及各自的基数配额） |
@@ -916,7 +932,7 @@ async placeOrder(input: { sku: string }) {
 - `tokens` 口径 = **四类之和**（input + output + cacheRead + cacheCreation），与 `BudgetGuard` 一致；分项在 `render()` 里以 label 给出，不会丢。
 - 分位是**窗口内精确值**（最近 rank 法），只反映最近 `windowSize` 条样本；**直方图计数是累积的**（全历史），两者语义不同、各有各的用处。
 - **内存上限** ≈ `(1 + 能力数 + 模型数) × windowSize` —— 三个维度都由基数上限封顶（`maxCapabilities` / `maxModels` / `maxScores`），长跑宿主不会被拖住。
-- 超上限的键折叠进 `__other__`：**丢的只是标签粒度，量不丢** —— `__other__` 桶照常累加，`snapshot()` 里各维度的总数仍然对得上。被折叠的**不同**键数见 `droppedCapabilities` / `droppedModels` / `droppedScores`（各自最多记账 1024 个键，满了以后是下界）。
+- 超上限的键折叠进 `__other__`：**丢的只是标签粒度，量不丢** —— `__other__` 桶照常累加，`snapshot()` 里各维度的总数仍然对得上。被折叠的**不同**键数见 `droppedCapabilities` / `droppedModels` / `droppedScores`（各自最多记账 1024 个键，满了以后是下界），归因标签维度另见 `droppedLabelValues`（按 labelKey 分键计）与 `droppedLabelCombos`（组合数上限折掉的那批）。
 **同样的数在 `/metrics` 上也看得见**（`render()`）：`agentia_dropped_keys{kind=…}` —— 只看 Prometheus
 不看 `snapshot()` 的部署不会漏掉折叠。
 - `costUsd` 依赖模型在价格表内（不在表里时不计、并计入 `unpricedTurns` 与 `usage.unpriced` 事件）；根 span 未收尾（如失败路径的半截 trace）的 run 不进延迟样本。
@@ -1021,6 +1037,8 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 - 直连 `runAgent` / `executeRun` 时可用引擎级选项 `systemVersion` 显式给。
 - **`@Prompt` 资产版本**：`@Prompt({ version })` 声明后，装配期把菜单里全部带版本的 @Prompt 收集成 `{ 能力名: 版本 }` 表（与主菜单同一条收集路径，`toolSources` 收窄同样生效），每次 run 落 run 根 span 的 `prompts.versions` attribute（`name@ver` 逗号拼接、按名排序、空表不记）—— 质量回归能定位到具体资产版本。直连 `runAgent` 时用引擎级选项 `promptVersions` 显式给。
 - **会话标识**：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` 时用引擎级选项 `sessionId` 显式给。
+- **菜单签名**：每次 run 落 run 根 span 的 `tools.names`（装配后菜单的名字、按名排序、超长截断带 `…(+N)`）与 `tools.menuHash`（12 位摘要，材料 = 排序后的「名字 + **输入 schema**」规范序列化）—— 与 `prompts.versions` 同动机：质量回归能回答「这两段 run 跑在同一个菜单上吗」。口径：与菜单顺序、schema 键序无关；**`description` 不参与**（润色文案不算菜单变化，代价是「只改描述」看不见 —— 有意）。给了 `tools` 就自动记，无需开关。
+- **菜单漂移（续跑时菜单变了）**：挂起段之后**续跑**时，未决 tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架记**三处信号**：`menu.drift` 事件（含 `{ missing, tool_use_ids, menu_size }`；时间线与 `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、一条 `console.warn`。⚠️ **run 照常收尾**（不判失败）：那些 tool_use 会以 `unknown tool` 回给模型 —— 为什么不做严格模式见 spec §10 2026-09-27 ⑧。注意这与「回合内模型编了个不存在的工具名」不同：那个是幻觉，走既有 `unknown_tool` 路径、**不**报漂移。
 
 ### 6.5 集成
 
@@ -1108,6 +1126,60 @@ const app = createApp({ system, providers: [...], tools });
 | `onSessionExpired` | 会话过期自愈时被调一次（见「已知边界」）—— 要计数 / 告警 / 打日志就挂它 |
 | `fetchImpl` | 注入 `fetch`（测试用；缺省全局 `fetch`，与 `createOpenAIClient` 同款） |
 
+#### MCP 反向桥（把能力菜单暴露成 MCP server）
+
+正向桥是「接进来」（`mcpTools` 把外部 server 的工具接进菜单）；反向桥是「**暴露出去**」：
+`createMcpServer(app, opts)` 把 `app.tools`（装配后、过了中间件的那份菜单）变成一个 MCP
+server —— Claude Code / Cursor / 任何 MCP 宿主都能直接调你的 `@Tool`。`app` 入参是鸭子类型
+（`AgentApp` 结构满足），也可以手拼 `{ tools: [...] }`。
+
+| API | 说明 |
+|---|---|
+| `createMcpServer` | 把能力菜单暴露成 MCP server（协议范围**只到 tools**：`initialize` / `notifications/initialized` / `tools/list` / `tools/call`，另有 `ping`；其余 method 一律 -32601，params 形状坏 -32602） |
+| `McpServerApp` | `app` 入参的鸭子类型：`{ tools: AgentTool[] }` |
+| `McpServerOptions` | 传输与行为选项（见下表） |
+| `McpServer` | 返回句柄：`url`（http 模式的实际 endpoint；stdio 为 `undefined`）/ `ready` / `close()`（幂等，中止在飞调用的 signal；自有 server 才关，挂进来的只摘 handler） |
+
+- **两个传输都只用标准库**：stdio = stdin/stdout 换行分隔 JSON-RPC（日志只去 stderr，stdout 是协议面）；http = StreamableHTTP（POST 收报文、应答 `application/json`，简单应答不上 SSE；GET → 405、DELETE → 200）。
+- **trace 叙事不破**：每次 `tools/call` 造一棵 trace —— run 根 `mcp.tools/call` 下挂一个 capability span（name = 工具名），记 `tool.input` / `tool.output` 事件（与引擎同账目形状），收尾投递 `sinks`；`initialize` / `tools/list` 不建 trace。capability span 无 skill/subagent 属性 ⇒ metrics 里以 `capability:<工具名>` 标签进能力指标。
+- **结果映射与正向桥方向对称**：工具返回 string → `content: [{ type: 'text', text }]`，其他 JSON 化进 text；抛错 → 协议层成功 + `isError: true`（MCP 惯例；正向桥的连接器正好把 `isError` 转回抛错）。
+- **取消是协作式**：客户端断连 / `close()` 会中止该次调用的 `ToolRunContext.signal`；`toolTimeoutMs` 与引擎同款语义（非正数 / 不设 = 不限；超时 = **放弃等待** + abort `abandoned`，该次调用回 `isError`，server 不挂）。
+- **默认 client 是惰性构造的**：`client` 不给时第一次 `tools/call` 才走 `createAnthropicClient()`（与引擎默认同款）—— 纯工具 server 不需要 API key 在场。
+
+```ts
+import { createMcpServer, jsonlTraceSink } from '@migor/agentia';
+
+// stdio（Claude Code / Cursor 这类宿主：它们 spawn 这个进程）
+createMcpServer(app, { transport: 'stdio', sinks: [jsonlTraceSink({ path: 'mcp-trace.jsonl' })] });
+
+// http（服务形态）：port 0 = 系统分配，读返回值的 url 拿实际端口
+const mcp = createMcpServer(app, {
+  transport: 'http',
+  port: 8787,
+  auth: (req) => {
+    // 只给缝：token/JWT 策略是你的（与 createHttpHandler 的 authenticate 同纪律）
+    if (req.headers['x-api-key'] !== expected) throw new Error('bad key');
+  },
+});
+await mcp.ready;
+console.log(mcp.url); // http://127.0.0.1:8787/mcp
+```
+
+#### `McpServerOptions`（反向桥的选项）
+
+| 字段 | 说明 |
+|---|---|
+| `transport` | `'stdio'` / `'http'`（必填） |
+| `host` | http 监听地址，缺省 `127.0.0.1` |
+| `port` | http 监听端口，缺省 `0`（系统分配）；自带 `server` 时无效 |
+| `path` | http endpoint 路径，缺省 `/mcp` |
+| `server` | 挂进**既有** `http.Server`（框架不替它 listen；`close()` 只摘本 handler 不关它）。非本 `path` 的请求本 handler 直接忽略（交给宿主自己的路由） |
+| `client` | 进 `ToolRunContext.client`（子 agent / skill 类工具要它拉子循环）；缺省惰性 `createAnthropicClient()` |
+| `sinks` | trace 出口：每次 `tools/call` 收尾投递（抛错被吞 + `console.warn`，观测不击穿业务） |
+| `toolTimeoutMs` | 单次 `tools/call` 的工具执行超时（毫秒），语义与引擎 `toolTimeoutMs` 同款；非正数 / 不设 = 不限 |
+| `auth` | http 侧鉴权钩子：在读 body 之前调用，抛错即 401（原文只进服务端日志）；stdio 侧信任父进程、本项不生效 |
+| `name` | `serverInfo.name`（握手回给客户端），缺省 `'agentia'` |
+
 #### evals（把 mockClient 提升为一等能力）
 
 | API | 说明 |
@@ -1158,6 +1230,28 @@ agentia harvest trace.jsonl --out evals/harvested.ts --force   # 覆盖已存在
   - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本（要覆盖子 agent 请单独写 eval）；
   - 预填的 `expect` 是从原 trace **抄录的实际轨迹** —— 发生过 ≠ 应该发生；
   - `EvalCase` 没有 `expect` 字段，粘贴时把断言搬进 `defineEval({ expect })`（脚手架注释会教）。
+
+#### trace → 训练数据集（`agentia export`）
+
+harvest 的孪生（R8-P3b）：harvest 产**回归用例**，export 产**训练数据**（JSONL，一行一份
+`{ messages, meta }`）。配 `traceContent: 'full'`（§4）跑出来的 trace 导出的是带真 assistant
+文本的完整对话；没开的导出工具轨迹（text 块缺席**不造占位** —— 占位文本进训练数据是投毒）。
+
+```bash
+agentia export trace.jsonl                                # 全部记录 → JSONL 打到 stdout
+agentia export trace.jsonl --ok-only --min-score 0.8 --out dataset.jsonl
+```
+
+- 输入同 `agentia report` / `harvest`；`--min-score` 按 run 根 score 事件的最大值过滤
+  （**没带分数的 run 在此过滤下被排除**：没判过 ≠ 及格）；`--ok-only` 只留 status ok。
+- 每条记录的 `meta.incomplete` 如实标注缺口，值是机器可 grep 的固定词：`input` = 原始输入
+  未入 trace（首条 user 恒为占位）；`assistant-text` = 模型正文缺席（终端回合没记到，
+  或**整棵 trace 一行正文都没有**且本 run 没开 `traceContent` —— 后者连混合回合的真文本
+  也拿不回来）；`no-final-assistant` = 末条是 user，**这条样本没有 loss 目标**（半截 run /
+  只剩工具往返；`--ok-only` 挡不住它 —— status ok ≠ 有终答）。`meta.nestedTurns` 记略去的
+  子 agent 嵌套回合数（它们不进主线 —— 其能力出参已在主线的 tool_result 里）。
+- 缺输出的 tool_use 补 is_error 占位块（协议要求配对合法）；有输出配不上对的计数进
+  `meta.droppedOutputs`，不静默丢。
 
 #### prompt / 模型 A/B（trace diff 与分叉重放）
 
@@ -1317,9 +1411,9 @@ class DeployTools {
 流程（异步任务宿主）：
 
 1. `POST /tasks` 提交任务；模型调到 `deploy` 时 run **挂起**：任务状态变
-   `awaiting_approval`，**整个回合一个工具都不执行**（全有或全无 —— 协议要求每个
+   `suspended`，**整个回合一个工具都不执行**（全有或全无 —— 协议要求每个
    tool_use 配对 tool_result，部分执行 + 部分挂起会产出配不平的历史）。
-2. 轮询 `GET /tasks/:id` 看到 `status: 'awaiting_approval'` + `pendingApprovals`
+2. 轮询 `GET /tasks/:id` 看到 `status: 'suspended'` + `pendingApprovals`
    （待决的 tool_use_id 列表）+ `spec.messages`（完整消息历史，末尾是含未决 tool_use
    的那条 assistant 消息）。挂起**不占并发槽**、不算终态（`awaitTask` 继续等）、
    `resumePending` 不会把它当孤儿捡走。
@@ -1356,6 +1450,61 @@ class DeployTools {
   没人读的任务不会自己超时 —— 要定期扫就靠 `resumePending()`。
 
 **已知边界**（也收录在 §7）：见 §7 表的「审批」相关行。
+
+#### 时间挂起（睡到某个时刻，durable timer）
+
+与「人工审批」是**同一套挂起骨架的两种原因**：审批 = 执行**前**等一个人的决定，
+时间挂起 = 执行**中**等一个时刻到来。差别决定了用法：
+
+- 审批由**宿主**在执行前给决定（`approval: 'required'` 的工具，`args.approvals` 里没有决定
+  就整回合挂起、一个工具都不跑）；
+- 时间挂起由**工具自己**在跑的时候提出来 —— 所以那个回合的工具**已经跑过了**（见下面的整批语义）。
+
+```ts
+import type { AgentTool } from '@migor/agentia';
+
+const waitForBatch: AgentTool = {
+  name: 'fetch_daily_report',
+  description: '取当天的批处理报表（没跑完就到明天早上再问）',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  async run(_input, ctx) {
+    const due = await nextBatchWindow();          // 你自己的判据（外部系统回填 / 限流窗口 / 收盘）
+    if (due.getTime() > Date.now()) {
+      ctx!.deferUntil(due);                       // 「现在还不是时候，T 之后再问我」
+      return 'deferred';                          // 返回值会被丢弃（见整批语义）
+    }
+    return await fetchReport();
+  },
+};
+```
+
+宿主侧（`AsyncRunner`）：引擎把该回合收尾成 `stopReason: 'suspended'` +
+`suspendedReason: 'timer'` + 目标时刻，任务落库为 `status: 'suspended'`、`wakeAt` 进
+`TaskRecord`（**活得比进程久**）。到点由 `resumePending()` / `poll()` 的**惰性**扫描唤醒
+（与审批超时同一套纪律：不起定时器、不养在飞回调），醒来后**重跑那一批**工具、拿到结果接着跑。
+
+三条要写进心里的：
+
+1. **时刻必须是将来**：`deferUntil` 传非有限数或 `≤ 现在` 会**当场抛 TypeError** ——
+   该条 `tool_result` 记 `is_error`、run 照常往前走（模型能看到「时刻必须在将来」并自己换路）。
+   这不是苛刻：允许过去时刻就等于允许「醒来 → 再请求同一个过去时刻」**自己打转**。
+2. **整批语义（副作用会重复）**：挂起是回合级的（协议要求每个 `tool_use` 都有配对
+   `tool_result`），所以同回合**已经执行完**的其他工具会在醒来后**重跑**一遍。框架把它
+   变成看得见的：trace 记 `defer.requested`（`{ wake_at, tool_use_ids, discarded }`），
+   真有兄弟工具被作废时落一条 `console.warn`。**要精确控制就让模型单独调这个工具，或者把它
+   做成幂等读。** 同回合多条请求取**最早**的那个时刻。
+3. **停机与可见性**：`drain()` 之后**不再唤醒**睡着的 run（停机 = 不再往前推，否则部署要等一条
+   天级任务）；重启后由新进程的首次 `resumePending()` 唤醒。`GET /healthz` 的
+   `suspended: { approval, timer, nextWakeAt }` 就是运维要看的那半（口径 = **本进程**看得见的
+   记录；无时间挂起时 `nextWakeAt` 是 `null`，不是 `0`）。
+
+**没有 `cancel` API**：今天要「叫停一条在睡的 run」，靠宿主自己 `abort` 在飞请求 + 不再唤醒它
+（取消语义是独立一件，见 spec §10 2026-09-28 ② 决策 6）。对一条 `timer` 挂起调 `approve()`
+会回 409（原因不对，不是状态不对）。
+
+**已知边界**：`resumePending()` 是 **O(全表)** 扫描（挂起数上量后每次重启/每轮扫描都要读全表；
+触发条件与候选实现见设计稿 §6）；`wakeAt` 到点后**必须有人读**才会醒（没人调
+`resumePending()` / `poll()` 的宿主里，任务不会自己动 —— 与审批超时同一条纪律）。
 
 #### 内容护栏
 
@@ -1406,6 +1555,7 @@ const callable = {
 | 任务进度流的边界（内存 / 跨进程） | `GET /tasks/:id/stream` 的事件缓冲在**跑任务的进程内存**里：每任务最近 500 条（可用 `AsyncRunner` 的 `streamBufferEvents` 调，须为正整数，坏值构造期抛错），超限丢**最旧**并先发一帧 `stream.truncated`；终态流只留最近 16 条。**跨进程**（队列消费者在别的进程）时没有实时流：发一帧 `stream.unavailable` 后**立即收口** —— 任务已终态则补 `task.end`（随后关连接）；**非终态**则补一帧 `stream.closed`（流级收尾，不是伪造终态）并关连接，客户端此后应转去轮询 `GET /tasks/:id`。要跨进程实时请用 `onTraceEvent` 把事件转发到宿主自己的总线（Redis Streams / Kafka） |
 | `traceLimits` 与 `maxEventChars` 各管一头 | `maxEventChars` 管**单个事件正文多长**（既有），`traceLimits.maxEvents` 管**整条 trace 多少个事件**（本版）。两者正交、都「不设 = 不限」；上限触发时**丢弃量写在 run 根的 `trace.truncated`** 上（不静默）。⚠️ 实测 `maxEventChars: false` + 大出参会让 trace 放大 **13.7×**（`npm run bench:trace` 可复现）—— 先收长度再谈采样，收益顺序比反过来大 |
 | **采样是导出决策，不是记账决策** | 采样在 `sink` 外做（配方见 `docs/observability.md` 2.3）：被采样掉的 trace 在框架内**仍然完整记账**，只是没发给下游。所以别拿「有采样」当「可以少记账」；也正因如此，出站 `traceparent` 的 flags 恒 `00`（记录/导出决策发生在收尾之后，运行期不可知——不替下游声明） |
+| 菜单漂移只**标记**、不判失败 | 续跑时未决 tool_use 的工具不在当前菜单 ⇒ 三处信号（`menu.drift` 事件 / 父 span attribute / `console.warn`），run **照常收尾**（那些 tool_use 以 `unknown tool` 回给模型）。**射程如实标注**：判据只看**名字** —— 「工具还在、schema 变了」能被 `tools.menuHash` 比出来，但**不会**在续跑时报 `menu.drift`；**只改 `description`** 连签名都不变（有意：润色文案不算漂移）。严格模式（带具名 error 的收尾）与「结果级字段」记在 spec §11 开放项 |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
 | 能力引用两种粒度 | `tools` 写 **provider token** = 整片能力菜单；写 `'<token>/<能力名>'` = 只引单个能力（@Tool/@Skill/@SubAgent/@Prompt 都可点名，装配期校验，名字不存在即抛错并列出可用名单） |
 | 能力名有格式校验 | 装饰器能力名（`name` 或缺省的方法名）必须匹配 `^[A-Za-z0-9_-]{1,64}$`（与 MCP 桥同口径），非法名在 `createApp` **装配期即抛错** —— 含空格/点/中文的名字会让模型 API 400，宁可在启动期拦住 |
@@ -1434,6 +1584,7 @@ const callable = {
 | OpenAI 流式的上游故障按失败处理 | 三种形态都**抛错**按失败处理：流中 `error` 分片（上游把故障塞进 200 的流；按 `type`/`code` 反推 status，限流能被引擎重试认出）；**未收到 `[DONE]` 也无 `finish_reason`**（流被上游/代理截断 —— 哪怕已吐出半句、有累积文本，也按不完整响应抛错，不报 `end_turn`）；正常终止却无任何文本与工具调用（与非流式空 `choices` 同一守卫）。**例外**：`finish_reason=content_filter` 的空流是合法 refusal，不抛 —— 与非流式路径同一个响应同一个结论 |
 | OpenAI 兼容端点回 legacy `function_call` 形态时**不支持** | 适配器只认现代 `tool_calls`（请求侧也只发这个形态）。收到 `finish_reason=function_call` 会**响亮失败**（400，落 `api`／不可重试），**不**按 `end_turn` 收尾 —— 那种回法里的调用在 `message.function_call` 里、读不出来，报成正常收尾会让「模型要调工具、工具却没执行」记成成功。换支持 `tool_calls` 的端点或模型即可（legacy `functions` 形态 OpenAI 2023 已废弃） |
 | MCP 只做 tools | `sampling`（server 反向请求模型）/ `resources` / `prompts` 原语不做；出厂连接器同样只做 `tools/list` + `tools/call` |
+| MCP 反向桥不校验会话（无状态 server） | `createMcpServer` 的 http 模式：`initialize` 铸 `mcp-session-id` 头但后续请求**不带也服务**（宽容是有意的）；GET → 405、DELETE → 200；鉴权只有 `auth` 钩子一道（stdio 信任父进程）。范围同样只到 tools（与正向桥同一张 YAGNI 清单） |
 | MCP 的协议层错误框架看不见 | `isError: true` 只有连接器能看见 —— 它必须转成抛错，否则模型收到的是一条「成功」的结果（出厂连接器已代你处理） |
 | MCP 超时同样是「不等了」 | 桥的 `timeoutMs` 取消不了 server 侧执行（拿不到取消句柄）；它只是**兜底** —— 引擎设了 `toolTimeoutMs` 时**不参与**判定（一次调用只有一个裁判；**显式 `toolTimeoutMs: 0` 也算设了** —— 那是引擎表态「不限」，桥不会再自作主张判 60s），两条路径**同判定、同账**（`errorKind='timeout'`） |
 | 已中止的 MCP 调用**不发请求** | 信号在**发送前**就已中止 ⇒ 立刻以 `AbortError` 收场，请求不出门（2026-09-21 前是「照样 write、Promise 永不 settle」：副作用真送达、调用方永久挂起）。发送**之后**才中止的，请求已在路上、取消不了 server 侧的执行，但返回的 Promise 同样立刻以 `AbortError` 收场、簿记同步清掉 —— 直接 await 连接器 API 的宿主不会永久挂起（2026-09-22 前是「只删簿记不 reject」：Promise 永不 settle，与 HTTP 连接器的在途中止行为不一致）；取消不了的只是 server 侧执行，这点与 `toolTimeoutMs` 同口径 |
@@ -1452,7 +1603,7 @@ const callable = {
 | 模型 / 评分维度也有基数上限 | `maxModels`（缺省 50）/ `maxScores`（缺省 200）：`model` 与评分键（`name@source`）都可能是无界键（上游把版本号拼进模型 id、eval 名带时间戳），而每个模型键都持一份时长窗口 —— 光是能力封顶不够。折叠只丢标签粒度，`__other__` 桶照常累加，总数仍对得上；被折叠的不同键数见 `droppedModels` / `droppedScores` |
 | 提示词版本只是标记 | 框架不存版本库、不回滚：`version` 只落 run 根 attribute；`system` 传已拼好的 `SystemParam` 时无版本可记 |
 | `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
-| 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace 不记 assistant 文本与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
+| 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace **缺省**不记 assistant 文本（opt-in 例外：`traceContent: 'full'`，见 §4）与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
 | 链路关联：入站自动、**出站只给读取器** | `traceContext` / `traceparent` 头把**上游**接进来（run 根的 `links`）；出站方向给 `currentTraceparent()`（当前 span 的 W3C 串，回合 / 能力调用粒度），但框架**不替你做注入** —— 它不创建出站请求，那一行由宿主的 `fetch` / metadata 自己写。两个边界：① `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined`（那时确实没有 span）；② flags 恒 `00`（本框架不采样）。id 宽度经**同一份投影**压到 16 位（与 OTLP 导出共用，单一真源）—— 故下游收到的 span id 与 collector 里的是同一个数。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
@@ -1463,7 +1614,7 @@ const callable = {
 | 挂起/恢复间预算重新起算 | `maxTotalTokens` / `maxCostUsd` 在恢复段从 0 重新计（新树新账，与 `resumePending` 续跑同口径） |
 | 恢复段的会话回写是进程内快照 | 带 `sessionId` 的任务挂起时，「本轮用户输入」快照只存进程内存（恢复段由 AsyncRunner 自己补写「用户输入 + 最终回复」，不再经 run 层重复拼历史）—— 进程崩在「挂起 → 重启 → approve」之间会**丢这一次会话回写**（会话少一轮，但绝不写进坏历史；审批决定本身已落库） |
 | 嵌套能力内的审批不支持挂起 | @SubAgent / @Skill 子循环里的 `approval: 'required'` 工具无法把整个 run 挂起 —— 子循环挂起会以 `is_error` 交回主 agent（要审批的能力请放主菜单） |
-| 同步 `/run` 撞上审批没人可批 | 同步 RPC 会带着 `stopReason: 'awaiting_approval'` 收尾返回 —— 但响应体（`toHttpBody`）**不含** `suspendedMessages`，也没有任务记录可审批（待决清单只能去 trace 的 `approval.requested` 事件里看）。**要审批请走 `POST /tasks` 异步宿主** |
+| 同步 `/run` 撞上审批没人可批 | 同步 RPC 会带着 `stopReason: 'suspended'` 收尾返回 —— 但响应体（`toHttpBody`）**不含** `suspendedMessages`，也没有任务记录可审批（待决清单只能去 trace 的 `approval.requested` 事件里看）。**要审批请走 `POST /tasks` 异步宿主** |
 | Scheduler 调度表不落库 | `every` / `at` 的调度本身只在内存：已 submit 的任务记录能经 `resumePending` 续跑，但「未来某刻再触发」的调度在重启后不存在（远期单发由宿主自己的 cron 驱动）。另：`drain()` 不停 Scheduler —— 停机窗口内到点的 tick 会打一条触发失败日志（无害但吵），介意就 `scheduler.stop()` 先行 |
 | file store 的撕裂写只在启动时自愈 | 写入中途失败（磁盘满等）留下的残行由 `healTail` 在**构造期**修复；同进程内继续 append 会把新记录粘在残行尾部、下次启动时一起丢弃 —— 磁盘满告警后先恢复写入能力再继续依赖它 |
 | 终态落库失败 ⇒ 重启会重跑 | AsyncRunner 终态 `save` 失败**不遮罩主流程**（「不击穿业务」的代价）：store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**（副作用已发生）的任务 —— 所以副作用工具必须自身幂等。**但失败本身不再静默**：`new AsyncRunner(app, { onPersistError })` 会收到 `{ record, error, phase }`（`phase: 'initial' \| 'outcome'`，后者就是这条）。⚠️ 框架**修不了**它（写不进去就是写不进去）—— 出口的职责是让你能对账、让「记录无声丢失」不再是默认行为（与 `createOtlpExporter({ onExportError })` 同因同形） |

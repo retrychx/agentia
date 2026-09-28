@@ -46,7 +46,7 @@ type UnclassifiedOfThat = Exclude<
 // @ts-expect-error 混进未归类字段时，`…extends never ? true : never` 应为 never ⇒ 赋 true 报错
 export const _probeUnclassifiedIsCaught: UnclassifiedOfThat extends never ? true : never = true;
 
-/* ============ ② 交由调用点播开的那组值：七个键**全必填** ============ */
+/* ============ ② 交由调用点播开的那组值：全部键**必填** ============ */
 
 /**
  * 少一个键必须报错 —— 这正是「调用点漏字段不可能发生」的机制
@@ -59,18 +59,20 @@ export const _missingOneKeyIsRejected: ForwardedToolContext = {
   priceOverrides: undefined,
   onUnpricedModel: undefined,
   maxEventChars: undefined,
+  traceContent: undefined,
   maxTotalTokens: undefined,
   maxCostUsd: undefined,
 };
 
 declare const forwarded: ForwardedToolContext;
 
-/** 正面：七个键都在场时可赋值（`undefined` 是合法值 —— 「本 run 没设」不是「没转发」）。 */
+/** 正面：全部键在场时可赋值（`undefined` 是合法值 —— 「本 run 没设」不是「没转发」）。 */
 export const _completeIsAccepted: ForwardedToolContext = {
   signal: forwarded.signal,
   priceOverrides: forwarded.priceOverrides,
   onUnpricedModel: forwarded.onUnpricedModel,
   maxEventChars: forwarded.maxEventChars,
+  traceContent: forwarded.traceContent,
   maxTotalTokens: forwarded.maxTotalTokens,
   maxCostUsd: forwarded.maxCostUsd,
   toolTimeoutMs: forwarded.toolTimeoutMs,

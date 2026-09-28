@@ -23,7 +23,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { AsyncRunner, executeRun } from '../src/index.js';
-import type { AgentTool, AppCallable } from '../src/index.js';
+import type { AgentTool, AppCallable, Trace } from '../src/index.js';
 import { LIMIT_SEMANTICS, type LimitKnob, type ZeroMeaning } from '../src/core/limits.js';
 import { interruptibleSleep, withTimeout, TIMED_OUT } from '../src/core/timeout.js';
 import { mapWithConcurrency } from '../src/engine/concurrency.js';
@@ -42,6 +42,39 @@ import type { ServerResponse } from 'node:http';
 import { endTurnMsg, mockClient, toolUseMsg } from './helpers.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 一条最小的 run trace（run 根 + `labels.tenant` 属性 + 给定 token 数）——
+ * 只为驱动 metricsSink 的归因标签路径（探针要断言「折叠真的发生、且量不丢」，
+ * 得有量可数）。
+ */
+function labelTrace(tenant: string, tokens: number): Trace {
+  return {
+    traceId: 't-label',
+    rootSpanId: 'root-label',
+    status: 'ok',
+    totalUsage: {
+      inputTokens: tokens,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    },
+    spans: [
+      {
+        spanId: 'root-label',
+        traceId: 't-label',
+        parentSpanId: null,
+        kind: 'run',
+        name: 'agent.run',
+        startedAt: 0,
+        endedAt: 1,
+        status: 'ok',
+        attributes: { 'labels.tenant': tenant },
+        events: [],
+      },
+    ] as never,
+  };
+}
 
 /** 一个「跑得慢但会成功」的 app：用来观察 runTimeoutMs 到底有没有把任务砍掉 */
 function slowApp(ms: number): AppCallable {
@@ -146,11 +179,11 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     // 0 = 不限：挂起后不会被「超时兜底拒绝」收掉，而是一直等人
     const runner = new AsyncRunner(hitlApp(), { approvalTimeoutMs: 0 });
     const t = runner.submit('x');
-    await pollUntil(runner, t.taskId, 'awaiting_approval');
+    await pollUntil(runner, t.taskId, 'suspended');
     await sleep(250);
     assert.equal(
       (await runner.poll(t.taskId))?.status,
-      'awaiting_approval',
+      'suspended',
       '0 必须读作「不限」：挂起不该被自动拒绝',
     );
     return 'unlimited';
@@ -406,6 +439,33 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
   async 'metricsSink.windowSize'() {
     assert.throws(() => metricsSink({ windowSize: 0 }), /必须为正数/);
     assert.throws(() => metricsSink({ maxCapabilities: 0 }), /必须为正数/);
+    return 'invalid';
+  },
+
+  async 'metricsSink.maxLabelValues'() {
+    assert.throws(() => metricsSink({ maxLabelValues: 0 }), /必须为正数/);
+    assert.throws(() => metricsSink({ maxLabelValues: -1 }), /必须为正数/);
+    // 正数放行且真的生效：cap=1 时第二个相异值折叠进 __other__（见 metrics 用例的完整对账）
+    return 'invalid';
+  },
+
+  async 'metricsSink.maxLabelCombos'() {
+    assert.throws(() => metricsSink({ labelKeys: ['tenant'], maxLabelCombos: 0 }), /必须为正数/);
+    assert.throws(() => metricsSink({ labelKeys: ['tenant'], maxLabelCombos: -1 }), /必须为正数/);
+    // 与相邻读法区分开：不是「0 = 不限」也不是「0 = 关掉折叠」—— 0 是配置错误（抛），
+    // 正数放行且**真的生效**：cap=2 时第 3 个组合必须折进同一个全 __other__ 的桶，
+    // 且量不丢（三条 run 的 tokens 之和 == 全局 tokens）。
+    const m = metricsSink({ labelKeys: ['tenant'], maxLabelCombos: 2 });
+    for (const tenant of ['a', 'b', 'c']) m.export(labelTrace(tenant, 10));
+    const s = m.snapshot();
+    const combos = Object.keys(s.runLabels);
+    assert.deepEqual(combos.sort(), ['tenant=__other__', 'tenant=a', 'tenant=b']);
+    assert.equal(s.droppedLabelCombos, 1, '第 3 个组合必须计数（静默折叠不算守卫）');
+    assert.equal(
+      Object.values(s.runLabels).reduce((n, a) => n + a.tokens, 0),
+      s.tokens,
+      '折叠只丢标签粒度，不丢量',
+    );
     return 'invalid';
   },
 

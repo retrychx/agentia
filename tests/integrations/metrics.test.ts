@@ -18,6 +18,8 @@ function traceOf(opts: {
   cacheRead?: number;
   cacheCreation?: number;
   costEstimate?: number;
+  /** 归因标签（R8-P4）：写成 run 根的 `labels.<k>` 属性（与 loop.ts 的写入位置一致） */
+  labels?: Record<string, string>;
 }): Trace {
   const rootSpanId = 'root-1';
   const ended = opts.durationMs === undefined;
@@ -42,7 +44,9 @@ function traceOf(opts: {
         startedAt: 1000,
         ...(ended ? {} : { endedAt: 1000 + opts.durationMs! }),
         status: opts.status ?? 'ok',
-        attributes: {},
+        attributes: Object.fromEntries(
+          Object.entries(opts.labels ?? {}).map(([k, v]) => [`labels.${k}`, v]),
+        ),
         events: [],
       },
     ],
@@ -547,6 +551,9 @@ describe('E5 OTLP/JSON 指标导出', () => {
         maxScores: 8,
         labelMode: 'capability',
         buckets: [10],
+        labelKeys: [],
+        maxLabelValues: 8,
+        maxLabelCombos: 8,
       });
       state.reset();
       const first = state.windowStartedAt;
@@ -1250,5 +1257,204 @@ describe('exemplars：指标尖峰 → 那条 trace', () => {
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
+  });
+});
+
+/**
+ * R8-P4 归因标签（run 根 `labels.*` → 指标标签）：`metricsSink({ labelKeys })` 显式点名的键
+ * 才上指标（缺省一个都不上），每个键的相异值数受 `maxLabelValues` 封顶（超出折叠进
+ * `__other__`，只丢标签粒度不丢量）。trace 侧写入见 tests/engine/run-labels.test.ts。
+ */
+describe('R8-P4 归因标签（labelKeys → 指标标签）', () => {
+  it('labelKeys 生效：runLabels 按 combo 分账，四个计数口径与全局对得上', () => {
+    const sink = metricsSink({ labelKeys: ['tenant'] });
+    sink.export(
+      traceOf({
+        durationMs: 5,
+        input: 10,
+        output: 5,
+        costEstimate: 0.01,
+        labels: { tenant: 'acme' },
+      }),
+    );
+    sink.export(traceOf({ durationMs: 5, input: 4, output: 1, labels: { tenant: 'acme' } }));
+    sink.export(
+      traceOf({
+        durationMs: 5,
+        status: 'error',
+        output: 2,
+        costEstimate: 0.02,
+        labels: { tenant: 'globex' },
+      }),
+    );
+
+    const s = sink.snapshot();
+    assert.equal(s.runs, 3);
+    assert.deepEqual(s.runLabels['tenant=acme'], {
+      runs: 2,
+      failed: 0,
+      tokens: 15 + 5,
+      costUsd: 0.01,
+    });
+    assert.deepEqual(s.runLabels['tenant=globex'], {
+      runs: 1,
+      failed: 1,
+      tokens: 2,
+      costUsd: 0.02,
+    });
+    const sum = Object.values(s.runLabels).reduce((n, a) => n + a.runs, 0);
+    assert.equal(sum, s.runs, '带标签分账之和必须等于全局总量（折叠只丢粒度不丢量）');
+    assert.deepEqual(s.droppedLabelValues, { tenant: 0 });
+  });
+
+  it('缺省不配 labelKeys：run 根有 labels.* 也一个标签都不上', () => {
+    const sink = metricsSink();
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'acme' } }));
+    assert.deepEqual(sink.snapshot().runLabels, {});
+    assert.deepEqual(sink.snapshot().droppedLabelValues, {});
+    const text = sink.render();
+    assert.equal(text.includes('tenant'), false, 'render 里不该出现任何归因标签');
+  });
+
+  it('maxLabelValues=1：第二个相异值折叠进 __other__，droppedLabelValues 计数，render 可见', () => {
+    const sink = metricsSink({ labelKeys: ['tenant'], maxLabelValues: 1 });
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'acme' } }));
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'globex' } }));
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'initech' } }));
+
+    const s = sink.snapshot();
+    assert.equal(s.runLabels['tenant=acme']!.runs, 1, '第一个值认下自己');
+    assert.equal(s.runLabels['tenant=__other__']!.runs, 2, '超出的两个值折叠同桶（量不丢）');
+    assert.equal(s.droppedLabelValues.tenant, 2, '被折叠的不同值数');
+    const text = sink.render();
+    assert.match(text, /agentia_runs_total\{tenant="acme"\} 1/);
+    assert.match(text, /agentia_runs_total\{tenant="__other__"\} 2/);
+    assert.match(text, /agentia_dropped_keys\{kind="label:tenant"\} 2/);
+  });
+
+  it('maxLabelCombos：组合数（叉乘）也封顶 —— 折叠可见、量不丢、render 露头', () => {
+    // 反向验证：摘掉 accumulate 里 comboBudget 那一跳 ⇒ 本用例红在「组合数 = 每键折叠桶
+    // 的叉乘」（此前实测 maxLabelValues=2 + 2 键 = 9 条常驻）与 droppedLabelCombos 恒 0。
+    const sink = metricsSink({ labelKeys: ['a', 'b'], maxLabelValues: 2, maxLabelCombos: 3 });
+    for (const a of ['a1', 'a2', 'a3']) {
+      for (const b of ['b1', 'b2', 'b3']) {
+        sink.export(traceOf({ durationMs: 1, input: 1, labels: { a, b } }));
+      }
+    }
+    const s = sink.snapshot();
+    assert.equal(Object.keys(s.runLabels).length, 4, '3 个组合认自己 + 1 个折叠桶（未封顶是 9）');
+    assert.equal(s.droppedLabelCombos, 6, '被折叠的**不同组合**数（这是此前完全看不见的那一项）');
+    assert.equal(
+      Object.values(s.runLabels).reduce((n, x) => n + x.runs, 0),
+      s.runs,
+      '折叠只丢标签粒度，不丢量',
+    );
+    assert.match(sink.render(), /agentia_dropped_keys\{kind="label:combos"\} 6/);
+  });
+
+  it('值里含 `,`/`=` 不许并账：两个不同标签集各记各的（combo 身份不是裸拼接）', () => {
+    // 2026-09-27 ⑧ 实测：裸拼接时这两条都拼成 `a=x,b=y,b=z` ⇒ 并成一本账、且按第一条的
+    // 标签渲染（第二条的量被错配）。
+    const sink = metricsSink({ labelKeys: ['a', 'b'] });
+    sink.export(traceOf({ durationMs: 1, input: 10, labels: { a: 'x,b=y', b: 'z' } }));
+    sink.export(traceOf({ durationMs: 1, input: 20, labels: { a: 'x', b: 'y,b=z' } }));
+
+    const s = sink.snapshot();
+    assert.equal(Object.keys(s.runLabels).length, 2, '两个不同标签集必须是两条账');
+    assert.equal(
+      Object.values(s.runLabels).reduce((n, x) => n + x.runs, 0),
+      2,
+      '各 1 条 run（并账会变成一条 2）',
+    );
+    const text = sink.render();
+    assert.match(text, /agentia_runs_total\{a="x,b=y",b="z"\} 1/);
+    assert.match(text, /agentia_runs_total\{a="x",b="y,b=z"\} 1/, '第二条必须是自己的标签');
+  });
+
+  it('缺键 / 空串值按 "" 计（观测宽容读取，不击穿业务）', () => {
+    const sink = metricsSink({ labelKeys: ['tenant', 'plan'] });
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'acme' } })); // plan 缺
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'acme', plan: '' } })); // 空串值
+    const s = sink.snapshot();
+    assert.equal(s.runLabels['tenant=acme,plan=']!.runs, 2, '缺键与空串值归同一个 combo');
+  });
+
+  it('render：四个 run 级家族追加带标签样本，全局行仍在（不带标签那行是总量）', () => {
+    const sink = metricsSink({ labelKeys: ['tenant'] });
+    sink.export(
+      traceOf({
+        durationMs: 5,
+        input: 3,
+        output: 2,
+        costEstimate: 0.5,
+        status: 'error',
+        labels: { tenant: 'acme' },
+      }),
+    );
+    const text = sink.render();
+    assert.match(text, /agentia_runs_total 1\n/);
+    assert.match(text, /agentia_runs_total\{tenant="acme"\} 1/);
+    assert.match(text, /agentia_runs_failed_total\{tenant="acme"\} 1/);
+    assert.match(text, /agentia_tokens_total\{tenant="acme"\} 5/);
+    assert.match(text, /agentia_cost_usd_total\{tenant="acme"\} 0\.5/);
+  });
+
+  it('OTLP：同四家族追加带 attributes 的 dataPoint（全局点无 attributes）', async () => {
+    const { buildOtlpPayload } = await import('../../src/integrations/metrics-otlp.js');
+    // buildOtlpPayload 读的是 MetricsState（sink 的内部件），直接造一个真 state
+    const st = new MetricsState({
+      windowSize: 8,
+      maxCapabilities: 8,
+      maxModels: 8,
+      maxScores: 8,
+      labelMode: 'capability',
+      buckets: [10],
+      labelKeys: ['tenant'],
+      maxLabelValues: 8,
+      maxLabelCombos: 8,
+    });
+    st.accumulate(traceOf({ durationMs: 5, input: 3, labels: { tenant: 'acme' } }));
+    const payload = buildOtlpPayload(st, {
+      prefix: 'agentia_',
+      serviceName: 'test',
+      startedAtMs: 1000,
+    }) as any;
+    const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics;
+    const byName = (n: string) => metrics.find((m: any) => m.name === n);
+    const runsPoints = byName('agentia_runs_total').sum.dataPoints;
+    assert.equal(runsPoints.length, 2, '全局点 + 带标签点');
+    assert.deepEqual(runsPoints[0].attributes, [], '第一个是全局点');
+    assert.deepEqual(runsPoints[1].attributes, [{ key: 'tenant', value: { stringValue: 'acme' } }]);
+    const droppedPoints = byName('agentia_dropped_keys');
+    assert.ok(
+      droppedPoints.gauge.dataPoints.some(
+        (d: any) => d.attributes[0]?.value.stringValue === 'label:tenant',
+      ),
+      'dropped_keys 要有 label:tenant 那一支',
+    );
+  });
+
+  it('构造期校验：非法标签名 / 重复键 / maxLabelValues 非正 一律抛错', () => {
+    assert.throws(() => metricsSink({ labelKeys: ['not a label'] }), /Prometheus 标签名/);
+    assert.throws(() => metricsSink({ labelKeys: ['9lives'] }), /Prometheus 标签名/);
+    assert.throws(() => metricsSink({ labelKeys: ['tenant', 'tenant'] }), /重复/);
+    assert.throws(() => metricsSink({ maxLabelValues: 0 }), /必须为正数/);
+    // 合法的最小配置放行
+    assert.equal(typeof metricsSink({ labelKeys: ['tenant', 'plan'] }).render, 'function');
+  });
+
+  it('reset() 清空 runLabels 与每键的折叠计数', () => {
+    const sink = metricsSink({ labelKeys: ['tenant'], maxLabelValues: 1 });
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'acme' } }));
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'globex' } }));
+    assert.equal(sink.snapshot().droppedLabelValues.tenant, 1);
+    sink.reset();
+    const s = sink.snapshot();
+    assert.deepEqual(s.runLabels, {});
+    assert.deepEqual(s.droppedLabelValues, { tenant: 0 });
+    // 配额也清了：reset 后第一个值重新认下自己
+    sink.export(traceOf({ durationMs: 5, labels: { tenant: 'newco' } }));
+    assert.equal(sink.snapshot().runLabels['tenant=newco']!.runs, 1);
+    assert.equal(sink.snapshot().droppedLabelValues.tenant, 0);
   });
 });

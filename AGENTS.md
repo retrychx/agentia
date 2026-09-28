@@ -42,6 +42,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   不保证送达）与 `traceLimits.maxEvents`（度量闸：超限停记，交付时于 run 根写
 │   │                        #   trace.truncated{droppedEvents}）。⚠️ seq **每次记账动作都占号**（与有没有订阅者无关）
 │   │                        #   —— 否则「订阅晚的人」的序号会错位（重放全乱）
+│   │                        #   mcp-server.ts = MCP 反向桥（R8-P5：app 菜单暴露成 MCP server，
+│   │                        #   stdio + StreamableHTTP 只用标准库；落 engine 是因为 integrations 只许
+│   │                        #   依赖 core 装不下 TraceRecorder。每次 tools/call 一棵 trace 进 sinks，
+│   │                        #   抛错 → isError，与正向桥方向对称）
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
@@ -123,6 +127,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   run 根 link、同 session_id 共享历史、同 idempotency-key 不重复执行；
 │                            #   假 Anthropic 端点 + tempdir trace，不联网、不留产物）
 ├── scripts/e2e-mcp.ts       # MCP 端到端（npm run e2e:mcp：真第三方 server → 桥 → 菜单 → 真跑一轮）
+├── scripts/e2e-mcp-server.ts  # MCP 反向桥端到端（npm run e2e:mcp:server：带 @Tool 的 app →
+│                            #   createMcpServer（stdio 真子进程 + HTTP 真端口）⇐ 出厂连接器当真协议
+│                            #   客户端打回去；trace 经 jsonlTraceSink 落盘逐条对账。离线零网络）
 ├── scripts/e2e-live.ts      # 真 API 集成验证（npm run e2e:live：真实厂商端点跑框架主路径 ——
 │                            #   SSE 分片 / tool_use / tool_result 回灌 / cache_control / signal 中止 /
 │                            #   runAgent 全链。走 ANTHROPIC_BASE_URL，用 DeepSeek 的 Anthropic 兼容端点
@@ -291,6 +298,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     （`declare module '…' { interface Blackboard }`）在同一编译程序内全局生效，混在一起会污染 src。
   - 另有 `npm run e2e:mcp`（真接第三方 MCP server，需要网络 / uv；离线自动回落
     `scripts/mcp-fixture-server.py`）。它**不并入**上面 8 步，但动了 `integrations/mcp.ts` 就要跑。
+  - 另有 `npm run e2e:mcp:server`（MCP **反向**桥：app 菜单暴露成 MCP server，两个传输都真跑，
+    客户端是我们自己的出厂连接器；离线零网络）。同样**不并入**上面 8 步，动了
+    `engine/mcp-server.ts` 就要跑。
   - 另有 `npm run e2e:live`（真 API 集成验证）。**不并入**上面 8 步、**不进 CI**（会真花 token），
     无凭据时跳过并打横幅（静默跳过 = 假装验过）。动了 `integrations/anthropic.ts` 或
     `core/tool.ts` 的 `ModelClient` 契约就要跑它 —— **mock 全绿发现不了「SDK 真实行为与我们的假设不符」**：

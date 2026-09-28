@@ -180,6 +180,14 @@ export interface ToolRunContext {
    */
   maxEventChars?: number | false;
   /**
+   * 本 run 是否记录 assistant 文本进 llm.turn span（`RunAgentOptions.traceContent`，R8-P3a）。
+   * 嵌套能力（@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去 —— 否则同一棵
+   * 调用树上主 agent 的回合有 `output.text`、子 agent 的没有（与 maxEventChars 同理由）。
+   *
+   * 不设（undefined）= 子循环不记录（缺省行为）。
+   */
+  traceContent?: 'full';
+  /**
    * 成本硬管控（C1）透传：整条 run 累计 token 上限（见 `RunAgentOptions.maxTotalTokens`）。
    * 嵌套能力（@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去 —— 预算是
    * **整条 run（含各级子 agent）** 的口径，子循环不拿到它就等于护栏在子循环期间离线
@@ -194,6 +202,22 @@ export interface ToolRunContext {
    * 批准/拒绝（审计日志、按 decidedBy 分级授权等）。
    */
   approval?: ApprovalDecision;
+  /**
+   * 「现在还不是时候，T 之后再问我」（durable timer，2026-09-28 ① 的 timer 侧）。
+   * 工具在执行期调用它 = 请求**本回合到此为止**：引擎丢弃本回合这批工具的结果、
+   * 把整批 tool_use 挂起（`stopReason: 'suspended'` + `suspendedReason: 'timer'` +
+   * 目标时刻 `wakeAt`），到点后由宿主续跑并**重跑这一批**（与审批续跑的形态一致）。
+   * 真实用途：等批处理作业、等限流窗口、等收盘、等外部系统回填。
+   *
+   * ⚠️ 两条契约（都是「说错就静默出事」的位置，细则见 `engine/defer.ts`）：
+   * ① **必须传将来的时刻**：T ≤ 现在（或非有限数）**当场抛 TypeError** —— 那次工具调用以
+   *    is_error 的 tool_result 回给模型、run 照常往前走（不挂起）。否则到期扫描会立刻
+   *    唤醒、重跑、工具再请求同一个过去时刻＝一条自己打转的 run。
+   * ② **整批语义**：挂起是回合级的（协议要求每个 tool_use 都有配对 tool_result），
+   *    所以同回合**已经执行完**的其他工具会在醒来后重跑（副作用重复）—— 要精确控制就让
+   *    模型单独调它，或把它做成幂等读。本回合多个请求取**最早**的那个时刻。
+   */
+  deferUntil?: (at: number | Date) => void;
   /**
    * 工具执行被引擎**放弃等待**的信号（`toolTimeoutMs` 超时触发）。
    *
@@ -237,7 +261,7 @@ export interface AgentTool<I = unknown, O = unknown> {
   strict?: boolean;
   /**
    * 人工审批闸（HITL）：`'required'` 时模型发起的该工具调用**不直接执行** ——
-   * 该回合挂起（`stopReason: 'awaiting_approval'`，回合级全有或全无：同一回合的
+   * 该回合挂起（`stopReason: 'suspended'`，回合级全有或全无：同一回合的
    * 其他工具也一并等待，因为协议要求每个 tool_use 都有配对 tool_result），
    * 等宿主把决定（`ApprovalDecision`，按 tool_use_id）喂回来后恢复：
    * 批准 → 正常执行（工具体内经 `ToolRunContext.approval` 读到自己的决定）；

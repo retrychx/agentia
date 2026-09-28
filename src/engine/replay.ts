@@ -27,7 +27,8 @@ import { stringifySafe, truncateWithMark } from '../core/json.js';
  *   可直接作为 Messages API 的 messages 喂回模型（末条为 user 是硬要求：
  *   以 assistant 收尾即 prefill，缺省模型上 400）。
  *
- * 注意：trace 不记录 assistant 文本（llm.turn 只记 usage/事件），还原的
+ * 注意：trace **缺省**不记录 assistant 文本（llm.turn 只记 usage/事件；opt-in 例外见
+ * `RunAgentOptions.traceContent: 'full'`，R8-P3a），还原的
  * assistant 消息以标注文本占位，非逐字原文。trace 同样不记 run 的原始输入，
  * 故重放的首尾说明性 user 均为合成（这一有损边界对 forkMessages 同样成立）。
  *

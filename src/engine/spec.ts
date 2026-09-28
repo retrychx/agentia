@@ -2,7 +2,7 @@ import type { MessageParam } from '../core/message.js';
 import type { AgentTool, ApprovalDecision, ModelClient, ModelPricing } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
 import type { TraceContext, TraceRecordEvent } from '../core/trace.js';
-import type { ContextPolicy } from './types.js';
+import type { ContextPolicy, ModelFallbackLink } from './types.js';
 import type { RetryOptions } from './retry.js';
 import type { TraceLimits } from './tracer.js';
 
@@ -74,6 +74,24 @@ export interface RunInvocationOptions {
   maxTotalTokens?: number;
   /** 成本硬管控：累计成本（美元）上限；依赖模型在价格表内，见 createBudgetGuard */
   maxCostUsd?: number;
+  /**
+   * 模型 fallback 链（R8-P2；语义见 `RunAgentOptions.fallbacks`）。
+   * ⚠️ 序列化边界：链环里的 `client` 是进程内对象，随 `TaskRecord` 落库会丢 ——
+   * 崩溃续跑读回的是空壳，run 入口会响亮抛 TypeError（鸭子类型校验）。要跨重启仍成立
+   * 的链只写 `model`（client 由 runner/应用级配置兜住），或干脆只在应用/run 级配置。
+   */
+  fallbacks?: ModelFallbackLink[];
+  /**
+   * opt-in 记录 assistant 文本进 llm.turn span 的 `output.text`（R8-P3a；
+   * 语义与代价见 `RunAgentOptions.traceContent`）。可序列化（字符串枚举），异步任务
+   * 随 TaskRecord 落库、续跑不丢 —— 与 fallbacks 环里的 client 不同。
+   */
+  traceContent?: 'full';
+  /**
+   * 租户/业务维度归因标签（R8-P4；语义与边界见 `RunAgentOptions.labels`）。
+   * 可序列化（字符串字典），异步任务随 TaskRecord 落库、续跑不丢。
+   */
+  labels?: Record<string, string>;
   /** 价格表覆盖/追加（$/1M tokens）；见 RunAgentOptions.priceOverrides */
   priceOverrides?: Record<string, ModelPricing>;
   /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */
@@ -90,7 +108,7 @@ export interface RunInvocationOptions {
    */
   maxEventChars?: number | false;
   /**
-   * 人工审批决定（HITL）：以 tool_use_id 为键。恢复 `awaiting_approval` 任务时由
+   * 人工审批决定（HITL）：以 tool_use_id 为键。恢复 `suspended` 任务时由
    * 异步宿主随记录传入（纯数据、可序列化，随 `TaskRecord` 落库）；手工续跑
    * 「assistant 结尾带 tool_use」的消息历史时也可直接给 `app.run`。
    */

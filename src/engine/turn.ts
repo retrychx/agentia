@@ -33,21 +33,36 @@ import { validateJsonSchema } from '../core/schema.js';
 import type { SpanError, SpanId } from '../core/trace.js';
 import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
+import { createDeferRequest } from './defer.js';
+import type { DeferRequest } from './defer.js';
 import { createBudgetGuard } from './budget.js';
 import type { BudgetGuard } from './budget.js';
 import { mapWithConcurrency, TIMED_OUT, withTimeout } from './concurrency.js';
 import { backoffDelay, resolveRetry, retryAllowed, sleep } from './retry.js';
 import { buildTurnRequest } from './turn-request.js';
+import type { ResolvedModelLink } from './run-config.js';
 import { buildToolRunContext } from './tool-context.js';
 import { withCurrentSpan } from './span-scope.js';
-import { toolInputPayload, toolOutputPayload, toolResultBlock } from './tool-events.js';
+import {
+  DEFAULT_EVENT_CHARS,
+  toolInputPayload,
+  toolOutputPayload,
+  toolResultBlock,
+} from './tool-events.js';
 import type { ToolErrorKind } from './tool-events.js';
+import { textOf } from './text.js';
+import { truncateWithMark } from '../core/json.js';
 import type { ResolvedRetry, RetryOptions } from './retry.js';
 import type { AgentStopReason, ContextPolicy, SystemParam } from './types.js';
 import { buildPricing, costEstimate, usageFromAnthropic } from './usage.js';
 
-/** 隐藏提交工具名：resultSchema 模式下由 engine 内部追加，不属开发者工具菜单 */
-const SUBMIT_RESULT = 'submit_result';
+/**
+ * 隐藏提交工具名：`resultSchema` 在场时由 engine 内部追加，**不属**开发者工具菜单。
+ *
+ * 它从不进 `args.tools` —— 所以「当前菜单里有没有这个名字」这个问题要单独处理
+ * （见 engine/menu-drift.ts 的 `detectMenuDrift`，那条口径只有一份）。
+ */
+export const SUBMIT_RESULT = 'submit_result';
 
 /** resultSchema 模式下追加到 system 末尾的指令 */
 const RESULT_INSTRUCTION =
@@ -67,6 +82,12 @@ function appendResultInstruction(system?: SystemParam): SystemParam {
 export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   client: ModelClient;
   model: string;
+  /**
+   * 已解析的模型链（R8-P2，run 入口经 `resolveModelChain` 校验装配；含主环在内至少一环）。
+   * 缺省 = 单环 `[{model, client}]` —— 直连 agentLoop 的调用方（单测）不传时与
+   * 「没配 fallbacks」逐字同语义。子 agent 子循环**不继承**主 run 的链（能力层显式给模型）。
+   */
+  modelChain?: ResolvedModelLink[] | undefined;
   maxTokens: number;
   maxIterations: number;
   system?: SystemParam | undefined;
@@ -100,6 +121,12 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars（三类事件共用同一个值） */
   maxEventChars?: number | false | undefined;
+  /**
+   * opt-in 记录 assistant 文本（R8-P3a）：'full' = 每回合模型文本落 llm.turn span 的
+   * `output.text` 属性（过 maxEventChars 同一道截断闸）。缺省不记（现状逐字不变）。
+   * 嵌套能力经 forwarded.ts 透传 —— 同一棵调用树上口径一致。
+   */
+  traceContent?: 'full' | undefined;
   /** 价格表覆盖（F1）：覆盖内置单价或给其他 provider 的模型定价 */
   priceOverrides?: Record<string, ModelPricing> | undefined;
   /** 未定价模型回调（F2）：本循环作用域内每模型一次 */
@@ -271,98 +298,142 @@ export interface TurnOutcome {
   /** 模型响应；请求失败/中断时为 undefined（字段在场，见 core/run.ts 的说明） */
   message: Message | undefined;
   aborted: boolean;
+  /**
+   * 本回合**实际**成功的模型（fallback 链（R8-P2）换下环后与 args.model 不同）——
+   * 成本估算 / 未定价探测必须用它，按 args.model 算就是记错账（span 的 model 名归错厂商）。
+   * 未成功（失败抛出 / aborted）时为 undefined。
+   */
+  model: string | undefined;
 }
 
 /**
- * —— 一次逻辑回合：可能含多次尝试（重试）；每次尝试开自己的 llm.turn span ——
+ * —— 一次逻辑回合：可能含多次尝试（重试）与多次换环（fallback 链，R8-P2）；
+ * 每次尝试开自己的 llm.turn span ——
  * 可重试失败按 retryCfg 退避后重试（已吐出文本的尝试不重试，否则会重复输出）；
- * 不可重试的失败原样抛出，由外层（runAgent / 子 agent 运行器）标记根/capability 并收尾。
+ * 重试用尽且错误类可换（`classifyError` 的 retryable 位 —— 与重试共用同一枚举，
+ * 分类器改口径时两处不会漂开）且本环**未吐过字**，换链上下一环重试本回合，
+ * 新 span 记 `llm.fallback` 事件；不可重试/不可换的失败原样抛出，由外层
+ * （runAgent / 子 agent 运行器）标记根/capability 并收尾。
  */
 export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Promise<TurnOutcome> {
   const { args } = ctx;
   const signal = args.signal;
   const retryCfg = ctx.retryCfg;
+  // 链在 run 入口已校验解析（resolveModelChain）；直连 agentLoop 的调用方（单测）没给时
+  // 退化为单环 —— 与「没配 fallbacks」逐字同语义
+  const chain = args.modelChain ?? [{ model: args.model, client: args.client }];
   let turnId: SpanId = '';
   let message: Message | undefined;
+  let modelUsed: string | undefined;
   let aborted = false;
-  let emitted = false; // 本回合是否已吐出过文本（吐过就不能重试，否则会重复输出）
-  for (let attempt = 1; ; attempt++) {
-    turnId = args.recorder.begin('llm.turn', args.model, args.parentSpanId);
-    if (attempt > 1) args.recorder.setAttribute(turnId, 'retry.attempt', attempt);
-    try {
-      // 请求装配外移到 turn-request.ts（三个条件展开的「键在场与否」是语义，单测钉住）
-      const stream = args.client.messages.stream(
-        buildTurnRequest({
-          model: args.model,
-          maxTokens: args.maxTokens,
-          system: ctx.system,
-          apiTools: ctx.apiTools,
-          messages: ctx.messages,
-          signal,
-        }),
-      );
-      stream.on('text', (delta) => {
-        emitted = true;
+  // 换环原因（从哪环/什么错误类换过来的）：写进下一环第一个尝试的 span 事件
+  let fallbackFrom: { from: string; errorType: string } | null = null;
+  for (let linkIdx = 0; linkIdx < chain.length; linkIdx++) {
+    const link = chain[linkIdx]!;
+    let emitted = false; // 本环是否已吐出过文本（吐过就不能重试也不能换环，否则会重复输出）
+    let switchLink = false;
+    for (let attempt = 1; ; attempt++) {
+      turnId = args.recorder.begin('llm.turn', link.model, args.parentSpanId);
+      if (fallbackFrom !== null) {
+        args.recorder.event(turnId, 'llm.fallback', {
+          from: fallbackFrom.from,
+          to: link.model,
+          errorType: fallbackFrom.errorType,
+        });
+        fallbackFrom = null;
+      }
+      if (attempt > 1) args.recorder.setAttribute(turnId, 'retry.attempt', attempt);
+      try {
+        // 请求装配外移到 turn-request.ts（三个条件展开的「键在场与否」是语义，单测钉住）
+        const stream = link.client.messages.stream(
+          buildTurnRequest({
+            model: link.model,
+            maxTokens: args.maxTokens,
+            system: ctx.system,
+            apiTools: ctx.apiTools,
+            messages: ctx.messages,
+            signal,
+          }),
+        );
+        stream.on('text', (delta) => {
+          emitted = true;
+          try {
+            args.onText?.(delta);
+          } catch {
+            /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
+          }
+        });
+        message = await stream.finalMessage();
+        modelUsed = link.model;
+        break;
+      } catch (e) {
+        const errInfo = classifyError(e);
+        args.recorder.end(turnId, { status: 'error', error: errInfo });
+        // 中断：不冒泡、不重试、**不换环**（用户取消不是故障 —— 换厂商再打一发是荒腔）
+        if (isAbortError(e) || signal?.aborted) {
+          aborted = true;
+          break;
+        }
+        // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
+        const canRetry = retryAllowed(retryCfg, attempt, e, emitted);
+        // 后半句只为让 TS 收窄：canRetry 为真时 retryCfg 必然非 null（合取的第一项），但**收窄不会
+        // 穿过变量**，而下面几行要用 retryCfg 的字段（backoffDelay / onRetry）。语义与抽取前一致。
+        if (!canRetry || retryCfg === null) {
+          // 换环判定：还有下一环 + 错误类可换（retryable 位 = rate_limit/server/timeout/connection）
+          // + 本环没吐过字。api/unknown 是请求本身有病，换模型无用，原样抛。
+          if (linkIdx + 1 < chain.length && errInfo.retryable && !emitted) {
+            fallbackFrom = { from: link.model, errorType: errInfo.type };
+            switchLink = true;
+            break;
+          }
+          throw e; // 冒泡：runAgent 或子 agent 运行器负责收尾
+        }
+        const delayMs = backoffDelay(attempt, retryCfg);
+        args.recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
         try {
-          args.onText?.(delta);
+          retryCfg.onRetry({ attempt, delayMs, error: errInfo });
         } catch {
           /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
         }
-      });
-      message = await stream.finalMessage();
-      break;
-    } catch (e) {
-      const errInfo = classifyError(e);
-      args.recorder.end(turnId, { status: 'error', error: errInfo });
-      // 中断：不冒泡、不重试 —— 以确定语义收尾
-      if (isAbortError(e) || signal?.aborted) {
-        aborted = true;
-        break;
-      }
-      // 可重试：配置允许 + 次数未尽 + 判定可重试 + 本次尝试未产出任何文本
-      const canRetry = retryAllowed(retryCfg, attempt, e, emitted);
-      // 后半句只为让 TS 收窄：canRetry 为真时 retryCfg 必然非 null（合取的第一项），但**收窄不会
-      // 穿过变量**，而下面几行要用 retryCfg 的字段（backoffDelay / onRetry）。语义与抽取前一致。
-      if (!canRetry || retryCfg === null) throw e; // 冒泡：runAgent 或子 agent 运行器负责收尾
-      const delayMs = backoffDelay(attempt, retryCfg);
-      args.recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
-      try {
-        retryCfg.onRetry({ attempt, delayMs, error: errInfo });
-      } catch {
-        /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
-      }
-      try {
-        await sleep(delayMs, signal);
-      } catch {
-        aborted = true; // 退避期间被取消
-        break;
+        try {
+          await sleep(delayMs, signal);
+        } catch {
+          aborted = true; // 退避期间被取消
+          break;
+        }
       }
     }
+    if (aborted || message !== undefined || !switchLink) break;
   }
-  return { turnId, message, aborted };
+  return { turnId, message, aborted, model: modelUsed };
 }
 
 /**
  * 回合记账：usage 换算 + 成本估算（未定价记事件 + 回调）+ 关 llm.turn span + token 属性。
  * 预算护栏依赖「记账完成后」的 usage 累计，所以本函数必须先于任何 budget.check 调用。
+ *
+ * `model` 是本回合**实际**成功的模型（TurnOutcome.model）：fallback 换环后与 args.model
+ * 不同 —— 成本估算与未定价探测按错模型算就是记错账（评审 2026-09-27 ② 的核心教训）。
  */
 export function recordTurnUsage<S extends JsonSchema>(
   ctx: LoopContext<S>,
   turnId: SpanId,
   message: Message,
+  model?: string,
 ): void {
   const { args } = ctx;
+  const billedModel = model ?? args.model;
   const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
   if (usage) {
-    const cost = costEstimate(args.model, usage, ctx.pricing);
+    const cost = costEstimate(billedModel, usage, ctx.pricing);
     usage.costEstimate = cost;
     // 未定价（F2）：模型不在价格表内 → 显式记事件 + 回调，别让 maxCostUsd 静默失效
     if (cost === undefined) {
-      args.recorder.event(turnId, 'usage.unpriced', { model: args.model });
-      if (!ctx.unpricedSeen.has(args.model)) {
-        ctx.unpricedSeen.add(args.model);
+      args.recorder.event(turnId, 'usage.unpriced', { model: billedModel });
+      if (!ctx.unpricedSeen.has(billedModel)) {
+        ctx.unpricedSeen.add(billedModel);
         try {
-          args.onUnpricedModel?.({ model: args.model, spanId: turnId });
+          args.onUnpricedModel?.({ model: billedModel, spanId: turnId });
         } catch {
           /* 观测是辅助动作：回调抛错不得影响 run */
         }
@@ -374,6 +445,20 @@ export function recordTurnUsage<S extends JsonSchema>(
   args.recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
   args.recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
   args.recorder.setAttribute(turnId, 'cache_creation_tokens', usage?.cacheCreationTokens ?? 0);
+  // R8-P3a：opt-in 记录 assistant 文本。截断过 `maxEventChars` 同一道闸（它管「多长」，
+  // traceContent 管「记不记」，缺省走成功出参档 DEFAULT_EVENT_CHARS）；纯 tool_use 回合
+  // 没有文本块，不记（空字符串属性只会制造「这回合说了什么」的假信号）。
+  if (args.traceContent === 'full') {
+    const text = textOf(message);
+    if (text !== '') {
+      const cap = args.maxEventChars ?? DEFAULT_EVENT_CHARS;
+      args.recorder.setAttribute(
+        turnId,
+        'output.text',
+        cap === false ? text : truncateWithMark(text, cap),
+      );
+    }
+  }
 }
 
 /** 回合收尾分流：finish = 终止/边界分支（带 stopReason 与收尾文本）；tools = 还有工具要执行 */
@@ -382,10 +467,17 @@ export function recordTurnUsage<S extends JsonSchema>(
  * - `executed`：全部执行完（results 与输入一一对应，顺序保持）；
  * - `suspended`：有需审批的 tool_use 还没有决定 ⇒ **整回合一个工具都没执行**
  *   （全有或全无，见下），`pending` 是缺决定的 tool_use_id 列表，由 loop 收尾为挂起。
+ * - `deferred`：本回合有工具请求「延后」（`ctx.deferUntil`，durable timer）⇒ 这批工具
+ *   **已经跑过但结果全部作废**（不推 tool_result），整批挂起到 `wakeAt`、醒来后重跑。
+ *   `pending` 是请求过延后的那几个 tool_use_id（`wakeAt` 取它们里最早的时刻）。
+ *   ⚠️ 与 `suspended` 的差别只有「为什么等」：审批是**执行前**缺决定（一条都没跑），
+ *   延后是**执行中**提出的（所以同批其他工具的副作用会随着重跑再来一次 —— 见 core/tool.ts
+ *   的 `deferUntil` 契约②）。
  */
 export type TurnToolsOutcome =
   | { kind: 'executed'; results: ToolResultBlockParam[] }
-  | { kind: 'suspended'; pending: string[] };
+  | { kind: 'suspended'; pending: string[] }
+  | { kind: 'deferred'; wakeAt: number; pending: string[] };
 
 /**
  * —— 执行工具：默认全并行，可由 maxToolConcurrency 收窄（C2）；
@@ -428,6 +520,9 @@ export async function executeTurnTools<S extends JsonSchema>(
     ? toolUses.filter((u) => args.resultSchema !== undefined && u.name === SUBMIT_RESULT)
     : toolUses;
 
+  // 延后请求（durable timer）：本回合的收集器 —— 工具经 `ctx.deferUntil` 往它里面记目标时刻。
+  // 批跑完再判（并行下「谁先请求」是不定的，所以判据是**批级**的：有一条请求就整批挂起）。
+  const defer = createDeferRequest();
   const results = await mapWithConcurrency(
     runnable,
     args.maxToolConcurrency ?? Number.POSITIVE_INFINITY,
@@ -436,9 +531,31 @@ export async function executeTurnTools<S extends JsonSchema>(
     // 每次调用一份作用域，并行工具因此互不干扰（run 级只存一个值会被互相覆盖）。
     (use) =>
       withCurrentSpan({ traceId: args.recorder.traceId, spanId: turnId }, () =>
-        executeOneTool(ctx, turnId, use),
+        executeOneTool(ctx, turnId, use, defer),
       ),
   );
+  const wakeAt = defer.earliest();
+  if (wakeAt !== undefined) {
+    // 整批作废（不推 tool_result —— 协议要求每个 tool_use 都有配对，部分执行 + 部分挂起
+    // 会产出残缺历史）：assistant 消息（含这批未决 tool_use）在 loop 里留在历史末尾，
+    // 醒来后由续跑入口重跑它们。事件记在**本回合**的 span 上，与 approval.requested 平行。
+    const pending = defer.ids();
+    args.recorder.event(turnId, 'defer.requested', {
+      wake_at: wakeAt,
+      tool_use_ids: pending,
+      // 被丢弃的 tool_result 条数：> pending.length 说明有**没请求延后**的兄弟工具也跑过了，
+      // 它们的副作用会在醒来重跑时再来一遍（契约②的代价，见 core/tool.ts）
+      discarded: results.length,
+    });
+    if (results.length > pending.length) {
+      console.warn(
+        `[agentia] 延后请求作废整批工具结果：本回合 ${results.length} 条工具已执行，` +
+          `其中 ${results.length - pending.length} 条没有请求延后 —— 它们的副作用会在醒来重跑时重复。` +
+          '要精确控制就让模型单独调用请求延后的那个工具，或把它做成幂等读。',
+      );
+    }
+    return { kind: 'deferred', wakeAt, pending };
+  }
   return { kind: 'executed', results };
 }
 
@@ -450,6 +567,7 @@ async function executeOneTool<S extends JsonSchema>(
   ctx: LoopContext<S>,
   turnId: SpanId,
   use: ToolUseBlock,
+  defer: DeferRequest,
 ): Promise<ToolResultBlockParam> {
   const { args } = ctx;
   const tool = args.tools.find((t) => t.name === use.name);
@@ -490,10 +608,16 @@ async function executeOneTool<S extends JsonSchema>(
     priceOverrides: args.priceOverrides,
     onUnpricedModel: args.onUnpricedModel,
     maxEventChars: args.maxEventChars,
+    traceContent: args.traceContent,
     maxTotalTokens: args.maxTotalTokens,
     maxCostUsd: args.maxCostUsd,
     toolTimeoutMs: args.toolTimeoutMs,
     approval: decision,
+    // 延后请求口（durable timer）：闭包绑死**本条的 tool_use_id** —— 「是谁请求的」
+    // 由此决定（工具只拿到一个 `(at) => void`，它不需要也不该知道自己的 id）。
+    // 取值非法（非有限 / 不在将来）当场抛 → 走下面既有的 catch，包成 is_error 的
+    // tool_result 回给模型（run 照常走，不挂起）—— 见 engine/defer.ts。
+    deferUntil: (at) => defer.request(use.id, at),
   });
   let ok = true;
   let content: unknown = '';

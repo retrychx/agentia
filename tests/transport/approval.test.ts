@@ -84,16 +84,12 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     // concurrency=1：挂起若占槽位，第二个任务永远排不到
     const runner = new AsyncRunner(app, { concurrency: 1, taskSinks: [sink] });
     const t1 = runner.submit('任务1');
-    const t1Suspended = await waitStatus(runner, t1.taskId, 'awaiting_approval');
+    const t1Suspended = await waitStatus(runner, t1.taskId, 'suspended');
 
     assert.equal(spy.calls.length, 0, '未决审批 ⇒ 工具一次都没执行');
     assert.deepEqual(t1Suspended.pendingApprovals, ['tu1'], '待决清单落库');
     assert.equal(t1Suspended.finishedAt, undefined, '挂起不是终态：finishedAt 不置');
-    assert.equal(
-      typeof t1Suspended.approvalPendingSince,
-      'number',
-      '挂起时刻落库（超时/审计的基准）',
-    );
+    assert.equal(typeof t1Suspended.suspendedSince, 'number', '挂起时刻落库（超时/审计的基准）');
     const tail = t1Suspended.spec.messages[t1Suspended.spec.messages.length - 1];
     assert.equal(tail.role, 'assistant', '扩展历史以含未决 tool_use 的 assistant 结尾');
     assert.ok(Array.isArray(tail.content));
@@ -118,7 +114,7 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     const { app } = hitlApp([toolUseMsg('danger', {}, 'tu1'), endTurnMsg('完成')], spy);
     const runner = new AsyncRunner(app);
     const t = runner.submit('活');
-    const suspended = await waitStatus(runner, t.taskId, 'awaiting_approval');
+    const suspended = await waitStatus(runner, t.taskId, 'suspended');
     const firstRunId = suspended.runId!;
 
     const rec = await runner.approve(
@@ -132,7 +128,7 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     assert.equal(typeof decision.decidedAt, 'number', 'decidedAt 缺省由框架填');
     assert.equal(
       decision.requestedAt,
-      suspended.approvalPendingSince,
+      suspended.suspendedSince,
       'requestedAt 回填为挂起时刻（waitedMs 的基准）',
     );
 
@@ -179,13 +175,13 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     const { app } = hitlApp([twoPending, endTurnMsg('完成')], spy, [deploy]);
     const runner = new AsyncRunner(app);
     const t = runner.submit('活');
-    await waitStatus(runner, t.taskId, 'awaiting_approval');
+    await waitStatus(runner, t.taskId, 'suspended');
 
     // 第一批：只批 tu1 —— 决定不齐，不恢复
     const afterFirst = await runner.approve(t.taskId, {
       tu1: { approved: true, reason: '第一次' },
     });
-    assert.equal(afterFirst.status, 'awaiting_approval', '决定不齐 ⇒ 继续等');
+    assert.equal(afterFirst.status, 'suspended', '决定不齐 ⇒ 继续等');
     assert.equal(spy.calls.length, 0);
 
     // 第二批：试图推翻 tu1（应被忽略）+ 批 tu2 —— 齐了，恢复
@@ -239,13 +235,13 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     const { app } = hitlApp(script, spy);
     const runner = new AsyncRunner(app, { approvalTimeoutMs: 60_000 });
     const t = runner.submit('活');
-    await waitStatus(runner, t.taskId, 'awaiting_approval');
+    await waitStatus(runner, t.taskId, 'suspended');
 
     // 把挂起时刻拨到很久以前（InMemory store 返回的是活对象）—— 不起定时器，
     // 超时只在「有人读它」时生效（惰性判定）
     const rec = (await runner.poll(t.taskId))!;
-    assert.equal(rec.status, 'awaiting_approval', '没到点不动作');
-    rec.approvalPendingSince = 0;
+    assert.equal(rec.status, 'suspended', '没到点不动作');
+    rec.suspendedSince = 0;
 
     // 下一次读到（poll） ⇒ 自动全拒 + 重派
     const done = await runner.awaitTask(t.taskId);
@@ -263,19 +259,19 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     const { app } = hitlApp([toolUseMsg('danger', {}, 'tu1'), endTurnMsg('好')], spy);
     const runner = new AsyncRunner(app, { store });
     const t = runner.submit('活');
-    await waitStatus(runner, t.taskId, 'awaiting_approval');
+    await waitStatus(runner, t.taskId, 'suspended');
 
     // 模拟另一个进程重启：新 runner（不同 ownerId）扫描同一 store
     const spy2: Spy = { calls: [] };
     const { app: app2 } = hitlApp([endTurnMsg('好')], spy2);
     const runner2 = new AsyncRunner(app2, { store });
     const dispatched = await runner2.resumePending();
-    assert.equal(dispatched, 0, 'awaiting_approval 不是孤儿，resumePending 不捡');
-    assert.equal((await runner2.poll(t.taskId))!.status, 'awaiting_approval');
+    assert.equal(dispatched, 0, 'suspended 不是孤儿，resumePending 不捡');
+    assert.equal((await runner2.poll(t.taskId))!.status, 'suspended');
 
     // 配了 approvalTimeoutMs 且已过期 ⇒ resumePending 顺手判掉（惰性）并重派
     const rec = (await runner2.poll(t.taskId))!;
-    rec.approvalPendingSince = 0;
+    rec.suspendedSince = 0;
     const runner3 = new AsyncRunner(app2, { store, approvalTimeoutMs: 1000 });
     const expired = await runner3.resumePending();
     assert.equal(expired, 1, '过期的挂起任务被自动判拒重派（计入重派数）');
@@ -292,14 +288,14 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
       const { app: app1 } = hitlApp([toolUseMsg('danger', {}, 'tu1')], spy1);
       const runner1 = new AsyncRunner(app1, { store: new FileTaskStore(file) });
       const t = runner1.submit('活');
-      await waitStatus(runner1, t.taskId, 'awaiting_approval');
+      await waitStatus(runner1, t.taskId, 'suspended');
 
       // 「重启」：新 FileTaskStore（读盘还原）+ 新 runner + 新模型脚本
       const spy2: Spy = { calls: [] };
       const { app: app2 } = hitlApp([endTurnMsg('重启后完成')], spy2);
       const runner2 = new AsyncRunner(app2, { store: new FileTaskStore(file) });
       const loaded = await runner2.poll(t.taskId);
-      assert.equal(loaded!.status, 'awaiting_approval', '挂起状态跨进程可见');
+      assert.equal(loaded!.status, 'suspended', '挂起状态跨进程可见');
       assert.deepEqual(loaded!.pendingApprovals, ['tu1'], '待决清单跨进程不丢');
 
       const rec = await runner2.approve(t.taskId, { tu1: { approved: true } });
@@ -324,9 +320,9 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     const { app } = hitlApp([toolUseMsg('danger', {}, 'tu1')], spy);
     const runner = new AsyncRunner(app);
     const t1 = runner.submit('活', { idempotencyKey: 'k1' });
-    await waitStatus(runner, t1.taskId, 'awaiting_approval');
+    await waitStatus(runner, t1.taskId, 'suspended');
     const t2 = runner.submit('活', { idempotencyKey: 'k1' });
-    assert.equal(t2.taskId, t1.taskId, 'awaiting_approval 同键去重：返回等待中的任务');
+    assert.equal(t2.taskId, t1.taskId, 'suspended 同键去重：返回等待中的任务');
     assert.equal((await runner.list()).length, 1);
   });
 });
@@ -385,7 +381,7 @@ describe('approve 的并发与落库纪律（第八轮复审补缺）', () => {
     const store = new GatedCopyStore();
     const runner = new AsyncRunner(app, { store });
     const { taskId } = runner.submit('任务');
-    await waitStatus(runner, taskId, 'awaiting_approval');
+    await waitStatus(runner, taskId, 'suspended');
 
     // 撑开窗口：第一个 approve 的 save 挂住，此时第二个 approve 进来
     store.holdNextSave();
@@ -415,7 +411,7 @@ describe('approve 的并发与落库纪律（第八轮复审补缺）', () => {
     const store = new GatedCopyStore();
     const runner = new AsyncRunner(app, { store });
     const { taskId } = runner.submit('任务');
-    await waitStatus(runner, taskId, 'awaiting_approval');
+    await waitStatus(runner, taskId, 'suspended');
 
     store.failNextSave = true;
     await assert.rejects(
@@ -426,7 +422,7 @@ describe('approve 的并发与落库纪律（第八轮复审补缺）', () => {
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(spy.calls.length, 0, '落库失败就绝不派发 —— 决定没落库的恢复不算数');
     const rec = await store.get(taskId);
-    assert.equal(rec?.status, 'awaiting_approval', '任务仍在等待，重试 approve 可恢复');
+    assert.equal(rec?.status, 'suspended', '任务仍在等待，重试 approve 可恢复');
   });
 });
 
@@ -479,10 +475,11 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
     };
     store.seed({
       taskId: 'task_expired',
-      status: 'awaiting_approval',
+      status: 'suspended',
       spec: { messages: [{ role: 'user', content: 'x' }] },
       createdAt: Date.now() - 120_000,
-      approvalPendingSince: 0, // 早已超时：任何一次读都会触发惰性判定
+      suspendedSince: 0, // 早已超时：任何一次读都会触发惰性判定
+      suspendedReason: 'approval', // 2026-09-28 ①：超时闸只对 approval 成立
       pendingApprovals: ['tu1'],
       ownerId: 'p999-otherproc',
     });
@@ -495,5 +492,51 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
     assert.equal(runs, 1, '并发惰性恢复只能派发一次 —— 重复执行会是 2');
     const rec = await store.get('task_expired');
     assert.equal(rec?.approvals?.tu1?.reason, '审批超时', '超时决定照常落库');
+  });
+
+  it('timer 挂起的任务：approve 一律 409（原因闸），且不派发、状态不动', async () => {
+    // 反向验证：把闸退回「只看 status」⇒ 这条红 —— approve 会把这台「睡眠机」当审批任务
+    // 恢复，而 approvalsComplete(空待决) === true ⇒ 它被**直接重派续跑**（提前叫醒 + 真实开销）。
+    const store = new InMemoryTaskStore();
+    let runs = 0;
+    const app: AppCallable = {
+      name: 'counting',
+      async run() {
+        runs++;
+        return {
+          run: { runId: `r-${runs}`, status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
+      },
+    };
+    await store.save({
+      taskId: 'task_sleeping',
+      status: 'suspended',
+      spec: { messages: [{ role: 'user', content: 'x' }] },
+      createdAt: Date.now(),
+      suspendedSince: Date.now(),
+      suspendedReason: 'timer',
+      ownerId: 'p1-thisproc',
+    });
+    const runner = new AsyncRunner(app, { store, approvalTimeoutMs: 1000 });
+
+    await assert.rejects(
+      () => runner.approve('task_sleeping', {}),
+      (e: unknown) => {
+        assert.ok(e instanceof TaskApproveError, '应是 409 的 TaskApproveError');
+        assert.equal(e.status, 409);
+        assert.match(e.message, /timer/, '文案要点明挂起原因，不能只说「状态不对」');
+        return true;
+      },
+    );
+    assert.equal(runs, 0, '被拒的审批不许派发');
+    const after = await store.get('task_sleeping');
+    assert.equal(after?.status, 'suspended', '状态不动');
+    assert.equal(after?.suspendedReason, 'timer', '原因不动');
+    assert.equal(
+      after?.suspendedSince !== undefined,
+      true,
+      '挂起时刻不动（超时基准不能被这次调用重置）',
+    );
   });
 });

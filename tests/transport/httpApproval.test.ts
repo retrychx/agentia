@@ -65,7 +65,7 @@ function post(base: string, path: string, body: unknown, headers: Record<string,
   });
 }
 
-/** 提交一个会挂起的任务并等到 awaiting_approval（轮询走真 GET /tasks/:id） */
+/** 提交一个会挂起的任务并等到 suspended（轮询走真 GET /tasks/:id） */
 async function submitAndSuspend(
   base: string,
   headers: Record<string, string> = {},
@@ -76,7 +76,7 @@ async function submitAndSuspend(
   for (;;) {
     const poll = await fetch(`${base}/tasks/${rec.taskId}`, { headers });
     const cur = await readJson(poll);
-    if (cur.status === 'awaiting_approval') return cur.taskId;
+    if (cur.status === 'suspended') return cur.taskId;
     await new Promise((r) => setTimeout(r, 5));
   }
 }
@@ -151,7 +151,7 @@ describe('POST /tasks/:id/approve（HITL）', () => {
     }
   });
 
-  it('409：任务不在 awaiting_approval 状态', async () => {
+  it('409：任务不在 suspended 状态', async () => {
     const spy = { calls: 0 };
     const app = hitlApp([endTurnMsg('ok')], spy);
     const { server, base, handler } = await start(app);

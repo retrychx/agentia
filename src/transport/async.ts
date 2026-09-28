@@ -15,6 +15,8 @@ import { composeTraceEvents } from '../core/trace.js';
 import type { TraceRecordEvent } from '../core/trace.js';
 import { SlotPool } from './slot-pool.js';
 import { approvalExpired, approvalsComplete, fillTimeoutDenials } from './approval-policy.js';
+import { summarizeSuspended, timerDue } from './wake-policy.js';
+import type { SuspendedEntry, SuspendedSummary } from './wake-policy.js';
 import { DrainGate } from './drain-gate.js';
 import { resumeSkipReason } from './resume-policy.js';
 import { TaskWaiters } from './task-waiters.js';
@@ -25,8 +27,11 @@ import type { TaskStreamEvent } from './task-events.js';
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
  *
  * - submit 即回（queued），后台驱动状态机 queued → running → succeeded/failed；
- *   工具标了 `approval: 'required'` 时 run 可在回合间挂起为 **awaiting_approval**
+ *   工具标了 `approval: 'required'` 时 run 可在回合间挂起为 **suspended**
  *   （HITL：非终态、不占并发槽、不触发 TaskSink.onFinished），`approve()` 给齐决定后恢复；
+ *   工具调 `ctx.deferUntil(t)` 时同样挂起（durable timer：`suspendedReason: 'timer'`），
+ *   到点由 `resumePending` / `poll` 的**惰性**扫描唤醒（不起定时器，见 wake-policy.ts）；
+ *   两条挂起路径的**闸按原因分开**（等谁的决定 vs 等到点了没）；
  * - **at-least-once 去重**：同一 idempotencyKey 重复 submit，若上一任务仍在
  *   queued/running/succeeded 则直接返回既有记录，不重复执行（失败可重试新任务）；
  * - run 记录落 TaskStore（v1 InMemoryTaskStore），trace 随 result 一同保留；
@@ -116,17 +121,17 @@ export class TaskStreamError extends Error {
 /**
  * 任务是否**已到终态**（流可以收口了）。
  *
- * ⚠️ 与 `resume-policy.ts` 那个「可续跑」的判定**刻意不同**：那里 `awaiting_approval`
+ * ⚠️ 与 `resume-policy.ts` 那个「可续跑」的判定**刻意不同**：那里 `suspended`
  * 算「不可续跑」（重启扫描不该去动它），这里是**非终态** —— 挂起在等人，人批了它会接着跑，
  * 流必须**继续开着**（关掉的话「等审批结果的前端」正好在最需要的时候断线）。
  */
 function isTerminalTask(rec: TaskRecord): boolean {
-  return rec.status !== 'queued' && rec.status !== 'running' && rec.status !== 'awaiting_approval';
+  return rec.status !== 'queued' && rec.status !== 'running' && rec.status !== 'suspended';
 }
 
 /**
  * `approve` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
- * `awaiting_approval` 状态），HTTP 宿主据此回对应响应。
+ * `suspended` 状态），HTTP 宿主据此回对应响应。
  * module 级 export —— 不进公共导出面（纯宿主内部实现细节）。
  */
 export class TaskApproveError extends Error {
@@ -189,7 +194,7 @@ export interface AsyncRunnerOptions {
    * 审批等待超时（毫秒，HITL）；缺省 0 = 不限（一直等人）。
    *
    * **惰性判定，不起定时器**：`approve` / `poll` / `resumePending` 读到一个
-   * `awaiting_approval` 任务时，若它挂起已超过该值，框架自动把**全部待决项**写成
+   * `suspended` 任务时，若它挂起已超过该值，框架自动把**全部待决项**写成
    * 「denied，reason: '审批超时'」并恢复执行（模型收到拒绝理由，可自行换路）。
    * 也就是说超时只在「有人读它」时生效 —— 没人读的任务不会自己动（进程里不养定时器，
    * 崩溃/重启也不依赖任何在飞回调）。
@@ -382,9 +387,9 @@ export class AsyncRunner {
   /** 查任务当前记录（异步 store 下返回 Promise，调用方 await） */
   poll(taskId: string): MaybePromise<TaskRecord | undefined> {
     const rec = this.store.get(taskId);
-    // 惰性审批超时（HITL）：读到 awaiting 记录时顺手判定 —— 到点就自动全拒并重派
-    if (isThenable(rec)) return rec.then((r) => this.#lazyExpireApproval(r));
-    return this.#lazyExpireApproval(rec);
+    // 惰性挂起闸（HITL 超时 + 到期唤醒）：读到挂起记录时顺手判定，到点就恢复并重派
+    if (isThenable(rec)) return rec.then((r) => this.#lazyGates(r));
+    return this.#lazyGates(rec);
   }
 
   /**
@@ -394,7 +399,7 @@ export class AsyncRunner {
    * 1. **先重放、后实时**：`opts.from`（= SSE 的 `Last-Event-ID` / `?from=`）之后的事件先补发，
    *    再挂实时订阅 —— 「连上时已经跑了一半」的客户端因此也能拿到完整前缀。
    * 2. **终态收口**：任务已终态 ⇒ 补发完缓冲 + 一帧 `end`，**不留**一条永远不会再产出事件的流。
-   *    挂起（`awaiting_approval`）**不是**终态：批了会接着跑，流必须开着（见 isTerminalTask）。
+   *    挂起（`suspended`）**不是**终态：批了（或睡到点了）会接着跑，流必须开着（见 isTerminalTask）。
    * 3. **跨进程不假装**：本进程没有这条流时（别的进程在跑 / 任务早于本进程），发一帧
    *    `unavailable` 后**立即收口**：终态补 `end`，非终态补 `closed`（流级收尾，不是
    *    伪造终态）—— 非终态只发 `unavailable` 就返回的话，这条 SSE 只剩心跳永远挂着。
@@ -461,13 +466,13 @@ export class AsyncRunner {
   }
 
   /**
-   * 审批一个处于 `awaiting_approval` 的任务（HITL）。
+   * 审批一个处于 `suspended` 的任务（HITL）。
    *
    * - **逐 tool_use_id 幂等**：已存在的决定不覆盖（第一次决定赢）—— 重复提交 /
    *   并发点击不会推翻已有决定，也不会让恢复段重复执行；
    * - **并发重入共享在飞那次**：同一任务的并发 approve（双击「批准」/两个审批人
    *   同时批）返回同一个 Promise —— 否则两个调用都在对方落库前读到
-   *   `awaiting_approval`、各自判「决定齐了」、**各派发一次**（同一任务重复执行，
+   *   `suspended`、各自判「决定齐了」、**各派发一次**（同一任务重复执行，
    *   与 resumePending 的闸门同一 bug 类）。被共享的那次覆盖不到的决定不丢：
    *   调用方从返回的记录看到任务仍在等待，重试即并入；
    * - 决定齐了就恢复：`status` 回 `running`、**先落库再派发**（与 `#redispatch`
@@ -503,10 +508,12 @@ export class AsyncRunner {
   ): Promise<TaskRecord> {
     const rec = await this.store.get(taskId);
     if (!rec) throw new TaskApproveError(404, `task 不存在: ${taskId}`);
-    if (rec.status !== 'awaiting_approval') {
+    if (rec.status !== 'suspended' || rec.suspendedReason !== 'approval') {
       throw new TaskApproveError(
         409,
-        `task ${taskId} 当前状态为 ${rec.status}，只有 awaiting_approval 才能审批`,
+        rec.status === 'suspended'
+          ? `task ${taskId} 的挂起原因是 ${rec.suspendedReason ?? '未知'}，只有等人工审批的挂起能审批`
+          : `task ${taskId} 当前状态为 ${rec.status}，只有挂起在等审批的任务才能审批`,
       );
     }
     const now = Date.now();
@@ -518,9 +525,7 @@ export class AsyncRunner {
         ...(d.reason !== undefined ? { reason: d.reason } : {}),
         ...(opts.decidedBy !== undefined ? { decidedBy: opts.decidedBy } : {}),
         decidedAt: now,
-        ...(rec.approvalPendingSince !== undefined
-          ? { requestedAt: rec.approvalPendingSince }
-          : {}),
+        ...(rec.suspendedSince !== undefined ? { requestedAt: rec.suspendedSince } : {}),
       };
     }
     // 惰性审批超时：人的决定先并入（先到先赢），仍空着的待决项由超时兜底成 deny
@@ -534,13 +539,51 @@ export class AsyncRunner {
     // 绝不恢复执行（落不了库的决定不算决定：进程崩在窗口里会丢决定，重启后把
     // 同一件事再判一次、可能改判）。调用方拿到 reject，重试即可。
     await this.store.save(rec);
-    if (complete) void this.#execute(rec);
+    if (complete) {
+      // 离开挂起态（读数纪律②）：决定齐了这就是「醒来」那一刻
+      this.#unmarkSuspended(taskId);
+      void this.#execute(rec);
+    }
     return { ...rec };
   }
 
   /** 已受理但未达终态的任务数（queued + running）—— 健康检查与 drain 共用同一口径 */
   get inFlight(): number {
     return this.active;
+  }
+
+  /**
+   * **本进程可见的挂起读数**（`/healthz` 的 `suspended` 段，配套 6）。
+   *
+   * 口径与 `inFlight` 同一张表：只数**本进程**经手的挂起 —— 跨进程要合并看板请自己聚合，
+   * 不假装是全局面（别的进程挂起的记录这里看不见，重启后由首次扫描对齐，见下）。
+   *
+   * 三条维护纪律（这条读数的唯一风险是**漂移**，所以每条出口都要写清）：
+   * ① 进挂起时登记（`#executeInner` 的挂起分支，与落库同一个分支）；
+   * ② 离开挂起时除名（`approve` / 两条恢复路径 / 终态分支）；
+   * ③ **每次 `resumePending` 扫描按 store 重建** —— 扫描本来就 `list()` 了全表，
+   *    顺手对齐即可，把「漏了某个出口」从永久漂移降级成「下一次扫描前的偏差」。
+   *
+   * 为什么不留成 store 查询（每次 /healthz 扫全表）：`/healthz` 是探针端点（秒级频率），
+   * 而 `list()` 要把**每条记录的完整 trace**取出来（sqlite/redis 下是全部反序列化）——
+   * 拿它当健康检查的代价比它回答的问题大得多。
+   */
+  readonly #suspended = new Map<string, SuspendedEntry>();
+
+  /** 挂起读数：按原因分组的条数 + 最早的目标时刻（无时间挂起时为 `null`） */
+  get suspendedSummary(): SuspendedSummary {
+    return summarizeSuspended(this.#suspended.values());
+  }
+
+  /** 登记一条挂起（纪律①）。原因缺失的记录不进表 —— 分不了组，宁可少数也不猜一个原因出来 */
+  #markSuspended(rec: TaskRecord): void {
+    if (rec.status !== 'suspended' || rec.suspendedReason === undefined) return;
+    this.#suspended.set(rec.taskId, { reason: rec.suspendedReason, wakeAt: rec.wakeAt });
+  }
+
+  /** 除名（纪律②）：任务离开挂起态时调用（恢复、终态都算） */
+  #unmarkSuspended(taskId: string): void {
+    this.#suspended.delete(taskId);
   }
 
   /** 是否已进入优雅停机（drain 之后为 true）—— HTTP 宿主据此对新单回 503 */
@@ -594,10 +637,7 @@ export class AsyncRunner {
     // 凭陈旧快照放行会把同一任务再派发一次。
     const fresh = await this.store.get(rec.taskId);
     const target = fresh ?? rec;
-    if (
-      target.status !== 'awaiting_approval' ||
-      !approvalExpired(target, now, this.approvalTimeoutMs)
-    ) {
+    if (target.status !== 'suspended' || !approvalExpired(target, now, this.approvalTimeoutMs)) {
       return target;
     }
     fillTimeoutDenials(target, now);
@@ -617,16 +657,83 @@ export class AsyncRunner {
         return target;
       }
     }
+    // 离开挂起态（读数纪律②）—— 落在**落库成功之后**：落不了库就不算恢复（没派发，读数也不动）
+    this.#unmarkSuspended(target.taskId);
     void this.#execute(target);
     return target;
   }
 
-  /** poll 的读路径钩子：读到 awaiting 且已超时 ⇒ 惰性判掉（判定见 approval-policy.ts） */
-  #lazyExpireApproval(rec: TaskRecord | undefined): TaskRecord | undefined {
+  /**
+   * poll 的读路径钩子：两条**惰性**的挂起闸各判一次（都不起定时器 —— 没人读的挂起不会自己动，
+   * 与审批超时同一条纪律；崩溃/重启也不依赖任何在飞回调）。
+   *
+   * 写成 `else if` 而不是两个独立的 `if`：两条闸的原因判据本来就互斥（`approval` / `timer`），
+   * 排他在这里是**写出来的**而不是「两个函数各自恰好正确」—— C 之前正是「一个状态兼职两件事」
+   * 让审批那条闸去叫醒了等时刻的 run。
+   */
+  #lazyGates(rec: TaskRecord | undefined): TaskRecord | undefined {
     if (!rec) return rec;
     const now = Date.now();
     if (approvalExpired(rec, now, this.approvalTimeoutMs)) this.#expireAndResume(rec, now);
+    else if (timerDue(rec, now)) this.#wakeDue(rec, now);
     return rec;
+  }
+
+  /** 在飞的到期唤醒（同一任务的重入闸，理由与 inflightApprovals 同款：两条路径都「落库 + 派发」）。 */
+  private readonly inflightWakes = new Map<string, Promise<TaskRecord>>();
+
+  /**
+   * 到期唤醒（durable timer）：读到一条**在睡且到点**的挂起 ⇒ 认领 + 重派，醒来后重跑那一批。
+   *
+   * 与 `#expireAndResume` 逐条同形（进在飞闸、重读一遍、先落库再派发），理由一字不差；
+   * 三处不同，都写在下面：drain 之后不唤（配套 5）、不填任何决定（时间挂起没有待决项）、
+   * 以及**返回值**（见下）。
+   *
+   * @returns 是否真的接管了这次唤醒 —— decline 时 `false`。`resumePending` 的返回值是
+   * 「我推进了几条」，把没推进的算进去就是谎报（drain 之后每次扫描都报「唤醒了 N 条」，
+   * 而它们一条都没动）。⚠️ 审批那条（`#expireAndResume`）的计数口径略宽（在飞也计入），
+   * 那是既有行为、本批不动它。
+   */
+  #wakeDue(rec: TaskRecord, now: number): boolean {
+    // 配套 5（drain 后不唤醒）：停机是「不再往前推」，与 submit 在 drain 后回 503 同一条纪律。
+    // 不设这道闸，一条天级的 sleeping run 会在停机窗口里被叫起来接着跑 —— 部署卡在它身上。
+    // （重启后由新进程的首次 resumePending 唤醒：那时停机窗口早过去了。）
+    if (this.#drain.isDraining) return false;
+    if (this.inflightWakes.has(rec.taskId)) return false;
+    const run = this.#wakeDueInner(rec, now).finally(() => {
+      this.inflightWakes.delete(rec.taskId);
+    });
+    this.inflightWakes.set(rec.taskId, run);
+    // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
+    run.catch(() => undefined);
+    return true;
+  }
+
+  async #wakeDueInner(rec: TaskRecord, now: number): Promise<TaskRecord> {
+    // 进闸后**重读一遍**再判（与 #expireAndResumeInner 同因）：闸只互斥「进入」，
+    // 挡不住「进闸前已取到的旧副本」——异步 store 的 get 有往返，凭陈旧快照放行会重复派发。
+    const fresh = await this.store.get(rec.taskId);
+    const target = fresh ?? rec;
+    if (!timerDue(target, now)) return target;
+    target.status = 'running';
+    target.ownerId = this.ownerId;
+    let saved: MaybePromise<void>;
+    try {
+      saved = this.store.save(target);
+    } catch {
+      return target; // 同步落库失败则不派发（先落库再派发，见 #expireAndResumeInner）
+    }
+    if (isThenable(saved)) {
+      try {
+        await saved;
+      } catch {
+        return target;
+      }
+    }
+    // 离开挂起态（读数纪律②）—— 落库成功之后才算醒来
+    this.#unmarkSuspended(target.taskId);
+    void this.#execute(target);
+    return target;
   }
 
   /** 任务终态唤醒与等待：实现见 task-waiters.ts（`notify` / `wait`） */
@@ -635,7 +742,7 @@ export class AsyncRunner {
     this.#drain.signalIdle(() => this.active === 0);
   }
 
-  /** 等到任务终态；超时抛错。`awaiting_approval` 不是终态 —— 继续等（人在路上）。 */
+  /** 等到任务终态；超时抛错。`suspended` 不是终态 —— 继续等（人在路上 / 时刻未到）。 */
   async awaitTask(
     taskId: string,
     opts: { timeoutMs?: number; intervalMs?: number } = {},
@@ -663,9 +770,12 @@ export class AsyncRunner {
    * （running 视为进程中断）。返回重派数量（异步 store 下返回 Promise<number>）。
    * 幂等键去重照常生效。
    *
-   * `awaiting_approval`（HITL）**不捡**：它在等人、不是孤儿（进程没死也可能挂着）。
-   * 但读到它会做**惰性超时判定**：配了 `approvalTimeoutMs` 且已超时的挂起任务
-   * 自动全拒（`denied, reason: '审批超时'`）并重派。
+   * `suspended`（HITL）**不捡**：它在等人、不是孤儿（进程没死也可能挂着）。
+   * 但读到它会做**惰性判定**，两条闸各管各的原因：
+   * - `approval`：配了 `approvalTimeoutMs` 且已超时的挂起任务自动全拒
+   *   （`denied, reason: '审批超时'`）并重派；
+   * - `timer`：`wakeAt` 已到的睡着的任务**唤醒并重派**（醒来重跑那一批）。
+   *   ⚠️ `drain()` 之后不唤醒（配套 5）：停机窗口里天级的 run 被叫起来接着跑 = 部署卡死。
    *
    * **认领先落库、再派发**（见 `#redispatch`）；异步 store 的认领落库失败会让本方法
    * reject —— 宁可让调用方看见「续跑没做」，也不要静默放出一批会被重复执行的任务。
@@ -729,15 +839,33 @@ export class AsyncRunner {
    */
   #redispatch(recs: TaskRecord[], staleAfterMs: number): number | Promise<number> {
     const now = Date.now();
-    // 惰性审批超时扫描（HITL）：awaiting_approval **不捡走续跑**（它在等人，不是
+    // 挂起读数的对齐（读数纪律③）：扫描本来就拿到了全表，顺手把 `/healthz` 的读数
+    // 按 store 重建一遍 —— 于是「漏了某个除名出口」只是下一次扫描前的偏差，不会永久漂移。
+    // 顺带把**他进程**（或本进程上一世）留下的挂起也算进本进程可见的那些（口径见
+    // suspendedSummary 的注释：本进程看得见的记录，不假装是全局面）。
+    this.#suspended.clear();
+    for (const rec of recs) {
+      if (rec.status !== 'suspended' || rec.suspendedReason === undefined) continue;
+      this.#suspended.set(rec.taskId, { reason: rec.suspendedReason, wakeAt: rec.wakeAt });
+    }
+    // 惰性审批超时扫描（HITL）：suspended **不捡走续跑**（它在等人，不是
     // 孤儿 —— 崩溃续跑语义不适用于「等审批」），但读到它时顺手判超时：
     // 到点自动全拒并重派（框架补的 deny 决定先进 store，再进引擎）。
     let expired = 0;
     for (const rec of recs) {
-      if (rec.status !== 'awaiting_approval' || !approvalExpired(rec, now, this.approvalTimeoutMs))
+      if (rec.status !== 'suspended' || !approvalExpired(rec, now, this.approvalTimeoutMs))
         continue;
       expired++;
       this.#expireAndResume(rec, now);
+    }
+    // 到期唤醒（durable timer）：在睡且到点的 timer 挂起 ⇒ 认领 + 重派（醒来重跑那一批）。
+    // 与上面那条循环并列而不是合并：两条闸的**原因判据互斥**，各读各的一眼可见；
+    // 合并成一个循环会让「谁的责任」藏进条件里。drain 之后不唤（#wakeDue 里那道闸）。
+    let woken = 0;
+    for (const rec of recs) {
+      if (!timerDue(rec, now)) continue;
+      // 只算**真接管**的那些（drain / 已在飞 ⇒ 不算）—— 返回值是「推进了几条」的承诺
+      if (this.#wakeDue(rec, now)) woken++;
     }
     // 认领判定外移到 resume-policy.ts：跳过原因具名化（terminal / own-process / too-fresh），
     // 每条规则与边界都由那份纯函数的单测钉住
@@ -757,8 +885,8 @@ export class AsyncRunner {
         void this.#execute(rec);
       }
     }
-    if (claims.length === 0) return pending.length + expired;
-    return Promise.all(claims).then(() => pending.length + expired);
+    if (claims.length === 0) return pending.length + expired + woken;
+    return Promise.all(claims).then(() => pending.length + expired + woken);
   }
 
   /**
@@ -768,7 +896,7 @@ export class AsyncRunner {
    */
   async #execute(rec: TaskRecord): Promise<void> {
     // 同步认领（在任何 await 之前）：同键并发提交的第二个 submit 立刻能看见它。
-    // 挂起（awaiting_approval）**不释放** —— 那是「等人工」，不是终态；放了会让同键再起一个新任务。
+    // 挂起（suspended）**不释放** —— 那是「等人工」，不是终态；放了会让同键再起一个新任务。
     const key = rec.idempotencyKey;
     if (key !== undefined && !this.#claims.has(key)) this.#claims.set(key, rec);
     // 同步开流（在任何 await 之前）：`GET /tasks/:id/stream` 从这一刻起可以订阅。
@@ -782,13 +910,13 @@ export class AsyncRunner {
       // 内层 finally 保证回调万一抛错（理论上被吞掉）也不泄漏在飞计数。
       try {
         // HITL：挂起不是终态 —— onFinished 的承诺是「任务达终态」，对它不开火
-        if (rec.status !== 'awaiting_approval') await this.#notifySinks(rec);
+        if (rec.status !== 'suspended') await this.#notifySinks(rec);
       } finally {
         this.active--;
         // 终态即清理 HITL 会话回写快照（挂起则保留 —— 恢复段成功后还要用它）
-        if (rec.status !== 'awaiting_approval') this.sessionInputs.delete(rec.taskId);
+        if (rec.status !== 'suspended') this.sessionInputs.delete(rec.taskId);
         // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
-        // 挂起也唤醒：等待者看一眼状态继续等（awaiting_approval 不是终态），无副作用。
+        // 挂起也唤醒：等待者看一眼状态继续等（suspended 不是终态），无副作用。
         this.#taskWaiters.notify(rec.taskId);
         // 任务流收口（挂起不算终态 —— 见 isTerminalTask 的注释：批了会接着跑，流得开着）。
         if (isTerminalTask(rec)) this.#streams.markDone(rec.taskId);
@@ -799,7 +927,7 @@ export class AsyncRunner {
         // 同键从此永远命中那条老记录）。
         if (
           key !== undefined &&
-          rec.status !== 'awaiting_approval' &&
+          rec.status !== 'suspended' &&
           this.#claims.get(key)?.taskId === rec.taskId
         ) {
           this.#claims.delete(key);
@@ -863,8 +991,12 @@ export class AsyncRunner {
               `任务 ${rec.taskId} 带了 options.sessionId，但本 runner 未配 sessionStore`,
             );
           }
-          // HITL 恢复段（带审批决定重进引擎）的判定 —— 决定会话注入与回写的走向（见下）
-          const isResume = rec.approvals !== undefined;
+          // **续跑段**的判定（不只是 HITL：时间挂起醒来也是续跑）—— 决定会话注入、
+          // 链路关联与会话回写三条口径的走向（见下）。判据**不能**只看 `approvals`：
+          // timer 挂起醒来时没有任何决定（approvals 是空的），但 `rec.spec.messages` 同样是
+          // 挂起段落库的**扩展历史**（末尾是含未决 tool_use 的 assistant）—— 那三条口径
+          // 一字不差地适用（`suspendedSince` 是「这条记录挂起过」的痕迹：挂起时写、终态才清）。
+          const isResume = rec.approvals !== undefined || rec.suspendedSince !== undefined;
           // runTimeoutMs 到点即 abort（对尊重 signal 的客户端是真中止）；与调用方
           // 可能传入的 signal 合成，任一触发都中止本次 run。
           const timeoutAc = new AbortController();
@@ -903,8 +1035,8 @@ export class AsyncRunner {
             ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
             // 恢复段的 trace 是一棵**新树**，经 traceContext link 挂到上一段 runId
             // （spec §9.2 的入站关联机制）——「挂起段 → 恢复段 → …」在观测后端连成一条链。
-            // 判定依据：有决定且已有上一段 runId = 本次是恢复执行；首次执行两者皆无。
-            ...(rec.approvals !== undefined && rec.runId !== undefined
+            // 判定依据：本段是续跑段（isResume）且已有上一段 runId；首次执行两者皆无。
+            ...(isResume && rec.runId !== undefined
               ? { traceContext: { traceId: rec.runId } }
               : {}),
             rethrow: false, // 硬失败也以 failed 记录落库
@@ -921,12 +1053,12 @@ export class AsyncRunner {
             rec.runId = out.run.runId;
             rec.result = out.result;
             rec.error = out.result.error;
-            if (out.result.stopReason === 'awaiting_approval' && out.result.suspendedMessages) {
+            if (out.result.stopReason === 'suspended' && out.result.suspendedMessages) {
               // HITL 挂起：扩展后的消息历史（末尾是含未决 tool_use 的 assistant 消息）
               // 与待决清单、挂起时刻一起落库 —— approve / 惰性超时 / 重启后都靠它们。
               // 槽位照常释放（finally）、onFinished 不触发（#execute 的出口判断）、
               // finishedAt 不置（下面 finally 里按状态跳过）：它不是终态。
-              rec.status = 'awaiting_approval';
+              rec.status = 'suspended';
               // 「本轮用户输入」快照必须在 overwrite **之前**取 —— 此刻 rec.spec.messages
               // 还是原始输入；恢复段成功后由 #appendResumedSession 拿它 + finalText 补写会话。
               // 只在首个挂起段快照（!isResume）：恢复段再挂起时 spec.messages 已是
@@ -940,12 +1072,24 @@ export class AsyncRunner {
               }
               rec.spec = { ...rec.spec, messages: out.result.suspendedMessages };
               rec.pendingApprovals = out.result.pendingApprovals;
-              rec.approvalPendingSince = Date.now();
+              rec.suspendedSince = Date.now();
+              // 挂起原因（2026-09-28 ①）：从结果形状里取，**不写死** ——
+              // 写死成 'approval' 会让将来新增的挂起原因在落库这一步被悄悄改写成审批。
+              rec.suspendedReason = out.result.suspendedReason;
+              // 目标时刻（时间挂起才有）—— 同上，从结果形状里取，不按原因反推
+              rec.wakeAt = out.result.wakeAt;
+              // 挂起读数（纪律①）：与落库**同一个分支**登记，不另起一处判断
+              this.#markSuspended(rec);
             } else {
               rec.status = out.run.status;
               // 终态后清掉挂起痕迹（决定保留：审批记录是审计的一部分，随任务走）
               rec.pendingApprovals = undefined;
-              rec.approvalPendingSince = undefined;
+              rec.suspendedSince = undefined;
+              rec.suspendedReason = undefined;
+              rec.wakeAt = undefined;
+              // 离开挂起态（读数纪律②）：两处恢复路径负责「还没跑到终态」的那一半，
+              // 这一支负责「跑到了终态」的那一半（兜底：恢复失败也会落到这里）
+              this.#unmarkSuspended(rec.taskId);
               // HITL 恢复段 + 会话：本段没把 session 交给 run 层（见上面 callOpts 注释），
               // 会话回写由 runner 自己补 —— 口径与 run.ts 的 appendSession 一致。
               if (isResume && out.run.status === 'succeeded') {
@@ -963,7 +1107,7 @@ export class AsyncRunner {
         }
       } finally {
         // HITL：挂起不是「完成」—— finishedAt 不置（等待中的任务没有结束时刻）
-        if (rec.status !== 'awaiting_approval') rec.finishedAt = Date.now();
+        if (rec.status !== 'suspended') rec.finishedAt = Date.now();
         // 落库失败不遮罩、槽位必须释放：释放放在内层 finally，即便落库实现抛错也必达
         try {
           await this.#safeSave(rec, 'outcome');

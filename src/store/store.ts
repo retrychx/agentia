@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
 import type { SpanError } from '../core/trace.js';
-import type { RunStatus } from '../core/run.js';
+import type { RunStatus, SuspendedReason } from '../core/run.js';
 import type { ApprovalDecision } from '../core/tool.js';
 import type { RunSpec } from '../engine/spec.js';
 
@@ -55,13 +55,30 @@ export interface TaskRecord {
   /**
    * HITL：当前**待决**的 tool_use_id 列表（挂起时由引擎写进结果、宿主落库）。
    * 审批方据此知道该批哪些 id；决定齐了之后宿主把任务恢复执行。
+   * ⚠️ 时间挂起（`suspendedReason === 'timer'`）也写这个位 —— 装的是**请求延后**的那几条
+   * （它们是「在等」的那批；醒来重跑的是整个回合，见 `core/tool.ts` 的 `deferUntil` 契约②）。
    */
   pendingApprovals?: string[] | undefined;
   /**
    * HITL：进入挂起的时刻（epoch ms）。`approvalTimeoutMs` 的**惰性**判定与
    * `approval.decided` 事件的 `waitedMs` 都以它为基准。
    */
-  approvalPendingSince?: number | undefined;
+  suspendedSince?: number | undefined;
+  /**
+   * 挂起原因（2026-09-28 ①）：`approval` = 等人工决定、`timer` = 等一个时刻。
+   * **随记录落库**（与 `suspendedSince` 同批）：进程重启后靠它决定用哪条闸 ——
+   * 审批超时只对 `approval` 成立，到期唤醒只对 `timer` 成立。
+   */
+  suspendedReason?: SuspendedReason | undefined;
+  /**
+   * 时间挂起的目标时刻（epoch ms，2026-09-28 ① 的 timer 侧）：到点由到期扫描唤醒
+   * （`resumePending` / `poll` 的惰性路径，判据见 `transport/wake-policy.ts`）。
+   * **随记录落库** —— 「睡到后天下午三点接着跑」这件事只有它活得比进程久。
+   *
+   * 恒缺省的有两类：等审批的挂起（人什么时候批就是什么时候）与一切非挂起记录；
+   * 记录离开挂起态时一并清掉（`#executeInner` 的终态分支与两条恢复路径）。
+   */
+  wakeAt?: number | undefined;
 }
 
 export interface TaskStore {
@@ -105,8 +122,8 @@ export class InMemoryTaskStore implements TaskStore {
   private evict(): void {
     for (const [taskId, rec] of this.byTask) {
       if (this.byTask.size <= this.maxRecords) break;
-      // awaiting_approval 同样不可淘汰：它不在跑、但也没完 —— 淘汰了审批决定就无家可归
-      if (rec.status === 'queued' || rec.status === 'running' || rec.status === 'awaiting_approval')
+      // suspended 同样不可淘汰：它不在跑、但也没完 —— 淘汰了审批决定就无家可归
+      if (rec.status === 'queued' || rec.status === 'running' || rec.status === 'suspended')
         continue;
       this.byTask.delete(taskId);
       if (rec.idempotencyKey && this.byKey.get(rec.idempotencyKey) === taskId) {

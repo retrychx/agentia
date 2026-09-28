@@ -209,7 +209,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 > 「trace 作重放基底」已落地，不再是开放问题：`traceToMessages` 把 trace 线性化为 messages
 > （R6 / v0.2.0，见 §10 2026-09-11），`forkMessages(trace, { atTurn, append? })` 支持在主循环
 > 第 N 回合截断分叉、拼新消息喂回 `app.run`（2026-09-16，见 §10）。两者同源有损
-> （trace 不记 assistant 原文）：产物跑的是**新 run**，不是接着原 run 续跑。
+> （trace **缺省**不记 assistant 原文 —— opt-in 例外见 §10 2026-09-27 ④ `traceContent`）：
+> 产物跑的是**新 run**，不是接着原 run 续跑。
 
 ## 10. 决策记录
 
@@ -2006,6 +2007,12 @@ assistant 消息」的消息历史落库（`TaskRecord.spec.messages`），恢�
 因此全部消解：状态有了（`awaiting_approval`）、落的就是消息数组本身（无损）、不走
 `traceToMessages`（不经 trace 重放）。
 
+> ⚠️ **状态值改名（2026-09-28 ①）**：本节（以及本文件其他正文）出现的 `awaiting_approval`
+> 一律读作 **`suspended`**，且它的「为什么挂起」由新字段 **`suspendedReason === 'approval'`**
+> 承载；引擎 `AgentStopReason` 与 `RunStatus` 的成员名同步从 `awaiting_approval` 改成
+> `suspended`。旧→新映射、破坏面与理由见 **§10 2026-09-28 ①**。正文原样保留（体例：只增不改，
+> 改名不重写记载它当时的判断）。
+
 **② 为什么回合级全有或全无**：协议要求每个 tool_use 都有配对 tool_result。一个回合里
 **任何一个**需审批的 tool_use 没有决定 ⇒ 整回合**一个工具都不执行**、不推任何 tool_result ——
 部分执行 + 部分挂起会产出协议上残缺的历史（配不平的 tool_use），恢复时无法重放。
@@ -3523,8 +3530,413 @@ sha256 逐字节一致。
 （由 ① 的告警兜底接住）。落 integrations 层（只依赖 core + `node:fs`，零新增依赖），
 与 `createOtlpExporter` 同组登记进公共面。
 
+### 2026-09-27 ③：**模型 fallback 链落在引擎层**（不在 client 层组合）—— 换环 = 新 llm.turn，成本归因天然正确（R8-P2）
+
+起因是规划评审（docs/plans/2026-09-27-evolution-r8.md 修订记录②）：初稿把 fallback 设计成
+`ModelClient` 组合器（包装 client、静默换厂商、不记账）——两条硬伤：① span 的 model 与成本
+都取自 run spec 的 `args.model`（`turn.ts` 的 begin / `costEstimate`），组合器静默换 client
+后**记错账**（归错模型、按错价目表、`usage.unpriced` 不响）；② `classifyError` 实为 7 类，
+初稿漏了 `timeout`（retryable: true，恰恰是最该换的那类）与 `aborted`（用户取消可能被打到
+第二个厂商）。
+
+⇒ 落地为**引擎级**链路：`fallbacks: [{ model, client? }]`（RunAgentOptions / AppOptions /
+RunInvocationOptions 三层同语义，app 级缺省 + run 级覆盖）。要点：
+
+1. **每环独立 llm.turn span**（model 名正确 ⇒ 成本/未定价探测天然归对）；切换在新 span 记
+   `llm.fallback { from, to, errorType }` 事件（与既有 `llm.retry` 同级同形）；`TurnOutcome`
+   带出**实际成功**的 model，`recordTurnUsage` 按它算账。
+2. **换环判定与重试共用 `retryable` 位**（不是另写一份类清单）：rate_limit / server /
+   timeout / connection 才换；api / unknown 是请求本身有病，原样失败收尾；
+   `aborted` **永不换**。重试先于换环（同环内 maxRetries 用尽才落下一环）。
+3. **「吐过字不换」**与 retryAllowed 的 `!emitted` 是同一护栏（换环重跑会让用户看到
+   两段拼起来的回答）；**每回合从主环重新起**（fallback 是单回合韧性，不把后续回合
+   钉在备用模型上）；子 agent / skill 子循环**不继承**主 run 的链（能力层显式给模型，
+   继承会让子 agent 悄悄换厂商）。
+4. 链环 `client` 缺省复用本次 run 的 client；run **入口**校验（`resolveModelChain` 在
+   runAgent 的 try 之外 —— 配置错响亮抛 TypeError，不被收成「一条失败的 run」）：
+   空 model / 死 client（持久化 store JSON 往返后的空壳）都在发请求前报出来。
+   快照记 `config.fallbacks`（只记备用模型名，client 是对象不序列化）。
+
+门禁 `tests/engine/fallback.test.ts`（12 条）；反向验证 4 变异各恰好咬死对应用例
+（摘 `!emitted` / abort 分支失效 / retryable→true / 成本按 args.model 算）。
+
+### 2026-09-27 ④：**opt-in 记录 assistant 文本**（`traceContent: 'full'`）—— 「trace 不记 assistant 文本」这条有损边界从「恒真」改成「缺省真」（R8-P3a）
+
+动机：trace → 训练数据导出（P3b）需要模型正文，而 trace 历来不记（llm.turn 只有
+usage/事件，replay/fork 的有损边界声明在 `engine/replay.ts`）。要点：
+
+1. **缺省不记，现状逐字不变** —— 旋钮是 `'full'` 单值枚举（不留布尔将来加档的坑），
+   只开在需要导出的 run 上。
+2. **旋钮分工**：裸 `maxEventChars`（`tool-events.ts`）管「单段负载多长」—— `output.text`
+   过同一道截断闸（缺省走成功出参档 2000）；`traceContent` 管「记不记」。`traceLimits`
+   下只有 `maxEvents`（管「多少条」），与两者正交。不进 `limits.ts` 真源表：它是字符串
+   枚举不是数值旋钮，「0 是什么」不适用。
+3. **纯 tool_use 回合不记**（无文本块）—— 空串属性是「这回合说了什么」的假信号。
+4. **透传子循环**：走 `forwarded.ts` 真源（ToolRunContext 新键被迫归类的机制咬住），
+   同一棵调用树同口径 —— 否则导出物里子 agent 的回合全是缺口。
+5. **代价写进文档**：实测 3 回合 × 约 1600 字符输出的 run，trace 5 564 → 11 010 字节
+   （约 2×）；模型输出进入脱敏面，与配方 2.4（observability.md）互相指。
+   §9.4 与 replay.ts 的「不记 assistant 文本」声明同步改为「缺省不记」。
+
+门禁 `tests/engine/trace-content.test.ts`（7 条）；反向验证 3 变异（记录闸摘掉 /
+不透传子循环 / 恒记）各恰好咬死对应用例。
+
+### 2026-09-27 ⑤：**`agentia export`（trace → 训练数据）**—— 导出器对「缺席」的态度：标注，不填假内容（R8-P3b）
+
+harvest 的孪生（它产 eval 用例骨架，这里产训练数据 JSONL）。核心决策都在
+「trace 里没有什么就怎么办」上：
+
+1. **原始输入不在 trace 里** ⇒ 首条 user 恒为占位，且 `meta.incomplete` 标 `'input'` ——
+   占位要自陈（词里带「训练前请补写」），不装成真输入。
+2. **assistant 文本缺口不造占位**（与 harvest 相反！harvest 的占位是给人看的脚手架注释，
+   这里的占位会进训练集 = 投毒）—— 终端回合没记到文本就**整条 assistant 不产生**，
+   标 `'assistant-text'`。纯 tool_use 回合本来就没文本，**不算缺口**（判定口径：
+   无 tool_use 又无文本的回合缺文本才是真缺口）。
+3. **tool_use ↔ tool_result 配对合法是硬要求**（残缺历史喂训练是静音投毒）：
+   缺输出补 is_error 占位块；有输出配不上对的跳过并计数 `meta.droppedOutputs`。
+4. **过滤语义**：`--min-score` 排除没分数的 run（没判过 ≠ 及格）；`--ok-only` 排除
+   失败 run。全部滤光要报错（静默产空文件是最难查的那种错）。
+5. 子 agent 嵌套回合不进主线（其能力出参已在主线 tool_result 里 —— 那是主线的合法
+   视角），数量记 `meta.nestedTurns`（与 harvest 同口径）。
+
+框架侧 `src/eval/export.ts` module 级（不进公共面，同 harvestEvalCase 纪律）；CLI 侧
+去类型移植副本 + 逐字对拍（`packages/cli/test/export.test.mjs`）。门禁：框架侧
+`tests/eval/export.test.ts` 6 条（夹具全是真引擎跑出来的 trace）+ CLI 侧 6 条（含对拍）。
+
+### 2026-09-27 ⑥：**租户归因 labels**（R8-P4）—— trace 根随便记，进 metrics 走「opt-in + cap」双闸门
+
+动机：拿框架做 SaaS 的第一张账单是「哪个客户烧了多少钱」。三层同语义
+（`RunAgentOptions.labels` / `AppOptions.labels` / `RunInvocationOptions.labels`）。决策：
+
+1. **trace 侧无基数问题**：`labels` 落 run 根的 `labels.<key>` 属性，随便加；
+   配置快照只记**键名**（`config.labels`），值可能含租户标识不复制。
+2. **与 `RunSpec.source` 正交不动**：source 是框架自己写的**触发来源**审计
+   （sync / async / schedule:<id>，单值）；labels 是宿主写的**业务维度**（多值）。
+   不合并、不互相映射。
+3. **metrics 侧双闸门**：`metricsSink({ labelKeys })` 显式点名哪些键上指标标签
+   （缺省 `[]` 一个都不上）—— 光 opt-in 挡不住「明知几千租户偏要上」，所以每键
+   相异值数还有 `maxLabelValues`（缺省 100，**必须为正数**，limits 真源表登记），
+   超出归入 `__other__`（与 `maxCapabilities` / `maxModels` / `maxScores` 同款折叠语义：
+   只丢标签粒度不丢量）；被折叠数见 `snapshot().droppedLabelValues` 与
+   `dropped_keys{kind="label:<key>"}`。labelKeys 要过 Prometheus 标签名校验
+   （`/^[a-zA-Z_][a-zA-Z0-9_]*$/`），非法名/重复键构造期抛错。
+4. **出口形态**：`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total`
+   四个 run 级家族在全局样本（无 label，仍是总量）之外追加带标签样本
+   （Prometheus 文本与 OTLP 同口径）。⚠️ 已知查询侧坑（写进 usage-guide）：开了
+   labelKeys 后 `sum(agentia_runs_total)` 会把全局行与分行重复计数 —— 总量用不带
+   标签的序列。带标签的 token 样本是**四类之和**（combo 标签不再叉乘 kind）。
+5. **刻意不做 per-label 时长直方图**：时长维度是 cap × windowSize 的又一份乘法
+   （每个 combo 一个环形窗口 + 直方图），「哪个租户慢」用 trace 侧的 `labels.*`
+   属性查（那才是逐条的归处长处）；`runLabels` 累加器因此只有四个计数、O(1)。
+6. **入口校验同 resolveModelChain 纪律**：labels 键空 / 值非字符串在 run 入口
+   （try 之外）抛 TypeError，不收成「一条失败的 run」。空串值合法（「租户未知」
+   是有意义的值）。`AppOptions.labels` 被单次 run 覆盖时是**整体替换**不是合并
+   （合并会让「这次不带 plan」说不出口）。
+
+门禁 `tests/engine/run-labels.test.ts`（7 条）+ `tests/integrations/metrics.test.ts`
+的 R8-P4 块（7 条）；反向验证 2 变异各恰好咬死对应用例（摘掉 cap 折叠 ⇒
+`maxLabelValues=1` 折叠用例与 reset 用例红；引擎侧摘掉 labels 落根 ⇒ run-labels
+3 条红）。公共面新增 `RunLabelMetrics` 类型导出（`MetricsSnapshot.runLabels` 的值型）。
+
+### 2026-09-27 ⑦：**MCP 反向桥**（`createMcpServer`，R8-P5）—— 把能力菜单暴露成 MCP server，trace 叙事不破
+
+动机：生态位跃迁 —— 框架从「agent 的运行容器」变成「生态里的工具供应商」：`@Tool`
+集合暴露成 MCP server 后，Claude Code / Cursor / 任何 MCP 宿主能直接调。决策：
+
+1. **落点 `engine/mcp-server.ts`**（不是 integrations）：它只允许依赖 core
+   （layering 守卫的 ALLOWED），而 server 每次 tools/call 要造一棵 trace、需要 engine 的
+   `TraceRecorder`；engine → integrations 这条边已存在（取默认 ModelClient），反向即成环；
+   transport 够不到 integrations。engine 是分层图上唯一能同时够到 core 与 integrations 的层。
+2. **app 入参是鸭子类型** `{ tools: AgentTool[] }`（`AgentApp` 结构满足 —— `app.tools`
+   就是装配后、过中间件的那份菜单）：engine 不能 import toolkit，鸭子类型让「菜单来自
+   装配层」这件事不引入新依赖边。e2e 夹具刻意走 `createApp` + `@Tool` 真装配来钉这条。
+3. **协议范围只到 tools**：initialize / notifications/initialized / tools/list /
+   tools/call + ping；其余 method 一律 -32601，params 形状坏 -32602。不做（YAGNI，与
+   正向桥同一张清单）：resources / prompts / sampling / SSE 推送 / 会话强制校验。
+4. **两个传输只用标准库**：stdio = 换行分隔 JSON-RPC（stdout 是协议面，日志只去
+   stderr）；StreamableHTTP = POST 收、回 application/json（简单应答不上 SSE），
+   initialize 铸 `mcp-session-id` 头但**不校验**（无状态 server：带了接受、不带也
+   服务 —— 宽容选择，写进 usage-guide §7）；GET → 405、DELETE → 200；客户端断连
+   中止该次调用的 `signal`。`server` 选项可把 handler 挂进既有 http.Server
+   （不替它 listen，close 只摘 handler）。
+5. **trace 叙事不破**：每次 tools/call 造一个 TraceRecorder —— run 根
+   `mcp.tools/call` + capability span（name = 工具名）+ 与引擎同形状的
+   `tool.input` / `tool.output` 事件（复用 `tool-events.ts` 的载荷装配），收尾投递
+   `opts.sinks`（抛错吞 + console.warn，与 flushSinks 同款）；initialize / tools/list
+   不建 trace。**偏差更正一处设计稿断言**：设计稿说 metrics 的 capabilityKindOf 会把这种
+   span「归为 tool」—— 读码核实后它不是：无 skill/subagent 属性的 capability span 归为
+   `capability:<name>` 标签（`capabilityKindOf` 的三值里根本没有 'tool'；`tool:` 标签来自
+   turn 上的 `tool.output` 事件，而 metrics 只扫 llm.turn 的事件）。「自动进能力指标」
+   本身成立，只是标签名是 `capability:` 前缀。
+6. **结果映射与正向桥方向对称**：string → text 块、其他 JSON 化、抛错 → 协议层成功 +
+   `isError: true`（正向桥的连接器正好把 isError 转回抛错）。`toolTimeoutMs` 复用引擎
+   同款语义（withTimeout 实测耗时判定 + 超时 abort `abandoned`），故不进 limits 真源表。
+7. **鉴权只给缝**：http 侧 `auth` 钩子在读 body 之前、抛错即 401（原文只进服务端日志）——
+   与 `createHttpHandler` 的 `authenticate` 同纪律；stdio 信任父进程。`client` 缺省
+   **惰性**走 `createAnthropicClient()`（首次 tools/call 才构造 —— 纯工具 server 不需要
+   API key 在场）。
+
+门禁 `tests/engine/mcp-server.test.ts`（19 条：协议面 HTTP 真端口 + stdio 真子进程 +
+trace 形状 + 断连/超时/鉴权/共享 server）；反向验证 3 变异：摘 isError 映射 ⇒ 恰好 3 条红
+（isError http / 超时 isError / stdio isError）；摘 trace 投递 ⇒ 恰好 4 条红（成功/抛错/
+超时/stdio 的 trace 断言）；未知 method 不回 -32601 ⇒ 恰好 1 条红；还原后 19/19。
+e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公共面新增
+`createMcpServer` + `McpServerApp` / `McpServerOptions` / `McpServer`（api.html 计数
+220 → 224）。
+
+### 2026-09-27 ⑧：**菜单漂移不再静默**（R8 候选 3 / durable 调研 §4.1）—— 续跑时未决工具没了记三处信号，但**不判失败**
+
+动机：`docs/plans/2026-09-27-durable-execution-research.md` §4.1 实测出来的那个静默 ——
+菜单变了（删 / 改工具）之后，在飞 run 续跑时未决的 tool_use 会拿到 `unknown tool: <name>`
+当出参回给模型（`turn.ts:611`），run 照常收尾：调用方 `result.error === undefined`、
+`stopReason='end_turn'`、`finalText` 是模型自己编的收尾，**零失败信号**。G4 因此从「中」提到
+「中高（静默 ≠ 缓和）」。本条是调研文档 §6 候选 3 的落地。
+
+决策：
+
+1. **不判失败，只把它变成三处看得见。** 挂起是合法态（「挂起不是失败」是本仓口径）、改代码是
+   发布常态 —— 判失败会让「续跑」在正常迭代节奏下频繁失败；而 §4.1 的害处是「没人知道」，
+   不是「不该继续」。三处：`menu.drift` 事件（时间线；经 `onTraceEvent` 也进
+   `GET /tasks/:id/stream`，见 `tracer.event()` 的 `span.event` 记录）、父 span 属性
+   `menu.drift`（可查询：`TaskRecord.result.trace` 里就带得到）、`console.warn`（运维面立即
+   看见，与 ②「sink 失败落 warn」同款）。**严格模式（带具名 error 的收尾）本轮不做** ——
+   它要动公共选项面 + limits 真源表，记进 §11 开放项。
+2. **签名口径 = 名字 + 输入 schema**（新纯件 `engine/menu-drift.ts`）：落 run 根 `tools.names`
+   （排序、截断带省略标记）与 `tools.menuHash`（规范序列化后 sha1 截 12 位），与
+   `prompts.versions` 同一动机（质量回归定位到具体菜单版本）。规范序列化 ⇒ 与菜单顺序、schema
+   键序无关；**`description` 刻意不参与**（改文案不该让在飞 run 被标记；代价是「只改描述」我们
+   看不见 —— 有意的取舍，已钉在用例里）。用 sha1 而不是自造哈希：碰撞在这里是**静默失效**
+   （两段不同菜单判成同一段），不值得为省一个内置模块自造。
+3. **漂移判据只看名字，且判据只有一份**：`detectMenuDrift(uses, tools, { resultSchema })`。
+   ⚠️ `resultSchema` 在场时把隐藏的 `submit_result` 当**在册** —— 它从不进 `args.tools`，忘了
+   这条会把**每一次**带 resultSchema 的续跑都误报成漂移（所以由本函数收 `resultSchema` 而不是
+   让调用方传名字清单：口径只有一份）。**不看「输入还合不合法」** —— 那段输入在挂起时**也没**
+   校验过，拿它当漂移证据是误报（模型本就可以给一份不合法的入参）。
+4. **与回合内的 `unknown_tool` 刻意分开**：那个是模型幻觉（模型拿一句 unknown tool 就能自我
+   修正，走既有路径，钉在 `tests/engine/toolTiming.test.ts`）；本条只管**续跑**时名字对不上 ——
+   那是我们的部署动作把一条在飞 run 的意图作废了。两条阴性对照各钉一边（工具都在 ⇒ 零信号；
+   回合内 ⇒ 不判漂移）。
+5. **落点**：`engine/menu-drift.ts`（纯判定单源）+ `loop.ts` 两处调用（run 根记签名、续跑入口
+   报漂移）。`SUBMIT_RESULT` 随之从 `turn.ts` 导出（engine 内部，**不进公共面** —— `index.ts`
+   与 api.html 零变化）。
+
+门禁两处（分工：**引擎侧钉判定口径、传输侧钉接线**，只动一侧不会两边都绿）：
+`tests/engine/menu-drift.test.ts`（10 条：纯件 6 + 集成 4）与
+`tests/transport/async.test.ts` 的「HITL 续跑时的菜单漂移」（1 条：两个 AppCallable 代表
+**两次发布**的同一应用、共用一个 store ⇒ 第二个 runner 就是「重启 + 发布之后」的进程，走
+`submit → 挂起 → approve → 续跑` 全链）。变异电池 7 条各自咬住目标（其中 3 条同时打红两侧）：
+哈希材料去掉 schema ⇒ 2 条红（「schema 变了 ⇒ hash 变」+ 键序那条）/ 去掉 `submit_result` 在册
+判定 ⇒ 1 条 / `description` 混进签名 ⇒ 1 条 / 信号打到空 span ⇒ **两侧各 1 条** / **无条件报
+漂移 ⇒ 打红阴性对照**（这一步证明阴性对照不是真空变绿）/ 不记 `tools.names` ⇒ 1 条 /
+干脆不报漂移（回到静默）⇒ **两侧各 1 条**；还原后工作区 0 改动、两侧复绿。
+`npm test` 1319/1319，`menu-drift.ts` 覆盖率 100/100/100/100。
+
+⚠️ 实测（生产路径真跑，非单测）：挂起段 run 根 `tools.names='danger'`、续跑段 `='safe'` ——
+**跨段比对菜单版本**靠的就是这两个 attribute 的差。
+
+### 2026-09-28 ①：**挂起改成「一个状态 + 一个原因」**（`awaiting_approval` → `suspended` + `suspendedReason`）—— durable timer（候选 1）的前置
+
+背景：起草候选 1（`wakeAt` 挂起）时按 `docs/plans/2026-09-27-durable-wake-at.md` 的核证清单
+逐条读码，量出「多加一种挂起」的真实成本**不在状态机骨架，而在用 `===` 逐值点名的地方** ——
+`isTerminalTask`（`async.ts:123`）、`resume-policy.ts:47`（非 queued/running 一律报 skip 原因
+`'terminal'` ⇒ 一条在睡的 run 会被**具名成「终态」**）、`store.ts` 的淘汰白名单，再加两条只认
+`awaiting_approval` 的闸（`approvalExpired`、`approve` 的 409）。设计稿 §2 给了三个分叉
+（A 复用旧状态 / B 新增 `awaiting_wake` + 谓词 / C 一个状态 + 原因字段），**用户定案 C**。
+
+决策：
+
+1. 「挂起」拆成**一个状态 + 一个原因**：`RunStatus.suspended` 只说「它在等」，
+   `suspendedReason` 说等什么（`'approval'` 等人工决定 / `'timer'` 等一个时刻）。
+2. **引擎侧同步改名**：`AgentStopReason` 的成员也从 `awaiting_approval` 改成 `suspended`，
+   原因走结果字段。结果形状里本来就有 `suspendedMessages` —— 「suspended」是这层自己的词；
+   留着 `awaiting_approval` 会让同一条 run 在引擎与宿主两层说两种话，正是 C 要消掉的不一致。
+3. **判据落在原因上**（本条的要点，不是顺手）：`approvalExpired` 增
+   `rec.suspendedReason === 'approval'`；`approve` 对非 `approval` 挂起一律 409（文案点明原因）。
+   若只看状态：配了 `approvalTimeoutMs` 的宿主会把一条等时刻的 run 判成「审批超时」，而
+   `#expireAndResume` 紧接着就 `fillTimeoutDenials` + 重派（它没有待决项，补不出任何决定，
+   `approvalsComplete(空)` 还是 true）—— **提前叫醒 + 一次真实 run 的开销**。
+4. 落库时**原因从结果形状里取，不写死**（`rec.suspendedReason = out.result.suspendedReason`）：
+   写死成 `'approval'` 会让将来新增的原因在落库这步被悄悄改写。
+5. 字段改名：`TaskRecord.approvalPendingSince` → **`suspendedSince`**（它本来就是「挂起时刻」，
+   两个原因共用；`approval.decided` 的 `waitedMs` 与超时基准链一并沿用）。
+
+破坏面（逐条）：
+
+- `RunStatus` / `AgentStopReason` 的成员名（两个公共字面量联合）；
+- 加法：`AgentRunResult.suspendedReason`（结果形状现在 8 个字段全在场）、`RunMeta.suspendedReason`、
+  `TaskRecord.suspendedReason`、新导出 `SuspendedReason`（api.html 导出计数 224 → 225）；
+- 持久化键名：`approvalPendingSince` → `suspendedSince`；
+- ⚠️ **持久化里的旧状态值**：库里 `status: 'awaiting_approval'` 的记录在新代码里**既不是挂起
+  态、也不被 `resumePending` 认作挂起**（`isTerminalTask` / resume-policy 都按逐值判定）⇒
+  升级前停着的挂起会成**孤儿**。本版**不做兼容读**（`SuspendedReason` 是类型、不是别名），
+  迁移办法写在 CHANGELOG 的「迁移」小节；要不要补垫片见 §11。
+
+门禁（两条闸各配一个变异，都亲跑过）：
+
+- `tests/transport/approval-policy.test.ts`：夹具缺省带 `suspendedReason: 'approval'` ——
+  **挂起记录必须带原因**（夹具如实反映形状，不是可选装饰）；新增「`timer` 挂起不被审批超时
+  叫醒」**+ 阳性对照**（同一时间戳只把原因换成 `approval` ⇒ 立刻过期，证明上一条不是真空变绿）。
+- `tests/transport/approval.test.ts`：新增「`timer` 挂起 `approve` 一律 409，且不派发、状态与
+  挂起时刻不动」。
+- 变异 A（摘掉 `approvalExpired` 的原因闸）⇒ 恰好那条新用例红；变异 B（`approve` 退回只看
+  `status`）⇒ 恰好那条新用例红；两次还原后 `src/` 干净且复绿（脚本 `trap` 还原 + 还原自检）。
+- 文档守卫自动咬合（**不是「守卫过时」，是它按设计工作**）：`tests/docs/api-page.test.ts` 抓出
+  `AgentRunResult` 漏写 `suspendedReason`（「形状自陈穷尽却漏成员」）与页头导出计数 224 ≠ 225。
+- 全量 `npm test`：三套件绿（含覆盖率棘轮）。
+
+⚠️ **本条不含 `wakeAt` 本体**：时间挂起、到期续跑、挂起期可见性、drain 后不唤醒都还没做
+（`src/` 里 `timer` 目前**没有任何生产者**，只有类型与那两条闸）；本条只是候选 1 的前置。
+→ **该待办已于同日 ② 补上**（见下一条）。
+
+### 2026-09-28 ②：**时间挂起本体落地**（`ctx.deferUntil` + 到期唤醒 + 配套 5/6）—— `timer` 从此有生产者
+
+背景：上一条（①）把「挂起」拆成「一个状态 + 一个原因」，但那条末尾如实记着「`src/` 里 `timer`
+**没有任何生产者**」。本条补上生产者与它下游的三件事（设计稿 `docs/plans/2026-09-27-durable-wake-at.md`
+§3 + §4 配套 5/6；**定案：状态分叉 C + 请求方形态 ①**）。
+
+决策：
+
+1. **请求方形态 = 工具侧请求延后**（设计稿 §3 形态 ①）：`ToolRunContext.deferUntil(at: number | Date)`。
+   不做 run 级「先睡一会儿再开跑」—— 那与既有 `transport/scheduler.ts`（定时起新 run）是同一个
+   东西的第二种拼法。真实用途：等批处理作业、等限流窗口、等收盘、等外部系统回填。
+2. **时刻必须是将来，非法值当场抛**（`engine/defer.ts::resolveWakeAt`）：非有限数、`at <= now`
+   一律 TypeError，走既有「工具抛错 ⇒ is_error 的 tool_result」路径（run 照常往前走，不挂起）。
+   为什么必须响亮：让 `at <= now` 成立的话，到期扫描会立刻唤醒、重跑、工具再请求同一个过去时刻
+   —— **一条自己打转的 run**（不烧钱，但 store / trace / 判据全在空转，且永不收尾）。
+3. **整批语义**：挂起是回合级的（协议要求每个 tool_use 都有配对 tool_result）⇒ 延后请求
+   **作废本回合这批工具的全部结果**，醒来后**重跑这一批**（与审批续跑同形）。代价是同回合
+   已执行完的兄弟工具会再跑一遍（副作用重复）—— 这一条**不靠口头约定**：写进
+   `ToolRunContext.deferUntil` 的契约注释、trace 的 `defer.requested{discarded}` 计数，
+   并在真有兄弟工具被作废时落一条 `console.warn`。要精确控制就让模型单独调它，或做成幂等读。
+4. **一个回合只能有一个时刻**：同回合多条请求取**最早**的那个（早醒可补救，晚醒白等）。
+5. **两条闸按原因分开**（承接 ① 的口径）：到期判据落在新纯件 `transport/wake-policy.ts` 的
+   `timerDue`（状态 + **原因** + `wakeAt <= now`）。缺 `wakeAt` 时**不**退化到 `createdAt`
+   （这里与 `approvalExpired` 的取舍相反）—— 「不知道它什么时候醒」与「现在就该醒」是两件事，
+   猜错的方向是**提前开跑**，代价是真实副作用。
+6. **配套 5（排空）**：`drain()` 之后**不唤醒**（与「submit 在 drain 后回 503」同纪律：停机 =
+   不再往前推）。不设这道闸，停机窗口里一条天级的 sleeping run 会被叫起来接着跑 —— 部署卡在
+   它身上；重启后由新进程的首次 `resumePending` 唤醒（那时窗口早过去了）。
+   **`cancel` API 本批不给**：它要新增公共面（`runner.cancel(taskId)`）、定义「取消一个正在跑的
+   工具」的中止语义、并决定取消算不算新终态 —— 是**独立一件**，与 `wakeAt` 无因果关系。
+   文档只如实写「取消靠宿主自己 abort 在飞请求 + 不唤醒」，不留一句「用户可以取消」。
+7. **配套 6（可见性）**：`AsyncRunner.suspendedSummary` + `GET /healthz` 的
+   `suspended: { approval, timer, nextWakeAt }`。口径 = **本进程**看得见的记录（与 `inFlight`
+   同一张表 —— 不假装是全局面）；读数由三条纪律维护：进挂起登记 / 离开挂起除名 /
+   **每次 `resumePending` 扫描按 store 重建**（扫描本来就 list 了全表，把「漏了某个出口」从
+   永久漂移降级成下次扫描前的偏差）。`/healthz` **不查 store**：探针是秒级频率，而 `list()`
+   要把每条记录的完整 trace 取出来 —— 代价比它回答的问题大。无时间挂起时 `nextWakeAt` 给
+   **`null` 而不是 `0`**（`0` 在 JSON 里是合法时刻，监控端算 `nextWakeAt - now` 会得到巨大负数，
+   看着像「早就该醒却没人醒」）。
+8. **两处顺手修掉**（都是 ① 的核证清单点过名的）：① `resume-policy` 给挂起单列 skip 原因
+   `'suspended'`（此前被报成 `'terminal'` —— 「在等」被具名成「终态」是静默说错话，而这个字段
+   的全部用途就是诊断）；② `isResume` 判据补上 `suspendedSince`（原先只看 `approvals`，而
+   timer 挂起醒来时**没有任何决定** ⇒ 恢复段被当成首次执行：会话历史重复 prepend、恢复段 trace
+   不 link 上一段、成功后把含未决 tool_use 的扩展历史写回会话）。
+9. **与候选 3 的交界**：醒来走的是**同一条续跑入口** ⇒ `detectMenuDrift` 自动生效（睡着的这段
+   时间里那个工具被删掉，醒来时三处漂移信号照出），不另起一套判据。
+
+兼容面（**全部是加法，无破坏性**）：`ToolRunContext.deferUntil`、`AgentRunResult.wakeAt`
+（结果形状现在 **9 个字段**全在场）、`RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`、
+`AsyncRunner.suspendedSummary`；新 trace 事件 `defer.requested{wake_at, tool_use_ids, discarded}`。
+
+门禁（**13 条变异逐条亲跑**，全部被**具名**用例抓住；`trap` 还原 + 还原自检 + 复绿）：
+
+- `tests/engine/defer.test.ts`：`resolveWakeAt`（将来性 + 非有限数的响亮拒绝，带阳性对照）
+  + 回合级收集器（多条取最早、同一条重复请求取更早）+ 引擎侧**五例**：整批挂起（工具**真跑过**、
+  结果作废、`defer.requested` 带 `discarded`）、醒来重跑那一批（`tool_result` 真进了下一次请求）、
+  醒来仍未成熟 ⇒ 以**本次**请求再挂一次、非法时刻 ⇒ is_error 不挂起（含台账 `errorKind: 'threw'`）、
+  **同批有没请求延后的兄弟工具 ⇒ `discarded` 数到 2 + 恰好一条 `console.warn` + 醒来那个副作用
+  真的跑第二遍**（前两件是信号、第三件才是事实；配 M12/M13 两条变异：摘掉告警 / 把 `discarded`
+  改成只数请求延后的那几条 —— 两条都只打红这条用例）。
+- ⚠️ **一条假 BAD 也记在这里**：变异脚本的套件白名单漏了 `defer.test.ts` 的 describe 名，
+  于是 `时间挂起（引擎侧）` 这条**套件行**在失败列表里冒充「非预期红」，两条变异一度被读成
+  BAD（实为 OK）。这正是「套件行与用例同名同形」那个老坑的可执行形态 —— 补白名单后复跑即 OK。
+- `tests/transport/wake-policy.test.ts`：`timerDue` 三条边界（到点即醒 / 只在挂起且原因是 timer /
+  缺 `wakeAt` 永不到点）+ `summarizeSuspended`（空集给 `null` 不给 `0`；只有等审批时不退化）。
+- `tests/transport/durable-timer.test.ts`：宿主侧**八例** —— 睡下时落库与读数进位、未到点不捡而到点
+  唤醒并重跑、**读路径的惰性唤醒**（`poll` / `GET /tasks/:id` 自己叫醒到点的任务 —— 这条用例
+  **一次都不调** `resumePending`，把「到期判定挂在读路径上」单独钉住）、drain 后不唤醒（附
+  「新进程照常唤醒」对照）、审批超时不误伤 timer（附「换成
+  `approval` 就被兜底」对照）、`/healthz` 的 `suspended` 段、与候选 3 的交界（醒来时
+  `menu.drift` 事件 + run 根属性照出）、session 与链路口径（会话只一份 / link 上一段 / 不被
+  工具块毒化）。
+- ⚠️ **盘点补出两处「零红的新闸」**（同日按「摘掉它有没有用例会红」逐条问出来的；两处都是
+  **本批新加的**判据，却因为既有用例只覆盖了它的兄弟而无人守）：
+  1. **读路径的 `#lazyGates` timer 分支**：到期判定有**两个**调用点（全表扫描 / 读路径），
+     既有用例只钉了扫描那个 ⇒ 摘掉读路径那半行**全绿**。已补阳性用例（见上）+ 变异 **M10**
+     （摘掉那行 ⇒ 恰好那条红）。
+  2. **`deferUntil` 的不转发归类**（`engine/forwarded.ts`）：那条「引擎自装配的键一个都不许漏进来」
+     的断言**手抄了五个键名**，新增的第六个键没人补 ⇒ 把它挪进转发组照样全绿。已把清单改成
+     **从夹具派生 + 数量下限**（下限 6 是故意的停顿点：新增不转发键时会被迫做一次「要不要转发」
+     的判断），并配变异 **M11**（清单 + 取值对象一起挪 ⇒ 恰好那条新断言红，**旧的键集断言仍绿**
+     —— 这正是「新断言多守了一层」的证据）。
+- **一处文档措辞订正**：设计稿 §4 写的是「`snapshot()` 与 `/healthz` 各加一段」，而本仓
+  **从来没有 runner 级 `snapshot()`**（`snapshot()` 是 metrics 侧与 tracer 的名字）——
+  读数实际落在 `AsyncRunner.suspendedSummary` 这个 getter 上，`/healthz` 读它。日期档正文
+  一字不动，订正指针加在那份稿子的 §8（本轮只动了 §8 的**新增块**）。
+- ⚠️ **一处用例自己的缺陷被变异电池抓出并当场修掉**：`timerDue` 的「原因」夹具原先写
+  `suspendedReason: 'approval', wakeAt: undefined` —— 摘掉原因判据的变异**一条红都没有**
+  （缺时刻那一条也在拦 ⇒ 等于没钉住原因这一半）。改成带一个过去的 `wakeAt`（宿主手写 /
+  旧版本记录可能出现的形状）后立刻变红。这条记在这里是因为它正说明**变异电池不能省**：
+  用例绿不等于判据被钉住。
+- 一处**实现缺陷**被新用例抓出：`#wakeDue` 原先不返回「是否真接管」，`drain` 之后每次扫描都把
+  没唤醒的算进 `resumePending()` 的返回值（谎报「推进了 N 条」）—— 改成返回 boolean。
+  计数口径与审批那条（`#expireAndResume` 在飞也计入）**刻意不完全对齐**，差异写在方法头注里。
+- 模拟「时间到了」用**倒填 `wakeAt`**，不睡墙钟：真等会把「调度慢」误判成「唤醒坏了」
+  （CI 满载下最难查的那类红）。
+
+### 2026-09-28 ③：**旧记录的读时归一**（迁移垫片）—— 六个读回点收成唯一入口
+
+背景：① 的状态改名是破坏性的，而**落盘的数据不受类型系统保护** —— `JSON.parse(raw) as TaskRecord`
+里那个 `as` 是对盘上数据的一句保证（TS 只检查你**写进**类型的值）。旧记录读回来带着一个
+`RunStatus` 里**已经不存在**的值，而每一处判断都按新语义读它：`isTerminalTask` 认它**终态**
+（事件流早关、`resumePending` 不捡）、`resume-policy` 报 `'terminal'`、`/healthz` 不计数、
+`approve` 回 409「状态不对」—— 一条在等审批的 run 成孤儿，**四个角度同时错**。
+此前（① 的处置）只在 CHANGELOG 里要求宿主手工改库。
+
+决策：
+
+1. **形态 = 读时归一 + 落库自愈**，落点是新件 `src/store/record.ts`：`parseTaskRecord`
+   （解析 + 形状守卫 + 归一）成为那六个「bytes → 记录」点的**唯一入口**（`fsStore` 的全量扫 +
+   残行探测、`sqliteStore` 的 get / byIdempotency / list、`redisStore` 的单键读）。
+   静态守卫盯着它：`src/store/*.ts` 里除 `record.ts` 外不得出现 `JSON.parse`（带抽词器下限 +
+   阳性对照）—— 将来加第七个 store 会被逼着走同一个入口，而不是又长一个漏归一的点。
+2. **只搬运盘上真有的东西**：`awaiting_approval` → `suspended` **并且补**
+   `suspendedReason: 'approval'`（两条闸都按原因判：只改状态会让这条记录被**两条都**漏掉 ——
+   比不归一更坏）；`approvalPendingSince` → `suspendedSince` 并**删除旧键**（两个键并存时任何读者
+   都可能读到错的那个；而且不删就不幂等，归一**永远**返回「动过了」）。
+   新形状的记录若缺 `suspendedReason` 则**不动它** —— 那是另一个缺陷，垫片不替它打掩护。
+3. **SQLite 额外回写派生列**：`status` 列是 json 的反规范化副本（专供外部/DBA 统计）。只在读时
+   归一 json 的话，`SELECT status, count(*) GROUP BY status` 会**继续**报旧值 ⇒ 框架说一种事实、
+   库里另一种。判据写成「列 ≠ json」而不是「刚才归一过没有」—— 任何原因（手改过、旧版本写的、
+   将来又一次改名）造成的漂移都该被顺手修掉。自愈失败（只读库 / 占锁超时）**响亮说一次**
+   （按 taskId 去重），不静默。fsStore / Redis 没有派生副本 ⇒ **不回写**（append-only 日志与
+   单键都是 last-wins，写回时机是这条记录的下一次 save），取舍写进代码注释与用例。
+4. **坏 JSON 的取舍不变**：三条 store 对「单条损坏」口径本就不同（文件与 Redis 跳过该条、
+   SQLite 照旧抛），归一层只做「解析 + 形状守卫 + 归一」，不越权决定「坏了怎么办」。
+5. `sqliteStore.list()` 伴随一处行为收紧：形状不合格（没有 `taskId`）的行**跳过**而不是当成记录
+   返回 —— 与 get 口径对齐（本实现自己写的行不会是那个形状）。
+
+兼容面：**无公共 API 变化**（`src/store/record.ts` 不进 `src/index.ts`，导出计数 225 不变）。
+
+门禁与变异（**5 条变异逐条亲跑**，全部被**具名**用例抓住；`trap` 还原 + 还原自检 + 复绿）：
+
+- `tests/store/record.test.ts`：归一函数（含**幂等**、阴性对照「新形状缺原因也不猜」、两个键都在时
+  以新键为准）、唯一入口的形状守卫（坏 JSON 照旧抛 / 非记录给 `undefined`）、
+  **三条 store 的读回接缝**（SQLite 那条先断言「列里确实是旧值」**再**断言被拉正 —— 否则
+  「自愈生效」这句话证明不了）、外加静态守卫那条。
+- 变异 M14（不补原因）/ M15（不搬挂起时刻）/ M16（SQLite 不回写列 —— **只打红 SQLite 那条**，
+  另两条 store 没有派生副本）/ M17（唯一入口不归一，覆盖面最广）/ M18（旧键不删，顺带打红幂等那条）。
+- ⚠️ 两条一开始被读成 BAD 的变异（M14 / M18）其实是**我的期望写漏了**：多出来的红落在同一条性质的
+  另一处断言上（唯一入口那条也断言了原因；幂等那条正是「不删旧键 ⇒ 永不幂等」的证据）。
+  处置是**把真红补进期望**，不是放宽期望 —— 读变异读数时「红在别处」要读进去，别直接当成锚点没选准。
+
 ## 11. 开放项
 
+- **菜单漂移的严格模式与结果级字段**（§10 2026-09-27 ⑧ 未做的那两件）：① `menuDrift: 'fail'`
+  这类开关 —— 要动公共选项面 + `limits.ts` 真源表；② 让「续跑跑在漂移的菜单上」直接出现在
+  `AgentRunResult` 上（而不是只落在 trace 属性里）—— 要动公共结果类型。现状是三处信号
+  （`menu.drift` 事件 / 父 span 属性 / `console.warn`）：够「可查询」，但调用方得主动读 trace。
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
   **宿主 / 集成接入不拆包**（gRPC / Kafka 这类只给配方 + 示例，判别规则与升级触发条件见 §10 2026-09-18 ⑪）。
   ⇒ 发布进度：v0.2.2（2026-09-14，框架包 + CLI 包，scope 为 `@migor/*`）→ v0.3.0（`.env` 一等入口）

@@ -353,6 +353,13 @@ const REGISTRY: ReadonlyArray<Entry> = [
   },
   { key: 'MCP 只做 tools', choice: 'YAGNI（spec §10）：sampling / resources / prompts 原语不做' },
   {
+    key: 'MCP 反向桥不校验会话（无状态 server）',
+    pin: {
+      file: 'tests/engine/mcp-server.test.ts',
+      marker: 'initialize 响应带 mcp-session-id；后续**不带**该头的请求照常服务（无状态宽容）',
+    },
+  },
+  {
     key: 'MCP 的协议层错误框架看不见',
     pin: {
       file: 'tests/integrations/mcpConnector.test.ts',
@@ -569,6 +576,16 @@ const REGISTRY: ReadonlyArray<Entry> = [
   {
     key: '框架不执行模型生成的代码',
     choice: '定位决定：模型输出只成文本 / tool_result；代码执行工具的隔离是工具实现内部的事',
+  },
+  {
+    // R8 候选 3（spec §10 2026-09-27 ⑧）：续跑时菜单漂移**只标记**（事件 / 属性 / console.warn），
+    // 不判失败 —— 「不判失败」是 decision 不是缺陷：挂起是合法态、改代码是发布常态。
+    // 标记本身有用例钉（pin）；严格模式是 spec §11 开放项。
+    key: '菜单漂移只**标记**、不判失败',
+    pin: {
+      file: 'tests/engine/menu-drift.test.ts',
+      marker: '工具被删 ⇒ menu.drift 事件 + 父 span 属性 + console.warn；run 仍照常收尾',
+    },
   },
 ];
 

@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { FORWARDED_TOOL_CONTEXT_KEYS, forwardToolContext } from '../../src/engine/forwarded.js';
 import type { ToolRunContext } from '../../src/core/tool.js';
 
-/** 造一个「七个旋钮都设了 + 五个引擎自装配键也在」的 ctx */
+/** 造一个「七个旋钮都设了 + 六个引擎自装配键也在」的 ctx */
 function fullCtx(): ToolRunContext {
   const signal = new AbortController().signal;
   return {
@@ -27,6 +27,7 @@ function fullCtx(): ToolRunContext {
     parentSpanId: 'span-1',
     abandoned: signal,
     approval: { approved: true, decidedBy: 'alice' } as never,
+    deferUntil: () => undefined,
     // 七个要转发的
     signal,
     priceOverrides: { 'my-model': { in: 1, out: 2 } },
@@ -48,9 +49,18 @@ describe('forwardToolContext：穷尽转发的取值单源', () => {
     );
   });
 
-  it('引擎自装配的键一个都不许漏进来', () => {
+  it('引擎自装配的键一个都不许漏进来（清单从夹具派生 + 数量下限）', () => {
     const out = forwardToolContext(fullCtx()) as Record<string, unknown>;
-    for (const k of ['client', 'recorder', 'parentSpanId', 'abandoned', 'approval']) {
+    // 为什么不再手抄键名：这份清单原先写死五个键，而 `deferUntil` 是新增的第六个 ——
+    // 没人补清单，于是「引擎自装配的键不许漏进来」这条断言**对它不成立**（换个组照样全绿）。
+    // 改成从夹具派生：夹具是形状的权威，它有的键只要不在转发清单上就必须不在结果里。
+    const forwarded = FORWARDED_TOOL_CONTEXT_KEYS as readonly string[];
+    const checked = Object.keys(fullCtx()).filter((k) => !forwarded.includes(k));
+    // 数量下限（防真空变绿）：夹具被清空 / 键被挪进转发组 ⇒ 这条立刻红。
+    // 6 = 当前的 client / recorder / parentSpanId / abandoned / approval / deferUntil；
+    // 新增不转发键时要连着改这个数 —— 那份「要不再想想该不该转发」的停顿是故意的。
+    assert.equal(checked.length, 6, `被检查的引擎自装配键：${checked.join(', ')}`);
+    for (const k of checked) {
       assert.ok(!(k in out), `${k} 属于引擎自装配，不该出现在转发结果里`);
     }
   });

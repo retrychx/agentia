@@ -14,15 +14,19 @@ import type { TaskRecord } from '../store/store.js';
 
 /**
  * 审批超时判定（HITL，**惰性**：不起定时器，只在 approve / poll / resumePending 读到
- * awaiting 记录时判）。基准是 `approvalPendingSince`（挂起时刻，挂起时落库）；缺失时按
+ * awaiting 记录时判）。基准是 `suspendedSince`（挂起时刻，挂起时落库）；缺失时按
  * startedAt → createdAt 退化（容忍手工塞进来的记录）。`timeoutMs <= 0` = 不启用超时；
  * 边界是**严格大于**（恰好等于不算过期）。
  */
 export function approvalExpired(rec: TaskRecord, now: number, timeoutMs: number): boolean {
   return (
     timeoutMs > 0 &&
-    rec.status === 'awaiting_approval' &&
-    now - (rec.approvalPendingSince ?? rec.startedAt ?? rec.createdAt) > timeoutMs
+    rec.status === 'suspended' &&
+    // ⚠️ 必须再卡**原因**（2026-09-28 ①）：`approvalTimeoutMs` 是「等人工」的闸，
+    // 拿它去判一条在等时刻的 run（reason='timer'）＝ 提前叫醒它，而且
+    // `#expireAndResume` 紧接着就重派（补不出任何 deny 决定，因为它没有待决项）。
+    rec.suspendedReason === 'approval' &&
+    now - (rec.suspendedSince ?? rec.startedAt ?? rec.createdAt) > timeoutMs
   );
 }
 
@@ -39,7 +43,7 @@ export function fillTimeoutDenials(rec: TaskRecord, now: number): void {
       reason: '审批超时',
       decidedBy: 'system',
       decidedAt: now,
-      ...(rec.approvalPendingSince !== undefined ? { requestedAt: rec.approvalPendingSince } : {}),
+      ...(rec.suspendedSince !== undefined ? { requestedAt: rec.suspendedSince } : {}),
     };
   }
 }

@@ -105,26 +105,53 @@ export function sampleSink(opts: SampleSinkOptions): SampleSink {
 }
 
 // ---------------------------------------------------------------------------
-// ② 脱敏：按字段名（+可选正则）抹掉敏感值，深拷贝不改原 trace
+// ② 脱敏：按字段名（+正则预设/自定义）抹掉敏感值，深拷贝不改原 trace
 // ---------------------------------------------------------------------------
 
 export interface RedactOptions {
   /** 命中即抹掉的**字段名**（大小写不敏感的子串匹配），如 `['authorization','api_key','password']` */
   keys?: readonly string[];
-  /** 额外：对字符串值做正则替换（如手机号 / 邮箱 / 内部 ID 形态） */
+  /** 额外：对字符串值做正则替换（自定义规则的替换文案是裸 `[REDACTED]`，无类别标签） */
   patterns?: readonly RegExp[];
+  /**
+   * 内置正则预设（缺省**全开** —— 拷走即用，不从零开始）。
+   * 传名字数组可只开一部分；传 `false` 全关（退回纯 keys/patterns 的旧行为）。
+   * ⚠️ 预设只是起点：你的合规清单（内部 ID 形态、业务字段）框架与示例都猜不到，自己补。
+   */
+  presets?: false | readonly RedactPresetName[];
   /** 脱敏后的 trace 交给它们 */
   sinks: readonly TraceSink[];
 }
+
+/**
+ * 内置正则预设（脱敏面 = agent 服务最常见的四类泄密：LLM key / 令牌 / PII）。
+ * 每条预设的替换文案带**类别标签**（`[REDACTED:email]`）—— 让「这里被改过、改的是哪类」
+ * 在 trace 里可见：静默替换会让下游排查误以为数据本来如此。
+ * 预设按数组序依次应用（bearer 先于 jwt —— `Bearer eyJ…` 整体归 bearer，不被 jwt 截走）。
+ */
+export const REDACT_PRESETS = [
+  { name: 'bearer', re: /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/g },
+  { name: 'jwt', re: /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g },
+  { name: 'aws-access-key', re: /\bAKIA[0-9A-Z]{16}\b/g },
+  { name: 'llm-api-key', re: /\bsk-[A-Za-z0-9]{16,}\b/g },
+  { name: 'email', re: /[\w.+-]+@[\w-]+\.[\w.]+/g },
+  { name: 'phone-cn', re: /(?<!\d)1[3-9]\d{9}(?!\d)/g },
+] as const;
+
+export type RedactPresetName = (typeof REDACT_PRESETS)[number]['name'];
 
 function hitKey(key: string, keys: readonly string[]): boolean {
   const k = key.toLowerCase();
   return keys.some((needle) => k.includes(needle.toLowerCase()));
 }
 
-function redactString(s: string, patterns: readonly RegExp[]): string {
+/** 应用一组「正则 → 替换文案」规则；规则 regex 带 /g，跨字符串复用前必须重置 lastIndex */
+function applyRules(s: string, rules: ReadonlyArray<{ re: RegExp; label: string }>): string {
   let out = s;
-  for (const p of patterns) out = out.replace(p, REDACTED);
+  for (const { re, label } of rules) {
+    re.lastIndex = 0;
+    out = out.replace(re, label);
+  }
   return out;
 }
 
@@ -132,14 +159,14 @@ function redactString(s: string, patterns: readonly RegExp[]): string {
 function redactValue(
   value: unknown,
   keys: readonly string[],
-  patterns: readonly RegExp[],
+  rules: ReadonlyArray<{ re: RegExp; label: string }>,
 ): unknown {
-  if (typeof value === 'string') return redactString(value, patterns);
+  if (typeof value === 'string') return applyRules(value, rules);
   if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map((v) => redactValue(v, keys, patterns));
+  if (Array.isArray(value)) return value.map((v) => redactValue(v, keys, rules));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = hitKey(k, keys) ? REDACTED : redactValue(v, keys, patterns);
+    out[k] = hitKey(k, keys) ? REDACTED : redactValue(v, keys, rules);
   }
   return out;
 }
@@ -148,10 +175,21 @@ function redactValue(
  * 脱敏闸门。框架只做**长度截断**（`includeToolIO: false` 是粗粒度开关），
  * 字段级 redaction 在这里 —— trace 会带用户输入与工具 IO，内部合规得自己兜。
  * 放在链路上游，保证下游（落库 / 日志）拿到的都已是脱敏副本。
+ *
+ * 规则顺序：预设（默认全开，`presets` 可调）→ 自定义 `patterns`。前者替换文案带类别
+ * 标签（`[REDACTED:email]`），后者是裸 `[REDACTED]`；`keys` 命中的字段整个抹成
+ * `[REDACTED]`（不看值，最严的一档）。
  */
 export function redactSink(opts: RedactOptions): TraceSink {
   const keys = opts.keys ?? [];
-  const patterns = opts.patterns ?? [];
+  const presetSel = opts.presets ?? REDACT_PRESETS.map((p) => p.name);
+  const rules: Array<{ re: RegExp; label: string }> =
+    presetSel === false
+      ? []
+      : REDACT_PRESETS.filter((p) => (presetSel as readonly string[]).includes(p.name)).map(
+          (p) => ({ re: p.re, label: `[REDACTED:${p.name}]` }),
+        );
+  for (const p of opts.patterns ?? []) rules.push({ re: p, label: REDACTED });
   const { sinks } = opts;
   return {
     async export(trace: Trace): Promise<void> {
@@ -160,10 +198,10 @@ export function redactSink(opts: RedactOptions): TraceSink {
         totalUsage: { ...trace.totalUsage },
         spans: trace.spans.map((span) => ({
           ...span,
-          attributes: redactValue(span.attributes, keys, patterns) as Span['attributes'],
-          events: span.events.map((e) => ({ ...e, body: redactValue(e.body, keys, patterns) })),
+          attributes: redactValue(span.attributes, keys, rules) as Span['attributes'],
+          events: span.events.map((e) => ({ ...e, body: redactValue(e.body, keys, rules) })),
           ...(span.error
-            ? { error: { ...span.error, message: redactString(span.error.message, patterns) } }
+            ? { error: { ...span.error, message: applyRules(span.error.message, rules) } }
             : {}),
         })),
       };

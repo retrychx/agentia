@@ -196,4 +196,86 @@ agentia 现状与他们之间的差距清单 + 推荐的最小语义增量）。
 
 ## 实施记录
 
-（滚动更新：每项落地后在此记 PR 号、反向验证读数、与设计的偏差。）
+- **P1 已落地（2026-09-27）**：`redactSink` 增内置预设（bearer / jwt / aws-access-key /
+  llm-api-key / email / phone-cn，缺省全开、`presets` 可调）、预设替换文案带类别标签；
+  `examples/complete` 删掉与预设重复的手机号/邮箱 patterns（演示新缺省）；
+  `docs/observability.md` §2.4 重写（预设表 + 「为什么不内建」指 spec §9.3/§10 2026-09-14 ⑥），
+  顶部不内建表**原样不动**（脱敏仍是 ❌ → 配方 2.4）。`src/` 零改动。
+  反向验证读数：摘掉 phone-cn 预设 ⇒ 恰好「预设缺省全开」用例红；presets 缺省改全关 ⇒
+  同一条红；其余 32 条不动。偏差：无（与设计一致）。
+- **P2 已落地（2026-09-27）**：引擎级 fallback 链（`fallbacks: [{ model, client? }]`，
+  RunAgentOptions / AppOptions / RunInvocationOptions 三层同语义）。每环独立 llm.turn +
+  `llm.fallback` 事件 + `TurnOutcome.model` 供 `recordTurnUsage` 按实际成功模型算账；
+  换环判定复用 `classifyError` 的 retryable 位（没另写类清单）；`resolveModelChain`
+  在 runAgent 的 try **之外**（配置错抛 TypeError，不被收成失败的 run）；
+  快照 `config.fallbacks` 只记模型名。runAgentScoped 不传链（子循环不继承，代码里留了
+  注释说明这是有意边界）。门禁 `tests/engine/fallback.test.ts` 12 条；反向验证 4 变异
+  （摘 `!emitted` / abort 分支失效 / retryable→true / 成本按 args.model）各恰好咬死
+  对应用例。偏差：设计稿说「`shouldFallback` 覆盖判定」—— 落地时**砍掉了**（复用
+  retryable 位已够，少一个公共面少一份漂移；真有人要自定义判定再加）。
+- **P3a 已落地（2026-09-27）**：`traceContent: 'full'`（RunAgentOptions /
+  RunInvocationOptions / AppOptions 三层同语义）。记进 llm.turn 的 `output.text`
+  （引擎文本口径多块 `\n` 连接；过 `maxEventChars` 同一道闸）；透传走 forwarded.ts
+  真源（ToolRunContext 新键被类型守卫逼着归类 —— 实施时它真咬了一次：调用点漏传
+  当场编译红）。偏差：无。实测体积数（3 回合 × ~1600 字符 ⇒ 5 564 → 11 010 字节）
+  进了 spec §10 ④ 与 CHANGELOG。门禁 `tests/engine/trace-content.test.ts` 7 条 +
+  反向验证 3 变异。
+- **P3b 已落地（2026-09-27）**：`agentia export <trace.jsonl> [--out] [--ok-only]
+  [--min-score n]`。框架侧 `src/eval/export.ts` 的 `exportRun`（module 级，不进公共面）；
+  CLI 侧去类型移植副本 + 逐字对拍（`packages/cli/test/export.test.mjs`）。
+  实施中设计修正一处（写进 spec §10 ⑤）：assistant 文本缺口的判定口径 —— 纯 tool_use
+  回合本来就没文本，**不算缺口**（初版实现把所有无 output.text 的回合都标缺口，
+  被「全量记录的 run」用例当场抓住）；占位文本纪律与 harvest **相反**（那里是给人看的
+  脚手架，这里会进训练集）。反向验证 2 变异（造占位文本 / 缺输出不补占位块）各咬死
+  对应用例。structure 棘轮补账 8328 → 8639。
+- **P4 已落地（2026-09-27）**：三层同语义（`RunAgentOptions` / `AppOptions` /
+  `RunInvocationOptions` 的 `labels`，`AppOptions` 被单次覆盖时**整体替换**不合并）。
+  run 根写 `labels.<key>`，快照 `config.labels` 只记键名；入口校验（try 之外抛
+  TypeError）与 resolveModelChain 同纪律。metrics 侧 `labelKeys`（Prometheus 标签名
+  校验 + 查重）+ `maxLabelValues`（缺省 100、invalid 类、limits 真源表登记 +
+  探针）；每键一本 KeyBudget，折叠进 `__other__`。出口：四个 run 级家族追加带标签
+  样本（全局行仍在第一位 —— renderOpenMetrics 的 exemplar 精确匹配靠它）+
+  `dropped_keys{kind="label:<key>"}`（kind 取 `label:<key>` 与能力标签 `kind:name`
+  同款拼法，保住 dropped_keys 家族的单 label 同质性）。OTLP trace 导出侧零改动
+  （span attributes 本来就全量透传，`labels.*` 自动跟出去）。
+  实施中两处设计与实现互相订正：① combo 键不做「值里含 `,`/`=` 可反解」的承诺
+  —— 累加器自带 `pairs`，出口按 pairs 拼标签，combo 键只是展示形；
+  ② **不做 per-label 时长直方图**（cap × windowSize 的又一份乘法，收益不抵代价，
+  「哪个租户慢」去 trace 侧按 `labels.*` 查）—— 已写进 spec §10 ⑥。
+  门禁 `tests/engine/run-labels.test.ts` 7 条 + `tests/integrations/metrics.test.ts`
+  R8-P4 块 7 条 + limits 探针；反向验证 2 变异（摘 cap 折叠 ⇒ 折叠/reset 两条红；
+  引擎摘 labels 落根 ⇒ run-labels 3 条红）。公共面新增 `RunLabelMetrics` 类型导出
+  （api.html 计数 219 → 220）。
+- **P5 已落地（2026-09-27）**：MCP 反向桥 `createMcpServer(app, opts)`
+  （`src/engine/mcp-server.ts`；落 engine 的理由 —— integrations 只许依赖 core 装不下
+  TraceRecorder、engine→integrations 反向成环、transport 够不到 integrations）。
+  app 是鸭子类型 `{ tools: AgentTool[] }`（e2e 夹具走 createApp + @Tool 真装配钉住
+  「AgentApp 结构满足」）。协议只到 tools（initialize / tools/list / tools/call + ping；
+  其余 -32601、params 坏 -32602）；传输 stdio + StreamableHTTP 都只用标准库；
+  每次 tools/call 一棵 trace（run 根 `mcp.tools/call` + capability span +
+  同形状的 tool.input/tool.output 事件）投递 opts.sinks；结果映射与正向桥方向对称
+  （抛错 → isError: true）。**偏差**：① 设计稿说 capabilityKindOf 把这种 span
+  「归为 tool」—— 读码核实后它归 `capability:<name>`（capabilityKindOf 三值里没有
+  'tool'；`tool:` 标签只来自 llm.turn 上的 tool.output 事件），「自动进能力指标」
+  成立但标签名不同，已写进 spec §10 ⑦；② HTTP 选项形状定为 host/port/path +
+  可挂进既有 http.Server（close 只摘 handler）。门禁
+  `tests/engine/mcp-server.test.ts` 19 条；反向验证 3 变异（摘 isError 映射 ⇒
+  恰好 3 条红；摘 trace 投递 ⇒ 恰好 4 条红；未知 method 不回 -32601 ⇒ 恰好 1 条红），
+  还原后 19/19。e2e `npm run e2e:mcp:server`（stdio 真子进程 + HTTP 真端口，离线零网络，
+  不进 verify-all）。公共面 +4（api.html 计数 220 → 224）。
+  **规划稿 P5 验收口径的偏离**：原稿写「真第三方 MCP **client** 打过来跑一轮」——
+  落地用**自己的出厂连接器**当真协议客户端（createStdioMcpConnector /
+  createStreamableHttpMcpConnector，本身就是真协议实现且双向都被 e2e 守住）；
+  第三方 client（如官方 SDK）要引依赖才能进 CI，留给后续评估。
+- **P6 已交付（2026-09-27，调研）**：`docs/plans/2026-09-27-durable-execution-research.md`。
+  关键判断：agent 主循环的状态是消息历史（天然可序列化、可断点续传），Temporal 系的
+  事件溯源重放对它是**错的抽象** —— 差距清单 G5（重放模型）确认不做；要补的是
+  durable timer（G1）与外部事件唤醒（G2）两个维度，候选增量列在文档 §6，
+  动代码前各自回 spec §10 立项。偏差：无（范围就是调研）。
+  **2026-09-27 复核追加**：候选从 4 条补到 **7 条**（§6 的 5/6/7 是 1/2 的配套：
+  挂起期的取消/排空语义、挂起期可见性、事件投递幂等 + 到期索引 —— 前两条只写「怎么醒」
+  会留下醒不过来的静默路径）；G4（代码版本 vs 在飞 run）定级由「中」提到「**中高**」，
+  依据是 §4.1 的实测：菜单变了不是「没人接」而是**降级且不告知**（`unknown tool: <name>`
+  当出参交回模型、run 照常收尾、调用方零信号，且这条路径当前无用例覆盖）。
+  **同日再追加**：那条「无用例覆盖」已补齐（`tests/engine/toolTiming.test.ts` 的
+  「未决 tool_use 遇上没有它的菜单」三条，钉的是**现状**、不是收口 —— 收口仍是候选 3）。

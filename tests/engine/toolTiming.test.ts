@@ -236,3 +236,159 @@ describe('E1 工具级时序（tool.output 事件带 durationMs / ok / errorKind
     assert.equal('durationMs' in (inputEvent.body as object), false);
   });
 });
+
+/**
+ * 未决 tool_use 遇上**没有它的菜单**（`errorKind='unknown_tool'`）—— 钉的是**现状**。
+ *
+ * ⚠️ 本组不是「期望行为」的用例，是**现状**的用例 —— 别把它读成对这个行为的背书：
+ *   菜单变了（工具被删 / 改名）时，引擎把 `unknown tool: <name>` 当成该 tool_use 的出参
+ *   交回模型，run **照常跑完**，而调用方这一侧**零失败信号**（`result.error === undefined`、
+ *   `stopReason='end_turn'`、`finalText` 是模型自己编的那句）。唯一痕迹是 trace 上那条
+ *   `errorKind='unknown_tool'`。
+ *
+ * 为什么要有这组：这条路径此前**一个用例都没有**（2026-09-27 实测 `grep -rn unknown_tool
+ * tests/` 零命中 —— 它只出现在源码的类型联合 `tool-events.ts:27` 与分支 `turn.ts:611`；
+ * 唯一提到它的是 `eventChars.test.ts` 的一句注释，解释子 agent 为什么要写 `tools: ['inner']`）。
+ * 也就是说「菜单变了会静默降级」这件事，连我们自己都没盯过。
+ *
+ * 两条动作是**分开**的，别在本轮把它们合并：
+ *   ① 补用例（本组）—— 防的是**无意改动**（分支被重排、归类被改掉、静默变成别的东西）；
+ *   ② 把静默变成「调用方看得见的东西」—— 那要**改语义**，属 durable 调研文档候选 3
+ *     （`docs/plans/2026-09-27-durable-execution-research.md` §4.1 实测 + §6 候选 3），
+ *     动代码前按纪律回 spec §10 立项。
+ *   ⇒ 将来要改这里时：**不要悄悄把断言改成「期望 run 失败」** —— 那等于跳过立项直接改语义
+ *     （trace 口径与 result 口径会不一致）。要改就连同 ② 一起改，并把这段注释一起结清。
+ */
+describe('未决 tool_use 遇上没有它的菜单（errorKind=unknown_tool —— 钉现状）', () => {
+  const echoTool = (run: () => unknown = () => 'echo-ok'): AgentTool => ({
+    name: 'echo',
+    description: 'echo',
+    inputSchema: SCHEMA,
+    run,
+  });
+
+  function toolOutputs(trace: Trace): Record<string, unknown>[] {
+    return trace.spans
+      .flatMap((s) => s.events)
+      .filter((e) => e.name === 'tool.output')
+      .map((e) => e.body as Record<string, unknown>);
+  }
+
+  /**
+   * 某次请求里**回给模型**的 tool_result 块（未找到则抛 —— 别让空数组静默通过）。
+   *
+   * ⚠️ 不能只看 `messages.at(-1)`：`mockClient` 的 `seen.push(params)` 存的是**引用**，
+   * 引擎随后往同一个 `messages` 数组里继续追加（下一轮 assistant……）⇒ 等你回头读时，
+   * 那次请求的末尾早已不是当轮的 tool_result。实测就是这么挂的（报「末尾是 assistant」）。
+   * 所以按**类型**扫全部消息，并顺手断言装它的那条消息是 user。
+   */
+  function toolResultsSent(seen: unknown[], index = 1): Record<string, unknown>[] {
+    const msgs = (seen[index] as { messages?: unknown[] } | undefined)?.messages;
+    if (!msgs) throw new Error(`第 ${index} 次请求没有 messages（mock 脚本没跑到位？）`);
+    const carriers = msgs.filter(
+      (m) =>
+        (m as { role?: string }).role === 'user' &&
+        Array.isArray((m as { content?: unknown }).content) &&
+        ((m as { content: Record<string, unknown>[] }).content as Record<string, unknown>[]).some(
+          (b) => b.type === 'tool_result',
+        ),
+    ) as { content: Record<string, unknown>[] }[];
+    if (carriers.length === 0)
+      throw new Error(`第 ${index} 次请求里没有带 tool_result 的 user 消息`);
+    return carriers.flatMap((m) => m.content.filter((b) => b.type === 'tool_result'));
+  }
+
+  it('未知工具：trace 记 unknown_tool，run 照常收尾，模型收到「没有这个工具」', async () => {
+    const { client, seen } = mockClient([
+      toolUseMsg('ghost', { q: 1 }, 'tu-ghost'),
+      endTurnMsg('done'),
+    ]);
+    const result = await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [echoTool()], // 菜单里没有 ghost（= 老 run 的未决 tool_use 遇上改过的菜单）
+      client: client as never,
+    });
+
+    const outputs = toolOutputs(result.trace);
+    assert.equal(outputs.length, 1);
+    const body = outputs[0]!;
+    assert.equal(body.tool, 'ghost');
+    assert.equal(body.tool_use_id, 'tu-ghost');
+    assert.equal(body.ok, false);
+    assert.equal(body.errorKind, 'unknown_tool');
+    assert.equal(body.content, 'unknown tool: ghost', '出参就是这一句（没有栈、没有堆）');
+
+    // 调用方这一侧：**零失败信号** —— 这就是 G4 的静默（候选 3 要收口的东西）
+    assert.equal(result.error, undefined);
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.suspendedMessages, undefined, '未知工具不挂起');
+    assert.equal(result.pendingApprovals, undefined);
+
+    // 模型这一侧：拿到 is_error 的 tool_result，可以据此自己往下编 —— run 因此照样收尾
+    const blocks = toolResultsSent(seen);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.tool_use_id, 'tu-ghost');
+    assert.equal(blocks[0]!.is_error, true);
+    assert.equal(blocks[0]!.content, 'unknown tool: ghost');
+  });
+
+  it('未知工具的归类与审批无关：硬塞决定（批准或拒绝）都仍记 unknown_tool', async () => {
+    // 判序钉的是两处**独立**机制，缺一处这条不变量都还成立 —— 变异验证时踩过：
+    //   ① `turn.ts:536` 的 `decision = tool?.approval === 'required' ? … : undefined`
+    //      ⇒ 不存在的工具拿不到决定；
+    //   ② `turn.ts:609` 的 `else if (!tool)` **在** `else if (decision && !decision.approved)` 之前。
+    // 单独放宽 ①（改成 `args.approvals?.[use.id]`）或单独调换 ② 都**语义等价于原代码**，
+    // 用例当然不红（那不是用例空转，是变异设计错 —— 技能 §8.9 ⑥）。真正能证伪的做法是
+    // **两处一起破**：实测那样做 ⇒ 恰好这条红（approved=false 落到 denied）。
+    // ⇒ 将来重构这段时：别以为「只动一处很安全」——两处是对同一件事的双保险，
+    //   动之前先确认另一处还在，否则这条静默降级会变成**错误的**归类（denied）。
+    for (const approved of [true, false]) {
+      const { client } = mockClient([toolUseMsg('ghost', {}, 'tu-ghost'), endTurnMsg('done')]);
+      const result = await runAgent({
+        messages: [{ role: 'user', content: 'go' }],
+        tools: [echoTool()],
+        client: client as never,
+        approvals: { 'tu-ghost': { approved } },
+      });
+      const body = toolOutputs(result.trace)[0]!;
+      assert.equal(body.errorKind, 'unknown_tool', `approved=${approved} 不该改变归类`);
+      assert.equal(result.suspendedMessages, undefined, `approved=${approved} 不该挂起`);
+    }
+  });
+
+  it('同回合混合：未知工具不拖垮其他工具（正常的照常执行，两条结果都回给模型）', async () => {
+    let echoCalled = false;
+    const { client, seen } = mockClient([
+      {
+        ...toolUseMsg('echo', { text: 'hi' }, 'tu-echo'),
+        content: [
+          { type: 'tool_use', id: 'tu-echo', name: 'echo', input: { text: 'hi' } },
+          { type: 'tool_use', id: 'tu-ghost', name: 'ghost', input: {} },
+        ],
+      },
+      endTurnMsg('done'),
+    ]);
+    const result = await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [
+        echoTool(() => {
+          echoCalled = true;
+          return 'echo-ok';
+        }),
+      ],
+      client: client as never,
+    });
+
+    assert.equal(echoCalled, true, '未知工具不该阻止同回合其他工具执行');
+    const bodies = toolOutputs(result.trace);
+    assert.equal(bodies.length, 2, '两个 tool_use 各记一条 tool.output');
+    assert.deepEqual(
+      bodies.map((b) => (b.tool === 'ghost' ? b.errorKind : b.ok ? 'ok' : '???')).sort(),
+      ['ok', 'unknown_tool'],
+    );
+    // Anthropic 协议要求每个 tool_use 都有配对 tool_result：两条都得回给模型
+    const blocks = toolResultsSent(seen);
+    assert.deepEqual(blocks.map((b) => b.tool_use_id).sort(), ['tu-echo', 'tu-ghost']);
+    assert.deepEqual(blocks.map((b) => b.is_error).sort(), [false, true]);
+  });
+});

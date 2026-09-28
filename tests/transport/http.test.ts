@@ -29,6 +29,8 @@ function fakeResult(text: string): AgentRunResult {
     typed: undefined,
     suspendedMessages: undefined,
     pendingApprovals: undefined,
+    suspendedReason: undefined,
+    wakeAt: undefined,
   };
 }
 

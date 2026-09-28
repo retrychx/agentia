@@ -9,6 +9,96 @@
 
 ### 新增
 
+- **时间挂起（durable timer，spec §10 2026-09-28 ②）**：工具可以在**执行期**调
+  `ctx.deferUntil(at)` 说「现在还不是时候，T 之后再问我」—— 引擎把该回合收尾成挂起
+  （`stopReason: 'suspended'` + `suspendedReason: 'timer'` + 目标时刻 `wakeAt`），
+  到点由宿主续跑并**重跑这一批**工具。用途：等批处理作业、等限流窗口、等外部系统回填。
+  - ⏱️ **时刻必须是将来**：非有限数或 `at <= now` 当场抛 `TypeError`（该条 `tool_result`
+    记 is_error、run 照常往前走，**不**挂起）—— 允许过去时刻会让「醒来 → 再请求同一个过去
+    时刻」自己打转。同回合多条请求取**最早**的那个。
+  - ⚠️ **整批语义**：挂起是回合级的（协议要求每个 `tool_use` 都有配对 `tool_result`），
+    所以同回合**已经执行完**的其他工具会在醒来后**重跑**（副作用重复）。框架把它变成看得见的：
+    trace 记 `defer.requested { wake_at, tool_use_ids, discarded }`，真有兄弟工具被作废时
+    落一条 `console.warn`。要精确控制就让模型单独调它，或把它做成幂等读。
+  - 🩺 **可见性**：`GET /healthz` 新增 `suspended: { approval, timer, nextWakeAt }`
+    （本进程口径，与 `inFlight` 同一张表；无时间挂起时 `nextWakeAt` 是 `null` 不是 `0`），
+    另有 `AsyncRunner.suspendedSummary`。
+  - 🛑 **停机**：`drain()` 之后**不再唤醒**睡着的 run（停机 = 不再往前推）；重启后由新进程的
+    首次 `resumePending` 唤醒。**不提供 `cancel` API**：取消靠宿主自己 abort 在飞请求 + 不唤醒
+    （独立立项，见 spec §10 2026-09-28 ② 决策 6）。
+  - 新增字段（**全部加法，无破坏性**）：`ToolRunContext.deferUntil`、`AgentRunResult.wakeAt`、
+    `RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`。另顺手修两处：
+    `resumePending` 跳过挂起记录时的原因不再是 `'terminal'` 而是 `'suspended'`（诊断不说错话）；
+    时间挂起醒来时的续跑段**不再**重复注入会话历史、且 trace 会 link 上一段 run。
+- **旧任务记录的读时归一（迁移垫片，spec §10 2026-09-28 ③）**：store 读回记录时会把 0.9.5 之前
+  落库的旧形状归一 —— 状态值 `awaiting_approval` → `suspended` 并补 `suspendedReason: 'approval'`，
+  挂起时刻 `approvalPendingSince` → `suspendedSince`（旧键删掉）。**升级不再需要宿主手工改库**：
+  此前那种记录读回来会被 `isTerminalTask` 判成终态、`resumePending` 按 `'terminal'` 跳过 ⇒
+  一条在等审批的 run 成孤儿（既不续跑、也无法再被审批）。
+  - 六个「bytes → 记录」点（`FileTaskStore` 全量扫 + 残行探测、`SqliteTaskStore` 的
+    get / byIdempotency / list、`RedisTaskStore` 单键读）收成**唯一入口** `src/store/record.ts`；
+    静态守卫：`src/store/*.ts` 里除它之外不得直接 `JSON.parse`。
+  - `SqliteTaskStore` 额外把派生列 `status` 拉回与 json 一致 —— 否则外部/DBA 的
+    `SELECT status, count(*) FROM tasks GROUP BY status` 会**继续**报旧值。
+  - 归一失败/坏 JSON 的取舍与各 store 既有口径一致；本改动**无公共 API 变化**。
+- **菜单漂移不再静默（R8 候选 3，spec §10 2026-09-27 ⑧）**：挂起段之后**续跑**时，未决
+  tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架把这件事记成**三处信号** ——
+  `menu.drift` 事件（`{ missing, tool_use_ids, menu_size }`；时间线与
+  `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、
+  一条 `console.warn`。⚠️ **run 照常收尾**（不判失败：挂起是合法态、改代码是发布常态 ——
+  理由与「严格模式为什么不给」见 spec §10 2026-09-27 ⑧）。另新增 run 根 attribute
+  `tools.names` / `tools.menuHash`（装配后菜单的名字清单 + 名字与**输入 schema** 的摘要，
+  与 `prompts.versions` 同动机：质量回归能定位到具体菜单版本）。口径：判据只看名字；签名与
+  菜单顺序、schema 键序无关，`description` **不参与**。**公共 API 零变化**。
+- **MCP 反向桥（`createMcpServer`，R8-P5）**：把 app 的能力菜单（装配后、过中间件的那份）
+  暴露成 MCP server —— Claude Code / Cursor / 任何 MCP 宿主能直接调你的 `@Tool`。
+  传输二选一（都只用标准库）：`stdio`（换行分隔 JSON-RPC，日志只去 stderr）与
+  StreamableHTTP（POST 收报文回 `application/json`；`initialize` 铸 `mcp-session-id`
+  头但**不校验**（无状态 server，宽容是有意的）；GET → 405、DELETE → 200；客户端断连
+  中止该次调用的 signal；`auth` 钩子只给缝 —— 读 body 之前、抛错即 401，与
+  `createHttpHandler` 同纪律）。协议范围只到 tools（initialize / tools/list / tools/call
+  + ping）。**trace 叙事不破**：每次 tools/call 造一棵 trace（run 根 `mcp.tools/call` +
+  capability span + 与引擎同形状的 `tool.input`/`tool.output` 事件）投递 `opts.sinks`；
+  结果映射与正向桥方向对称（抛错 → 协议层成功 + `isError: true`）。公共面新增
+  `createMcpServer` 与 `McpServerApp` / `McpServerOptions` / `McpServer` 类型。
+  决策见 spec §10 2026-09-27 ⑦。
+- **租户归因 labels（`labels: Record<string, string>`，R8-P4）**：`createApp` 缺省 +
+  `app.run` 单次覆盖（**整体替换**不合并）+ `runAgent` 直连三层同语义。落 run 根的
+  `labels.<key>` 属性（trace 侧无基数问题；与框架自写的 `source` 触发来源审计正交）；
+  可序列化，异步任务随 TaskRecord 落库、续跑不丢；键空 / 值非字符串在 run 入口抛
+  TypeError。进 metrics 是**另一个开关**：`metricsSink({ labelKeys, maxLabelValues? })`
+  显式点名哪些键上指标标签（缺省一个都不上），每键相异值数封顶（缺省 100、
+  必须为正数），超出折叠进 `__other__`（只丢粒度不丢量），被折叠数见
+  `snapshot().droppedLabelValues` 与 `dropped_keys{kind="label:<key>"}`；四个 run 级
+  家族（`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total`）在全局
+  样本外追加带标签样本（⚠️ 开了以后 `sum(agentia_runs_total)` 会重复计数，总量用
+  不带标签的序列）。公共面新增 `RunLabelMetrics` 类型。决策见 spec §10 2026-09-27 ⑥。
+- **CLI `agentia export`：trace 落盘文件 → 训练数据集**（JSONL，一行一份
+  `{ messages, meta }`；R8-P3b）—— harvest（产回归用例）的孪生。开了
+  `traceContent: 'full'` 的 run 导出带真 assistant 文本的完整对话；没开的导出工具
+  轨迹，缺文本**不造占位**（占位文本进训练数据是投毒），缺口进 `meta.incomplete`。
+  过滤：`--ok-only` / `--min-score n`（没带分数的 run 被排除：没判过 ≠ 及格）；
+  `--out` 落盘（stdout 是产物的纪律同 harvest）。框架侧 `src/eval/export.ts` 的
+  `exportRun` 是 module 级（不进公共面，同 harvestEvalCase 纪律），CLI 侧为去类型
+  移植副本 + 逐字对拍守护。决策见 spec §10 2026-09-27 ⑤。
+- **opt-in 记录 assistant 文本进 trace（`traceContent: 'full'`）**：每回合的模型文本落
+  该 llm.turn span 的 `output.text` 属性（多块 `\n` 连接；过 `maxEventChars` 同一道
+  截断闸 —— 它管「多长」，`traceContent` 管「记不记」）。缺省不记，现状逐字不变；
+  纯 tool_use 回合不记。透传子 agent / skill 子循环（`forwarded.ts` 同树同口径）。
+  run 根快照记 `config.traceContent`。⚠️ 实测代价：3 回合、每回合约 1600 字符输出的
+  run，trace 体积 5 564 → 11 010 字节（约 2×）；且模型输出从此进入要脱敏的面 ——
+  出库前走 `docs/observability.md` 配方 2.4。这是「trace → 训练数据导出」（R8-P3b）
+  的引擎侧前提。决策见 spec §10 2026-09-27 ④。
+- **模型 fallback 链（引擎级，`fallbacks: [{ model, client? }]`）**：`createApp` 缺省 +
+  `app.run` 单次覆盖 + `runAgent` 直连三层同语义。主模型本回合最终失败（含其
+  `maxRetries` 用尽）且错误可换（`classifyError` 的 retryable 类：rate_limit / server /
+  timeout / connection）时按序换环重试本回合 —— **每一环开自己的 llm.turn span**
+  （model 名正确 ⇒ 成本归因与 `usage.unpriced` 探测天然对），切换在新 span 记
+  `llm.fallback { from, to, errorType }` 事件，run 根快照记 `config.fallbacks`。
+  护栏：`aborted` 永不换（用户取消不是故障）、本回合吐过字不换（与 retry 的
+  `!emitted` 同一护栏）、每回合从主环重新起；子 agent / skill 子循环不继承。
+  链环 `client` 缺省复用本次 run 的 client（同端点换模型是主用例）；run 入口校验
+  坏环/死 client（持久化反序列化空壳）响亮抛 TypeError。决策见 spec §10 2026-09-27 ③。
 - **`jsonlTraceSink({ path })`：JSONL 文件 sink 进框架** —— CLI 三件套（`agentia report` /
   `diff` / `harvest`）消费 `trace.jsonl`，而产出侧此前要用户手写 `appendFileSync`（usage-guide
   曾这么教）。现在一行接入：`createApp({ sinks: [jsonlTraceSink({ path: 'trace.jsonl' })] })`。
@@ -26,9 +116,32 @@
 
 ### 变更
 
+- **挂起改成「一个状态 + 一个原因」：`awaiting_approval` → `suspended` + `suspendedReason`**
+  （spec §10 2026-09-28 ①；为 durable timer 铺路）：`RunStatus` 与 `AgentStopReason` 的成员名
+  都改成 `'suspended'`，「为什么挂起」由新字段承载 —— `'approval'`（等人工决定）/
+  `'timer'`（等一个时刻）。两条判据因此落在**原因**上：`approvalTimeoutMs` 只对 `approval`
+  成立、`approve` 对 `timer` 挂起一律 409 —— 否则一条等时刻的 run 会被「审批超时」提前叫醒
+  并重派。`TaskRecord.approvalPendingSince` 改名 `suspendedSince`（它本来就是挂起时刻）。
+  新增导出 `SuspendedReason`（`api.html` 计数 224 → 225）。**破坏性** —— 迁移见下。
+- **脱敏配方 2.4 升级**（`examples/observability` 的 `redactSink`，框架 `src/` 零改动）：
+  新增内置正则预设（Bearer / JWT / AWS access key / LLM `sk-` key / 邮箱 / 手机号），
+  **缺省全开**（拷走即用），`presets` 可开子集或 `false` 全关；预设命中的替换文案带类别
+  标签（`[REDACTED:email]`），自定义 `patterns` 与 `keys` 命中的仍是裸 `[REDACTED]`。
+  脱敏不内建进框架是已锁定决策（spec §9.3 / §10 2026-09-14 ⑥），这是配方层的升级。
 - **sink 投递失败不再完全静默**：`flushSinks` 吞掉 sink 异常的纪律不变（观测不击穿业务），
   但吞之前现在会落一条 `console.warn`（文案含「trace sink」，可 grep）——「观测的观测」
   此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ②。
+
+### 迁移
+
+- **升级前停在 `awaiting_approval` 的任务记录**（`FileTaskStore` / `SqliteTaskStore` /
+  `RedisTaskStore` 里已写好的 JSON）：**本版内置兼容读，宿主不需要做任何动作** —— store 读回记录
+  时会把旧形状归一（`awaiting_approval` → `suspended` 并补 `suspendedReason: 'approval'`；
+  `approvalPendingSince` → `suspendedSince`，旧键删掉），`SqliteTaskStore` 还会把派生列 `status`
+  一并拉正。细节与门禁见 `docs/spec.md` §10 2026-09-28 ③。
+  ⚠️ 本小节此前写的是「框架**不**内置兼容读、请宿主在升级前手工改库」—— 垫片落地后那段要求
+  **已作废**（手工处置仍可行，但不再是必须；在等审批的 run 不会再被判成终态）。
+  `SuspendedReason` 仍然是**类型**而不是别名：不为旧值引入第二个运行时名字。
 
 ## [0.9.4] - 2026-09-26
 
@@ -51,6 +164,33 @@
   —— 修后 **32 字符 / 3 139 token**，与顶层图片同一条口径（内嵌与顶层的估算差 ≤ 3 token）。
 - **`tool_use` 的参数同样有界**：同一类「大载荷灌进摘要器」的洞，两处各配回归用例
   （含「小参数不许被截断」的阳性对照），变异验证 4/4 咬人。
+
+### 变更 · 复审收口（2026-09-27，九条「测试没覆盖的缝」）
+
+> 来源：对 R8 五项实现（P1–P5）的逐条复审 —— 单测全绿、全链 8/8，问题全在用例之外。
+> 每条的取证与复现读数记在各自提交里；下面按模块列**行为变化**。
+
+- **MCP 反向桥三处**：① `tools/call` 现在走引擎**同一份** `inputSchema` 校验器，入参不合法
+  回 `-32602` 且方法体零调用（此前缺必填项被当成功调用，实测返回 `你好，undefined`）；
+  ② `auth` 钩子提到方法/路径判定**之前**（此前未鉴权能拿到 `405 allow: POST, DELETE` 与
+  `DELETE → 200`，与 `createHttpHandler` 的「其余先鉴权」纪律不符）；③ stdio 的 stdout
+  挂了 `error` 守卫吞 EPIPE（此前宿主先关读端会把 server 打成栈回溯 + exit 1；正向连接器
+  对子进程 stdin 一直是这么吞的）。
+- **`metricsSink` 归因标签补上第四道基数上限 `maxLabelCombos`**（缺省 200，进 limits 真源表）：
+  `maxLabelValues` 只封每个键的**值域**，而进内存的是键的**组合**（叉乘）—— 缺省 100 值域
+  配 3 个键 = 1,030,301 条常驻，且 `droppedLabelValues` 看不见它。超限的**新组合**折进一个
+  全 `__other__` 的桶（量不丢），折叠数经 `snapshot().droppedLabelCombos` 与
+  `dropped_keys{kind="label:combos"}` 可见。**单键配置（最常见）组合数 ≈ 值数 ⇒ 行为不变。**
+- **标签 combo 身份不再裸拼接**：值里出现 `,`/`=`/`\` 时会给 `\` 前缀转义 —— 此前两个不同
+  标签集能拼出同一个键（实测 `a="x,b=y",b="z"` 与 `a="x",b="y,b=z"` 并成一本账、且按前者
+  的标签渲染，后者的量被错配）。正常值（不含这三个字符）的键与展示形**逐字不变**。
+- **`agentia export` / `exportRun` 三处**：① 汇总现在**也**在 stdout 模式打（走 stderr）——
+  此前 `agentia export x.jsonl > dataset.jsonl` 静默丢坏行、而 `--out` 形态与 `report` 都会报；
+  ② `incomplete` 新增 `assistant-text` 的**整棵 trace 无正文**判据（混合回合的真文本此前静默
+  缺席却不当缺口）与 `no-final-assistant`（末条 user ⇒ 无 loss 目标）；③ 侧产物与 CLI 移植
+  副本在「trace 缺 `status` / span 缺 `attributes`」的裸 trace 上不再分叉（框架侧此前会抛）。
+  **⚠️ 迁移注意**：`meta.incomplete` 会多出 `no-final-assistant` 这个词 —— 按等值断言
+  `incomplete` 的消费方要放宽成「包含」或补上这个词。
 
 ### 变更 · 三个旋钮的 `0` 从「静默失效」改成构造期报错
 

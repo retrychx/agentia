@@ -57,7 +57,9 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'markdown.ts': 296,
     'templates.ts': 259,
     'doctor.ts': 213,
-    'cli.ts': 206,
+    // 2026-09-27（R8-P3b `agentia export` 命令注册）：206 → 219（+13 = import/帮助表/
+    //   USAGE 表/分发分支，全是接线；新命令的本体在 export.ts）
+    'cli.ts': 219,
     'native-pick.ts': 198,
     'report.ts': 194,
     'create.ts': 140,
@@ -73,6 +75,14 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'registry.ts': 93,
     'generate.ts': 82,
     'inspector-sink.ts': 75,
+    // 2026-09-27 R8-P3b 新增：`agentia export`（trace → 训练数据 JSONL）。
+    // 框架侧生成器（src/eval/export.ts）的去类型移植副本 + CLI 薄壳（过滤/落盘），
+    // 逐字对拍守护在 test/export.test.mjs（同 harvest/diff 模式）
+    // 2026-09-27（R8 评审 ⑨⑩⑪⑫ 修复 —— **行为变更**，不是搬移）：298 → 330（+32）。
+    //   与框架侧 src/eval/export.ts 的 +31 同源：那条是**生成器本体**、这条是它的移植副本，
+    //   两侧必须逐字对拍，所以不能只在一侧抽件（抽了就散了）。净增 = 两条收尾判据
+    //   （正文缺席合取 / no-final-assistant）+ stdout 汇总 + 「为什么这么判」的注释。
+    'export.ts': 330,
     'add.ts': 72,
     'npm-bin.ts': 59,
     'layout.ts': 51,
@@ -123,7 +133,14 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //   +5  dev-machine.ts：abort-grace-expired 的相位弱化边界（相位随 restart 效果发出
   //       就落 idle、不等 stopChild 真停，以及为什么当前不可达）—— 评审建议级
   //   +3  dev.ts：pickFolder 的「pick-folder 是纯标记效果」谜面注 —— 评审建议级
-  const TOTAL_BUDGET = 8328;
+  // 补账（2026-09-27，R8-P3b `agentia export` —— **新功能**，不是搬移）：8328 → 8639（+311）。
+  //   +298  export.ts（新文件）：框架侧 src/eval/export.ts 的去类型移植副本 + CLI 薄壳
+  //       （--out / --ok-only / --min-score 过滤与报错），逐字对拍守护在 test/export.test.mjs
+  //   +13   cli.ts：命令注册接线（import / 帮助表 / USAGE 表 / 分发分支）
+  // 补账（2026-09-27，R8 评审 ⑨⑩⑪⑫ 修复 —— **行为变更**，不是搬移）：8639 → 8671（+32）。
+  //   全部落在 export.ts（见上方单文件基线的说明）——「CLI 移植副本与框架侧逐字对拍」
+  //   这条不变量决定了这个涨幅不能靠抽件摊掉：两侧同增是**设计**，不是失守。
+  const TOTAL_BUDGET = 8671;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
