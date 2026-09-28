@@ -232,6 +232,33 @@
   但吞之前现在会落一条 `console.warn`（文案含「trace sink」，可 grep）——「观测的观测」
   此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ②。
 
+### 重构（纯结构，零行为变化）· 结构收口（2026-09-28，底盘见仓库根 `SRC-STRUCTURE-2026-09-28.md` 的落地顺序 1–4）
+
+- **HTTP 宿主拆成三件 —— `http.ts` 拆分第三步**：`src/transport/http.ts` **840 → 306 行**，
+  最大单函数 `createHttpHandler` **489 → 123 行**（拆分前这一个函数占全文 58%）。
+  同系列前两步（#99 外移形状口径 → `http-shapes.ts`、#100 外移路由判定 → `http-route.ts`）
+  移走的都是**纯件**，占大头的那一半（九条路由的**体**）原地不动 —— 于是文件从 533 行又长回
+  840。这一步把它搬走：
+  - `http-endpoints.ts`（新）= **端点体**：派发表 `handleRoute` + 九条 `handleXxx`
+    （读 body → 调 runner → 写响应 → 选状态码）。免鉴权组（`/healthz` / `/metrics`）连同
+    它们自己的 405 也在这张表里 —— 表**不认识鉴权**，闸在宿主侧（`handler` 里那两行否定
+    条件：「不是免鉴权组才过闸」）。
+  - `http-io.ts`（新）= **收发原语**：`sendJson` / `readBody` / `parseJsonBody` / 405 / 413 /
+    503 / 500 的机械动作。**零内部依赖**（只 import `node:http` 的类型）⇒ 宿主与端点都引它
+    而**不可能**成环 —— 无环是构造性的，不是碰巧。
+  - `http.ts` = 宿主契约 + 宿主状态 + 准入/停机。原先散在闭包里的三个 `let`（在飞 run 计数 /
+    停机态 / SSE 收口表）收成一个**有名字的对象** `HttpState`，按引用交给每个请求 ——
+    「健康检查与停机判断看的是同一个数」这条承诺从此有个明主。
+  - **行为零变化**：既有 HTTP 套件 146/146 未改一字全过；公开面（`src/index.ts`）一行未改
+    （`HealthResponse` 随实现搬走并在 `http.ts` 转出，与 #99 转出两个形状类型同款）。
+  - **配源码级守卫** `tests/transport/http-boundary-guard.test.ts`：端点体绕不开的五个记号
+    （`route.kind` / `sse.event(` / 三个形状解析器）必须在端点文件、必须不在宿主文件；准入
+    判定只许留在宿主；原语层不许长内部依赖；派发表的穷尽断言必须在场。反向验证过三条
+    （放回拆分前的文件 / 删掉穷尽断言 / 给原语层加内部依赖 —— 各恰好一条红）。
+  - 顺带修好一条**盯着实现排布而非契约**的守卫：`tests/docs/sse-frames.test.ts` 原先写死扫
+    `src/transport/http.ts` 的 `sse.event('…')`，帧一搬家就误红（帧一条没少）—— 改成扫整个
+    `src/transport/` 目录。断言方向是「文档提到的 ⊆ 实现 emit 的」，所以扫宽不会假绿。
+
 ### 迁移
 
 - **升级前停在 `awaiting_approval` 的任务记录**（`FileTaskStore` / `SqliteTaskStore` /

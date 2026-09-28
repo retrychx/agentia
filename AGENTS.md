@@ -73,6 +73,17 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   纯函数；三条顺序是全部内容 —— 免鉴权组的 405 先于鉴权、其余先鉴权再判
 │   │                        #   方法/路径（未鉴权不泄露路径是否存在）、approve / cancel / events 与 stream 都先于
 │   │                        #   通用 id 且「方法不对」压过「id 坏了」（DELETE /tasks/%zz/approve = 405，不是 400）
+│   │                        #   http-endpoints.ts = **端点体**（http.ts 拆分第三步）：走到一条路上
+│   │                        #   做什么 —— 派发表 handleRoute（穷尽性断言是 `const _never: never = route`；
+│   │                        #   免鉴权组也在这张表里，表**不认识鉴权**，闸在宿主侧）+ 九条 handleXxx
+│   │                        #   （读 body → 调 runner → 写响应 → 选状态码）。判据：`route.kind` /
+│   │                        #   `sse.event(` / 三个形状解析器都只许出现在本文件 —— 源码级钉在
+│   │                        #   tests/transport/http-boundary-guard.test.ts（连同「准入判定留在宿主」「派发表
+│   │                        #   穷尽断言在场」），退化时构建红
+│   │                        #   http-io.ts = **收发原语**（同一步的另半边）：sendJson / readBody /
+│   │                        #   parseJsonBody / 405 / 413 / 503 / 500 的机械动作，**零内部依赖**
+│   │                        #   （只 import node:http 的类型）—— 宿主与端点都引它 ⇒ 不可能成环是**构造性**的
+│   │                        #   （`HttpException` 刻意不在这里：它是宿主契约，搬过去会让原语层反向依赖宿主）
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
