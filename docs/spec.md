@@ -3839,12 +3839,18 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
 （结果形状现在 **9 个字段**全在场）、`RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`、
 `AsyncRunner.suspendedSummary`；新 trace 事件 `defer.requested{wake_at, tool_use_ids, discarded}`。
 
-门禁（**11 条变异逐条亲跑**，全部被**具名**用例抓住；`trap` 还原 + 还原自检 + 复绿）：
+门禁（**13 条变异逐条亲跑**，全部被**具名**用例抓住；`trap` 还原 + 还原自检 + 复绿）：
 
 - `tests/engine/defer.test.ts`：`resolveWakeAt`（将来性 + 非有限数的响亮拒绝，带阳性对照）
-  + 回合级收集器（多条取最早、同一条重复请求取更早）+ 引擎侧四例：整批挂起（工具**真跑过**、
+  + 回合级收集器（多条取最早、同一条重复请求取更早）+ 引擎侧**五例**：整批挂起（工具**真跑过**、
   结果作废、`defer.requested` 带 `discarded`）、醒来重跑那一批（`tool_result` 真进了下一次请求）、
-  醒来仍未成熟 ⇒ 以**本次**请求再挂一次、非法时刻 ⇒ is_error 不挂起（含台账 `errorKind: 'threw'`）。
+  醒来仍未成熟 ⇒ 以**本次**请求再挂一次、非法时刻 ⇒ is_error 不挂起（含台账 `errorKind: 'threw'`）、
+  **同批有没请求延后的兄弟工具 ⇒ `discarded` 数到 2 + 恰好一条 `console.warn` + 醒来那个副作用
+  真的跑第二遍**（前两件是信号、第三件才是事实；配 M12/M13 两条变异：摘掉告警 / 把 `discarded`
+  改成只数请求延后的那几条 —— 两条都只打红这条用例）。
+- ⚠️ **一条假 BAD 也记在这里**：变异脚本的套件白名单漏了 `defer.test.ts` 的 describe 名，
+  于是 `时间挂起（引擎侧）` 这条**套件行**在失败列表里冒充「非预期红」，两条变异一度被读成
+  BAD（实为 OK）。这正是「套件行与用例同名同形」那个老坑的可执行形态 —— 补白名单后复跑即 OK。
 - `tests/transport/wake-policy.test.ts`：`timerDue` 三条边界（到点即醒 / 只在挂起且原因是 timer /
   缺 `wakeAt` 永不到点）+ `summarizeSuspended`（空集给 `null` 不给 `0`；只有等审批时不退化）。
 - `tests/transport/durable-timer.test.ts`：宿主侧**八例** —— 睡下时落库与读数进位、未到点不捡而到点
