@@ -64,7 +64,8 @@ const NEEDLES = ["'tool.input'", "'tool.output'"];
 function maskNonCode(src: string): string {
   const out = src.split('');
   const blank = (a: number, b: number): void => {
-    for (let k = Math.max(0, a); k < Math.min(b, src.length); k++) if (out[k] !== '\n') out[k] = ' ';
+    for (let k = Math.max(0, a); k < Math.min(b, src.length); k++)
+      if (out[k] !== '\n') out[k] = ' ';
   };
 
   /** 扫一段**代码**：注释就地遮蔽、模板递归、普通字符串只跳过（内容保留） */
@@ -211,11 +212,7 @@ describe('工具 I/O 事件名的跨层单源（E8）', () => {
       2,
       '代码位置的两处必须都看得见（含 ${} 嵌套里那处）',
     );
-    assert.equal(
-      (masked.match(/'tool\.output'/g) ?? []).length,
-      0,
-      '注释与模板里的两处必须看不见',
-    );
+    assert.equal((masked.match(/'tool\.output'/g) ?? []).length, 0, '注释与模板里的两处必须看不见');
   });
 
   it('全 src 只有单源文件允许出现这两个字面量（白名单按文件+条数，不许静默变大）', () => {

@@ -112,6 +112,18 @@
   拦下来等于把它搁死在 store 里。④ 幂等键命中的重复提交**不吃** 503（闸在去重之后）。
   ⑤ `get queued` 与闸**同用** `#queueDepth`：读数即判据，不会各说各话。
   顺带把 `SlotPool.inUse` 的「测试用」自述改成真话（它从此是闸的一半）。
+- **工具 I/O 事件名单源到 `core/trace.ts`**（E8）：`tool.input` / `tool.output` 跨
+  **engine → eval → integrations** 三层被手写（**12 处**取值 —— 报告写「7 处」偏小，我逐条点数是 12）。
+  漏一处的后果不是「少记一条事件」，是**静默归零**：`integrations/report.ts` 与
+  `metrics-state.ts` 都按名字过滤，改名漏一处 ⇒ 报表说「没有工具调用」而 trace 里明明有。
+  现在常量 + `ToolIoEventName` 类型落在 **`core/trace.ts`**（⚠️ 报告建议的落点
+  `engine/tool-events.ts` **不可行**：`integrations` 只许依赖 `core`，够不着 engine —— 那样
+  integrations 侧只能再手写一份，等于把单源补成两处）；11 处取值 + 6 处 import 改引常量。
+  `eval/harvest.ts` 里**生成出去的用例源码文本**保留字面量：生成的脚本不 import 本仓常量，
+  改了会得到一个引用不存在标识符的脚本（跑起来才炸）。
+  配**源码级守卫** `tests/architecture/tool-event-names.test.ts`（自带遮蔽器，与
+  `lib/source-scan.ts` 相反 —— 那个按设计遮蔽字符串）：三条自证样本 + 白名单按「文件 + 恰好
+  条数」+ 射程钉 + 走查下限；变异三条全部具名复红（含「守卫自身的守卫」：遮蔽器退化）。
 
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /
