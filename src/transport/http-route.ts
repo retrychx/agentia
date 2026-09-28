@@ -13,9 +13,10 @@
  *      而没配 metrics 出口时 `/metrics` **不是**免鉴权路径（会先过鉴权，最后 404）。
  *   ② **其余一律先鉴权、再判方法与路径**：所以鉴权失败时 `DELETE /run` 回 401 而不是 405，
  *      `POST /不存在的路径` 也先过鉴权 —— 「你路径写错了」不该泄露给未鉴权的调用方。
- *   ③ **`/tasks/<id>/approve` 与 `/tasks/<id>/stream` 都先于 `/tasks/<id>`，且「方法不对」
- *      压过「id 坏了」**：
- *      `GET /tasks/x/approve` 回 **405（Allow: POST）**而不是 404、也不走轮询；
+ *   ③ **`/tasks/<id>/approve`、`/tasks/<id>/cancel` 与 `/tasks/<id>/stream` 都先于
+ *      `/tasks/<id>`，且「方法不对」压过「id 坏了」**：
+ *      `GET /tasks/x/approve` 回 **405（Allow: POST）**而不是 404、也不走轮询
+ *      （cancel 同款：`GET /tasks/x/cancel` = 405）；
  *      `POST /tasks/x/stream` 回 **405（Allow: GET）**；
  *      `DELETE /tasks/%zz/approve` 回 **405 而不是 400** —— 方法不对就轮不到判 id。
  *      可观测的是这个结果，不是源码里的书写次序：解码经 `decodeSegment`（**不抛错**，
@@ -34,6 +35,7 @@ export type HttpRoute =
   | { kind: 'run' }
   | { kind: 'submit' }
   | { kind: 'approve'; taskId: string }
+  | { kind: 'cancel'; taskId: string }
   | { kind: 'taskStream'; taskId: string }
   | { kind: 'poll'; taskId: string }
   /** taskId 的 URL 编码残缺 → 400（调用方输入问题，不是 500） */
@@ -80,6 +82,12 @@ export function routeRequest(pathname: string, method: string, hasMetrics: boole
       if (method !== 'POST') return refuse('POST', false);
       const id = decodeSegment(rest.slice(0, -'/approve'.length));
       return id === undefined ? { kind: 'badTaskId' } : { kind: 'approve', taskId: id };
+    }
+    // 取消（2026-09-28 ④）：与 approve 同款排法 —— 先判方法、再解码
+    if (rest.endsWith('/cancel')) {
+      if (method !== 'POST') return refuse('POST', false);
+      const id = decodeSegment(rest.slice(0, -'/cancel'.length));
+      return id === undefined ? { kind: 'badTaskId' } : { kind: 'cancel', taskId: id };
     }
     if (rest.endsWith('/stream')) {
       if (method !== 'GET') return refuse('GET', false);

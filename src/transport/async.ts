@@ -157,6 +157,16 @@ export class TaskCancelError extends Error {
   }
 }
 
+/**
+ * 取消的**宽限**：取消请求发出后，留给那次 run 自己收尾的时间。
+ *
+ * 尊重 signal 的 client 是毫秒级收尾（SDK 一收到 abort 就 reject，run 随即以 `stopReason:
+ * 'aborted'` 收尾 —— 那条路连 `result` 与 trace 都保得住，本常量对它只是余量：一次网络往返 +
+ * trace 落盘）。不认 signal 的宿主**永远**不会自己收尾 —— 等多久都是白等，所以到点就撤回意图、
+ * 如实抛 409（见 `#awaitCancelled`），不假装取消成功。
+ */
+const CANCEL_GRACE_MS = 2_000;
+
 export interface AsyncRunnerOptions {
   client?: ModelClient;
   store?: TaskStore;
@@ -527,10 +537,8 @@ export class AsyncRunner {
       inflight.abort();
       return this.#awaitCancelled(taskId);
     }
-    // queued / suspended：没有在飞 run，直接落终态。
-    // ⚠️ 翻转**之前**先记住原状态：`queued` 那支有一条**活着的** `#execute` 在等槽位，
-    // 它会自己收尾（记账 + sinks），本方法不许再记一遍（否则 onFinished 触发两次）
-    const queuedLive = rec.status === 'queued';
+    // queued / suspended：没有在飞 run（或它还没起跑），直接落终态 —— 记账由本方法做完，
+    // 等槽位那趟 #execute 的 finally 靠 `#cancelSettled` 跳过它那一份（否则 onFinished 两次）。
     rec.status = 'cancelled';
     rec.error = abortedError();
     rec.finishedAt = Date.now();
@@ -543,14 +551,8 @@ export class AsyncRunner {
     this.#unmarkSuspended(taskId);
     const saved = this.#safeSave(rec, 'outcome');
     this.#cancels.delete(taskId);
+    this.#cancelSettled.add(taskId);
     const finish = (): TaskRecord => {
-      if (queuedLive) {
-        // 记账交给那条在等槽位的 #execute：它拿到槽位后重读、发现状态不对就返回，
-        // 然后在自己的 finally 里做 sinks / 事件流 / 认领释放 / 等待者那一套
-        this.#notifyDrained();
-        return { ...rec };
-      }
-      // 挂起：没有活着的 #execute，本方法把记账做完（与 #execute finally 的顺序一致）
       this.#taskWaiters.notify(taskId);
       this.#streams.markDone(taskId);
       this.sessionInputs.delete(taskId);
@@ -559,24 +561,39 @@ export class AsyncRunner {
       this.#notifyDrained();
       return { ...rec };
     };
-    // sinks 同理：只有「没有活着的 #execute」那一支才由本方法通知
-    const settle = (): MaybePromise<TaskRecord> =>
-      queuedLive ? finish() : this.#notifySinks(rec).then(finish);
-    return isThenable(saved) ? Promise.resolve(saved).then(settle) : settle();
+    return isThenable(saved)
+      ? Promise.resolve(saved)
+          .then(() => this.#notifySinks(rec))
+          .then(finish)
+      : this.#notifySinks(rec).then(finish);
   }
 
   /**
-   * 等一条**已请求取消**的在飞任务真收尾。
+   * 等一条**已请求取消**的在飞任务真收尾（宽限见 `CANCEL_GRACE_MS`）。
+   *
    * 终态判据用 `isTerminalTask`（单一真源）—— 手写两值会让 `cancelled` 在这里被漏掉，
    * 等待就变成「等到超时」，症状是「取消没生效」。
+   *
+   * ⚠️ 宽限内没收尾 ⇒ **撤回意图 + 抛 409**，不假装：敢说「取消了」而那条 run 还活着的话，
+   * 它跑完会把状态覆盖回去（调用方以为成功、实际什么都没发生）。不认 `signal` 的宿主正是
+   * 这一类；`runTimeoutMs` 那条老路对同样情形是「放弃等待」（记录落 failed、槽位释放、
+   * 底层执行照样跑完）—— 两者**刻意不同**：超时是宿主自己定的预算，取消是人手按的动作，
+   * 骗人的代价不一样。
    */
   async #awaitCancelled(taskId: string): Promise<TaskRecord> {
-    const deadline = Date.now() + 30_000; // 与 awaitTask 的缺省同量级
+    const deadline = Date.now() + CANCEL_GRACE_MS;
     for (;;) {
       const rec = await this.store.get(taskId);
       if (rec && isTerminalTask(rec)) return rec;
       const left = deadline - Date.now();
-      if (left <= 0) throw new TaskCancelError(409, `task ${taskId} 取消后 30s 仍未收尾`);
+      if (left <= 0) {
+        // 撤回意图（不删 `#runAborts`：那条 run 还在本进程里活着，句柄留给它自己的 finally 摘）
+        this.#cancels.delete(taskId);
+        throw new TaskCancelError(
+          409,
+          `task ${taskId} 的中断没有在 ${CANCEL_GRACE_MS}ms 内生效（宿主不认 signal？）—— 取消未发生`,
+        );
+      }
       await this.#taskWaiters.wait(taskId, Math.min(250, left));
     }
   }
@@ -809,6 +826,13 @@ export class AsyncRunner {
   readonly #runAborts = new Map<string, AbortController>();
 
   /**
+   * 已由 `cancel` **自己**收尾过的任务。那趟等槽位的 `#execute` 还活着，它的 finally 会再记一遍账
+   * （onFinished 触发两次 / 流被关两次）—— 用这个集合把「谁负责记账」说定：cancel 收尾了，
+   * finally 就只做它自己那份（在飞递减、通知等待者、排空通知）。
+   */
+  readonly #cancelSettled = new Set<string>();
+
+  /**
    * 到期唤醒（durable timer）：读到一条**在睡且到点**的挂起 ⇒ 认领 + 重派，醒来后重跑那一批。
    *
    * 与 `#expireAndResume` 逐条同形（进在飞闸、重读一遍、先落库再派发），理由一字不差；
@@ -1037,29 +1061,36 @@ export class AsyncRunner {
       // 通知在飞递减**之前**：drain() 返回时保证「任务已终态 + 回调已发完」。
       // 内层 finally 保证回调万一抛错（理论上被吞掉）也不泄漏在飞计数。
       try {
-        // HITL：挂起不是终态 —— onFinished 的承诺是「任务达终态」，对它不开火
-        if (rec.status !== 'suspended') await this.#notifySinks(rec);
+        // HITL：挂起不是终态 —— onFinished 的承诺是「任务达终态」，对它不开火。
+        // 已由 `cancel` 自己收尾过的那一条也不开火（`#cancelSettled`）：两处都记会触发两次
+        if (rec.status !== 'suspended' && !this.#cancelSettled.has(rec.taskId)) {
+          await this.#notifySinks(rec);
+        }
       } finally {
         this.active--;
-        // 终态即清理 HITL 会话回写快照（挂起则保留 —— 恢复段成功后还要用它）
-        if (rec.status !== 'suspended') this.sessionInputs.delete(rec.taskId);
+        // 记账的归属：cancel 收尾过的那一份已经做过（流收口 / 会话清理 / 认领释放），
+        // 这里只消费掉标记，不重复 —— 在飞递减、等待者、排空通知照旧必达
+        if (!this.#cancelSettled.delete(rec.taskId)) {
+          // 终态即清理 HITL 会话回写快照（挂起则保留 —— 恢复段成功后还要用它）
+          if (rec.status !== 'suspended') this.sessionInputs.delete(rec.taskId);
+          // 任务流收口（挂起不算终态 —— 见 isTerminalTask 的注释：批了会接着跑，流得开着）。
+          if (isTerminalTask(rec)) this.#streams.markDone(rec.taskId);
+          // 释放同键认领：**只有终态才释放**（挂起仍在等人，同键提交不该另起一个任务）。
+          // 判据用 taskId 比对而非 `claimed`：HITL 的恢复段是**另一次** #execute 调用
+          // （approve / 超时兜底 / 崩溃恢复都会重派，且异步 store 交出的常是新副本对象），
+          // 那次 `claimed` 必为 false —— 只看 `claimed` 会让挂起过的键**永不释放**（认领表泄漏，
+          // 同键从此永远命中那条老记录）。
+          if (
+            key !== undefined &&
+            rec.status !== 'suspended' &&
+            this.#claims.get(key)?.taskId === rec.taskId
+          ) {
+            this.#claims.delete(key);
+          }
+        }
         // 任务已达终态并落库 → 唤醒 awaitTask 的等待者（放在递减之后，语义与 drain 一致）。
         // 挂起也唤醒：等待者看一眼状态继续等（suspended 不是终态），无副作用。
         this.#taskWaiters.notify(rec.taskId);
-        // 任务流收口（挂起不算终态 —— 见 isTerminalTask 的注释：批了会接着跑，流得开着）。
-        if (isTerminalTask(rec)) this.#streams.markDone(rec.taskId);
-        // 释放同键认领：**只有终态才释放**（挂起仍在等人，同键提交不该另起一个任务）。
-        // 判据用 taskId 比对而非 `claimed`：HITL 的恢复段是**另一次** #execute 调用
-        // （approve / 超时兜底 / 崩溃恢复都会重派，且异步 store 交出的常是新副本对象），
-        // 那次 `claimed` 必为 false —— 只看 `claimed` 会让挂起过的键**永不释放**（认领表泄漏，
-        // 同键从此永远命中那条老记录）。
-        if (
-          key !== undefined &&
-          rec.status !== 'suspended' &&
-          this.#claims.get(key)?.taskId === rec.taskId
-        ) {
-          this.#claims.delete(key);
-        }
         this.#notifyDrained();
       }
     }
@@ -1241,7 +1272,12 @@ export class AsyncRunner {
               // 取消：机制与 `runTimeoutMs` 一字不差（同一条 abort signal），**意图**不同 ——
               // 状态按意图落（超时 = failed、人取消 = cancelled）。意图从 `#cancels` 取，
               // 不从 signal 反推：同一条 signal 有三个来源（调用方 / 超时 / 取消）。
-              rec.status = this.#cancels.has(rec.taskId) ? 'cancelled' : out.run.status;
+              const cancelled = this.#cancels.has(rec.taskId);
+              rec.status = cancelled ? 'cancelled' : out.run.status;
+              // 取消必须带**结构化原因**（「取消不是失败，但原因要可查」）：宿主自定义的
+              // AppCallable 若不认 signal，它照旧返回一个正常结果 ⇒ `result.error` 是空的，
+              // 那时记录里也得说清「这条是被取消的」（与超时那条的账一类）。
+              if (cancelled && rec.error === undefined) rec.error = abortedError();
               // 终态后清掉挂起痕迹（决定保留：审批记录是审计的一部分，随任务走）
               rec.pendingApprovals = undefined;
               rec.suspendedSince = undefined;
