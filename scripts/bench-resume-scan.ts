@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AsyncRunner, FileTaskStore } from '../src/index.js';
-import type { AppCallable, TaskRecord, TaskStore } from '../src/index.js';
+import type { AppCallable, TaskRecord } from '../src/index.js';
 
 const sizes = process.argv
   .slice(2)
@@ -72,6 +72,18 @@ function timeIt(fn: () => number): { ms: number; value: number } {
   return { ms, value };
 }
 
+/**
+ * `resumePending()` 的返回类型是 `number | Promise<number>`（异步 store 下是 Promise），
+ * 而本基准只喂同步 store ⇒ 现场归一。用 `timeIt` 包不住它（那里的 fn 必须同步出数）。
+ */
+async function timeResume(runner: AsyncRunner): Promise<{ ms: number; value: number }> {
+  const t0 = process.hrtime.bigint();
+  const r = runner.resumePending();
+  const value = typeof r === 'number' ? r : await r;
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  return { ms, value };
+}
+
 const dir = mkdtempSync(join(tmpdir(), 'agentia-bench-scan-'));
 try {
   console.log('挂起量 → resumePending 扫描成本（file store；单次读数，看量级不看小数）');
@@ -85,7 +97,7 @@ try {
   console.log('     N    挂起  load(ms)  list(ms)  resume(ms)   磁盘(MB)');
   for (const n of SIZES) {
     const file = join(dir, `tasks-${n}.jsonl`);
-    const seed: TaskStore = new FileTaskStore(file);
+    const seed = new FileTaskStore(file);
     const suspended = Math.max(1, Math.floor(n / 10));
     for (let i = 0; i < n; i++) seed.save(rec(i, i < suspended));
     // 重新构造：让 load()（全表 JSON 解析）进被测路径 —— 重启后的首次扫描正是这个形状
@@ -93,11 +105,11 @@ try {
       new FileTaskStore(file);
       return 1;
     });
-    const loaded: TaskStore = new FileTaskStore(file);
+    const loaded = new FileTaskStore(file);
     const runner = new AsyncRunner(noopApp, { store: loaded });
 
     const list = timeIt(() => loaded.list().length);
-    const resume = timeIt(() => runner.resumePending());
+    const resume = await timeResume(runner);
     if (resume.value !== 0) throw new Error(`不该唤醒任何记录，实际 ${resume.value}`);
     const mb = statSync(file).size / (1024 * 1024);
     console.log(
@@ -124,7 +136,7 @@ for (const n of SIZES) {
   for (let i = 0; i < n; i++) store.save(rec(i, i < suspended));
   const list = timeIt(() => store.list().length);
   const runner = new AsyncRunner(noopApp, { store });
-  const resume = timeIt(() => runner.resumePending());
+  const resume = await timeResume(runner);
   if (resume.value !== 0) throw new Error(`不该唤醒任何记录，实际 ${resume.value}`);
   console.log(
     `${String(n).padStart(6)}  ${String(suspended).padStart(5)}  ${list.ms
