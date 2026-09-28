@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { TraceRecorder, diffTraces } from '../../src/index.js';
-import type { Span, Trace, Usage } from '../../src/index.js';
+import type { Span, SpanError, SpanStatus, Trace, Usage } from '../../src/index.js';
 
 const U1: Usage = {
   inputTokens: 10,
@@ -211,5 +211,91 @@ describe('diffTraces（trace diff / A-B 比对）', () => {
     assert.equal(fields.length, 21);
     assert.equal(fields.filter((e) => e.field === 'events').length, 1);
     assert.ok(String(fields[20].a).includes('另有 10 条未列出'));
+  });
+});
+
+/**
+ * 单 turn 的 trace：可控 run 级 status 与 turn 的收尾 patch（status/error）。
+ * 与 `buildTrace` 同构（同一棵 run→llm.turn），但**不写事件、不写 usage** ——
+ * 专供「状态 / 错误」这两个维度：它们此前在全部用例里都恒为 ok/undefined，
+ * 于是 `diffTraces` 里那三条判定从未被走到（2026-09-28 覆盖率复查实测）。
+ */
+function statusTrace(
+  traceStatus: SpanStatus,
+  patch: { status?: SpanStatus; error?: SpanError } = {},
+): Trace {
+  const r = new TraceRecorder();
+  const root = r.begin('run', 'app', null);
+  const t = r.begin('llm.turn', 'model-a', root);
+  r.end(t, patch);
+  r.end(root);
+  return r.snapshot(traceStatus);
+}
+
+describe('diffTraces：status / error 差异（此前两侧恒为 ok，这三条判定没被走到）', () => {
+  it('run 级 status 不同 ⇒ summary 记 {field:"status"}（逐节点视图为空：两侧 span 完全一样）', () => {
+    const d = diffTraces(statusTrace('ok'), statusTrace('error'));
+    assert.equal(d.equal, false);
+    assert.deepEqual(d.summary, [{ field: 'status', a: 'ok', b: 'error' }]);
+    assert.deepEqual(d.spans, [], 'span 侧无差异 ⇒ 不该凭空多出节点');
+  });
+
+  it('span 级 status 不同 ⇒ 该 span 的 fields 记 {field:"status"}；run 级相同则 summary 为空', () => {
+    const d = diffTraces(statusTrace('ok'), statusTrace('ok', { status: 'error' }));
+    assert.equal(d.equal, false);
+    assert.deepEqual(d.summary, [], 'run 级 status 相同 ⇒ summary 不该混进 status');
+    const turn = d.spans.find((s) => s.path.endsWith('llm.turn#0'))!;
+    assert.ok(turn.a && turn.b, '同一个 span 应配成一对，而不是各报一条缺侧');
+    assert.deepEqual(turn.fields, [{ field: 'status', a: 'ok', b: 'error' }]);
+  });
+
+  it('两侧都带 error 但三元组不同 ⇒ 记 {field:"error"}（比 type+message+retryable）', () => {
+    const d = diffTraces(
+      statusTrace('error', {
+        status: 'error',
+        error: { type: 'timeout', message: '超了', retryable: true },
+      }),
+      statusTrace('error', {
+        status: 'error',
+        error: { type: 'agent_error', message: '超了', retryable: true },
+      }),
+    );
+    const turn = d.spans.find((s) => s.path.endsWith('llm.turn#0'))!;
+    const errField = turn.fields.find((f) => f.field === 'error');
+    assert.ok(errField, 'type 不同的两个 error 必须报差');
+    assert.equal((errField.a as SpanError).type, 'timeout');
+    assert.equal((errField.b as SpanError).type, 'agent_error');
+    assert.equal(
+      turn.fields.filter((f) => f.field === 'status').length,
+      0,
+      'status 两侧相同 ⇒ 只报 error 一条，不要顺带报 status',
+    );
+  });
+
+  it('一侧有 error 一侧没有 ⇒ 记差异（`!x || !y` 的 x!==y 一侧）', () => {
+    const d = diffTraces(
+      statusTrace('error', {
+        status: 'error',
+        error: { type: 'timeout', message: 'm', retryable: true },
+      }),
+      statusTrace('error', { status: 'error' }),
+    );
+    const turn = d.spans.find((s) => s.path.endsWith('llm.turn#0'))!;
+    const errField = turn.fields.find((f) => f.field === 'error')!;
+    assert.ok(errField, '「这次失败了、上次没有」必须报出来');
+    assert.equal((errField.a as SpanError).type, 'timeout');
+    assert.equal(errField.b, undefined);
+  });
+
+  it('两侧 error 三元组逐字相同 ⇒ 不算差异（比的是内容，不是对象引用）', () => {
+    const mk = () =>
+      statusTrace('error', {
+        status: 'error',
+        error: { type: 'agent_error', message: '同一条错', retryable: true },
+      });
+    const d = diffTraces(mk(), mk());
+    assert.equal(d.equal, true, '内容相同的两个 error 对象被判成了差异 —— 比的是引用不是三元组');
+    assert.deepEqual(d.summary, []);
+    assert.deepEqual(d.spans, []);
   });
 });

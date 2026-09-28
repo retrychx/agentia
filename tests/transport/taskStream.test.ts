@@ -7,6 +7,7 @@ import { createHttpHandler } from '../../src/transport/http.js';
 import { AsyncRunner } from '../../src/transport/async.js';
 import { InMemoryTaskStore } from '../../src/store/store.js';
 import { createApp, SystemPrompt, scriptedClient } from '../../src/index.js';
+import type { AsyncRunnerOptions } from '../../src/index.js';
 
 /**
  * `GET /tasks/:id/stream`（增量 trace 出口的传输层那一半）。
@@ -100,13 +101,13 @@ function gatedClient(gate: Promise<void>) {
   ] as never);
 }
 
-async function setup(gate: Promise<void>) {
+async function setup(gate: Promise<void>, runnerOpts: AsyncRunnerOptions = {}) {
   const app = await createApp({
     name: 'task-stream',
     system: new SystemPrompt().add('role', '助手。', true),
   });
   const store = new InMemoryTaskStore();
-  const runner = new AsyncRunner(app, { store, client: gatedClient(gate) });
+  const runner = new AsyncRunner(app, { store, client: gatedClient(gate), ...runnerOpts });
   const server = createServer(createHttpHandler(app, { runner }));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address() as AddressInfo;
@@ -360,6 +361,79 @@ describe('GET /tasks/:id/stream（异步任务的增量事件流）', () => {
         text.includes('"type":"span.begin"'),
         'trace.event 的 body 应是 TraceRecordEvent（含 type）',
       );
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+/**
+ * `streamBufferEvents` 调小后会露出两件此前**从没走到**的行为（2026-09-28 覆盖率复查实测）：
+ * ① 重放之前先发一帧 `stream.truncated`（明示「前面缺了一段」）——
+ *    对应 `async.streamTask` 的 `droppedBefore` 分支 + `http-endpoints` 的 `stream.truncated` 帧；
+ * ② 任务**已终态之后**才连上来时：重放缓冲 + 立刻补 `task.end` 收口 ——
+ *    对应 `async.streamTask` 的 `replayed.done` 分支（「刚跑完就连上来」那条路）。
+ * 既有用例走的是「运行中连上」与「跨进程（本进程没有这条流）」，这两条恰好都没踩到。
+ */
+describe('事件缓冲上限（streamBufferEvents 调小）在传输层的两个后果', () => {
+  it('缓冲溢出 ⇒ 连上时在重放之前先发 stream.truncated，并带上 droppedBefore', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    // 上限压到 1：run 一连记两条事件就会丢最旧的 ⇒ droppedBefore 必然有值
+    const { base, server } = await setup(gate, { streamBufferEvents: 1 });
+    try {
+      const taskId = await submit(base);
+      const s = await openSse(base, `/tasks/${taskId}/stream`);
+      await until(
+        () => s.frames.some((f) => f.event === 'stream.truncated'),
+        3000,
+        'stream.truncated',
+      );
+      const names = s.frames.map((f) => f.event);
+      assert.equal(
+        names.indexOf('stream.truncated'),
+        0,
+        '截断明示必须是**第一帧**：下游要先知道「前面缺了一段」，再读后面的数据',
+      );
+      assert.equal(
+        typeof (s.frames[0]!.data as { droppedBefore?: unknown }).droppedBefore,
+        'number',
+        'truncated 帧必须带 droppedBefore（「小于它的序号已不在缓冲里」），否则下游无从判断丢了多少',
+      );
+
+      release();
+      await until(() => s.frames.some((f) => f.event === 'task.end'), 3000, 'task.end');
+      s.close();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('任务已终态后再连：重放缓冲 + 立刻 task.end 收口（本进程有这条流，不报 unavailable）', async () => {
+    const { base, server, runner } = await setup(Promise.resolve());
+    try {
+      const taskId = await submit(base);
+      await until(() => runner.inFlight === 0, 3000, '任务跑完');
+      // 跑完**之后**才连：走「重放到终态 ⇒ 补 end 帧 ⇒ 返回 noop」那条路
+      const s = await openSse(base, `/tasks/${taskId}/stream`);
+      await until(() => s.frames.some((f) => f.event === 'task.end'), 3000, 'task.end');
+      const names = s.frames.map((f) => f.event);
+      assert.ok(
+        names.includes('trace.event'),
+        '刚跑完就连上来必须能重放缓冲 —— 否则「连晚了」等于什么都看不到',
+      );
+      assert.ok(
+        !names.includes('stream.unavailable'),
+        '本进程明明有这条流却报了 unavailable —— 那是跨进程语义，会把同进程客户端误导去轮询',
+      );
+      assert.equal(names[names.length - 1], 'task.end', '终态帧必须是最后一帧');
+      // 收口证据：服务端主动关连接（客户端读到流尾），而不是留一条只剩心跳的鬼流
+      await Promise.race([
+        s.pump,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('流没关')), 3000)),
+      ]);
     } finally {
       await closeServer(server);
     }
