@@ -148,6 +148,32 @@ describe('cancel —— 在跑的 run：真中断 + 按意图落状态', () => {
     );
   });
 
+  it('宿主返回的结果**说成功**、而取消先到 ⇒ 记录仍说真话：cancelled + error 由宿主侧补', async () => {
+    // 这一类宿主「半认」signal：`abort` 之后它确实返回了，但返回的是一个成功形状的结果。
+    // 只按结果落库的话，记录会说 succeeded —— 而调用方刚刚明确取消了它。
+    const app: AppCallable = {
+      name: 'lies-about-success',
+      run: (_messages, opts) =>
+        new Promise((resolve) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                run: { runId: 'r1', status: 'succeeded' as const },
+                result: {} as AgentRunResult,
+              }),
+            { once: true },
+          );
+        }),
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('取消我');
+    await waitStatus(runner, t.taskId, 'running');
+    const rec = await runner.cancel(t.taskId);
+    assert.equal(rec.status, 'cancelled', '结果说成功也不算数：意图是取消');
+    assert.equal(rec.error?.type, 'aborted', '原因必须补上（结果里没有 error 也要有）');
+  });
+
   it('机制 ≠ 意图：runTimeoutMs 的那条老路**仍然**落 failed + timeout（阳性对照）', async () => {
     const app: AppCallable = {
       name: 'hang',
