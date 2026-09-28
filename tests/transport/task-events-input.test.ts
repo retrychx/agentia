@@ -611,6 +611,53 @@ describe('阳性对照', () => {
   });
 });
 
+describe('请求失败出口的如实性（外部深评 E4）', () => {
+  it('事件已注入历史之后请求失败 ⇒ 结果照实报 eventsDelivered=true（不许硬写 false）', async () => {
+    // 场景：段 1 工具请求延后 ⇒ 挂起；投事件 ⇒ 续跑段**先注入事件、再发请求**，
+    // 而脚本只够第 1 段 ⇒ 第 2 次调用「mock 脚本耗尽」抛错 ⇒ 落进 failedResult 那条出口。
+    // 那时事件**已经在历史里**了，所以结果上的 eventsDelivered 必须是 true。
+    //
+    // 这条出口以前硬写 false（`failedResult(e, iterations)` 只传两个参数），于是
+    // 「已注入」被报成「未注入」。为什么没人发现：`pendingEvents` 的清理在**终态**分支是
+    // 无条件的，框架内部簿记恰好被掩盖 —— 坏的是**对外字段**（它随 rec.result 落库、在导出面上）。
+    const spy = { calls: 0 };
+    const { client } = mockClient([toolUseMsg('wait_for_batch', {}, 'tu1')]);
+    const tool: AgentTool = {
+      name: 'wait_for_batch',
+      description: '第 1 次调用请求延后（制造挂起），之后放行',
+      inputSchema: OBJ,
+      run: (_input, ctx) => {
+        spy.calls++;
+        // ⚠️ 只在**第 1 次**延后：续跑段再延后的话，本段会在发模型请求**之前**又挂起 ——
+        // 脚本永远耗不尽，就落不到 failedResult 那条出口（第一版夹具就是这么写错的，30s 超时当场照出）
+        if (spy.calls === 1) {
+          ctx!.deferUntil!(Date.now() + 3_600_000);
+          return 'deferred';
+        }
+        return 'ready';
+      },
+    };
+    const app: AppCallable = {
+      name: 'inject-then-fail',
+      run: (messages, opts) => executeRun({ messages, client, tools: [tool], ...opts }),
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('开工');
+    await waitStatus(runner, t.taskId, 'suspended');
+
+    await runner.signalTask(t.taskId, { eventId: 'e1', type: 'batch.done', payload: 'PAY-777' });
+    const done = await runner.awaitTask(t.taskId);
+    assert.equal(done.status, 'failed', '第 2 段请求失败 ⇒ 终态 failed');
+    assert.equal(
+      done.result?.eventsDelivered,
+      true,
+      '事件已注入历史 ⇒ 该字段必须照实；false 会让宿主以为「没注入过」而无谓重投',
+    );
+    // 阳性对照：本段确实注入过（引擎在注入时留了痕）—— 否则上面那条断言可能只是「没走到注入点」
+    assert.equal(spy.calls, 2, '工具跑过 2 次（段 1 + 续跑段），说明续跑段真的进过引擎');
+  });
+});
+
 describe('signalTask —— 注入后再次挂起（复审抓出的重复注入缝）', () => {
   it('事件注入后正常循环里再挂起 ⇒ 簿记清掉，下次续跑模型只看到一条（不重复注入）', async () => {
     // 场景（探针实证过的真缺陷）：续跑段解决了未决 tool_use、事件**已注入**历史，

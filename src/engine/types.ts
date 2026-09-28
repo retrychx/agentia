@@ -65,13 +65,50 @@ export type AgentStopReason =
   | 'error';
 
 /**
+ * 「是否算正常收尾」的**分类表**（外部深评 E5）。
+ *
+ * 为什么是 `Record<AgentStopReason, boolean>` 而不是 `reason === 'end_turn' || …`：
+ * `Record` 要求**每个成员都在表里表态**，所以「往联合里加一个新的 stop reason」这件事
+ * 会让 `tsc` 当场报缺属性 —— **新增原因而漏改分类**在类型上写不出来。
+ * 原先的二值 `||` 链没有任何这种约束：加一个成员，它默认落进「失败」，
+ * 而三处消费者（`runtime/run.ts` 的 run 状态、`engine/loop.ts` 的 trace 状态、
+ * `toolkit/subagent.ts` 的交回判定）会**各说各话**——`stop_sequence` 落地时就真踩过
+ * （loop 判成功、Run 判失败；见 `isSuccessStopReason` 的下游注释）。
+ *
+ * ⚠️ 别把它改成 `Partial<Record<…>>` / 加 `?? false` 兜底：那样这个守卫就废了
+ * （缺的成员会被静默当成 false）。`tests/types/stop-reason.types.ts` 用 `@ts-expect-error`
+ * 把「表必须是完整的」这一点钉住 —— 谁把它放宽，那条指令就变成未使用 ⇒ 类型检查红。
+ *
+ * 语义提醒：这里的「成功」只回答**看板算不算成功**。`suspended` 既不算成功也不算失败
+ * （挂起段本身执行无误），所以它在表里是 `false` —— 「不是成功」不等于「失败」，
+ * 两种「非成功」的区分由 `stopReason` 自己承担。
+ */
+const SUCCESS_STOP_REASON: Record<AgentStopReason, boolean> = {
+  // —— 正常收尾 ——
+  end_turn: true,
+  stop_sequence: true, // 命中 stop 序列同样是正常收尾
+  // —— 非正常收尾（都带结构化 error，见 engine/stop-reason.ts）——
+  max_tokens: false,
+  refusal: false,
+  pause_turn: false,
+  max_iterations: false,
+  aborted: false,
+  budget_exceeded: false, // 护栏拦下的，不是正常收尾
+  tool_use_no_blocks: false,
+  unknown_stop_reason: false,
+  error: false,
+  // —— 既不是成功也不是失败 ——
+  suspended: false,
+};
+
+/**
  * 是否「正常收尾」：end_turn（自然结束）与 stop_sequence（命中 stop 序列）都算。
  * run 状态机 / trace 状态 / 子 agent 交回判定共用这一把尺子 —— 三处各写各的
  * `=== 'end_turn'` 时，新增一个正常收尾原因就会漏改其中一处（stop_sequence 落地时
- * 就出现过：loop 判成功、Run 判失败）。
+ * 就出现过：loop 判成功、Run 判失败）。判据在 `SUCCESS_STOP_REASON` 表里（表是穷尽式的）。
  */
 export function isSuccessStopReason(reason: AgentStopReason): boolean {
-  return reason === 'end_turn' || reason === 'stop_sequence';
+  return SUCCESS_STOP_REASON[reason];
 }
 
 /** 可携带 cache_control 的 system 文本块（见 runtime/systemPrompt.ts） */
@@ -93,7 +130,14 @@ export type SystemParam = string | SystemTextBlock[];
  * 独立实例，否则状态跨 run 泄漏（见 forRun 说明）。
  */
 export interface ContextPolicy {
-  /** 预算（估算 input tokens）；超预算的回合触发降级。供观测/文档用 */
+  /**
+   * 预算（**估算 messages 的** tokens）；超预算的回合触发降级。供观测/文档用。
+   *
+   * ⚠️ 口径如实（外部深评 E6）：估的**只有 `messages`** —— system prompt 与 tools schema
+   * 不在这个数里，而它们同样进请求（`policy.ts` 只把 `messages` 喂给 `countTokens`）。
+   * 所以它是「对话历史多大」的尺子，不是「这次请求多大」的尺子：真实 input tokens
+   * 恒 ≥ 这个数。改口径要连 `usage-guide` 那一行一起改（两边说的必须是同一件事）。
+   */
   readonly budgetTokens?: number;
   beforeTurn(
     messages: MessageParam[],
