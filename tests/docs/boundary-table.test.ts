@@ -127,7 +127,7 @@ type Entry =
   | { key: string; gap: string; candidate: string };
 
 /**
- * 登记表（88 条，与 §7 的行一一对应）。
+ * 登记表（89 条，与 §7 的行一一对应）。
  *
  * `pin` 的 `marker` 是目标用例 `it(...)` 标题里的**一段原文**（或脚本里的原文），
  * A3 会逐条断言它在场 —— 引用一条其实不相关的用例会当场红。
@@ -179,6 +179,13 @@ const REGISTRY: ReadonlyArray<Entry> = [
     pin: {
       file: 'tests/transport/taskStream.test.ts',
       marker: '跨进程（同一 store、另一 runner）：stream.unavailable + task.end，不假装实时',
+    },
+  },
+  {
+    key: '异步任务的排队段边界（内存）',
+    pin: {
+      file: 'tests/transport/max-queued.test.ts',
+      marker: '排队满 → submit 同步抛 TaskQueueFullError（status 503）；额度内的每一条都真的受理',
     },
   },
   {

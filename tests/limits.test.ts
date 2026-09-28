@@ -331,6 +331,19 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     return 'immediate';
   },
 
+  // ── 0 = 不限（数量旋钮：全表第二个 `unlimited`，与直觉的「一条都不许排」相反）──
+  async 'AsyncRunner.maxQueued'() {
+    // 声明的读法是 `zero: 'unlimited'`（0 = 不设排队上限）—— 与直觉的 `disabled`
+    // （0 = 一条都不许排）**正好相反**，所以探针要把两者分开：concurrency 1 之下灌 3 条，
+    // 读成 unlimited ⇒ 全部受理；读成 disabled ⇒ 第 2 条当场抛。
+    const runner = new AsyncRunner(slowApp(20), { concurrency: 1, maxQueued: 0 });
+    const ids = [runner.submit('a'), runner.submit('b'), runner.submit('c')];
+    assert.equal(ids.length, 3, 'maxQueued: 0 必须**照收**（若读成 disabled，第 2 条就抛了）');
+    await runner.drain({ timeoutMs: 5_000 });
+    assert.equal(runner.queued, 0, '排空后计数归零（不然「不限」是假的：额度被泄漏光了）');
+    return 'unlimited';
+  },
+
   // ── 0 = 非法配置（响亮失败）─────────────────────────────────────────────
   async 'AsyncRunner.concurrency'() {
     assert.throws(() => new AsyncRunner(slowApp(1), { concurrency: 0 }), /必须为正数/);
@@ -645,6 +658,11 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
         'AsyncRunner.concurrency',
         () => new AsyncRunner(slowApp(1), { concurrency: 0 }),
         /0 = 没有 worker/,
+      ],
+      [
+        'AsyncRunner.maxQueued',
+        () => new AsyncRunner(slowApp(1), { maxQueued: -1 }),
+        /0 = 不限（不设排队上限）/,
       ],
       ['withTimeout.ms', () => withTimeout(Promise.resolve(1), Number.NaN), /非正 = 不设超时/],
       ['interruptibleSleep.ms', () => interruptibleSleep(Number.NaN), /非正 = 不睡/],

@@ -4639,6 +4639,41 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
 补齐后 `tests/limits.test.ts` 30/30 绿，受影响套件（timeout / sse-text-stats / metrics /
 task-events / anthropic / async）141/141 绿，`npm test` 三套件全过。
 
+### 2026-09-28 ⑮：**排队段的上限 `maxQueued`**（外部深评 T5）
+
+事实核验：`concurrency` 只约束**同时在跑**几个，而「跑不上、排在后面」的那一段**没有任何上限**
+—— `submit` 永远收单、`POST /tasks` 永远 202。`concurrency: 1` 挡不住它，那只是让排队段更长：
+每条排队任务 = 一条 `TaskRecord` + 一棵 `#execute` 的悬挂 promise + 一个 `SlotPool` 等待者，
+**全在内存里**（报告原话「无深度上限、无背压信号」，我核到的是同一个形状）。
+
+新旋钮 `AsyncRunnerOptions.maxQueued`（缺省 **0 = 不限** —— 与加它之前逐字一致）：
+
+1. **超限即拒**：`submit` 抛 `TaskQueueFullError`（`status: 503` 自陈字段），HTTP 宿主回
+   **503 + `Retry-After`**。为什么不复用 `TaskInputError`：入参不合法是 **400**（调用方改请求
+   就能过），排队满**不是调用方的错**（同一请求稍后重发就该过）—— 混成一支会让运维去改一个
+   没写错的请求（与 `maxConcurrentRuns` 的 503 那支刻意分开的理由同款）。
+2. **判据 = 真正在排队的深度**：`max(0, 已受理未持槽的任务数 + 1 − 空槽位数)`。
+   ⚠️ **不是**「已受理未持槽的任务数」—— 那会把「池子还空着、马上就能跑」的也算成排队的：
+   `concurrency: 1` + `maxQueued: 1` 下同步连灌两条，第 2 条（正好是那 1 条合法排队）会被误拒。
+   **第一版就是那么写的，被用例当场抓出来**（`tests/transport/max-queued.test.ts` 那条
+   「『立刻就能跑的』不算排队」就是当时的现场）。
+3. **`SlotPool.tryAcquire()`（新增的同步快路径）** 是②的前提：只走 `await acquire()` 时
+   「占槽」发生在同步段（`running++`）、「出排队段」却要等一个微任务，同一条任务在那一瞬被
+   算两遍 ⇒ 深度虚高一格。有了快路径，调用方能在**同一次同步执行**里占槽 + 出集合。
+4. **闸只挡新活**：只在 `submit` 判。恢复路径（approve / 到期唤醒 / 崩溃重投）推进的是
+   **已受理**的任务 —— 拦下来等于把它永久搁死在 store 里。另：幂等键命中的重复提交
+   **不吃** 503（闸放在去重之后，否则「重试同一个键」会变成看服务忙不忙的运气）。
+5. 额度释放走「**拿槽位就还**」（`add`/`delete` 幂等 + `#execute` 外层 finally 兜底），
+   故意不写成整数计数器 —— 释放点压根不在同一个函数作用域里，自己造「只减一次」的闸最容易写漏。
+6. `get queued`（诊断读数）与闸**同用** `#queueDepth`：看到的数就是判据的数。
+
+**顺带修自述**：`SlotPool.inUse` 原注释写「测试用；对外暴露的是 active」—— 它从此是闸的一半，
+那句话会让读代码的人以为改这个读数不影响行为，已改成真话。
+
+**证据**：`tests/transport/max-queued.test.ts` 8 条全绿（含 HTTP 503 一支 + 多轮灌满/排空 soak），
+`tests/limits.test.ts` 表驱动对账 30+ 条全绿（`maxQueued` 的 `zero: 'unlimited'` 与直觉的
+`disabled` 正好相反，探针专门把两种读法分开）。变异三条待跑（摘闸 / 摘释放 / 去掉快路径）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

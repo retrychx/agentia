@@ -176,6 +176,28 @@ export class TaskEventError extends Error {
 }
 
 /**
+ * `submit` 在**排队段已满**时的失败（`AsyncRunnerOptions.maxQueued`，2026-09-28 外部深评 T5）。
+ *
+ * 为什么单独一个类型、而不是复用 `TaskInputError`：两者在 HTTP 上的**含义不同** ——
+ * 入参不合法是 **400**（调用方改请求就能过），排队满**不是调用方的错**，是 **503
+ * + `Retry-After`**（同一次请求稍后重发就该过）。宿主若把它们混成一支，运维看到的就是
+ * 「你的请求有问题」，而实际是「服务该扩容 / 该退避」—— 与 `maxConcurrentRuns` 的 503
+ * 那支刻意分开的理由同款。
+ *
+ * `status` 是自陈字段（本仓 `TaskApproveError` 起的惯例）：宿主按它选状态码，不靠
+ * `instanceof` 猜；本类目前只有 503 一种。
+ *
+ * module 级 export —— 不进公共导出面（与 TaskApproveError / TaskCancelError / TaskEventError 同档）。
+ */
+export class TaskQueueFullError extends Error {
+  readonly status = 503;
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskQueueFullError';
+  }
+}
+
+/**
  * `deliveredEventIds` 簿记的条数上限（FIFO 裁最旧）。它是**去重簿记**不是审计日志：
  * 256 条对「webhook 重试窗口」绰绰有余，而无界增长会让每条 TaskRecord 随事件量膨胀
  * （记录随 trace 一起落库，每次 save 全文重写）。「数量有界」不是用户旋钮，不进
@@ -229,6 +251,27 @@ export interface AsyncRunnerOptions {
   };
   /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
   concurrency?: number;
+  /**
+   * **在等槽位的任务数**上限（`concurrency` 之外的那一段）；缺省 0 = 不限。
+   *
+   * 为什么需要它（2026-09-28 外部深评 T5）：`concurrency` 只约束**同时在跑**几个，
+   * 而「跑不上、排在后面」的那一段**没有任何上限** —— `submit` 永远收单（POST /tasks
+   * 永远 202），排队段因此随调用方灌入无界增长：每条排队任务都是一条 `TaskRecord` +
+   * 一棵 `#execute` 的悬挂 promise + 一个 `#slots` 等待者，**全部在内存里**。
+   * `concurrency: 1` 挡不住它 —— 那只是让排队段更长。
+   *
+   * 语义：**「在等槽位」= 已受理（落库 + `#execute` 同步前段已计数）、尚未拿到槽位**。
+   * 拿到槽位即离开本计数（此后归 `concurrency` 管），所以两个旋钮管的是两段、可加：
+   * 进程内最多 `concurrency + maxQueued` 条任务同时在推进。
+   *
+   * ⚠️ 两个刻意的口径：
+   * - **只在 `submit`（新活入口）判**：恢复路径（approve / 到期唤醒 / 崩溃重投）**不受闸**
+   *   —— 它们推进的是**已受理**的任务，拦下来等于把任务永久搁死在 store 里。
+   * - **超限是 503 不是 400**：这不是调用方把参数写错了，是「现在排不下、稍后再来」。
+   *   HTTP 宿主回 503 + `Retry-After`（与 `maxConcurrentRuns` 同款），错误类型
+   *   `TaskQueueFullError` 让宿主能把它与「入参不合法」分开。
+   */
+  maxQueued?: number;
   /** 任务完成回调（进程内）；见 TaskSink */
   taskSinks?: TaskSink[];
   /**
@@ -328,6 +371,47 @@ export class AsyncRunner {
   private readonly client: ModelClient | undefined;
   private readonly sessionStore: AsyncRunnerOptions['sessionStore'];
   private readonly concurrency: number;
+  private readonly maxQueued: number;
+  /**
+   * 当前**在等槽位**的任务 id 集合（已受理、尚未拿到槽位）—— `maxQueued` 的判据，
+   * 也是 `queued` 读数。
+   *
+   * 为什么是**集合**而不是计数器：入口只有一处（`#execute` 的**同步前段**、第一个 await
+   * 之前 `add`），出口有两处（`#executeInner` 里**拿到槽位**那一刻 `delete`，`#execute`
+   * 的外层 finally 再 `delete` 一次兜底 —— 覆盖「幂等去重早退 / 中途抛错」）。`add` /
+   * `delete` 的语义**天然幂等**，所以多重释放无害、漏放不可能（兜底那道闸在 finally 里）。
+   * 用整数计数器要做到同一件事，得自己再造一个「只减一次」的闸 —— 那正是最容易写漏的东西
+   * （第一版就是这么写的，而释放点根本不在同一个函数作用域里，闭包跨不过去）。
+   *
+   * ⚠️ 同一 taskId 的两次 `#execute` 并发不在设计内（在飞闸挡着）；万一发生，先退出那一趟
+   * 的 finally 会把仍在等槽位的那趟从集合里删掉 ⇒ 读数**偏小**（闸更宽松）。偏小是安全的
+   * 方向：它不会把服务永久锁在 503 上，而「多收一条」只是回到加本旋钮之前的行为。
+   *
+   * ⚠️ **它本身不是排队深度**：队列长度要减掉「马上就能拿到空槽位的那些」，见 `#queueDepth`
+   * —— 一个 `submit` 循环里同步灌进来的每一条都会先落进本集合，而此时池子还空着，
+   * 直接拿 `size` 当深度会把「立刻就能跑的」也算成排队的（`concurrency: 1` + `maxQueued: 1`
+   * 下连灌两条就会把第 2 条误拒 —— 第一版就是这么写的，被用例当场抓出来）。
+   */
+  readonly #waiting = new Set<string>();
+
+  /**
+   * **真正在排队的深度**（`maxQueued` 的判据，也是 `queued` 读数）。
+   *
+   * 公式：`max(0, 已受理未持槽的任务数 + adding − 当前空槽位数)`。
+   *
+   * 为什么不能只用等待队列长度、也不能只用 `#waiting.size`：
+   * - `#waiting` 里混了「刚 submit、还没走到 acquire」的任务 —— 池子空着时它们**不会排队**，
+   *   只是还没轮到执行那一刻。`adding` 就是给「正在提交的这一条」留的位置。
+   * - 空槽位数 = `concurrency − #slots.inUse`。于是「同步灌 N 条」时：先到的 N 条一边进
+   *   `#waiting`、一边还算着同样的空槽位，两个量相抵 ⇒ 判据正好落在
+   *   「最多 `concurrency + maxQueued` 条在推进」这条对外口径上（见 `AsyncRunnerOptions.maxQueued`）。
+   * - `concurrency` 为 `Infinity`（缺省）时空槽位数是 `Infinity` ⇒ 深度恒为 0 ⇒ 闸天然不起作用，
+   *   与「缺省行为与加本旋钮之前逐字一致」对齐。
+   */
+  #queueDepth(adding = 0): number {
+    const freeSlots = Math.max(0, this.concurrency - this.#slots.inUse);
+    return Math.max(0, this.#waiting.size + adding - freeSlots);
+  }
   private readonly runTimeoutMs: number;
   private readonly approvalTimeoutMs: number;
   /** 并发槽位池（见 slot-pool.ts）：本类不再自管 running/waitQueue */
@@ -404,6 +488,15 @@ export class AsyncRunner {
     }
     // 放在校验之后：字段初始化式在构造函数体之前求值，那时 concurrency 还是 undefined
     this.#slots = new SlotPool(this.concurrency);
+    this.maxQueued = opts.maxQueued ?? 0;
+    if (!Number.isInteger(this.maxQueued) || this.maxQueued < 0) {
+      // 与 concurrency 同族：`0` 本身**合法**（= 不限），坏的是「负数 / 小数 / NaN / Infinity」。
+      // 负数的读法无解（「最多排 -1 个」是什么），小数会让比较变成「有时收有时不收」——
+      // 都不是「配置宽一点」而是「配置说了另一件事」，所以构造期响亮失败。
+      throw new Error(
+        `maxQueued 必须为 ≥ 0 的整数（${zeroClauseOf('AsyncRunner.maxQueued')}），收到 ${opts.maxQueued}`,
+      );
+    }
     this.runTimeoutMs = opts.runTimeoutMs ?? 0;
     if (!Number.isFinite(this.runTimeoutMs) || this.runTimeoutMs < 0) {
       // NaN/Infinity 都不能放给 setTimeout：两者都会被钳到 1ms，每个任务立即「超时」失败
@@ -471,6 +564,22 @@ export class AsyncRunner {
         // `succeeded` 的异步路径不一致：同一件事两种 store 两种结局）。
         return { ...existing };
       }
+    }
+    // 排队段闸（2026-09-28 外部深评 T5）：放在**去重之后** —— 幂等键命中既有记录时
+    // 本次提交既不产生新活也不排队，不该吃 503（否则「重试同一个键」会变成看运气）。
+    // 读 `#waiting` 是**同步准确**的：别的 submit 在它自己的 `#execute` 同步前段就入过集合
+    // （`#dispatch` 是 submit 的最后一行，`void this.#execute(rec)` 的 body 到第一个 await
+    // 之前全同步）⇒ 「一个循环里同步灌 N 条」不可能绕过这道闸，不靠人记得 await。
+    // 判据是**真正在排队的深度**（`#queueDepth`），不是「已受理未持槽」的集合大小：
+    // 后者把「池子还空着、马上就能跑」的那些也算成排队的，会把第 2 条合法提交误拒。
+    // `(1)` = 把正在提交的这一条算进去 —— 闸要拦的是「这条交了以后会溢出」。
+    const queueDepth = this.#queueDepth(1);
+    if (this.maxQueued > 0 && queueDepth > this.maxQueued) {
+      throw new TaskQueueFullError(
+        `排队已满：这条提交会让 ${queueDepth} 条任务排在槽位后` +
+          `（上限 maxQueued=${this.maxQueued}，concurrency=${this.concurrency}）` +
+          '—— 请退避重试，或调大 concurrency / maxQueued',
+      );
     }
     const rec: TaskRecord = {
       taskId: nextTaskId(),
@@ -1185,6 +1294,16 @@ export class AsyncRunner {
   /** 「停机窗口里拒绝派发」的告警是否已出过（每次停机只报一条，见 `#dispatch`） */
   #dispatchRefusedWarned = false;
 
+  /**
+   * 当前**真正在排队**的任务数（`maxQueued` 的实时读数，诊断用）—— 与闸用的是**同一个**
+   * `#queueDepth`，所以「看到的数」就是「判据的数」，不会各说各话。
+   * 与 `inFlight` 的分工：`inFlight` 是「本进程已受理、未达终态」的全量（含在跑、含挂起），
+   * 本读数是其中「排不上、在等槽位」的那一段。
+   */
+  get queued(): number {
+    return this.#queueDepth();
+  }
+
   /** 任务终态唤醒与等待：实现见 task-waiters.ts（`notify` / `wait`） */
   /** 排空通知：只在确无在飞任务时唤醒等待者（drain 的唯一出口）—— 判定在 drain-gate.ts */
   #notifyDrained(): void {
@@ -1384,9 +1503,16 @@ export class AsyncRunner {
     // 区分「排队未起跑」与「真不在本进程」。终点是整个 #execute 退出的 finally。
     this.#executions.add(rec.taskId);
     this.active++;
+    // **在等槽位**的入口（同步段，与 `active++` 同处）—— 只看 id，出集合在「拿到槽位」
+    // 那一刻（`#executeInner`）与本节 finally 两处，`add`/`delete` 幂等所以两处都安全。
+    // 同步段入集合是这道闸**挡得住同步突发**的前提：`#dispatch` 是 submit 的最后一行，
+    // `void this.#execute(rec)` 的 body 到第一个 await 之前全同步 ⇒ 一个循环里连续 submit
+    // 时，每次读到的都是已含前几条的**准确**读数。
+    this.#waiting.add(rec.taskId);
     try {
       await this.#executeInner(rec);
     } finally {
+      this.#waiting.delete(rec.taskId);
       // 通知在飞递减**之前**：drain() 返回时保证「任务已终态 + 回调已发完」。
       // 内层 finally 保证回调万一抛错（理论上被吞掉）也不泄漏在飞计数。
       try {
@@ -1466,7 +1592,13 @@ export class AsyncRunner {
         }
       }
 
-      await this.#slots.acquire();
+      // 占槽走**同步快路径**（`tryAcquire`），让「拿到槽位」与「离开排队段」发生在
+      // 同一次同步执行里 —— 只走 `await acquire()` 的话，`running++` 是同步的、出集合却要
+      // 等一次微任务，同一条任务在那一瞬被算两遍（排队深度虚高一格，`maxQueued` 会误拒）。
+      if (!this.#slots.tryAcquire()) {
+        await this.#slots.acquire();
+      }
+      this.#waiting.delete(rec.taskId); // 拿到槽位 = 离开排队段（此后归 concurrency 管）
       try {
         // 认领前**重读一遍**再判（异步 store 交出的是副本：拿 submit 时那个对象判不出
         // 「排队期间被取消了没有」）——与 `#wakeDueInner` 的「进闸后重读」同因。
