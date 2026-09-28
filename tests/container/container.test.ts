@@ -92,4 +92,22 @@ describe('Container（显式 DI）', () => {
     );
     assert.notEqual(c.resolve('app'), first);
   });
+
+  it('async 工厂不再被静默当成值：解析期响亮抛错（外部深评 K4）', () => {
+    // 症状：`useFactory` 写成 async ⇒ 容器把 Promise 原样缓存成「值」，下游注入到的是 Promise 本身，
+    // 首次属性访问全 undefined、零报错、tsc 也看不出来（类型断言成 T 了）。
+    const c = new Container().register({
+      provide: 'svc',
+      useFactory: () => Promise.resolve({ ready: true }),
+    });
+    assert.throws(() => c.resolve('svc'), /解析出的是 Promise/);
+    // 第二次解析：错误要在**缓存之前**抛（不许把 Promise 留在 cache 里当作「已解析」）
+    assert.throws(() => c.resolve('svc'), /解析出的是 Promise/);
+  });
+
+  it('确实要注入 Promise 本体：包一层即可（逃逸口有测试，不是口头承诺）', () => {
+    const p = Promise.resolve(1);
+    const c = new Container().register({ provide: 'p', useValue: { promise: p } });
+    assert.equal(c.resolve<{ promise: Promise<number> }>('p').promise, p);
+  });
 });

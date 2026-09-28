@@ -127,6 +127,24 @@ export class Container {
       this.resolving.pop();
     }
 
+    // thenable 检测（外部深评 K4）：容器是**同步**解析的 —— `async` 工厂返回的 Promise
+    // 会原样被当成「值」缓存，下游注入到的是 Promise 本身：首次属性访问全 `undefined`、
+    // 零报错、`tsc` 也看不出来（类型断言成 T 了）。这类「静默给错东西」必须在构造/解析期响亮失败。
+    //
+    // ⚠️ 检测器**就地写**、不从别处 import：`container` 是纯叶子（`layering.test.ts` 里
+    // `container: []`，不许引内部任何模块），为两行逻辑破叶子边界不值得。
+    // 逃逸口：确实要注入 Promise **本体**，包一层即可（`useValue: { promise }`）。
+    if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+      const then = (value as { then?: unknown }).then;
+      if (typeof then === 'function') {
+        throw new TypeError(
+          `provider "${token}" 解析出的是 Promise：容器同步解析，它会被原样缓存成「值」，` +
+            '下游拿到 Promise 而非 await 过的结果（首次属性访问全 undefined、且零报错）。' +
+            '异步初始化请在装配前 await 好再用 useValue 注入；确实要注入 Promise 本体，包一层：useValue: { promise }',
+        );
+      }
+    }
+
     this.cache.set(token, value);
     return value as T;
   }

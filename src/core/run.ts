@@ -27,6 +27,13 @@ export type RunStatus =
    * 「人按的」与「跑挂的」混成一类（`GROUP BY status` 是第一读者）。
    * 机制上是 `abort signal`（与 `runTimeoutMs` 同一条），差别在**意图** ——
    * 状态按意图落：超时仍是 `failed`。
+   *
+   * ⚠️ **可达性如实（外部深评 K3）**：这个成员**由宿主落**（`TaskRecord.status`），
+   * 进程内 `Run` **到不了它** —— 引擎侧的取消表现为 `stopReason: 'aborted'`，
+   * `Run.finish()` 按 `isSuccessStopReason` 判 ⇒ 记 `failed`（带结构化
+   * `error.type: 'aborted'`）。同一份联合类型有**两个消费者、可达集不同**，这是有意的：
+   * `TaskRecord` 是运维读数（「人按的」与「跑挂的」必须分得开，`GROUP BY status` 是第一读者），
+   * 而 `Run` 是进程内状态机（只关心跑没跑完）。要加状态时**先想清是给谁的**。
    */
   | 'cancelled';
 

@@ -4933,6 +4933,67 @@ system prompt 与 tools schema 同样进请求、却不在这个数里。选**�
 不能凭印象写 —— 这与我在这里反复强调的「读数而非印象」是同一条，只是这次犯在自己身上。
 **本批之后的 P2 账**：26 行 = **12 已落地 / 13 未做 / 1 有意为之**。
 
+### 2026-09-28 ㉑：**runtime / container / 文档三处「静默给错东西」收口**（外部深评 K3 / K4 / K6）
+
+接 `docs/reviews/2026-09-28/README.md` §2.2 的 `K3` / `K4` / `K6`。三条同族：
+**都是「出了错却没有任何信号」**——两条给出错的**值/状态**，一条给出错的**认知**（文档）。
+
+**K3 · `Run.finish()` 没有守卫（行为变更：从静默翻转改成响亮抛错）**
+
+`start()` 有守卫（`!== 'queued'` 抛）、`suspend()` 有守卫（`!== 'running'` 抛），
+**`finish()` 没有** —— 对一条**挂起中**的 run 调它，会把 `_status` 静默改成
+`isSuccessStopReason(...) ? 'succeeded' : 'failed'`。挂起**不是终态**：它带着
+`suspendedMessages` 等审批/唤醒，宿主的恢复路径正是靠它接回来的；翻掉之后这条 run 在 store 里
+看起来「已结束」，恢复路径**再也接不上**，而且全程零信号。
+`Run` 是公开导出（`src/index.ts:95`）⇒ 这不是内部纪律，是**对外承诺**。
+判据只认 `running`（`queued` 的 run 还没开跑，拿结果去收尾同样是调用方用错）。
+
+**K3 的后半 · `cancelled` 的可达性如实（只改口径）**：`RunStatus` 有 6 个成员，而进程内
+`Run` **到不了 `cancelled`** —— 引擎侧取消表现为 `stopReason: 'aborted'`，
+`finish()` 按 `isSuccessStopReason` 判 ⇒ 记 `failed`（带结构化 `error.type: 'aborted'`）。
+`cancelled` 由**宿主**落（`TaskRecord.status`）。同一份联合类型**两个消费者、可达集不同**，
+这是**有意的**（`TaskRecord` 是运维读数：「人按的」与「跑挂的」必须分得开；`Run` 是进程内状态机），
+但此前只写在实现里、没写在类型上 —— 现在写进 `core/run.ts` 的 `cancelled` 注释，
+并留下判据：「要加状态时先想清是给谁的」。
+
+**K4 · `async` 工厂被静默当成值（行为变更：解析期响亮抛错）**
+
+容器是**同步**解析的：`useFactory` 写成 `async` ⇒ 返回的 Promise 被**原样缓存成「值」**
+（`cache.set(token, value)`），下游注入到的是 Promise 本身 —— 首次属性访问全 `undefined`、
+零报错、`tsc` 也看不出来（调用点把结果断言成了 `T`）。这是最坏的一类：**错的不是报错，是值**。
+现在在 `cache.set` **之前**检测 thenable 并抛 `TypeError`（文案给出两条出路：装配前 await 好再
+`useValue`，或包一层 `useValue: { promise }` 注入 Promise 本体）。
+
+两条设计取舍写下来：
+- **检测器就地写、不从别处 import**：`container` 是**纯叶子**（`tests/architecture/layering.test.ts`
+  里 `container: []`），为两行逻辑破叶子边界不值得；`store/store.ts` 里那个 `isThenable` 够不着。
+- **覆盖三个分支**（`useValue` / `useClass` 实例 / 工厂结果），不是只查工厂：三个分支的契约
+  同样是「同步解析成**就绪的值**」，只查一处等于把同一类错留在另两处（本仓最贵的教训）。
+  已 grep 确认全仓没有「故意注入 Promise」的用法；逃逸口**配了测试**，不是口头承诺。
+
+**K6 · 三态 `system` 的隐性差异进使用者文档（纯文档，零代码）**
+
+`resolveSubSystem`：`string` 与 `SystemPrompt` 两形态**自动追加** `REPORT_HINT`
+（「你运行在独立上下文，全部中间过程不外传；你的最终回复将作为报告原样交回主 agent」），
+而**函数形态不追加**（`return spec(task)`）。这是**有意**的（函数形态的返回值由使用者全权决定），
+但使用者读 `usage-guide` 时看不到 —— 于是「我用了函数形态，为什么子 agent 不按报告格式回」成了
+文档没答的问题。已在 `usage-guide` 的 `system` 行写明差异与「要提示请自己拼」。
+
+**验证**
+
+- K3：`tests/runtime/run.test.ts` 新用例（`suspended` 与 `queued` 两条路径都要抛，且**抛后状态不许被改**）。
+  **变异：摘掉 `finish()` 的守卫 ⇒ 恰好那条红**，还原后 `sha256` 逐字节一致。
+- K4：`tests/container/container.test.ts` 新用例（async 工厂抛错 + **第二次解析仍抛**
+  —— 错误必须在缓存**之前**抛，不许把 Promise 留在 cache 里当「已解析」；外加逃逸口用例）。
+  **变异：摘掉 thenable 检测 ⇒ 恰好那条红**，还原后逐字节一致。
+- K6：纯文档，验证 = 三套件全绿 + 文档门禁。
+- 全链：`build` / `biome ci . --error-on-warnings` / `typecheck` / `typecheck:types` / `typecheck:tests`
+  全绿；`npm test` 三套件全绿（**1549** / 20 / 27，fail 0）。
+
+**射程如实**：K3 / K4 是**行为变更**（都朝「响亮失败」的方向）；两者都在**用错时**才触发
+（正常路径逐字未变：`finish()` 只在 `running` 后调、工厂都是同步的 —— 全仓 grep 过）。
+P2 账：26 行 = **15 已落地 / 10 未做 / 1 有意为之**。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
