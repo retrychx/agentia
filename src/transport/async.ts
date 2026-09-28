@@ -1592,12 +1592,16 @@ export class AsyncRunner {
         }
       }
 
-      // 占槽走**同步快路径**（`tryAcquire`），让「拿到槽位」与「离开排队段」发生在
-      // 同一次同步执行里 —— 只走 `await acquire()` 的话，`running++` 是同步的、出集合却要
-      // 等一次微任务，同一条任务在那一瞬被算两遍（排队深度虚高一格，`maxQueued` 会误拒）。
-      if (!this.#slots.tryAcquire()) {
-        await this.#slots.acquire();
-      }
+      // 「出排队段」必须与「占槽」落在**同一次同步执行**里：`await acquire()` 的连续体要等
+      // 一次微任务，而 `acquire` 内部的 `running++` 是同步的 —— 同一条任务在那一瞬被算两遍
+      // ⇒ 排队深度虚高一格（`concurrency: 1` + `maxQueued: 1` 下第 2 条合法提交被误拒）。
+      // 所以：**有空位就趁 await 之前出集合**（判据是快照 —— 判断与 acquire 之间没有 await，
+      // 池子状态不会变）；排队等到的那些，则在 acquire 兑现后出集合（同一个 delete，幂等）。
+      // ⚠️ 刻意**不**把 acquire 换成同步快路径：那会顺带少掉一次微任务，把「置 running」
+      // 相对引擎推进的时刻提前，踩到既有用例里「等到 running 就当工具已挂在飞」的隐含假设
+      // （`tests/transport/cancel.test.ts` 的前置断言当场红）。记账改原子，时序一个字不改。
+      if (this.#slots.inUse < this.concurrency) this.#waiting.delete(rec.taskId);
+      await this.#slots.acquire();
       this.#waiting.delete(rec.taskId); // 拿到槽位 = 离开排队段（此后归 concurrency 管）
       try {
         // 认领前**重读一遍**再判（异步 store 交出的是副本：拿 submit 时那个对象判不出

@@ -16,27 +16,12 @@ export class SlotPool {
 
   constructor(private readonly limit: number) {}
 
-  /**
-   * **同步**取槽位：有空位就当场占下并回 `true`，否则**什么都不做**并回 `false`。
-   *
-   * 为什么要有它（2026-09-28）：`acquire()` 返回的 promise 即使立刻兑现，调用方也要等
-   * 一次微任务才拿到槽位 —— 而 async.ts 的排队段闸要靠「一条任务**是否已持槽**」算排队深度。
-   * 只走 `await acquire()` 的话，「占槽」发生在同步段（`running++`）、「出排队段」却晚一个
-   * 微任务，同一条任务在那一瞬被算两遍 ⇒ 深度虚高一格 ⇒ `concurrency: 1` + `maxQueued: 1`
-   * 下第 2 条合法提交被误拒。有了快路径，调用方能在**同一次同步执行**里占槽 + 出集合，
-   * 读数与判据因此在同一个 tick 内自洽（用例：`tests/transport/max-queued.test.ts`）。
-   */
-  tryAcquire(): boolean {
-    if (this.running < this.limit) {
-      this.running++;
-      return true;
-    }
-    return false;
-  }
-
   /** 取槽位：未到上限立刻兑现，否则排队 */
   acquire(): Promise<void> {
-    if (this.tryAcquire()) return Promise.resolve();
+    if (this.running < this.limit) {
+      this.running++;
+      return Promise.resolve();
+    }
     return new Promise((resolve) => this.waitQueue.push(resolve));
   }
 
