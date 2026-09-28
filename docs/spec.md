@@ -4604,6 +4604,40 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
 用例 `tests/core/schema-depth.test.ts`（4 条：环 + 浅值报环点路径 / DAG 不误报 / 60 层合法深度
 不误伤 / 300 层撞背板）。红证据：第一版只带深度闸时，「环 + 浅值」用例**实证红**
 （`必须抛出来（不是静默放行）`）。
+### 2026-09-28 ⑭：**limits 表的对账收口**（外部深评 C4 + C5 家族）
+
+事实核验（**我自己的读数，不是报告转述**）：`LIMIT_SEMANTICS` 里 `badValue: 'throws'` 的旋钮
+**18 个**（报告写 16 —— 表长过），而「构造期报错文案取自同一张表」的对账 case 只覆盖 **10 个**；
+那个清单的声明是 `Array<[LimitKnob, () => unknown, RegExp]>` ⇒ **新增一个 throws 旋钮却忘了对账，
+不会有任何东西红**（与 #164 那条「枚举靠人记」是同一类失效模式）。
+
+修法（C4）：
+
+1. **A4 单向穷尽断言**：`filter(badValue==='throws')` 的每个旋钮都必须出现在 `cases` 里，缺一个就红；
+   列表里引用不存在的 knob 也会红（clause 取空 ⇒ 文案断言失败）。
+2. **补齐缺的 8 条**：`AsyncRunner.concurrency` / `withTimeout.ms` / `interruptibleSleep.ms` /
+   `createAnthropicClient.timeout` / `metricsSink.windowSize` / `maxLabelValues` / `maxLabelCombos` /
+   `TaskEventStreams.retainTerminal`。
+3. **把实现侧文案接上 `zeroClauseOf`**（8 条里 7 条此前手写、或被 `assertTimerDelay` 的通用文案
+   盖掉 —— 单源只有一头接了）。代价：`core/timeout.ts` 要 import `core/limits.js`，它「零 import」
+   的自述**同步改成真话**（只 import 那张**纯数据、自身零 import** 的表 ⇒ 叶子性不变、无环）。
+4. **顺手修一个真 bug（文案套两层括号）**：8 条 `zeroClause` 自带「必须为正数（…）」包装，而实现
+   写的是 `必须为正数（${zeroClauseOf(...)}）` ⇒ 生成「必须为正数（必须为正数（0 = …））」。
+   表统一成**裸语义**，外层由实现负责。**例外**：`HttpHandlerOptions.maxConcurrentRuns` 保留括号
+   —— 它里面是「Infinity = 无上限（0 = 全部 503）」，那是真信息，不是套娃。
+5. **`withTimeout` 的 async 站点**：它是 `async function` ⇒ 坏值表现为 **rejection** 而不是同步
+   throw，原来的循环只 `assert.throws` 会把它记成「Missing expected exception」（那不是「没炸」，
+   是「炸在另一条通道上」）。循环现在两种通道都认。
+
+另一件（C5 家族，同一天顺手发现）：**五个旋钮从未登记进这张表** ⇒ 「改 0 的读法不改表就构建红」
+这条纪律对它们曾经是空的。补登 + 配探针：`BudgetGuardOptions.maxTotalTokens` / `maxCostUsd`
+（0 = 第一次记账就撞线，**刻意不抛错** —— 预算是运行期累计量，配 0 是「这次一条都别花」的合法
+意图）+ `metricsSink.maxCapabilities` / `maxModels` / `maxScores`（基数封顶，0 = 全部折进一个桶
+⇒ 非法配置）。
+
+**证据**：A4 断言**第一次跑就红了**，报出我刚补登的三个 metrics 旋钮（正是它该做的事）；
+补齐后 `tests/limits.test.ts` 30/30 绿，受影响套件（timeout / sse-text-stats / metrics /
+task-events / anthropic / async）141/141 绿，`npm test` 三套件全过。
 
 ## 11. 开放项
 

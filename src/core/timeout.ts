@@ -6,8 +6,12 @@
  * 2026-09-14 的「硬保证」收紧只落进了 `engine/concurrency.ts`，桥那一份继续用竞速判定 ——
  * 同一个承诺两套实现，于是同一个事件在 trace 里能有两种账（见 `docs/spec.md` §10 2026-09-17 ①）。
  * `integrations` 只能依赖 core（`tests/architecture/layering.test.ts` 强制），
- * 所以单源的落点是 core。core 是叶子：本文件零 import。
+ * 所以单源的落点是 core。core 是叶子：本文件只 import `limits.js`（**纯数据表，零 import**）
+ * —— 2026-09-28 起它要 `zeroClauseOf`：两处 `assertTimerDelay` 的文案必须与 limits 表同源
+ * （外部深评 C3/C4 的「单源断了一头」）。叶子性没变：数据表不引入任何运行期依赖，也不成环。
  */
+
+import { zeroClauseOf } from './limits.js';
 
 /** 超时哨兵：区分「超时」与「工具恰好返回了 undefined」 */
 export const TIMED_OUT = Symbol('agentia.timed-out');
@@ -163,7 +167,10 @@ export async function withTimeout<T>(
   // ⇒ 会被**静默**读成「不设超时」，与使用者「我设了个预算」的预期正好相反
   // （桥还会因此起自己的 60s 兜底 ⇒ 双计时器、双账本，见 limits 表 withTimeout.ms 的 note）。
   // `0` / 负数不在此列 —— 它们是合法的「不设超时」，走下面那句原样透传。
-  assertTimerDelay(timeoutMs, 'withTimeout 的 timeoutMs（引擎 toolTimeoutMs / 桥兜底超时）');
+  assertTimerDelay(
+    timeoutMs,
+    `withTimeout 的 timeoutMs（引擎 toolTimeoutMs / 桥兜底超时；${zeroClauseOf('withTimeout.ms')}）`,
+  );
   if (!(timeoutMs > 0)) return p;
   // 单调钟（performance.now）：硬超时判定看的是**耗时**，墙钟（Date.now）会被
   // NTP 回拨/跳变扭曲 —— 回拨让 settledAt - startedAt 变负，超时的工具被记成 ok，
@@ -239,7 +246,10 @@ export function interruptibleSleep(
   // —— 它会穿透那句直落 `setTimeout(fn, NaN)`，被 Node 钳成 1ms ⇒「退避」静默变成
   // 「立刻重试」；超上限同理（钳到 1ms）。`0` / 负数仍是合法的「不睡」，
   // 且「先于 aborted 检查」那条次序（被用例钉着）不受影响 —— 见函数头注释。
-  assertTimerDelay(ms, 'interruptibleSleep 的 ms（重试退避）');
+  assertTimerDelay(
+    ms,
+    `interruptibleSleep 的 ms（重试退避；${zeroClauseOf('interruptibleSleep.ms')}）`,
+  );
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
     // 已中止：立即 reject（此处 timer 尚未创建，绝不能去 clear）

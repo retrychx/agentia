@@ -398,7 +398,9 @@ export class AsyncRunner {
     );
     this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY;
     if (!(this.concurrency > 0)) {
-      throw new Error(`concurrency 必须为正数，收到 ${opts.concurrency}`);
+      throw new Error(
+        `concurrency 必须为正数（${zeroClauseOf('AsyncRunner.concurrency')}），收到 ${opts.concurrency}`,
+      );
     }
     // 放在校验之后：字段初始化式在构造函数体之前求值，那时 concurrency 还是 undefined
     this.#slots = new SlotPool(this.concurrency);

@@ -84,6 +84,15 @@
   （与值深度无关，点名路径；用祖先集，**共享子树不算环**）+ `MAX_SCHEMA_DEPTH = 256` 兜
   「合法但深到失控」。⚠️ 只加深度闸是**不够的**：递归深度 = min(schema 深度, 值深度)，
   所以「环 + 浅值」根本不会爆栈（我也正是这么写出第一版红用例的）。
+- **limits 表的对账收口**（C4 + C5 家族）：`LIMIT_SEMANTICS` 里声明「坏值抛错」的旋钮有 18 个，
+  而「报错文案真的取自同一张表」的对账 case 只覆盖 10 个，且那个清单是个 `Array` ——
+  新增一个 throws 旋钮却忘了对账，**不会有任何东西红**（「表说它有构造期校验」与「文案真同源」
+  之间没有机器守着）。现在：**A4 单向穷尽断言**（每个 throws 旋钮都必须有 case）+ 补齐 8 条
+  case + 把实现侧的文案接上 `zeroClauseOf`（7 处此前是手写或被通用文案盖掉）。
+  另补登 **5 个**从未进表的旋钮：`BudgetGuardOptions.maxTotalTokens` / `maxCostUsd`
+  （v0.5.0 起就存在）与 `metricsSink.maxCapabilities` / `maxModels` / `maxScores`。
+  顺带修 8 条 `zeroClause` 的**双层括号**（表里自带「必须为正数（…）」而实现又加一层），
+  并把 `withTimeout` 的 **async 站点**（坏值表现为 rejection 而非同步 throw）纳入对账。
 
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /
