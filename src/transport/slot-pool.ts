@@ -35,7 +35,15 @@ export class SlotPool {
     }
   }
 
-  /** 当前占用数（测试用；AsyncRunner 对外暴露的是 active，不是它） */
+  /**
+   * 当前占用数。
+   *
+   * ⚠️ 2026-09-28 起它**不再是「测试用」**：`AsyncRunner` 的排队段闸（`maxQueued`）
+   * 用它算「此刻还有几个空槽位」—— 判据是「**真正在排队的深度** = 已受理未持槽的任务数
+   * − 当前空槽位数」（见 async.ts 的 `#queueDepth`）。先前那句「测试用；对外暴露的是
+   * active」是一句**会误导人**的自述：它让读代码的人以为改这个读数不影响行为。
+   * 读到它想改语义时，请连着 `#queueDepth` 一起看 —— 那里写着为什么不能只看等待队列长度。
+   */
   get inUse(): number {
     return this.running;
   }

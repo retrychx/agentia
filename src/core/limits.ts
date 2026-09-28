@@ -104,6 +104,15 @@ export const LIMIT_SEMANTICS = [
     note: '同 runTimeoutMs：非有限数会让「已挂起多久」的比较静默失效或立即超时。',
   },
   {
+    knob: 'AsyncRunner.maxQueued',
+    where: 'transport/async.ts',
+    unit: 'count',
+    zero: 'unlimited',
+    zeroClause: '0 = 不限（不设排队上限）',
+    badValue: 'throws',
+    note: '2026-09-28 外部深评 T5 补登的**新旋钮**，也刻意是「数量 + 0 = 不限」的**第二个**样本（第一个是 `mapWithConcurrency.limit`）。⚠️ 它必须登记的理由不是形式：`maxQueued: 0` 的直觉读法是「一条都不许排」（= `disabled`），而**那样读的后果正是本旋钮要防的反面** —— 并发一满，每个提交都 503。所以 0 = 不限是**刻意选的**（缺省行为与加本旋钮之前逐字一致），探针必须把这两种读法分开：`concurrency: 1` + `maxQueued: 0` 下灌 3 条，断言**都受理**且都跑完（若读成 disabled，第 2 条就抛）。',
+  },
+  {
     knob: 'AsyncRunner.drain.timeoutMs',
     where: 'transport/drain-gate.ts',
     unit: 'ms',

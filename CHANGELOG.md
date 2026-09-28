@@ -93,6 +93,25 @@
   （v0.5.0 起就存在）与 `metricsSink.maxCapabilities` / `maxModels` / `maxScores`。
   顺带修 8 条 `zeroClause` 的**双层括号**（表里自带「必须为正数（…）」而实现又加一层），
   并把 `withTimeout` 的 **async 站点**（坏值表现为 rejection 而非同步 throw）纳入对账。
+- **排队段的上限 `AsyncRunnerOptions.maxQueued`**（T5，缺省 0 = 不限）：`concurrency` 只约束
+  「同时在跑几个」，而「跑不上、排在后面」那一段**此前没有任何上限** —— `submit` 永远收单、
+  `POST /tasks` 永远 202，排队段随调用方灌入无界增长（每条排队任务 = 一条记录 + 一棵悬挂的
+  `#execute` promise + 一个槽位等待者，全在内存）。现在超限 `submit` 抛 `TaskQueueFullError`
+  （带 `status: 503` 自陈字段），HTTP 宿主回 **503 + `Retry-After`**（与 `maxConcurrentRuns`
+  同款，**不是 400** —— 排队满不是调用方的错）。
+  ① **判据不是「已受理未持槽的条数」**，而是「**真正在排队的深度** = `max(0, 已受理未持槽数
+  − 空槽位数)`」：前者把「池子还空着、马上就能跑」的也算成排队的，`concurrency: 1` +
+  `maxQueued: 1` 下会把第 2 条**合法**提交误拒（第一版就是这么写的，被用例当场抓出来）。
+  ② 为此把「出排队段」挪到 `await acquire()` **之前**做一次快照判断（`inUse < concurrency`
+  就当场出集合）：只走 acquire 的连续体时，「占槽」（`running++`）是同步的、「出排队段」却要
+  等一个微任务，同一条任务在那一瞬被算两遍 ⇒ 深度虚高一格。
+  ⚠️ 刻意**不**把它做成「同步快路径替代 acquire」：那会顺带少掉一次微任务，把「置 running」
+  相对引擎推进的时刻**提前**，踩到既有用例里「等到 `running` 就当工具已挂在飞」的隐含假设
+  （`cancel.test.ts` 的前置断言当场红，实测踩到过）—— **记账改原子，时序一个字不改**。
+  ③ **只在 `submit` 判**：恢复路径（approve / 到期唤醒 / 崩溃重投）推进的是**已受理**的任务，
+  拦下来等于把它搁死在 store 里。④ 幂等键命中的重复提交**不吃** 503（闸在去重之后）。
+  ⑤ `get queued` 与闸**同用** `#queueDepth`：读数即判据，不会各说各话。
+  顺带把 `SlotPool.inUse` 的「测试用」自述改成真话（它从此是闸的一半）。
 
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /

@@ -7,6 +7,7 @@ import {
   TaskApproveError,
   TaskCancelError,
   TaskEventError,
+  TaskQueueFullError,
   TaskStreamError,
 } from './async.js';
 import type { AppCallable, TaskStreamFrame } from './async.js';
@@ -401,6 +402,16 @@ async function handleSubmit(ctx: HttpCtx): Promise<void> {
     // 并把内部错误消息原样回给调用方（500/401 路径都不这么干）。
     if (e instanceof TaskInputError) {
       sendJson(res, 400, { error: errMessage(e) });
+      return;
+    }
+    // 排队段满（T5）：**不是**调用方的错，回 503 让它退避重试 —— 与 `maxConcurrentRuns`
+    // 那一支同款（同一种情况在「已跑满」与「排满了」两个阶段各有一道闸，状态码就该一致）。
+    // 放在 `TaskInputError` 之后：入参不合法仍是 400（那是它能自己修好的），
+    // 排在 `isDraining` 之前：停机文案说「服务正在优雅停机」，而这条说的是「排队满了」——
+    // 两句话对运维的指示不同（前者别再来，后者稍后再来），不能混成一句。
+    if (e instanceof TaskQueueFullError) {
+      res.setHeader('retry-after', RETRY_AFTER_SECONDS);
+      sendJson(res, 503, { error: errMessage(e) });
       return;
     }
     // 上面的停机闸门与 `submit` 之间隔着一次 `await parseJsonBody`：读 body 期间
