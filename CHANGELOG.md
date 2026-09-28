@@ -399,6 +399,16 @@
 
 ### 仓库自身（不面向使用者）
 
+- **补两份「口径单测」**（`tests/integrations/mcp-protocol.test.ts` + `tests/transport/http-io.test.ts`，
+  2026-09-28，结构收口的尾巴）：这两组 helper 是「桥 + 两个连接器」与「宿主 + 端点」的**共用面**，
+  抽成独立文件（断值环 / 拆路由体）后**没有同名单测** —— 行覆盖靠既有套件就够（都是 100% 行），
+  但**口径**从没被正面钉过。按 `http-shapes.test.ts` / `http-route.test.ts` 的先例补两份、共 35 条。
+  **不追覆盖率**：纯防御分支**刻意不补** —— 典型是 `readBody` 的 `if (done) return`
+  （Promise 二次 `resolve` 是 no-op，少这行行为完全一样），为它写断言就是真空变绿。
+  ⚠️ 同一轮查清一个会误导人的读数：`src/engine/mcp-server-stdio.ts` 报 **22.22% 行覆盖**不是缺口，
+  是**采集假象**（用例走真子进程，c8 只采父进程；实测该用例 22/22 全过），且该数字拆分前就存在。
+  变异验证 17/17 逐条咬人。详见 `docs/spec.md` §10 2026-09-28 ⑩ 第 5 条。
+
 - **`packages/cli/test/inspector.test.mjs` 新增 ⑫「选完文件夹 → 透传给 run 的就是所选目录」**：
   2026-09-24 真用户反馈「选完之后透传给 agent 的不是所选文件夹」，逐环核实后**链路是通的**
   （`createApp` 把显式 `providers` 拼在 discover 结果**之后** ⇒ 模板的 `WORKDIR = opts.workdir`

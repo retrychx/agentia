@@ -4370,6 +4370,36 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
      也成立 —— 它只按 `from '…'` 抓。今天无害（造成假边的注释落在**同层**，而它只记跨层边），
      但一条**跨层**的导入字面量写进注释就会造成「越权」误红。修法是把该守卫也切到 `scan()`；
      因其反向验证证据是逐条按旧实现钉的，**留作后续单独一轮**，不并入本批。
+5. **补「口径单测」（本轮的尾巴，纯测试、零语义变化）**：第 1、2 件各抽出几个**共用面**
+   helper（`http-io.ts` / `mcp-protocol.ts`），当时没配同名单测 —— 行覆盖靠既有套件就够
+   （两文件都是 100% 行），但**口径**（返回什么、抛什么、文案长什么样）从没被正面钉过。
+   按先例（`http-shapes.test.ts` / `http-route.test.ts`：抽出的**纯决策/形状模块**配同名单测，
+   每个 `describe` 枚举一条规则）补两份、共 35 条：
+   - `tests/integrations/mcp-protocol.test.ts` —— `unwrap` 的「**键存在 ≠ 值非空**」
+     （`{result: undefined}` 也算「有」；改成 `msg.result !== undefined` 会把「server 明确回了
+     `undefined`」误判成 malformed）；`withDeadline` 抛的必须是**类型化** `TimeoutError`
+     （抛普通 `Error` ⇒ 引擎记 `threw`/`unknown`，同一个事件两种账 —— 正是 §10 2026-09-17 ①
+     单源化要消掉的那件事）；`brief` 对**循环引用**与 **`undefined`** 的退化
+     （`JSON.stringify(undefined)` 返回的是 `undefined` 而非字符串 ⇒ 落到 `String(value)`）；
+     `DEFAULT_CLIENT_INFO.version === '0.0.0'` 是**刻意的**（写成真版本会让
+     `scripts/release-surface.mjs` 的计数断言失配）。
+   - `tests/transport/http-io.test.ts` —— `parseJsonBody` 的**空 body 不算解析失败**
+     （回 `undefined` 而不是 400）；`sendJson` 的 `content-length` 按**字节**
+     （`.length` 遇中文会写小 ⇒ 客户端按它截断）；`readBody` settle 后**监听必须摘干净**
+     （残留 = 每个半截请求漏一个 handler）；`sendInternalError(exposeErrors=false)`
+     不得把内部拓扑写进响应体。
+   - **「刻意不补」与「补」同等重要**：`readBody` 的 `if (done) return` 是**不可观测**的
+     （Promise 二次 `resolve` 是 no-op，少这一行行为完全一样）—— 为它写断言就是
+     `scripts/test-all.mjs` 注释里点名的**真空变绿**。同理 `taskStream` 的 `unsubscribe`
+     缺省支、穷尽性 `default`、`taskStream` 的 `TaskStreamError` catch 一律不凑数。
+   - ⚠️ **一个会误导人的覆盖率读数**：`src/engine/mcp-server-stdio.ts` 报 **22.22% 行覆盖**，
+     看着像缺口，其实是**采集假象** —— 它的用例走**真子进程**（夹具在子进程里
+     `createMcpServer({ transport: 'stdio' })`），c8 只采父进程。实测：单跑该测试文件仍是 22%，
+     而用例 **22/22 全过**。该数字**拆分前就存在**（同一段代码内联在 `mcp-server.ts` 里）——
+     别照着它去补测试。
+   - **变异反向验证 17/17**：逐条改坏实现（`content-length` 换 `.length` / 空 body 直接
+     `JSON.parse` / 摘掉 `cleanup()` / `unwrap` 改值判定 / `withDeadline` 抛普通 `Error` /
+     `exposeErrors=false` 泄漏 ……），每条**恰好红在对的那条用例**上，且还原后源文件逐字节一致。
 
 ## 11. 开放项
 
