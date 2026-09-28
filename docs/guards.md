@@ -68,6 +68,8 @@
 
 | `tests/types/store-surface.types.ts`（**可选能力必须在接口上、且必须是可选的**，2026-09-28 S5） | `TaskStore` 的 `compact?()` / `close?()` 是**接口成员**（宿主在接口类型上就能 `store.compact?.()` 多态调用，不必 `as` 强转），且**保持可选**（只实现基本面的 store / 测试桩照常满足接口） | 类型级断言（`npm run typecheck:types`，`include: ["tests/types"]`）：正向是「接口上多态调用」+「最小实现仍满足接口」；**正控**是一条 `@ts-expect-error`（可选成员当必填直接调必须报错）—— 谁把可选改成必填 / 给个假实现，这条指令变未使用 ⇒ `TS2578` ⇒ 红 | 宿主拿到的通常是接口类型（DI / 工厂 / 配置驱动选 store），只能 `as FileTaskStore` 强转 ⇒ **换 store 后不报错**（sqlite 没有 `compact`、file 没有 `close`），要到运行期才炸；「框架替宿主关 store」更糟：共享的 sqlite 连接被 drain 关掉，别人还在用 |
 
+| `tests/runtime/memory.test.ts` · `tests/types/memory-surface.types.ts`（**记忆回写的 CAS：成对 + 冲突出声**，2026-09-29 ①） | `MemoryStore` 的版本号能力 `loadWithRev` / `saveIfRev` **必须成对**（只实现一个 ⇒ `executeRun` 入口抛 `TypeError`：半个 CAS 与「不支持」等效，却让「有没有被覆盖」看起来有据可查）；成对且冲突（`committed !== true`，**含忘返回 `undefined`**）⇒ 回写**一个字都不写** + 一条 `console.warn`（不合并、不重试）；两个都不实现 ⇒ 行为一字不改（last-write-wins），但**每个 store 实例第一次使用时**一条一次性提示 | 真跑 `executeRun`：① 冲突那条用「另一条 run 在工具执行期写了同一份 store」造出真实窗口，断言被拒 + store 上是别人的值 + 恰好一条告警；② 一次性提示按**实例**去重（连跑两条 run 恰好一条）；③ 半成品两个方向各 `assert.rejects(/必须成对实现/)`。类型级（`typecheck:types`）钉「两个成员是**接口上的可选**成员、最小实现仍满足接口、`committed` 必填」。**反向验证过（2026-09-29，四条变异逐条点名）**：冲突当成功 ⇒ 恰好冲突那条红；摘掉成对检查 ⇒ 恰好两条半成品红；摘掉一次性提示 ⇒ 恰好去重那条红；冲突分支退回照写 ⇒ 恰好「别人的值原样在」那条红 | 同 keys 的并发 run 之间**丢写无声**（后写覆盖先写、双方都看不出异常）—— 且没有任何读数能补：**版本号是检测覆盖的唯一依据**（没有它，框架连「发生了覆盖」都不知道）；「半个 CAS」更坏：白多一次读、看起来有据可查、实际照旧静默覆盖 |
+
 ### 1.3 宿主与耐久
 
 | 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |

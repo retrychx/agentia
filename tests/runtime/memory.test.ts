@@ -286,3 +286,150 @@ describe('MemoryStore 跨 run 记忆', () => {
     assert.equal(Object.getPrototypeOf(loaded), null, '无原型，绝不污染 Object.prototype');
   });
 });
+
+describe('MemoryStore 版本号（CAS）—— 并发丢写不再无声', () => {
+  /** 捕获 console.warn（包住一段 await）：断言「出声」这件事真的发生了，而不是只写在注释里 */
+  async function captureWarn<T>(fn: () => Promise<T>): Promise<{ warnings: string[]; value: T }> {
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+    try {
+      return { warnings, value: await fn() };
+    } finally {
+      console.warn = orig;
+    }
+  }
+
+  /** 写某 key 的 run（用 writeTool：run 内改黑板，收尾回写） */
+  function runOnce(store: MemoryStore, keys: string[], key: string, value: unknown) {
+    return executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [writeTool(key, value)],
+      client: mockClient([toolUseMsg('write_key', {}), endTurnMsg('ok')]).client,
+      memory: { store, keys },
+    });
+  }
+
+  it('带版本号的 store：回写走 CAS（saveIfRev），不再走无版本号的 save；提交成功不出声', async () => {
+    const plain = new InMemoryMemoryStore();
+    plain.save({ k: 'seed' });
+    const viaCas: unknown[] = [];
+    const store: MemoryStore = {
+      load: (keys) => plain.load(keys),
+      save: (entries) => {
+        viaCas.push('save'); // 走到这里 = 回写没走 CAS
+        plain.save(entries);
+      },
+      loadWithRev: (keys) => plain.loadWithRev(keys),
+      saveIfRev: (entries, rev) => plain.saveIfRev(entries, rev),
+    };
+
+    const { warnings, value } = await captureWarn(() => runOnce(store, ['k'], 'k', 'v'));
+    assert.equal(value.run.status, 'succeeded');
+    assert.deepEqual({ ...plain.load(['k']) }, { k: 'v' }, 'CAS 提交成功 ⇒ 值落库');
+    assert.deepEqual(viaCas, [], '有版本号就不该退回无版本号的 save');
+    assert.deepEqual(warnings, [], '提交成功是常态，不该出声');
+  });
+
+  it('并发丢写被抓：读之后别人写过同一份 store ⇒ 本次回写被拒、一个字都不写、并出声', async () => {
+    const store = new InMemoryMemoryStore();
+    store.save({ memo: 'old' }); // 水合读到的版本 = 1
+
+    // 「另一条并发 run」：在本 run 的水合之后、回写之前提交（工具执行期就是这么个窗口）
+    const concurrentWriter: AgentTool = {
+      name: 'other_run',
+      description: 'd',
+      inputSchema: SCHEMA,
+      run: () => {
+        store.save({ memo: 'other-run' }); // 版本 1 → 2：本条 run 手上的 rev 就此过期
+        return 'ok';
+      },
+    };
+    const { warnings, value } = await captureWarn(() =>
+      executeRun({
+        messages: [{ role: 'user', content: 'go' }],
+        tools: [writeTool('memo', 'mine'), concurrentWriter],
+        client: mockClient([
+          toolUseMsg('write_key', {}),
+          toolUseMsg('other_run', {}),
+          endTurnMsg('ok'),
+        ]).client,
+        memory: { store, keys: ['memo'] },
+      }),
+    );
+
+    assert.equal(value.run.status, 'succeeded', '回写被拒是辅助动作失败，不改 run 状态');
+    assert.equal(
+      Object.assign({}, store.load(['memo'])).memo,
+      'other-run',
+      '冲突时一个字都不写：别人的值原样在，不合并、不覆盖',
+    );
+    assert.equal(warnings.length, 1, '冲突 = 恰好一条告警');
+    assert.match(warnings[0]!, /记忆回写被拒绝/);
+    assert.match(warnings[0]!, /conflict/);
+    assert.match(warnings[0]!, /memo/, '告警要能看出是哪些 keys 丢了回写');
+  });
+
+  it('无版本号的 store：出声降级（每个实例只说一次，连跑两条 run 也只一条提示）', async () => {
+    const saves: Record<string, unknown>[] = [];
+    const store: MemoryStore = {
+      load: () => ({}),
+      save: (entries) => {
+        saves.push({ ...entries });
+      },
+    };
+
+    const { warnings, value } = await captureWarn(async () => {
+      const first = await runOnce(store, ['k'], 'k', 'v1');
+      const second = await runOnce(store, ['k'], 'k', 'v2');
+      return { first, second };
+    });
+
+    assert.equal(value.first.run.status, 'succeeded');
+    assert.equal(value.second.run.status, 'succeeded');
+    assert.equal(saves.length, 2, '不支持版本号 = 保持旧行为（照旧 save）');
+    assert.equal(warnings.length, 1, '提示按**实例**去重：不是每轮 run 都吵');
+    assert.match(warnings[0]!, /last-write-wins/);
+    assert.match(warnings[0]!, /loadWithRev/, '提示要给出路：实现哪两个成员');
+  });
+
+  it('半个 CAS 一律入口拒：只实现 loadWithRev 抛 TypeError（不被「辅助动作」吞掉）', async () => {
+    const store: MemoryStore = {
+      load: () => ({}),
+      save: () => {},
+      loadWithRev: () => ({ values: {}, rev: 1 }),
+    };
+    await assert.rejects(
+      () => runOnce(store, ['k'], 'k', 'v'),
+      /必须成对实现.*只实现了 loadWithRev/s,
+    );
+  });
+
+  it('半个 CAS 一律入口拒：只实现 saveIfRev 同样抛（反方向）', async () => {
+    const store: MemoryStore = {
+      load: () => ({}),
+      save: () => {},
+      saveIfRev: () => ({ committed: true }),
+    };
+    await assert.rejects(
+      () => runOnce(store, ['k'], 'k', 'v'),
+      /必须成对实现.*只实现了 saveIfRev/s,
+    );
+  });
+
+  it('saveIfRev 忘返回结果（undefined）⇒ 按「未提交」处理并出声（宁可多报，不记成写成功）', async () => {
+    const store: MemoryStore = {
+      load: () => ({}),
+      save: () => {},
+      loadWithRev: () => ({ values: {}, rev: 1 }),
+      // 半成品实现：写了但没回结果 —— 契约要求 `{ committed }`，这里模拟「没遵守」
+      // 断言用 NonNullable：`MemoryStore['saveIfRev']` 含 `| undefined`（可选成员），
+      // 本对象字面量在 exactOptionalPropertyTypes 下不允许把可能 undefined 的值赋给可选属性
+      saveIfRev: (() => undefined) as unknown as NonNullable<MemoryStore['saveIfRev']>,
+    };
+    const { warnings, value } = await captureWarn(() => runOnce(store, ['k'], 'k', 'v'));
+    assert.equal(value.run.status, 'succeeded');
+    assert.equal(warnings.length, 1, '「不知道写没写」也要出声');
+    assert.match(warnings[0]!, /未确认/);
+  });
+});

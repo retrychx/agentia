@@ -1086,6 +1086,55 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 | `diffTraces` | 两条 trace 的 A/B 比对（prompt / 模型实验）：run 级 summary + 逐 span 字段差；纯函数，llm.turn 配对**忽略模型名**，缺省忽略墙钟 |
 | `applyMiddleware` | 手动包裹配置菜单（装配层已自动做） |
 
+#### 并发 run 共用同一 keys（回写会不会互相覆盖）
+
+`memory: { store, keys }` 的水合/回写是**读 → 改 → 写**三步：`load` 在 run 开始，`save` 在收尾。
+两条 run 拿**同一份 store + 同一批 keys** 并发跑时，后写的那条会把先写那条改过的键**整片覆盖**回去，
+而它自己看不出任何异常 —— 这就是 lost update（**落后写赢**：先写完的那条被静默丢掉）。
+框架能发现它的**唯一依据是版本号**，所以这是一对**可选**成员：
+
+```ts
+class MyMemoryStore implements MemoryStore {
+  load(keys: string[]): Record<string, unknown> | Promise<Record<string, unknown>> { /* 必填 */ }
+  save(entries: Record<string, unknown>): void | Promise<void> { /* 必填 */ }
+
+  // 可选①：带版本号的读 —— 多回一个**不透明**句柄（框架不解释它，只在本 run 回写时原样递回）
+  loadWithRev(keys: string[]): MemorySnapshot { /* → { values, rev } */ }
+
+  // 可选②：CAS 写 —— 版本对不上就**一个字都不写**，并如实回报
+  saveIfRev(entries: Record<string, unknown>, rev: unknown): MemoryWriteResult {
+    // 版本对不上 ⇒ return { committed: false, reason: 'conflict' }   // 写成功的路径不许半写
+    // 写成功     ⇒ return { committed: true }
+  }
+}
+```
+
+三条规则：
+
+1. **成对实现**：只实现一个是**装配错误** —— `executeRun` 入口当场抛 `TypeError`。
+   半个 CAS 与「不支持」等效（回写照旧静默覆盖），却让「有没有被覆盖」看起来有据可查 ——
+   本仓把这类「看起来在岗、其实不在岗」一律当错误处理。
+2. **冲突时框架不写、也不替你合并**：`saveIfRev` 回 `committed: false` ⇒ 本轮回写被拒
+   （一个字都没写）+ 一条 `console.warn`（带 keys 与冲突事实）。「后写赢 / 逐键赢 / 按时间戳赢」
+   都是策略，属于 store 与宿主的决定 —— 框架只负责把「丢了一条写」变成**有声**。
+3. **回写被拒不改 run 结局**（仍是 `succeeded`）—— 与 sink 抛错、store 故障同款：辅助动作
+   不击穿业务。**代价如实**：这一轮的记忆**没落库**，所以它是一条日志而不是一句承诺。
+   要重试请在自己的 store 里做（合并策略是你的）：
+
+   ```ts
+   for (let attempt = 0; attempt < 3; attempt++) {
+     const { values, rev } = store.loadWithRev(keys);
+     const merged = { ...values, ...myChanges };   // ← 「怎么合并」由你定，框架不猜
+     if (store.saveIfRev(merged, rev).committed) break;
+   }
+   ```
+
+⚠️ **不实现这一对**（只有 `load` / `save`）：**保持原行为**（last-write-wins），框架照常跑 ——
+但**第一次**用这个 store 时会打一条**一次性**提示（每个 store 实例一次），说明「同 keys 的并发
+回写丢写不会被发现」，让装配的人自己决定要不要补 CAS。框架**检测不了**没有版本号的覆盖：
+这不是「暂时不查」，是没有依据可查。
+`InMemoryMemoryStore` 已带版本号（**整店一个单调计数**，粒度粗 ⇒ 宁可多报冲突，也不漏报真实覆盖）。
+
 #### MCP 桥与连接器（MCP 是「工具来源」，不是新机制）
 
 | API | 说明 |
@@ -1693,6 +1742,7 @@ const callable = {
 | 终态落库失败 ⇒ 重启会重跑 | AsyncRunner 终态 `save` 失败**不遮罩主流程**（「不击穿业务」的代价）：store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**（副作用已发生）的任务 —— 所以副作用工具必须自身幂等。**但失败本身不再静默**：`new AsyncRunner(app, { onPersistError })` 会收到 `{ record, error, phase }`（`phase: 'initial' \| 'outcome'`，后者就是这条）。⚠️ 框架**修不了**它（写不进去就是写不进去）—— 出口的职责是让你能对账、让「记录无声丢失」不再是默认行为（与 `createOtlpExporter({ onExportError })` 同因同形） |
 | `contextPolicy` 不进子循环 | 应用级 `contextPolicy` / `onText` 只对主循环生效：@SubAgent / @Skill 的子运行不做上下文裁剪（长跑子 agent 撞上下文上限会以 api 错误收尾）。预算护栏（`maxTotalTokens` / `maxCostUsd`）正常透传 |
 | 记忆没有删除语义 | `MemoryStore` 只有 load/save：run 内 `ctx.delete` 掉的键回写时不会从 store 移除（下一轮水合会复活）。要真删请直接操作 store 实现 |
+| 同 keys 的并发回写不合并 | CAS（`loadWithRev` + `saveIfRev`）只做到「冲突时**不写 + 出声**」：框架**不合并、不重试**（合并语义是 store 与宿主的决定，配方见 §6.5）。只有 `load` / `save` 的 store 连冲突都**看不见** —— 版本号是唯一依据，没有它就检测不了覆盖；`InMemoryMemoryStore` 的版本粒度是**整店一个计数**（宁可多报冲突，不漏报真实覆盖） |
 | 内容护栏不给实现 | 同「配额」：只给缝（入参包 `app.run` / 工具前 `middleware` / 出参包返回值或 `sinks`），策略（正则 / 分类器 / 外部 API）是你的 |
 | 框架不执行模型生成的代码 | 无沙箱可言：`@Skill` 跑你写的方法、`@Tool` 是你写的函数，模型输出只成文本 / `tool_result`；代码执行工具的隔离是**工具实现内部**的事；工具起的子进程取消时要自己 kill |
 

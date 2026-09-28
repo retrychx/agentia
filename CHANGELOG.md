@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+### 变更 · 记忆回写的 CAS（可选、成对、冲突出声）（2026-09-29 ①）
+
+来源：`DEEP-AUDIT-VERIFIED-2026-09-28.md` 的 P2 表 `K5`（**未做**那三条之一）。
+病灶：`flushMemory` 是无条件**全量读改写** —— 同 keys 的并发 run 之间是 last-write-wins，
+后写的那条把先写的改动整片覆盖，**双方都看不出异常**。
+
+- **`MemoryStore` 新增两个可选成员**（`runtime/memory.ts`）：`loadWithRev(keys) → { values, rev }`
+  与 `saveIfRev(entries, rev) → { committed, reason? }`（`rev` 是**不透明**版本句柄，框架不解释、
+  只在本 run 回写时原样递回）。**成对实现**：只实现一个是装配错误 ⇒ `executeRun` **入口**抛
+  `TypeError`（半个 CAS 与「不支持」等效，却让「有没有被覆盖」看起来有据可查）。类型级守卫在
+  `tests/types/memory-surface.types.ts`（两个成员必须在**接口上**且**可选**）。
+- **冲突时：不写 + 出声**（`runtime/run.ts`）：`saveIfRev` 回 `committed !== true`（含忘返回
+  `undefined` —— 不知道写没写就不许记成写成功）⇒ 该 key 集**一个字都不写**并打一条
+  `console.warn`（含 keys 与 `conflict`）。**框架不合并、不重试** —— 「后写赢 / 逐键赢 / 按时间戳赢」
+  都是策略，属 store 与宿主；框架只负责把「丢了一条写」变成有声。回写被拒**不改 run 结局**
+  （仍 `succeeded`，与 sink 抛错同款）。代价如实：这一轮记忆**没落库**，重试配方见 `usage-guide` §6.5。
+- **不支持 CAS 的 store：出声降级**。只有 `load` / `save` 时行为**一字不改**（照旧 last-write-wins），
+  但**第一次**用这个 store 实例时打一条**一次性**提示（按实例去重，不是每轮刷屏）。
+  框架**检测不了**没有版本号的覆盖 —— 版本号是唯一依据，写进 `usage-guide` §7 边界表。
+- `InMemoryMemoryStore` 顺带实现这一对：版本是**整店一个单调计数**（粒度粗 ⇒ 宁可多报冲突，
+  也不漏报真实覆盖；`loadWithRev` 的返回形状 = `MemorySnapshot`）。
+
 ### 变更 · store 的可选能力进接口（S5）+ 两处如实口径（K1 / T6）（2026-09-28 ㉓）
 
 - **`TaskStore` 增加两个可选成员**（`store/store.ts`）：`compact?()` 与 `close?()`。

@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>226</b> 个导出</span>
+          <span class="api-chip"><b>228</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -228,8 +228,10 @@
             <tr><td>createOpenAIClient</td><td><code>(opts?: { apiKey?; baseURL?; fetchImpl?; stream? }) → ModelClient</code></td><td>OpenAI 兼容端点（含 DeepSeek 等）适配成 ModelClient：<strong>真流式</strong>、图片块转 image_url、转发 signal。<code>stream: false</code> 退回一次性。</td></tr>
             <tr><td>createAnthropicClient</td><td><code>(opts?: { apiKey?; baseURL?; … }) → ModelClient</code></td><td>默认 ModelClient（Anthropic Messages API）。自定义只传 <code>apiKey</code> / <code>baseURL</code>（缺省走环境变量），<strong>不需要直接依赖厂商 SDK</strong>。</td></tr>
             <tr><td>AnthropicClientOptions</td><td><code>{ apiKey?; baseURL?; … }</code></td><td>createAnthropicClient 的可配置项（其余参数原样透传 SDK）。</td></tr>
-            <tr><td>MemoryStore</td><td><code>interface：load(keys) / save(entries)</code></td><td>跨 run 记忆存储面（可同步或异步实现）。</td></tr>
-            <tr><td>InMemoryMemoryStore</td><td><code>class（MemoryStore）</code></td><td>Map 实现：进程内，无持久化。</td></tr>
+            <tr><td>MemoryStore</td><td><code>interface：load(keys) / save(entries) + 可选 loadWithRev / saveIfRev</code></td><td>跨 run 记忆存储面（可同步或异步实现）。只有 load/save = <strong>last-write-wins</strong>：同 keys 的并发 run 会丢写且框架<strong>检测不到</strong>；要能发现就成对实现 <code>loadWithRev</code> + <code>saveIfRev</code>（CAS：冲突时框架<strong>不写 + 出声</strong>，不替你合并）。只实现一个是装配错误 ⇒ 入口抛 <code>TypeError</code>。</td></tr>
+            <tr><td>InMemoryMemoryStore</td><td><code>class（MemoryStore）</code></td><td>Map 实现：进程内，无持久化。<strong>带版本号</strong>（整店一个单调计数，粒度粗 ⇒ 宁可多报冲突）。</td></tr>
+            <tr><td>MemorySnapshot</td><td><code>interface：values / rev</code></td><td><code>loadWithRev</code> 的返回：<code>values</code> 同 <code>load</code>；<code>rev</code> 是不透明<strong>版本句柄</strong>（框架不解释它、只在本 run 回写时原样递给 <code>saveIfRev</code>）。粒度由 store 定，越细误报越少。</td></tr>
+            <tr><td>MemoryWriteResult</td><td><code>interface：committed / reason?</code></td><td><code>saveIfRev</code> 的结果：只有 <code>committed: true</code> 才算<strong>真写进去了</strong>；<code>false</code>（<code>reason: 'conflict'</code>）时<strong>一个字都不许写</strong>，框架据此打一条告警（「回写被拒」不再静默）。</td></tr>
           </tbody>
         </table></div>
       </section>
