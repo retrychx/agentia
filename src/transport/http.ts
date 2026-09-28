@@ -226,7 +226,25 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
     openSse: new Set(),
   };
 
-  /** 优雅停机（B2）：拒新单 → 等异步任务与在飞同步 run → 强制收口 SSE。 */
+  /**
+   * 强制收口全部仍开着的 SSE 流，返回**切掉了几条在飞的 run**
+   * （只关旁观者的长连不计 —— 判据在 `OpenSseHandle.cutsRun` 上，别在这里重新推导）。
+   */
+  const closeStreams = (): number => {
+    let cutRuns = 0;
+    for (const s of [...state.openSse]) {
+      if (s.cutsRun) cutRuns++;
+      s.close();
+    }
+    return cutRuns;
+  };
+
+  /**
+   * 优雅停机（B2）：拒新单 → 等异步任务与在飞同步 run → 强制收口 SSE。
+   *
+   * ⚠️ `timeoutMs` 缺省 0 = **对在飞工作**一直等；**活连接（SSE）不享受无限窗口** ——
+   * 没有 deadline 时先把它们收口再等，否则等待没有终点（见下面那段顺序陷阱的注）。
+   */
   const drain = async (drainOpts: { timeoutMs?: number } = {}): Promise<boolean> => {
     state.draining = true; // 先拒新单，再等存量
     const timeoutMs = drainOpts.timeoutMs ?? 0;
@@ -246,14 +264,29 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
       const left = deadline - Date.now();
       tasksDrained = left > 0 ? await runner.drain({ timeoutMs: left }) : false;
     }
-    // 同步 /run（含 SSE 流）也在 inFlightRuns 里计数 —— 同样给到 deadline
+    // 同步 /run（含 SSE 流）也在 inFlightRuns 里计数 —— 同样给到 deadline。
+    //
+    // ⚠️ 顺序陷阱（2026-09-28 修）：SSE 的**强制收口必须先于这次等待**地做出判断。
+    // 此前收口排在等待**之后** ⇒ 若某条 SSE 的 run 自己不结束（客户端不断线 + 长跑），
+    // `waitUntil(..., Infinity)`（`timeoutMs` 缺省 0 = 一直等）永不返回，而**唯一**能结束
+    // 它的机制（收口 = 关流 + abort 对应 run）排在等待后面 ⇒ 死锁：`drain()` 既不返回也不报
+    // false，SIGTERM 的容器只能在宽限期后被强杀（正是本函数上面那段注释要避免的事）。
+    //
+    // 为什么只在「无 deadline」时提前：**「一直等」承诺的是「等在飞工作自己收尾」**，而活连接
+    // （SSE）没有「自己收尾」的义务，不该给它无限窗口。有 deadline 时保持既有优雅：先给流到
+    // deadline 的窗口自己收尾，到点再硬收（那条路径行为逐字不变）。
+    const unbounded = deadline === Number.POSITIVE_INFINITY;
+    const cutEarly = unbounded ? closeStreams() : 0;
     const runsDrained =
       state.inFlightRuns === 0 || (await waitUntil(() => state.inFlightRuns === 0, deadline));
-    // 收口：超时仍挂着的 SSE 流强制关闭。closeSse 会同时 abort 对应 run
-    // （stopReason='aborted'）——只 close 不 abort 的话，res.end() 让 writableEnded
-    // 同步变 true，onClose 守卫永不触发，run 会在后台继续烧 token（实测复现）。
-    for (const close of [...state.openSse]) close();
-    return tasksDrained && runsDrained;
+    // 收口：仍挂着的 SSE 流强制关闭。closeSse 会同时 abort 对应 run（stopReason='aborted'）
+    // ——只 close 不 abort 的话，res.end() 让 writableEnded 同步变 true，onClose 守卫永不触发，
+    // run 会在后台继续烧 token（实测复现）。
+    closeStreams();
+    // ⚠️ 返回值如实分两种收口（`OpenSseHandle.cutsRun`）：**切过在飞的 run** ⇒ 不算排空干净
+    // （工作是被 abort 收尾的，回 true 等于把「切了」说成「等干净了」）；只关掉旁观者的长连
+    // （`/tasks/<id>/stream`）⇒ 不损失任何工作，不参与这个判断（记成 false 是另一种说错话）。
+    return tasksDrained && runsDrained && cutEarly === 0;
   };
 
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {

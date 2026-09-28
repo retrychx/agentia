@@ -94,6 +94,20 @@ export interface HealthResponse {
 }
 
 /**
+ * 一条仍开着的 SSE 流的**收口句柄**（`HttpState.openSse` 的元素）。
+ *
+ * `cutsRun` 不是装饰：两条 SSE 路径的收口语义**不同**，而 `drain()` 的返回值要如实区分
+ * 它们 —— `/run` 收口**连带中止在飞的 run**（工作被切，回 `true` 就是谎称排空干净），
+ * `/tasks/<id>/stream` 只是旁观者退订（关掉它不损失任何工作，把它算成「没排干净」是另一种
+ * 说错话，2026-09-28）。
+ */
+export interface OpenSseHandle {
+  readonly close: () => void;
+  /** 收口是否**中止在飞的 run**（`/run` = true；`/tasks/<id>/stream` = false） */
+  readonly cutsRun: boolean;
+}
+
+/**
  * 宿主级的**可变状态**（原先散在 `createHttpHandler` 里的三个 `let`）。
  *
  * 由宿主创建**一份**、按引用交给每个请求的 ctx：`drain()` 与 `/healthz`/`/run` 读写的
@@ -109,11 +123,10 @@ export interface HttpState {
   /** 是否已进入优雅停机（`drain()` 置真，**单向**：本进程此后不再接单、不再派发新 run） */
   draining: boolean;
   /**
-   * 仍开着的 SSE 流的收口函数 —— `drain` 时强制 close，否则长连会把进程吊住。
-   * 两条 SSE 路径（`/run` 与 `/tasks/<id>/stream`）各自登记自己的收口函数，语义不同：
-   * 前者收口**连带中止 run**（下游就是 run 的所有者），后者只退订（读者是旁观者）。
+   * 仍开着的 SSE 流的收口句柄 —— `drain` 时强制 close，否则长连会把进程吊住。
+   * 两条 SSE 路径（`/run` 与 `/tasks/<id>/stream`）各自登记，语义差别见 `OpenSseHandle`。
    */
-  readonly openSse: Set<() => void>;
+  readonly openSse: Set<OpenSseHandle>;
 }
 
 /**
@@ -304,7 +317,9 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
         runAc.abort();
         sse.close();
       };
-      state.openSse.add(closeSse);
+      // `cutsRun: true` —— 收口连带中止本次 run（见 `OpenSseHandle`：drain 的返回值靠它如实）
+      const sseHandle: OpenSseHandle = { close: closeSse, cutsRun: true };
+      state.openSse.add(sseHandle);
       try {
         // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 run.end 下发（status/error 字段）
         const out = await app.run(messages, {
@@ -324,7 +339,7 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
         // 流已开（200 与头已发出）→ 只能以 error 事件收尾，不能再改 HTTP 状态码
         sse.event('error', { message: errMessage(e) });
       } finally {
-        state.openSse.delete(closeSse);
+        state.openSse.delete(sseHandle);
         closeSse();
       }
       return;
@@ -528,12 +543,16 @@ async function handleTaskStream(taskId: string, ctx: HttpCtx): Promise<void> {
   let unsubscribe: () => void = () => {};
   let finished = false;
   let heartbeat: NodeJS.Timeout | undefined;
+  // 登记的收口句柄（下面三处 add / delete 都用**同一个对象**）：`closeStream` 自己也要把
+  // 这条从 openSse 摘掉（客户端断连、任务终态、背压都走它）。句柄先声明、赋值在 add 处 ——
+  // `closeStream` 只会在 `runner.streamTask`（本函数尾部）之后被调用，那时它一定已就位。
+  let sseHandle: OpenSseHandle | undefined;
   const closeStream = (): void => {
     if (finished) return;
     finished = true;
     if (heartbeat) clearInterval(heartbeat);
     unsubscribe();
-    state.openSse.delete(closeStream);
+    if (sseHandle !== undefined) state.openSse.delete(sseHandle);
     sse.close();
   };
   const sse = sseWriter(res, {
@@ -544,8 +563,10 @@ async function handleTaskStream(taskId: string, ctx: HttpCtx): Promise<void> {
   });
   heartbeat = setInterval(() => sse.comment('ping'), 15_000);
   heartbeat.unref?.();
-  // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）
-  state.openSse.add(closeStream);
+  // 登记收口函数：drain 时强制关闭（SSE 是长连，不关会把进程吊住）。
+  // `cutsRun: false` —— 关掉本流只是旁观者退订，**不**中止任务、也不损失工作（见 `OpenSseHandle`）
+  sseHandle = { close: closeStream, cutsRun: false };
+  state.openSse.add(sseHandle);
   // 客户端断开 ⇒ 退订（不退订订阅者会一直挂在 runner 的表里）
   res.once('close', () => {
     if (!res.writableEnded) closeStream();

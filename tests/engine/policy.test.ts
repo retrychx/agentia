@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { MessageParam } from '../../src/index.js';
+import type { ContextPolicy, MessageParam } from '../../src/index.js';
 import { createBudgetPolicy, runAgent } from '../../src/index.js';
 import { mockClient, endTurnMsg } from '../helpers.js';
 
@@ -90,5 +90,56 @@ describe('createBudgetPolicy 的 per-run 状态隔离（ContextPolicy.forRun）'
     });
     assert.equal(result.stopReason, 'end_turn');
     assert.equal(calls, 1, '无状态自定义策略不需要 forRun 也能用');
+  });
+});
+
+describe('beforeTurn 失败降级（2026-09-28）', () => {
+  it('策略抛错 → run 照常跑完，且 run 根留下 context.policy_failed（出声不静默）', async () => {
+    // 为什么必须降级：`beforeTurn` 里可能**走网络**（compaction 的 summarize 是模型调用），
+    // 一次 429 / 超时不该把整条 run 判死 —— 上下文压缩是尽力而为的优化，不是 run 的前置条件。
+    let calls = 0;
+    const boom: ContextPolicy = {
+      async beforeTurn(): Promise<MessageParam[]> {
+        calls++;
+        throw new Error('summarize 429');
+      },
+    };
+    const result = await runAgent({
+      client: mockClient([endTurnMsg('done')]).client,
+      messages: [{ role: 'user', content: 'go' }],
+      contextPolicy: boom,
+    });
+
+    assert.equal(result.stopReason, 'end_turn', '压缩失败不得改判 run 的收尾方式');
+    assert.equal(result.finalText, 'done', '消息照原样发出（降级 = 本回合不压缩）');
+    assert.equal(calls, 1, '降级的是「失败处理」，不是调用点 —— 每回合仍照调');
+    const root = result.trace.spans.find((s) => s.kind === 'run');
+    const ev = root?.events.find((e) => e.name === 'context.policy_failed');
+    assert.ok(ev, '失败必须出声（run 根事件），否则「历史一直很长」没人知道为什么');
+    assert.deepEqual(ev.body, { iteration: 0, message: 'summarize 429' });
+  });
+
+  it('压缩失败不烧滞回额度：下一回合仍会重试（滞回记的是「上次成功」）', async () => {
+    let calls = 0;
+    const policy = createBudgetPolicy({
+      budgetTokens: 1, // 永远超预算 ⇒ 每回合都走降级分支
+      keepRecent: 2,
+      compactEvery: 10, // 滞回窗口刻意拉大：把「失败」记成「上次压缩」的话，后面 9 回合都不再试
+      summarize: () => {
+        calls++;
+        if (calls === 1) throw new Error('429 from summarizer');
+        return '摘要';
+      },
+    });
+    const perRun = policy.forRun!();
+
+    await assert.rejects(
+      () => perRun.beforeTurn(fourMessages(), { iteration: 0, model: 'm' }),
+      /429 from summarizer/,
+    );
+    assert.equal(calls, 1);
+    const out = await perRun.beforeTurn(fourMessages(), { iteration: 1, model: 'm' });
+    assert.equal(calls, 2, '失败不记额度 ⇒ 下一回合重试（旧实现在这里会跳过）');
+    assert.ok(JSON.stringify(out).includes('摘要'), '第二回合真的压成了');
   });
 });

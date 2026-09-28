@@ -621,6 +621,12 @@ const handler = createHttpHandler(callable, { runner });
 返回值另外挂着两样（不影响 `(req,res)` 的调用形状）：
 
 - **`handler.drain(opts?)`** —— 优雅停机：拒新单（`POST /run` 与 `/tasks` → 503，`GET /tasks/:id` 仍可轮询）→ 等异步任务与在飞同步 run 收尾 → 强制收口仍开着的 SSE 流（**收口同时 abort 对应 run**，以 `stopReason='aborted'` 收尾 —— 只关流不中止会让 run 在后台继续烧 token）。返回是否排空干净；超时返回 `false`，**未完成的任务留在 store 里**，下次启动由 `resumePending` 续跑（不是丢弃）。`timeoutMs` 缺省 0 = 一直等。
+  - ⚠️ **「一直等」只对在飞工作成立，活连接（SSE）不享受无限窗口**（2026-09-28 修）：唯一能结束一条
+    「自己不结束的流」的机制就是收口，而收口原先排在等待**之后** ⇒ 缺省调用会死等。现在没有 deadline
+    时**先收口再等**；给了 `timeoutMs` 时保持既有的优雅等待。
+  - 返回值**如实分两种收口**：收口切掉了**在飞的 run**（`/run` 的流）⇒ `false` —— 那些工作是被
+    `abort` 收尾的，不是排空的；只关掉**旁观者长连**（`GET /tasks/:id/stream`）⇒ 不损失任何工作，
+    不影响这个布尔。宿主的 SIGTERM 决策（退出 / 再等）就依赖它。
   **框架不订阅信号** —— `process.on('SIGTERM', () => handler.drain())` 是宿主的事（同「框架不读 env」）。
 - **`handler.runner`** —— 内部 `AsyncRunner`，需要时手动控制（`resumePending` / `awaitTask` / `list`）。
 
@@ -1597,6 +1603,7 @@ const callable = {
 | `TaskRecord.approvals` 有界但**不清** | 单次 approve 能写的键被钉在当前 `pendingApprovals` 里 ⇒ 单次输入无法放大体积；跨多轮挂起会累计**历次**待决的并集（每轮都对应真跑出来的模型回合），增长只随真实运行发生 ⇒ 天然有界，**不需要**常量上限；但**终态也不清**（审批记录是审计的一部分）—— 想减负请换 store 的清理/TTL 策略 |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
 | 能力引用两种粒度 | `tools` 写 **provider token** = 整片能力菜单；写 `'<token>/<能力名>'` = 只引单个能力（@Tool/@Skill/@SubAgent/@Prompt 都可点名，装配期校验，名字不存在即抛错并列出可用名单） |
+| 能力引用**成环 ⇒ 装配期抛错**（2026-09-28） | `@SubAgent` / `@Skill` 的 `tools` 不得绕回自己（直接自引用，或经另一个 provider 绕回来都算）。为什么必须要拦：`subagentToTool` 的引用解析是**延迟求值**的，环只在**运行期**成立，而 `maxIterations` 只限一回合的**宽度**、深度没有任何闸 ⇒ 模型一次自我调用就无限递归（树按 `宽度^深度` 炸开）。抛错信息给出**环上的节点序列**。没有「深度上限」可以配 —— 这是装配错误，不是运行参数 |
 | 能力名有格式校验 | 装饰器能力名（`name` 或缺省的方法名）必须匹配 `^[A-Za-z0-9_-]{1,64}$`（与 MCP 桥同口径），非法名在 `createApp` **装配期即抛错** —— 含空格/点/中文的名字会让模型 API 400，宁可在启动期拦住 |
 | `discover` 入口会回落 | 能力目录里源码与编译产物并存（`index.ts` + `index.js`）时，首选 `.ts` 加载失败会**回落 `.js` 并 warn** —— 命中的可能是**陈旧编译产物**（刚改过源码时注意）；全部候选都失败才抛错并列出各自原因 |
 | `asset()` 的 rel 必须是相对路径 | 带 scheme（`file:` / `https:` …）的 rel 会让 `new URL(rel, base)` 整个忽略 base（「以为读了能力目录、实际读了别处」），显式抛错；`../` 越出能力目录是**有意放行**（共享资产如 `../../shared/x.md` 是合法用法） |
@@ -1609,7 +1616,12 @@ const callable = {
 | 鉴权只是缝 | 框架**不实现** token / JWT / 签名策略，也不碰凭据 env —— `authenticate` 只承诺「拦在入口、读 body 之前」；策略是宿主或反代的事 |
 | 运行时是 Node | 按 Node ≥ 18 设计与测试（`engines` 写明，CI 在 18/20/22 上守）；**未对 Deno / edge 做验证**。`SqliteTaskStore` 需 Node ≥ 22.5（`node:sqlite`），未提供时构造期抛可读报错 |
 | 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不做进程级决策）；信号处理是宿主的 |
-| 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
+| 停机可能切断 SSE | `drain()` 收口时会强制关闭仍开着的 SSE 流，`/run` 的流被收口时其 run 以 `stopReason='aborted'` 收尾（客户端应把断流当作可重试）。**没有 `timeoutMs` 时也收口**（否则等待没有终点，见上）；只关旁观者长连（`/tasks/:id/stream`）**不损失工作**，那种收口不影响 `drain()` 的返回值 |
+| 多进程共库：续跑认领靠**租约**，不靠时间（2026-09-28） | `resumePending({ staleAfterMs })` 的 `staleAfterMs` **不是**租约而是**兜底启发式**。`> 0` 时按两档判他进程的记录：① `ownerId` 里的主机名是本机 ⇒ **问那个 pid 还在不在**（`process.kill(pid, 0)`）——**在的绝不抢**（不管记录多老）、**不在的立刻可抢**（崩溃孤儿不等保鲜期）；② **判不了**（异主机 / 升级前写下的旧格式 `ownerId` / 自定义串）⇒ 才用 `staleAfterMs`（「记录看起来还新」）。缺省 `0` = 不问他进程，与升级前逐字一致 |
+| `ownerId` 是**内部标识**，别解析它 | 形状 `p<pid>@<host>-<8 位十六进制>`（2026-09-28 起带主机名，**此前没有**）。混版本部署安全：旧进程写下的无 `@host` 记录一律走「判不了 ⇒ 新鲜度」，行为与升级前一致。宿主如果需要自己的任务归属标记，请写进 `spec.options`，别依赖这个字段的格式 |
+| 租约判定的两个**残留风险**：只晚捡、不抢错（2026-09-28） | **PID 复用**与**僵尸进程**（父进程未收尸，pid 仍在进程表里）都会被判成「主人在」⇒ 那条孤儿记录要等那个 pid 真的消失才可捡。框架刻意**不加时间硬上限**兜它们 —— 加上限 = 把租约换回新鲜度启发式，「长跑被抢」那个 bug 原样回来。取舍一句话：宁可偶尔晚捡，不可偶尔抢跑 |
+| `beforeTurn` 抛错 ⇒ 本回合降级，不判死 run（2026-09-28） | `ContextPolicy.beforeTurn` 里**可能走网络**（compaction 的 `summarize` 是模型调用）⇒ 一次 429 / 超时原先会让整条 run 以「请求失败」收尾。现在降级为「本回合原样放行」，**且出声**：run 根记 `context.policy_failed` + 一条 `console.warn`。⚠️ 代价：降级只是「这一回合不压」，不是「不再压」——历史偏长时先看有没有这条事件 |
+| 压缩失败**不烧**滞回额度（2026-09-28） | `compactEvery` 的语义是「距上次**成功**压缩至少隔几个回合」——失败不记账、下一回合重试（原先失败也记，于是摘要器抖一下会让后面几个回合都不再尝试）。代价说清：摘要器**持续**失败时每回合都会再调一次（多一次失败的模型往返），要抑制请在 `summarize` 里自己退避 |
 | `drain()` 之后本进程不再推进任何任务（单向闩） | 置位后**没有复位路径**，且 `false`（排空超时）同样意味着**宿主必须退出**：停机窗口里已落库的记录（`running`/`queued` + 本进程 ownerId）在本进程内**没有自愈路径** —— `resumePending` 按 `own-process` 跳过、`submit` 已整体关闭 ⇒ 只能等下一次启动认领（ownerId 含 pid）。宿主若不退出，那些记录会一直停在 `running`（`awaitTask` 不返回、`GET /tasks/:id/stream` 还会说 `not-in-this-process`）。首次被拒时有 `[agentia] 停机中：…` 的 `console.warn`（可 grep），别忽略 |
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
 | 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；并行子循环（一回合多个子 agent）各自过闸，超支上限是「**每个在飞分支**各一个回合」而非「总共一个回合」；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |

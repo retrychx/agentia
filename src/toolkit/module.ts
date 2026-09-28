@@ -24,6 +24,8 @@ import { collectPromptEntries } from './prompt.js';
 import type { CollectedPrompts } from './prompt.js';
 import { applyMiddleware } from './middleware.js';
 import type { CapabilityMiddleware } from './middleware.js';
+import { buildCapabilityGraph, findCapabilityCycle } from './capability-cycles.js';
+import type { CapabilityRefInput } from './capability-cycles.js';
 import type { ContextPolicy } from '../engine/types.js';
 import type { RetryOptions } from '../engine/retry.js';
 
@@ -382,6 +384,38 @@ export class AgentApp {
     // 因此包装必须覆盖全部 provider，否则 ref 解析会拿到未包装（可绕过中间件）的工具。
     for (const p of providerList) {
       wrappedByToken.set(p.provide, wrap(buildSlice(p.provide)));
+    }
+
+    // ── 能力引用图成环检测（2026-09-28）────────────────────────────────────────────
+    // 上面那次切片已经把**引用存在性**校验完了（未注册 provider / 不存在的能力名都在
+    // `resolveRefTools` 里抛过），所以这里可以放心按 token 扇出。
+    //
+    // 为什么要挡成环：能力是**运行期**展开的（`subagentToTool` 的 resolveTools 是延迟 thunk，
+    // `wrappedByToken` 此刻已全部建满）⇒ 一旦成环，模型点一次就是无限递归；而 `maxIterations`
+    // 只限每层的**宽度**、深度没有任何闸 ⇒ 树按 宽度^深度 炸开（token 与内存双爆），
+    // 且要到运行期才显形。DI 容器有环检测（`container.ts`），能力图此前没有。
+    // 实现在 `capability-cycles.ts`（纯件：不碰 DI、可单独单测）。
+    const graphInputs: CapabilityRefInput[] = providerList.flatMap((p) => [
+      ...(capabilitiesByToken.get(p.provide) ?? []).map((c) => ({
+        token: p.provide,
+        kind: 'subagent' as const,
+        name: c.name,
+        refs: c.spec.tools ?? [],
+      })),
+      ...(skillsByToken.get(p.provide) ?? []).map((c) => ({
+        token: p.provide,
+        kind: 'skill' as const,
+        name: c.name,
+        refs: c.spec.tools ?? [],
+      })),
+    ]);
+    const cycle = findCapabilityCycle(buildCapabilityGraph(graphInputs));
+    if (cycle !== undefined) {
+      throw new Error(
+        `能力引用成环：${cycle.map((n) => n.label).join(' → ')}。` +
+          '@SubAgent / @Skill 的 tools 引用不得绕回自己 —— 递归能力没有深度闸，' +
+          '模型一次自我调用就是无限递归（拆掉环，或把「递归」改成普通工具自己实现）',
+      );
     }
 
     // toolSources 是「取哪些 provider 的能力」的白名单，同一 token 写重只该取一次：

@@ -245,3 +245,56 @@ describe('tools 能力级路径引用（<token>/<能力名>）', () => {
     );
   });
 });
+
+describe('能力引用成环：装配期即拒绝（2026-09-28）', () => {
+  // 为什么必须挡：能力是**运行期**展开的（subagentToTool 的 resolveTools 是延迟 thunk，
+  // 装配期已把整个菜单建满）⇒ 成环 = 模型点一次就无限递归，而 maxIterations 只限每层宽度、
+  // 深度没有闸 ⇒ 树按 宽度^深度 炸开。且这一切要到运行期才显形 —— 装配期拒绝是唯一便宜的时点。
+  it('自引用（整片引用自己所在的 provider）→ createApp 抛错，文案给出环的路径', () => {
+    class Agents {
+      @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: ['agents'] })
+      runner_agent(_input: unknown): void {}
+    }
+    assert.throws(
+      () => createApp({ providers: [{ provide: 'agents', useClass: Agents }], system: sys() }),
+      /能力引用成环：@SubAgent "runner_agent" \(agents\) → @SubAgent "runner_agent" \(agents\)/,
+    );
+  });
+
+  it('互引（两个能力各引对方）→ 抛错并列出完整环；拆掉一条边即放行（反向对照）', () => {
+    const build = (bRefs: string[]) => {
+      class Agents {
+        @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: ['agents/agent_b'] })
+        agent_a(_input: unknown): void {}
+        @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: bRefs })
+        agent_b(_input: unknown): void {}
+      }
+      return createApp({
+        providers: [
+          { provide: 'agents', useClass: Agents },
+          { provide: 'tools', useClass: class {} },
+        ],
+        system: sys(),
+      });
+    };
+    assert.throws(
+      () => build(['agents/agent_a']),
+      /能力引用成环：@SubAgent "agent_a" \(agents\) → @SubAgent "agent_b" \(agents\) → @SubAgent "agent_a" \(agents\)/,
+    );
+    // 反向对照：把环拆开（agent_b 不再引用 agent_a）⇒ 正常装配
+    assert.doesNotThrow(() => build([]));
+  });
+
+  it('经整片 token 引用形成的隐式环也能抓到（不点名，直接引自己的 provider）', () => {
+    class Agents {
+      @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: ['agents/agent_b'] })
+      agent_a(_input: unknown): void {}
+      @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: ['agents'] })
+      agent_b(_input: unknown): void {}
+    }
+    assert.throws(
+      () => createApp({ providers: [{ provide: 'agents', useClass: Agents }], system: sys() }),
+      /能力引用成环：@SubAgent "agent_a" \(agents\) → @SubAgent "agent_b" \(agents\) → @SubAgent "agent_a" \(agents\)/,
+    );
+  });
+});

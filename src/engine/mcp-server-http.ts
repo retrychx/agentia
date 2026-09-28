@@ -10,7 +10,8 @@ import type { McpCore, McpServer, McpServerOptions } from './mcp-server.js';
  * 形状：POST 收 JSON-RPC，应答 `application/json`（简单应答不上 SSE）；`initialize`
  * 响应发 `mcp-session-id` 头（生成的 uuid），后续请求带了就接受、**不带也服务**
  * （无状态 server，宽容是有意的）；GET（server→client 流）→ 405；DELETE → 200；
- * 客户端断连会中止该次工具调用的 `signal`。
+ * 客户端断连会中止该次工具调用的 `signal`；**协议面之外的意外**回 200 + JSON-RPC
+ * `-32603`（不冒泡成 unhandled rejection 把宿主带走，见 `onRequest` 的 catch）。
  *
  * **依赖方向（单向，运行期无环）**：本文件从 `mcp-server.js` 只取**类型**
  * （`McpCore` / `McpServer` / 传输相关的选项），协议与执行由 `core` 注入 ——
@@ -152,6 +153,26 @@ export function startHttpTransport(
       }
       res.writeHead(200, headers);
       res.end(payload);
+    } catch (e) {
+      // 兜底（2026-09-28 修）：这个 try 此前**只有 `finally`** —— 异常冒泡出 async handler
+      // 就是 unhandled rejection，Node ≥15 默认**终止进程**（同文件的鉴权钩子与 JSON.parse
+      // 两处都有 catch；stdio 那条传输也有 `.catch` 兜着，只有这里漏了 ⇒ 同一份协议面在两条
+      // 传输上一条活着、一条把宿主带走）。
+      //
+      // 真能走到这里的只有「协议面之外的意外」，工具自身抛错由 `callTool` 兜成 `isError`
+      // 不会冒泡：例如工具列表里某条 `inputSchema` 是带 getter 的对象（`validateJsonSchema`
+      // 一读就抛）、或惰性 client 构造失败（默认 `createAnthropicClient()` 缺 API key）。
+      // 这些是**请求级**的意外 ⇒ 该回一条 JSON-RPC 错误并继续服务，而不是退出进程。
+      console.error('[agentia:mcp-server] 请求处理异常:', e);
+      const rawId = (msg as { id?: unknown }).id;
+      const id =
+        typeof rawId === 'number' || typeof rawId === 'string' || rawId === null ? rawId : null;
+      if (res.headersSent) {
+        res.end(); // 响应头已定（200 已发）：只能收口，状态码改不了了
+      } else if (!res.writableEnded && !res.destroyed) {
+        // 与 stdio 侧同形状（`rpcError` 是协议面的知识，由 core 注入 —— 传输层不自己拼错误码）
+        sendJson(res, 200, core.rpcError(id, -32603, '内部错误（详见服务端日志）'));
+      }
     } finally {
       res.off('close', onClose);
       core.untrackCall(ac);
