@@ -160,7 +160,10 @@ describe('AsyncRunner.maxQueued：排队段的上限', () => {
       async run() {
         const g = gates[Math.min(call++, gates.length - 1)];
         await g!.wait();
-        return { run: { runId: `r-${call}`, status: 'succeeded' as const }, result: fakeResult('ok') };
+        return {
+          run: { runId: `r-${call}`, status: 'succeeded' as const },
+          result: fakeResult('ok'),
+        };
       },
     };
     const runner = new AsyncRunner(app, { concurrency: 1, maxQueued: 1 });
@@ -194,7 +197,12 @@ describe('AsyncRunner.maxQueued：排队段的上限', () => {
       const runner = new AsyncRunner(gatedApp(gate), { concurrency: 1, maxQueued: 1 });
       const a = runner.submit(`a${round}`);
       runner.submit(`b${round}`);
-      assert.equal(runner.queued, 1, `第 ${round} 轮：1 条在排队`);
+      // ⚠️ 读进局部变量再断言：`assert.equal` 在 @types/node 里是**断言函数**（`asserts actual is T`），
+      // 断言 `runner.queued === 1` 会把 getter 的静态类型**窄化成字面量 1**，
+      // 于是下面那句 `runner.queued !== 0` 被判成「恒真、疑似写错」（TS2367）——
+      // 该用例在 CI 的 `typecheck:tests` 上真红过。断言局部变量就没有这层副作用。
+      const queuedNow = runner.queued;
+      assert.equal(queuedNow, 1, `第 ${round} 轮：1 条在排队`);
       assert.throws(() => runner.submit(`c${round}`), /排队已满/, `第 ${round} 轮：满则拒`);
       gate.open();
       await runner.awaitTask(a.taskId, { timeoutMs: 5_000 });
