@@ -30,6 +30,17 @@
     `RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`。另顺手修两处：
     `resumePending` 跳过挂起记录时的原因不再是 `'terminal'` 而是 `'suspended'`（诊断不说错话）；
     时间挂起醒来时的续跑段**不再**重复注入会话历史、且 trace 会 link 上一段 run。
+- **旧任务记录的读时归一（迁移垫片，spec §10 2026-09-28 ③）**：store 读回记录时会把 0.9.5 之前
+  落库的旧形状归一 —— 状态值 `awaiting_approval` → `suspended` 并补 `suspendedReason: 'approval'`，
+  挂起时刻 `approvalPendingSince` → `suspendedSince`（旧键删掉）。**升级不再需要宿主手工改库**：
+  此前那种记录读回来会被 `isTerminalTask` 判成终态、`resumePending` 按 `'terminal'` 跳过 ⇒
+  一条在等审批的 run 成孤儿（既不续跑、也无法再被审批）。
+  - 六个「bytes → 记录」点（`FileTaskStore` 全量扫 + 残行探测、`SqliteTaskStore` 的
+    get / byIdempotency / list、`RedisTaskStore` 单键读）收成**唯一入口** `src/store/record.ts`；
+    静态守卫：`src/store/*.ts` 里除它之外不得直接 `JSON.parse`。
+  - `SqliteTaskStore` 额外把派生列 `status` 拉回与 json 一致 —— 否则外部/DBA 的
+    `SELECT status, count(*) FROM tasks GROUP BY status` 会**继续**报旧值。
+  - 归一失败/坏 JSON 的取舍与各 store 既有口径一致；本改动**无公共 API 变化**。
 - **菜单漂移不再静默（R8 候选 3，spec §10 2026-09-27 ⑧）**：挂起段之后**续跑**时，未决
   tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架把这件事记成**三处信号** ——
   `menu.drift` 事件（`{ missing, tool_use_ids, menu_size }`；时间线与
@@ -124,12 +135,13 @@
 ### 迁移
 
 - **升级前停在 `awaiting_approval` 的任务记录**（`FileTaskStore` / `SqliteTaskStore` /
-  `RedisTaskStore` 里已写好的 JSON）：新代码不认这个旧值 —— 它在 `isTerminalTask` 里算「终态」、
-  `resumePending` 也按 `'terminal'` 跳过 ⇒ **那条挂起会成孤儿**（既不续跑、也不再能被审批）。
-  处置：升级前先 `approve` 收口，或把库里这些记录的 `status` 改成 `suspended` 并补
-  `suspendedReason: 'approval'`（`approvalPendingSince` → `suspendedSince` 同名改名；缺了不影响
-  超时判定 —— 基准链本来就会退到 `startedAt` / `createdAt`）。框架**不内置兼容读**：
-  `SuspendedReason` 是类型而不是别名（理由与「什么时候该补垫片」见 `docs/spec.md` §11）。
+  `RedisTaskStore` 里已写好的 JSON）：**本版内置兼容读，宿主不需要做任何动作** —— store 读回记录
+  时会把旧形状归一（`awaiting_approval` → `suspended` 并补 `suspendedReason: 'approval'`；
+  `approvalPendingSince` → `suspendedSince`，旧键删掉），`SqliteTaskStore` 还会把派生列 `status`
+  一并拉正。细节与门禁见 `docs/spec.md` §10 2026-09-28 ③。
+  ⚠️ 本小节此前写的是「框架**不**内置兼容读、请宿主在升级前手工改库」—— 垫片落地后那段要求
+  **已作废**（手工处置仍可行，但不再是必须；在等审批的 run 不会再被判成终态）。
+  `SuspendedReason` 仍然是**类型**而不是别名：不为旧值引入第二个运行时名字。
 
 ## [0.9.4] - 2026-09-26
 

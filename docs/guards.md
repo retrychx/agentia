@@ -71,6 +71,8 @@
 
 | `tests/engine/defer.test.ts` · `tests/transport/wake-policy.test.ts` · `tests/transport/durable-timer.test.ts`（**时间挂起**，2026-09-28 ②） | durable timer 的五条承诺：延后时刻必须是**将来**（非法值 ⇒ is_error 的 tool_result，**不**挂起）、延后请求**作废整批**并在醒来后重跑那一批、**到点才唤醒**（缺 `wakeAt` 不退化到 `createdAt`；原因必须是 `timer`，等人工的挂起带过去时刻也不许被捞走）、`drain()` 之后**不唤醒**、`/healthz` 的 `suspended` 按原因分组且空队列给 `null` 不给 `0` | 引擎侧走真循环（`executeRun` + mockClient），宿主侧走真引擎 + 真 HTTP；「时间到了」用**倒填 `wakeAt`** 模拟（不睡墙钟 —— 真等会把「调度慢」误判成「唤醒坏了」）。**9 条变异逐条亲跑全部被具名用例抓住** + `trap` 还原 + 还原自检 + 复绿。⚠️ 变异电池当场抓出**用例自己的缺陷**：`timerDue` 的「原因」夹具原先写 `wakeAt: undefined`，摘掉原因判据**一条红都没有**（缺时刻那一条也在拦）⇒ 改成带过去的 `wakeAt` 才钉住；另抓出一处实现缺陷（`#wakeDue` 不返回「是否真接管」，drain 之后谎报「推进了 N 条」） | 一条在睡的 run 被提前叫醒（`approvalTimeoutMs` 误伤 / 缺时刻退化）＝ 停机窗口卡死或副作用提前发生；读数恒 0 ＝ 运维看不见「几条在睡」；`isResume` 只认 `approvals` ⇒ 醒来时会话历史翻倍、恢复段 trace 断链、会话被 tool 块毒化 |
 
+| `tests/store/record.test.ts`（**旧记录的读时归一**，2026-09-28 ③） | 落盘数据不受类型系统保护：旧记录读回时必须归一（状态 → `suspended` **且补原因**、旧挂起时刻搬过来并把旧键删掉）；`src/store/*.ts` 里除 `record.ts` 外不得直接 `JSON.parse`；SQLite 的派生列 `status` 必须与 json 一致 | 归一函数走纯驱动（含幂等与阴性对照）；三条 store 各自走**自己的 save + 读回**（SQLite 那条先用第二个连接断言「列里确实是旧值」**再**断言被拉正）；静态守卫带抽词器下限 + 阳性对照 | **5 条变异逐条亲跑**：不补原因 / 不搬挂起时刻 / SQLite 不回写列（只打红 SQLite 那一条）/ 唯一入口不归一 / 旧键不删（顺带打红幂等那条） | 一条在等审批的 run 读回来被判**终态**（事件流早关、不续跑、读数不计数、`approve` 回 409）＝ 孤儿；或状态对了原因空着 ⇒ 两条闸都漏掉；或 DBA 的 `GROUP BY status` 永远报旧值 |
+
 ### 1.4 文档与发布面
 
 | 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |
