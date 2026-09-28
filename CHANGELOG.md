@@ -232,6 +232,73 @@
   但吞之前现在会落一条 `console.warn`（文案含「trace sink」，可 grep）——「观测的观测」
   此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ②。
 
+### 重构（纯结构，零行为变化）· 结构收口（2026-09-28，底盘见仓库根 `SRC-STRUCTURE-2026-09-28.md` 的落地顺序 1–4）
+
+- **HTTP 宿主拆成三件 —— `http.ts` 拆分第三步**：`src/transport/http.ts` **840 → 306 行**，
+  最大单函数 `createHttpHandler` **489 → 123 行**（拆分前这一个函数占全文 58%）。
+  同系列前两步（#99 外移形状口径 → `http-shapes.ts`、#100 外移路由判定 → `http-route.ts`）
+  移走的都是**纯件**，占大头的那一半（九条路由的**体**）原地不动 —— 于是文件从 533 行又长回
+  840。这一步把它搬走：
+  - `http-endpoints.ts`（新）= **端点体**：派发表 `handleRoute` + 九条 `handleXxx`
+    （读 body → 调 runner → 写响应 → 选状态码）。免鉴权组（`/healthz` / `/metrics`）连同
+    它们自己的 405 也在这张表里 —— 表**不认识鉴权**，闸在宿主侧（`handler` 里那两行否定
+    条件：「不是免鉴权组才过闸」）。
+  - `http-io.ts`（新）= **收发原语**：`sendJson` / `readBody` / `parseJsonBody` / 405 / 413 /
+    503 / 500 的机械动作。**零内部依赖**（只 import `node:http` 的类型）⇒ 宿主与端点都引它
+    而**不可能**成环 —— 无环是构造性的，不是碰巧。
+  - `http.ts` = 宿主契约 + 宿主状态 + 准入/停机。原先散在闭包里的三个 `let`（在飞 run 计数 /
+    停机态 / SSE 收口表）收成一个**有名字的对象** `HttpState`，按引用交给每个请求 ——
+    「健康检查与停机判断看的是同一个数」这条承诺从此有个明主。
+  - **行为零变化**：既有 HTTP 套件 146/146 未改一字全过；公开面（`src/index.ts`）一行未改
+    （`HealthResponse` 随实现搬走并在 `http.ts` 转出，与 #99 转出两个形状类型同款）。
+  - **配源码级守卫** `tests/transport/http-boundary-guard.test.ts`：端点体绕不开的五个记号
+    （`route.kind` / `sse.event(` / 三个形状解析器）必须在端点文件、必须不在宿主文件；准入
+    判定只许留在宿主；原语层不许长内部依赖；派发表的穷尽断言必须在场。反向验证过三条
+    （放回拆分前的文件 / 删掉穷尽断言 / 给原语层加内部依赖 —— 各恰好一条红）。
+  - 顺带修好一条**盯着实现排布而非契约**的守卫：`tests/docs/sse-frames.test.ts` 原先写死扫
+    `src/transport/http.ts` 的 `sse.event('…')`，帧一搬家就误红（帧一条没少）—— 改成扫整个
+    `src/transport/` 目录。断言方向是「文档提到的 ⊆ 实现 emit 的」，所以扫宽不会假绿。
+
+- **MCP 反向桥拆成三件 —— `createMcpServer` 441 → 47 行**：`src/engine/mcp-server.ts`
+  **564 → 409 行**，最大单函数 `createMcpServer` **441 → 47 行**（拆分前占全文 78%）。
+  先例是正向桥按传输分文件，于是：
+  - `mcp-server.ts` = **协议 + 执行 + 装配**：顶层的 `rpcError` / `rpcResult` / `dispatch`
+    （报文分派，两传输共用）/ `callTool`（执行一次 `tools/call`、造一棵 trace）—— 拆前它们是
+    441 行闭包里的无名块。`createMcpServer` 只余「读选项 → 造 core → 按 `opts.transport` 挑传输」。
+  - `mcp-server-stdio.ts`（新，72 行）= stdio 传输：stdin/stdout 换行分隔 JSON-RPC，
+    `process.stdout` 的 EPIPE 必须吞（对端走了的次生现象）。
+  - `mcp-server-http.ts`（新，199 行）= StreamableHTTP 传输：POST 收 JSON-RPC、GET→405、
+    DELETE→200、`initialize` 发 `mcp-session-id`、客户端断连中止本次工具调用的 `signal`。
+  - **无环是构造性的（不照抄正向桥）**：协议与执行经 `McpCore` **注入**给传输，传输只从
+    `mcp-server.ts` 取**类型**。正向桥的 `mcp.ts ↔ mcp-stdio.ts` 是**真实的值环**（靠 ESM 函数
+    提升侥幸无恙）；反向桥刻意做成注入式单向。
+  - **「为什么留在 engine」复核仍成立**：本文件需 engine 侧 4 个值 + integrations 侧 2 个值，
+    而 integrations 只许依赖 core ⇒ engine 是唯一能同时够到两边的层（搬走会造出越权边与环）。
+  - **不再往下拆传输**（反例）：`startHttpTransport` 172 行 / `startStdioTransport` 57 行属
+    「一个宿主的生命周期」，该是一个协作者，且比正向桥同位函数（265 / 235 行）更瘦。
+  - **行为零变化**：MCP 反向桥单测 22/22 全过，`npm run e2e:mcp:server` 全绿。
+
+- **`#executeInner`（247 行）的编排归属 = 定案「不拆」**（**零代码改动**，产出是一份有依据的裁定）：
+  `async.ts` 最大可调用体 247 ÷ 总行 1690 = **14.6%**、可调用体 **40** 个 ⇒ 按判据属「**大类**」病
+  （抽协作者，**别切方法**），而纯协作者已抽过六轮（`slot-pool` / `approval-policy` / `drain-gate` /
+  `resume-policy` / `task-waiters` / `task-events`）。它触及 **14 个 runner 内部成员**，外移编排
+  等于重建 `AsyncRunner`；且调用结构**早已被** `tests/transport/dispatch-guard.test.ts` **钉死**
+  （`#dispatch` = 派发口 / `#execute` = 计数与开流包裹层 / `#executeInner` = 状态机主体）。
+  唯一成块的纯件 `callOpts` 装配（~42 行）因「单调用者 + 不产生可守卫边界」也判为不外移。
+
+- **文件级无环守卫 + 断开 MCP 正向桥的**真实值环** —— 第 4 件**：
+  - 新增 `tests/architecture/file-cycles.test.ts`：`layering.test.ts` 的 `layerOf()` 取路径第一段，
+    **层内环是盲区**；本守卫建**文件级值边图**（Tarjan SCC）断言**运行期无环**。口径只算**值边** ——
+    `import type` 运行期擦除、不构成环（`runtime/context ↔ run`、`engine/mcp-server ↔
+    mcp-server-{stdio,http}` 两条 type-only 环**留着**）。两条变异反向验证过（注入值边 / 把真实
+    `import type` 改成值导入 ⇒ 各恰好 1 条红）；另加「注释里的导入字面量不算边」自证。
+  - 断环：桥（`integrations/mcp.ts`）与两个连接器**共用**的协议面（7 helper + 4 结构类型）
+    抽到新文件 `src/integrations/mcp-protocol.ts` —— 此前 `mcp.ts` re-export 连接器（值）+
+    连接器反向取 helper（值）是一条**真实的值环**（靠 ESM 函数提升侥幸无恙）。抽后成单向 DAG，
+    **公共面不变**（`src/index.ts` 未改；`mcp.ts` 继续转出这些符号）。
+  - ⚠️ 盘点报告初稿写「两条环的回边都是 `import type`」**是错的** —— 实测 `mcp.ts:350/352` 是
+    **re-export 值**。结论与修法见 `docs/spec.md` §10 2026-09-28 ⑩ 第 4 条。
+
 ### 迁移
 
 - **升级前停在 `awaiting_approval` 的任务记录**（`FileTaskStore` / `SqliteTaskStore` /

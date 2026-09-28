@@ -573,8 +573,9 @@ describe('createMcpServer —— stdio（真子进程，夹具走 createApp + @T
   });
 
   it('宿主先关读端（EPIPE）不打崩 server：stdout 的 error 被吞，子进程存活', async () => {
-    // 反向验证：摘掉 mcp-server.ts 里 `process.stdout.on('error', …)` 那两行 ⇒ 本用例红在
-    // 「exitCode 变 1」。实测修前：栈顶 `write EPIPE` at mcp-server.ts 的应答写入，exit 1。
+    // 反向验证：摘掉 mcp-server-stdio.ts 里 `process.stdout.on('error', …)` 那两行 ⇒ 本用例红在
+    // 「exitCode 变 1」。实测修前：栈顶 `write EPIPE` at mcp-server-stdio.ts 的应答写入，exit 1。
+    // （2026-09-28：那两行随 stdio 传输自 mcp-server.ts 切出，注释同步 —— 旧写「mcp-server.ts」已失真。）
     const { spawn } = await import('node:child_process');
     const child = spawn(process.execPath, ['--import', 'tsx', FIXTURE], {
       stdio: ['pipe', 'pipe', 'pipe'],

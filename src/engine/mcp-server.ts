@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import { createServer } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
 import { stringifySafe } from '../core/json.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { TIMED_OUT, isTimeoutError, withTimeout } from '../core/timeout.js';
@@ -9,6 +8,8 @@ import type { SpanError, TraceSink } from '../core/trace.js';
 import { DEFAULT_PROTOCOL_VERSION } from '../integrations/mcp.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import { classifyError } from './errors.js';
+import { startHttpTransport } from './mcp-server-http.js';
+import { startStdioTransport } from './mcp-server-stdio.js';
 import { buildToolRunContext } from './tool-context.js';
 import { toolInputPayload, toolOutputPayload } from './tool-events.js';
 import { TraceRecorder } from './tracer.js';
@@ -17,12 +18,27 @@ import { TraceRecorder } from './tracer.js';
  * Agentia —— **MCP 反向桥**（R8-P5）：把 app 的能力菜单暴露成 MCP server
  * （正向桥 `integrations/mcp.ts` 是把外部 MCP server 的工具接进来，本文件是反方向）。
  *
- * **落点为什么不在 integrations**：它只允许依赖 core（`tests/architecture/layering.test.ts`
- * 的 ALLOWED），装不下本文件 —— server 每次 tools/call 要造一棵 trace，需要 engine 的
- * `TraceRecorder`；engine → integrations 这条边已存在（取默认 ModelClient），反向即成环；
- * transport 则够不到 integrations。engine 是分层图上唯一能同时够到 core 与 integrations
- * 的层，故落在这里。app 入参是**鸭子类型** `{ tools: AgentTool[] }`（toolkit 的 AgentApp
- * 结构满足，`app.tools` 就是装配后、过中间件的那份菜单）—— engine 不能 import toolkit。
+ * **本文件是「桥」**：协议面（`initialize` / `tools/list` / `tools/call` 的报文分派与
+ * 入参校验）、执行面（一次能力调用的 trace 记账 + 超时 + 错误分类 + sink 投递）、
+ * 以及装配（校验 → 状态 → 选传输）。两条**传输**各居其文件
+ * （`mcp-server-stdio.ts` / `mcp-server-http.ts`，2026-09-28 纯结构拆分、零行为变化），
+ * 与正向桥的排布（`mcp.ts` + `mcp-stdio.ts` / `mcp-http.ts`）同款。
+ * ⚠️ 一处**刻意不同**：正向桥的 `mcp.ts ↔ mcp-stdio/mcp-http` 是一条**真实的值环**
+ * （桥 re-export 连接器、连接器又反向 import 桥的共享 helper，靠 ESM 函数提升与调用时机
+ * 侥幸无恙）；这里改成**注入式单向** —— 传输只从本文件取**类型**，值由 `createMcpServer`
+ * 经 `McpCore` 传进去 ⇒ 无环是**构造性**的，不靠运气。
+ *
+ * **落点为什么在 engine**（2026-09-28 用真实 import 复核过，结论成立）：
+ * 本文件需要 **engine 侧四个值** —— `TraceRecorder`（每次 tools/call 一棵 trace）、
+ * `classifyError`、`buildToolRunContext`、`tool-events` 的记账载荷；同时需要
+ * **integrations 侧两个值** —— `DEFAULT_PROTOCOL_VERSION`（正向桥那份协议版本常量）与
+ * `createAnthropicClient`（`ToolRunContext.client` 的惰性缺省）。而
+ * `integrations` 只许依赖 core，`transport` 够不到 integrations，engine 是分层图上**唯一**
+ * 能同时够到两边的层。放进 integrations 需要一条 `integrations → engine`（4 个值），
+ * 既越权又与既有的 `engine → integrations` 成环。
+ * ⚠️ 顺带订正 AGENTS.md 的一句旧文案：`engine → integrations` 这条边**不止**
+ * 「取默认 ModelClient」一个用途 —— 本文件用的 `DEFAULT_PROTOCOL_VERSION` 是第二个
+ * （`loop.ts` 那处才是取 client）。它仍是一条边（不新增方向），故分层表的 ALLOWED 不动。
  *
  * **协议范围只到 tools**：`initialize` / `notifications/initialized` / `tools/list` /
  * `tools/call`（顺手支持 `ping`）；其余 method 一律 -32601，params 形状坏 → -32602。
@@ -55,7 +71,7 @@ export interface McpServerOptions {
   path?: string;
   /**
    * http：**挂进既有的 `http.Server`**（框架不替它 listen；`close()` 只摘除本 handler，
-   不关 server）。此时非本 `path` 的请求本 handler 直接忽略（交给宿主自己的路由）。
+   * 不关 server）。此时非本 `path` 的请求本 handler 直接忽略（交给宿主自己的路由）。
    */
   server?: Server;
   /**
@@ -82,7 +98,7 @@ export interface McpServerOptions {
   name?: string;
 }
 
-/** `createMcpServer` 的返回值 */
+/** `createMcpServer` 的返回值（也是两条传输各自的返回值） */
 export interface McpServer {
   /** http 模式的实际 endpoint（如 `http://127.0.0.1:54321/mcp`）；stdio 模式恒为 `undefined` */
   readonly url: string | undefined;
@@ -95,11 +111,33 @@ export interface McpServer {
   close(): Promise<void>;
 }
 
+/**
+ * 传输层看得见的**协议面**（`createMcpServer` 组装好后注入，两条传输共用同一份）。
+ *
+ * 为什么是这几个：传输的职责是「把字节搬进搬出」，凡是**协议语义**（这条报文该怎么应答、
+ * 什么形状才算合法报文、在飞调用怎么记账）都不该由它决定 —— 但它需要在正确的时刻调用它们。
+ */
+export interface McpCore {
+  /**
+   * 报文分派（两条传输共用）。返回 `null` = 通知，不应答。
+   * 协议范围只到 tools（见文件头）；其余 method 一律 -32601，params 形状坏 → -32602。
+   */
+  dispatch(msg: unknown, signal: AbortSignal): Promise<Record<string, unknown> | null>;
+  /**
+   * 造一条 JSON-RPC 错误应答 —— 传输层**自己发现坏报文**时用它
+   * （目前只有 stdio：一行不是合法 JSON ⇒ -32700）。让传输层调它而不是自己拼
+   * `{ error: { code } }`：错误码是协议面的知识，api 面漂移时只该改一处。
+   */
+  rpcError(id: JsonRpcId, code: number, message: string): Record<string, unknown>;
+  /** 为一次请求登记中止句柄（close() / 传输侧断连时中止它），返回其 signal */
+  trackCall(ac: AbortController): AbortSignal;
+  untrackCall(ac: AbortController): void;
+  /** 中止全部在飞调用（close() 用） */
+  abortAll(): void;
+}
+
 /** serverInfo.version 刻意不写真版本字面量（与 DEFAULT_CLIENT_INFO 同纪律，release-surface 按精确版本串计数） */
 const SERVER_INFO_VERSION = '0.0.0';
-
-/** http 侧请求 body 上限（固定 1 MiB，与 HTTP 宿主缺省一致；不公开成旋钮） */
-const MAX_BODY_BYTES = 1024 * 1024;
 
 type JsonRpcId = number | string | null;
 
@@ -113,6 +151,204 @@ function rpcResult(id: JsonRpcId, result: unknown): Record<string, unknown> {
   return { jsonrpc: '2.0', id, result };
 }
 
+/** 执行面的共享依赖（`createMcpServer` 一次性装好，两个传输共用同一份） */
+interface CallDeps {
+  /** trace 出口：每次调用收尾投递（抛错被吞，观测不击穿业务） */
+  readonly sinks: readonly TraceSink[];
+  /** 单次执行的超时（见 `McpServerOptions.toolTimeoutMs`）；undefined = 不限 */
+  readonly toolTimeoutMs: number | undefined;
+  /** client 惰性构造（见 `McpServerOptions.client`）：第一次 `tools/call` 才建 */
+  readonly clientOf: () => ModelClient;
+}
+
+/** 报文分派的依赖 = 执行依赖 + 协议面自己要知道的两件 */
+interface DispatchDeps extends CallDeps {
+  readonly tools: readonly AgentTool[];
+  readonly serverInfo: { readonly name: string; readonly version: string };
+}
+
+/**
+ * 执行一次 `tools/call`：造一棵 trace（run 根 + capability span + tool.input/tool.output
+ * 事件），收尾投递 sinks，然后把结果映射成 MCP 形状。
+ *
+ * 独立成顶层函数（而不是 `createMcpServer` 闭包里的一支）：它是本文件里最大的一块，
+ * 且**只依赖 `deps` 三件**，不碰装配期的任何状态 —— 拆前它藏在 441 行的闭包里无名可分。
+ */
+async function callTool(
+  tool: AgentTool,
+  args: Record<string, unknown>,
+  signal: AbortSignal,
+  deps: CallDeps,
+): Promise<Record<string, unknown>> {
+  const { sinks, toolTimeoutMs } = deps;
+  const recorder = new TraceRecorder();
+  const rootId = recorder.begin('run', 'mcp.tools/call', null);
+  const capId = recorder.begin('capability', tool.name, rootId);
+  // tool_use_id 与引擎同义（同名工具并行时靠 id 配对入参/出参事件）
+  const use = { type: 'tool_use' as const, id: randomUUID(), name: tool.name, input: args };
+  const startedAt = Date.now();
+  recorder.event(capId, 'tool.input', toolInputPayload(use));
+  // 超时「放弃等待」的通知信号（与引擎 executeOneTool 同款：判超时分支里 abort）
+  const abandonAc = new AbortController();
+  const toolCtx: ToolRunContext = buildToolRunContext({
+    client: deps.clientOf(),
+    recorder,
+    parentSpanId: capId,
+    abandoned: abandonAc.signal,
+    signal,
+    toolTimeoutMs,
+  });
+
+  let ok = true;
+  let content: unknown = '';
+  let errorKind: 'timeout' | 'threw' | undefined;
+  let spanError: SpanError | undefined;
+  try {
+    // 与引擎同一判定原语（core/timeout.ts，实测耗时兜底）：超时 = 放弃等待，不杀 server
+    const out = await withTimeout(Promise.resolve(tool.run(args, toolCtx)), toolTimeoutMs ?? 0);
+    if (out === TIMED_OUT) {
+      abandonAc.abort(); // 通知工具「没人等结果了」（@SubAgent/@Skill 靠它自中止）
+      ok = false;
+      errorKind = 'timeout';
+      content = `error(timeout): 工具执行超过 ${toolTimeoutMs}ms`;
+      spanError = { type: 'timeout', message: String(content), retryable: true };
+    } else {
+      content = out;
+    }
+  } catch (e) {
+    ok = false;
+    if (isTimeoutError(e)) {
+      // 工具自判的超时与引擎判的归同一类账（与 turn.ts 同口径）
+      errorKind = 'timeout';
+      content = `error(timeout): ${e instanceof Error ? e.message : String(e)}`;
+      spanError = { type: 'timeout', message: String(content), retryable: true };
+    } else {
+      errorKind = 'threw';
+      const err = classifyError(e);
+      content = `error(${err.type}): ${err.message}`;
+      spanError = err;
+    }
+  }
+  recorder.event(
+    capId,
+    'tool.output',
+    toolOutputPayload({ use, ok, errorKind, startedAt, now: Date.now(), content }),
+  );
+  recorder.end(
+    capId,
+    ok
+      ? {}
+      : {
+          status: 'error',
+          // exactOptionalPropertyTypes：显式 undefined 不是合法的 `error?: SpanError`
+          ...(spanError !== undefined ? { error: spanError } : {}),
+        },
+  );
+  recorder.end(
+    rootId,
+    ok
+      ? {}
+      : {
+          status: 'error',
+          ...(spanError !== undefined ? { error: spanError } : {}),
+        },
+  );
+  const trace = recorder.snapshot(ok ? 'ok' : 'error');
+  // 观测不击穿业务：sink 抛错吞掉 + console.warn（与 runtime 的 flushSinks 同款文案）
+  for (const sink of sinks) {
+    try {
+      await sink.export(trace);
+    } catch (e) {
+      console.warn('[agentia] trace sink 投递失败:', e instanceof Error ? e.message : e);
+    }
+  }
+
+  // 结果映射：抛错 → 协议层成功 + isError（MCP 惯例；正向桥那头正好把 isError 转回抛错，
+  // 方向对称）；string 原样进 text；其他 JSON 化进 text
+  if (!ok) return { content: [{ type: 'text', text: String(content) }], isError: true };
+  const text = typeof content === 'string' ? content : stringifySafe(content);
+  return { content: [{ type: 'text', text }] };
+}
+
+/**
+ * 报文分派（两个传输共用）。返回 `null` = 通知，不应答。
+ * 协议范围只到 tools（见文件头）；其余 method 一律 -32601，params 形状坏 → -32602。
+ */
+async function dispatch(
+  msg: unknown,
+  signal: AbortSignal,
+  deps: DispatchDeps,
+): Promise<Record<string, unknown> | null> {
+  if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) {
+    return rpcError(null, -32600, '报文不是 JSON-RPC 对象');
+  }
+  const m = msg as { id?: unknown; method?: unknown; params?: unknown };
+  const id: JsonRpcId =
+    typeof m.id === 'number' || typeof m.id === 'string' || m.id === null ? m.id : null;
+  if (typeof m.method !== 'string') {
+    return m.id === undefined ? null : rpcError(id, -32600, '报文缺 method 字段');
+  }
+  const method = m.method;
+  // 通知（含 notifications/initialized）一律不应答；无 id 的非通知报文不是请求
+  if (method.startsWith('notifications/') || m.id === undefined) return null;
+
+  switch (method) {
+    case 'initialize':
+      return rpcResult(id, {
+        protocolVersion: DEFAULT_PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+        serverInfo: deps.serverInfo,
+      });
+    case 'ping':
+      return rpcResult(id, {});
+    case 'tools/list':
+      // 不建 trace（见文件头）：菜单查询不是一次「能力调用」
+      return rpcResult(id, {
+        tools: deps.tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        })),
+      });
+    case 'tools/call': {
+      const params = m.params;
+      if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+        return rpcError(id, -32602, 'tools/call 的 params 必须是对象（{ name, arguments? }）');
+      }
+      const name = (params as { name?: unknown }).name;
+      if (typeof name !== 'string' || name === '') {
+        return rpcError(id, -32602, 'tools/call 的 params.name 必须是非空字符串');
+      }
+      const rawArgs = (params as { arguments?: unknown }).arguments;
+      if (
+        rawArgs !== undefined &&
+        (typeof rawArgs !== 'object' || rawArgs === null || Array.isArray(rawArgs))
+      ) {
+        return rpcError(id, -32602, 'tools/call 的 params.arguments 必须是对象');
+      }
+      const tool = deps.tools.find((t) => t.name === name);
+      if (!tool) {
+        return rpcError(id, -32602, `未知工具: ${name}`);
+      }
+      // 入参契约与引擎**同一份校验器**（core/schema.ts，与 turn.ts 进方法体之前那次同源）：
+      // 反向桥若跳过它，同一份 @Tool 就会有两条契约 —— 引擎那边缺必填项记 errorKind
+      // 'invalid_input' 且不进方法体，这边却把畸形入参一路带进副作用。MCP 规范把
+      // 「未知工具 / 入参不合法」都归为协议错误（Invalid params），故回 -32602 而非
+      // result.isError（后者留给「工具真执行了但失败了」）。
+      const badInput = validateJsonSchema(tool.inputSchema, rawArgs ?? {});
+      if (badInput !== null) {
+        return rpcError(id, -32602, `工具 ${name} 的入参不满足 inputSchema：${badInput}`);
+      }
+      return rpcResult(
+        id,
+        await callTool(tool, (rawArgs ?? {}) as Record<string, unknown>, signal, deps),
+      );
+    }
+    default:
+      return rpcError(id, -32601, `method not found: ${method}`);
+  }
+}
+
 /**
  * 把 app 的能力菜单暴露成 MCP server。两个传输都只用标准库：
  * - **stdio**：stdin/stdout 换行分隔 JSON-RPC（每行一个完整报文）；日志只去 stderr；
@@ -120,6 +356,9 @@ function rpcResult(id: JsonRpcId, result: unknown): Record<string, unknown> {
  *   `initialize` 响应发 `mcp-session-id` 头（生成的 uuid），后续请求带了就接受、不带也服务
  *   （无状态 server，**宽容是有意的**）；GET（server→client 流）→ 405；DELETE → 200；
  *   客户端断连会中止该次工具调用的 `signal`。
+ *
+ * 本函数只做**装配**：构造期校验 → 状态（惰性 client / 在飞句柄表）→ 组装 `McpCore`
+ * → 交给选中的传输。协议与执行见 `dispatch` / `callTool`，传输见各自的文件。
  */
 export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpServer {
   if (typeof app !== 'object' || app === null || !Array.isArray(app.tools)) {
@@ -132,433 +371,37 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
       `createMcpServer：transport 只认 'stdio' | 'http'，收到 ${String(opts.transport)}`,
     );
   }
-  const tools = app.tools;
-  const serverInfo = { name: opts.name ?? 'agentia', version: SERVER_INFO_VERSION };
-  const toolTimeoutMs = opts.toolTimeoutMs;
-  const sinks = opts.sinks ?? [];
+
+  /** client 惰性构造（见 McpServerOptions.client）：第一次 tools/call 才建 */
+  let cachedClient: ModelClient | undefined;
+  const deps: DispatchDeps = {
+    tools: app.tools,
+    serverInfo: { name: opts.name ?? 'agentia', version: SERVER_INFO_VERSION },
+    sinks: opts.sinks ?? [],
+    toolTimeoutMs: opts.toolTimeoutMs,
+    clientOf: () => {
+      cachedClient ??= opts.client ?? createAnthropicClient();
+      return cachedClient;
+    },
+  };
 
   /** 在飞 tools/call 的中止句柄 —— close() 中止它们（服务器关闭 = 调用方没了） */
   const inFlight = new Set<AbortController>();
-  /** client 惰性构造（见 McpServerOptions.client）：第一次 tools/call 才建 */
-  let cachedClient: ModelClient | undefined;
-  const clientOf = (): ModelClient => {
-    cachedClient ??= opts.client ?? createAnthropicClient();
-    return cachedClient;
-  };
-
-  /**
-   * 执行一次 `tools/call`：造一棵 trace（run 根 + capability span + tool.input/tool.output
-   * 事件），收尾投递 sinks，然后把结果映射成 MCP 形状。
-   */
-  const callTool = async (
-    tool: AgentTool,
-    args: Record<string, unknown>,
-    signal: AbortSignal,
-  ): Promise<Record<string, unknown>> => {
-    const recorder = new TraceRecorder();
-    const rootId = recorder.begin('run', 'mcp.tools/call', null);
-    const capId = recorder.begin('capability', tool.name, rootId);
-    // tool_use_id 与引擎同义（同名工具并行时靠 id 配对入参/出参事件）
-    const use = { type: 'tool_use' as const, id: randomUUID(), name: tool.name, input: args };
-    const startedAt = Date.now();
-    recorder.event(capId, 'tool.input', toolInputPayload(use));
-    // 超时「放弃等待」的通知信号（与引擎 executeOneTool 同款：判超时分支里 abort）
-    const abandonAc = new AbortController();
-    const toolCtx: ToolRunContext = buildToolRunContext({
-      client: clientOf(),
-      recorder,
-      parentSpanId: capId,
-      abandoned: abandonAc.signal,
-      signal,
-      toolTimeoutMs,
-    });
-
-    let ok = true;
-    let content: unknown = '';
-    let errorKind: 'timeout' | 'threw' | undefined;
-    let spanError: SpanError | undefined;
-    try {
-      // 与引擎同一判定原语（core/timeout.ts，实测耗时兜底）：超时 = 放弃等待，不杀 server
-      const out = await withTimeout(Promise.resolve(tool.run(args, toolCtx)), toolTimeoutMs ?? 0);
-      if (out === TIMED_OUT) {
-        abandonAc.abort(); // 通知工具「没人等结果了」（@SubAgent/@Skill 靠它自中止）
-        ok = false;
-        errorKind = 'timeout';
-        content = `error(timeout): 工具执行超过 ${toolTimeoutMs}ms`;
-        spanError = { type: 'timeout', message: String(content), retryable: true };
-      } else {
-        content = out;
-      }
-    } catch (e) {
-      ok = false;
-      if (isTimeoutError(e)) {
-        // 工具自判的超时与引擎判的归同一类账（与 turn.ts 同口径）
-        errorKind = 'timeout';
-        content = `error(timeout): ${e instanceof Error ? e.message : String(e)}`;
-        spanError = { type: 'timeout', message: String(content), retryable: true };
-      } else {
-        errorKind = 'threw';
-        const err = classifyError(e);
-        content = `error(${err.type}): ${err.message}`;
-        spanError = err;
-      }
-    }
-    recorder.event(
-      capId,
-      'tool.output',
-      toolOutputPayload({ use, ok, errorKind, startedAt, now: Date.now(), content }),
-    );
-    recorder.end(
-      capId,
-      ok
-        ? {}
-        : {
-            status: 'error',
-            // exactOptionalPropertyTypes：显式 undefined 不是合法的 `error?: SpanError`
-            ...(spanError !== undefined ? { error: spanError } : {}),
-          },
-    );
-    recorder.end(
-      rootId,
-      ok
-        ? {}
-        : {
-            status: 'error',
-            ...(spanError !== undefined ? { error: spanError } : {}),
-          },
-    );
-    const trace = recorder.snapshot(ok ? 'ok' : 'error');
-    // 观测不击穿业务：sink 抛错吞掉 + console.warn（与 runtime 的 flushSinks 同款文案）
-    for (const sink of sinks) {
-      try {
-        await sink.export(trace);
-      } catch (e) {
-        console.warn('[agentia] trace sink 投递失败:', e instanceof Error ? e.message : e);
-      }
-    }
-
-    // 结果映射：抛错 → 协议层成功 + isError（MCP 惯例；正向桥那头正好把 isError 转回抛错，
-    // 方向对称）；string 原样进 text；其他 JSON 化进 text
-    if (!ok) return { content: [{ type: 'text', text: String(content) }], isError: true };
-    const text = typeof content === 'string' ? content : stringifySafe(content);
-    return { content: [{ type: 'text', text }] };
-  };
-
-  /**
-   * 报文分派（两个传输共用）。返回 `null` = 通知，不应答。
-   * 协议范围只到 tools（见文件头）；其余 method 一律 -32601，params 形状坏 → -32602。
-   */
-  const dispatch = async (
-    msg: unknown,
-    signal: AbortSignal,
-  ): Promise<Record<string, unknown> | null> => {
-    if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) {
-      return rpcError(null, -32600, '报文不是 JSON-RPC 对象');
-    }
-    const m = msg as { id?: unknown; method?: unknown; params?: unknown };
-    const id: JsonRpcId =
-      typeof m.id === 'number' || typeof m.id === 'string' || m.id === null ? m.id : null;
-    if (typeof m.method !== 'string') {
-      return m.id === undefined ? null : rpcError(id, -32600, '报文缺 method 字段');
-    }
-    const method = m.method;
-    // 通知（含 notifications/initialized）一律不应答；无 id 的非通知报文不是请求
-    if (method.startsWith('notifications/') || m.id === undefined) return null;
-
-    switch (method) {
-      case 'initialize':
-        return rpcResult(id, {
-          protocolVersion: DEFAULT_PROTOCOL_VERSION,
-          capabilities: { tools: {} },
-          serverInfo,
-        });
-      case 'ping':
-        return rpcResult(id, {});
-      case 'tools/list':
-        // 不建 trace（见文件头）：菜单查询不是一次「能力调用」
-        return rpcResult(id, {
-          tools: tools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-          })),
-        });
-      case 'tools/call': {
-        const params = m.params;
-        if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-          return rpcError(id, -32602, 'tools/call 的 params 必须是对象（{ name, arguments? }）');
-        }
-        const name = (params as { name?: unknown }).name;
-        if (typeof name !== 'string' || name === '') {
-          return rpcError(id, -32602, 'tools/call 的 params.name 必须是非空字符串');
-        }
-        const rawArgs = (params as { arguments?: unknown }).arguments;
-        if (
-          rawArgs !== undefined &&
-          (typeof rawArgs !== 'object' || rawArgs === null || Array.isArray(rawArgs))
-        ) {
-          return rpcError(id, -32602, 'tools/call 的 params.arguments 必须是对象');
-        }
-        const tool = tools.find((t) => t.name === name);
-        if (!tool) {
-          return rpcError(id, -32602, `未知工具: ${name}`);
-        }
-        // 入参契约与引擎**同一份校验器**（core/schema.ts，与 turn.ts 进方法体之前那次同源）：
-        // 反向桥若跳过它，同一份 @Tool 就会有两条契约 —— 引擎那边缺必填项记 errorKind
-        // 'invalid_input' 且不进方法体，这边却把畸形入参一路带进副作用。MCP 规范把
-        // 「未知工具 / 入参不合法」都归为协议错误（Invalid params），故回 -32602 而非
-        // result.isError（后者留给「工具真执行了但失败了」）。
-        const badInput = validateJsonSchema(tool.inputSchema, rawArgs ?? {});
-        if (badInput !== null) {
-          return rpcError(id, -32602, `工具 ${name} 的入参不满足 inputSchema：${badInput}`);
-        }
-        return rpcResult(
-          id,
-          await callTool(tool, (rawArgs ?? {}) as Record<string, unknown>, signal),
-        );
-      }
-      default:
-        return rpcError(id, -32601, `method not found: ${method}`);
-    }
-  };
-
-  /** 为一次请求登记中止句柄（close() / 传输侧断连时中止它），返回其 signal */
-  const trackCall = (ac: AbortController): AbortSignal => {
-    inFlight.add(ac);
-    return ac.signal;
-  };
-  const untrackCall = (ac: AbortController): void => {
-    inFlight.delete(ac);
-  };
-  const abortAll = (): void => {
-    for (const ac of inFlight) ac.abort();
-    inFlight.clear();
-  };
-
-  if (opts.transport === 'stdio') {
-    // stdio：换行分隔 JSON-RPC（每行一个完整报文）；日志只能去 stderr（stdout 是协议面）
-    //
-    // stdout 的 error **必须吞**：宿主先关读端、stdin 仍开着时，下一次应答写入就是异步
-    // `write EPIPE` —— 未捕获会把 server 打成栈回溯 + exit 1（2026-09-27 ⑩），而它只是
-    // 「对端没了」的次生现象，不是根因。正向连接器对子进程 stdin 是同一处置
-    // （`integrations/mcp-stdio.ts` 的 `p.stdin?.on('error', () => {})`），方向对称。
-    // 吞掉 ≠ 静默：真该知道的人（宿主）已经从自己的管道拿到 EOF 了。
-    process.stdout.on('error', () => {
-      /* EPIPE：对端已走 */
-    });
-    let buf = '';
-    let closed = false;
-    const onData = (chunk: string): void => {
-      buf += chunk;
-      for (;;) {
-        const nl = buf.indexOf('\n');
-        if (nl < 0) break;
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (line.trim() === '') continue;
-        let msg: unknown;
-        try {
-          msg = JSON.parse(line);
-        } catch {
-          process.stdout.write(`${JSON.stringify(rpcError(null, -32700, '行不是合法 JSON'))}\n`);
-          continue;
-        }
-        const ac = new AbortController();
-        const signal = trackCall(ac);
-        void dispatch(msg, signal)
-          .then((resp) => {
-            if (resp !== null && !closed) {
-              process.stdout.write(`${JSON.stringify(resp)}\n`);
-            }
-          })
-          .catch(() => {
-            /* 分派自身不该抛（callTool 内部已兜住）；真抛了也不许把 server 带崩 */
-          })
-          .finally(() => untrackCall(ac));
-      }
-    };
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', onData);
-    return {
-      url: undefined,
-      ready: Promise.resolve(),
-      close: () => {
-        if (closed) return Promise.resolve();
-        closed = true;
-        abortAll();
-        process.stdin.off('data', onData);
-        process.stdin.pause(); // 摘掉读端，宿主进程的事件循环不再被我们吊住
-        return Promise.resolve();
-      },
-    };
-  }
-
-  // ── StreamableHTTP ──
-  const host = opts.host ?? '127.0.0.1';
-  const path = opts.path ?? '/mcp';
-  const shared = opts.server !== undefined;
-  const server: Server = opts.server ?? createServer();
-  /** initialize 响应发的会话 id（生成的 uuid；无状态 server 只发不校验 —— 宽容是有意的） */
-  const sessionId = randomUUID();
-
-  const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
-    if (res.writableEnded || res.destroyed) return; // 客户端已走：写了也没人收
-    const payload = JSON.stringify(body);
-    res.writeHead(status, {
-      'content-type': 'application/json; charset=utf-8',
-      'content-length': Buffer.byteLength(payload),
-    });
-    res.end(payload);
-  };
-
-  const readBody = (req: IncomingMessage): Promise<string | null> =>
-    new Promise((resolvePromise) => {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      let done = false;
-      const finish = (v: string | null): void => {
-        if (done) return;
-        done = true;
-        resolvePromise(v);
-      };
-      req.on('data', (c: Buffer) => {
-        size += c.length;
-        if (size > MAX_BODY_BYTES) {
-          finish(null);
-          return;
-        }
-        chunks.push(c);
-      });
-      req.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
-      req.on('error', () => finish(null));
-      req.on('close', () => finish(null));
-    });
-
-  const onRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-    if (pathname !== path) {
-      // 挂进既有 server 时，别的路径交给宿主自己的路由（本 handler 不管）；
-      // 自有 server 上就是 404
-      if (shared) return;
-      sendJson(res, 404, { error: `路径不存在: ${pathname}` });
-      return;
-    }
-    const method = req.method ?? 'GET';
-
-    // 鉴权缝：与 HTTP 宿主同纪律，**两点都同** ——
-    // ① 在读 body 之前（body 一个字节都不收）；
-    // ② 在**方法 / 路径判定之前**：未鉴权一律 401，不泄露 endpoint 存在性。
-    //    宿主的分支顺序是「免鉴权组的 405 先于鉴权，其余先鉴权再判方法与路径」
-    //    （`transport/http-route.ts`），此前这里把 DELETE/405 摆在鉴权前面，
-    //    于是未鉴权能拿到 `405 allow: POST, DELETE` 与 `DELETE → 200`（2026-09-27 ⑨）。
-    //    自己这条 path 的判定不在此列：它只是「这个请求是不是我的」，别的路径原样交回宿主。
-    if (opts.auth) {
-      try {
-        await opts.auth(req);
-      } catch (e) {
-        console.error('[agentia:mcp-server] 鉴权钩子异常:', e);
-        if (!req.complete) res.setHeader('connection', 'close'); // body 未消费 ⇒ 连接不可复用
-        sendJson(res, 401, { error: '未通过鉴权' });
-        return;
-      }
-    }
-
-    if (method === 'DELETE') {
-      // 尽力终止会话（MCP 约定）：无状态 server 没有可终止的会话，200 收口
-      res.writeHead(200);
-      res.end();
-      return;
-    }
-    if (method !== 'POST') {
-      // GET（server→client 流）不做（YAGNI，见文件头）→ 405
-      res.setHeader('allow', 'POST, DELETE');
-      sendJson(res, 405, { error: `方法 ${method} 不被允许，请用 POST` });
-      return;
-    }
-
-    const raw = await readBody(req);
-    if (raw === null) {
-      if (!req.complete) res.setHeader('connection', 'close');
-      sendJson(res, 413, { error: `请求 body 超过上限 ${MAX_BODY_BYTES} 字节或连接中断` });
-      return;
-    }
-    let msg: unknown;
-    try {
-      msg = JSON.parse(raw);
-    } catch {
-      sendJson(res, 400, { error: '请求 body 不是合法 JSON' });
-      return;
-    }
-
-    // 客户端断连 ⇒ 中止该次工具调用的 signal（协作式；与 HTTP 宿主同款 onClose 守卫）
-    const ac = new AbortController();
-    const signal = trackCall(ac);
-    const onClose = (): void => {
-      if (!res.writableEnded) ac.abort();
-    };
-    res.once('close', onClose);
-    try {
-      const resp = await dispatch(msg, signal);
-      if (resp === null) {
-        // 通知（含 notifications/initialized）：202 + 空体
-        res.writeHead(202);
-        res.end();
-        return;
-      }
-      if (res.writableEnded || res.destroyed) return;
-      const payload = JSON.stringify(resp);
-      const headers: Record<string, string | number> = {
-        'content-type': 'application/json; charset=utf-8',
-        'content-length': Buffer.byteLength(payload),
-      };
-      // initialize 响应发 mcp-session-id（生成的 uuid）；后续请求带了就接受、不带也服务
-      if ((msg as { method?: unknown }).method === 'initialize') {
-        headers['mcp-session-id'] = sessionId;
-      }
-      res.writeHead(200, headers);
-      res.end(payload);
-    } finally {
-      res.off('close', onClose);
-      untrackCall(ac);
-    }
-  };
-  server.on('request', onRequest);
-
-  let url: string | undefined;
-  const ready = shared
-    ? Promise.resolve()
-    : new Promise<void>((resolvePromise, rejectPromise) => {
-        server.once('error', rejectPromise);
-        server.listen(opts.port ?? 0, host, () => {
-          const addr = server.address();
-          if (addr !== null && typeof addr === 'object') {
-            url = `http://${host}:${addr.port}${path}`;
-          }
-          resolvePromise();
-        });
-      });
-
-  let closed = false;
-  return {
-    get url() {
-      return url;
+  const core: McpCore = {
+    dispatch: (msg, signal) => dispatch(msg, signal, deps),
+    rpcError,
+    trackCall: (ac) => {
+      inFlight.add(ac);
+      return ac.signal;
     },
-    ready,
-    close: () => {
-      if (closed) return Promise.resolve();
-      closed = true;
-      abortAll();
-      if (shared) {
-        // 挂进来的既有 server 由宿主自己管：只摘除本 handler
-        server.off('request', onRequest);
-        return Promise.resolve();
-      }
-      return new Promise<void>((resolvePromise) => {
-        server.close(() => resolvePromise());
-        // 仍在飞的连接会吊住 close 的回调（Node ≥ 18.2 有 closeAllConnections；旧版没有则
-        // 靠 abortAll 之后工具自行收尾 —— 读 signal 的工具会退出，连接随之结束）
-        server.closeAllConnections?.();
-      });
+    untrackCall: (ac) => {
+      inFlight.delete(ac);
+    },
+    abortAll: () => {
+      for (const ac of inFlight) ac.abort();
+      inFlight.clear();
     },
   };
+
+  return opts.transport === 'stdio' ? startStdioTransport(core) : startHttpTransport(core, opts);
 }

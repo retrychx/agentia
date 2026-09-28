@@ -4251,6 +4251,126 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    把 `trace.truncated` 说成「run 根的 **attribute**」（它是**事件**，且会作为 `trace.event`
    帧体流经 SSE）；`api.html` 的 `createHttpHandler` 行漏了 ⑦ 新增的语义级 400。
 
+### 2026-09-28 ⑩：**结构收口四件**（`http.ts` 拆分第三步 / `mcp-server.ts` / `#executeInner` 的归属 / 文件级无环守卫）
+
+来源：`SRC-STRUCTURE-2026-09-28.md`（**未随本仓提交**，与两份复核报告同惯例）的「落地顺序 1–4」。
+那份盘点的诊断维度不是「文件几行」，而是**最大单函数 ÷ 文件总行数**：它把「超大函数」病
+（比例高 ⇒ 拆这个函数）与「大类」病（比例低但可调用体几十个 ⇒ 抽协作者，别切方法）分开 ——
+`http.ts` / `mcp-server.ts` 是前者，`async.ts` 是后者的典型。逐条：
+
+1. **HTTP 宿主拆成三件 —— `http.ts` 拆分第三步**（实测量：最大单函数 489 → 123 行，
+   文件 840 → 306 行）。
+   这是既定系列的第三步（#99 外移形状口径、#100 外移路由判定，两次提交信息都以「拆分第一步 /
+   第二步」自名）。**前两步为什么没止住增长**：它们移走的都是**纯件**（纯形状判定 / 纯路由判定），
+   而占大头的那一半 —— 九条路由的**体**（读 body → 调 runner → 写响应 → 选状态码）——
+   不纯、住在 `createHttpHandler` 的闭包里，原地不动；于是 `http.ts` 从 533 行又长回 840。
+   第三步把它搬走，落成三条边界：`http-endpoints.ts` = 走到一条路上做什么（派发表 +
+   九条 `handleXxx`）；`http-io.ts` = 怎么收发（零内部依赖的叶子）；`http.ts` = 宿主契约 +
+   宿主状态 + 准入/停机。
+   - **搬出闭包就得把上下文显式化**：三个散着的 `let`（在飞 run 计数 / 停机态 / SSE 收口表）
+     收成 `HttpState` 一个对象、按引用交给每个请求的 `HttpCtx`。「健康检查与停机判断看的是
+     同一个数」这条承诺（`HealthResponse.inFlight` 与 `drain()` 同口径）此前靠「都在同一个闭包里」
+     维持 —— 现在靠**同一个对象**，是个更强也更可读的保证。
+   - **顺带简化了一处安全相关的编排**：鉴权闸从「`if (isPreAuthRoute(route)) { 一大段应答 }`
+     提前 return，再走 switch」改成**否定条件** `if (!isPreAuthRoute(route) && authenticate)`。
+     豁免名单的真源仍只有 `http-route.ts` 一处，但 `handler` 里现在只剩「谁被豁免」可读，
+     被豁免者**回什么**全在端点表里。行为逐字不变（HTTP 套件 146/146 未改一字）。
+   - **穷尽性断言随之增强**：免鉴权组现在也走同一张派发表，于是末尾的
+     `const residual: 'healthz' | 'metrics' | 'notFound' = route.kind` 可以换成更强的
+     `const _never: never = route`（12 个 kind 全被 case 覆盖 ⇒ 收窄为 never）。
+     这条形态变了，`docs/guards.md` 的旧证据（按旧形态反向验证的）**已作废重做**。
+   - **留下的守卫**：`tests/transport/http-boundary-guard.test.ts`（源码级，四条断言 +
+     两层防真空变绿，反向验证过三条）。它防的是**下一次**：新加端点时的默认姿势又变回
+     「往 `http.ts` 里再塞一段」—— 那不是靠 AGENTS.md 的散文能拦住的。
+   - ⚠️ 一条守卫是**被这次搬迁咬出来的**：`tests/docs/sse-frames.test.ts` 原先写死扫
+     `src/transport/http.ts` 的 `sse.event('…')`，帧一搬家就红（帧一条没少）。它盯的是
+     **实现排布**而不是**契约**（契约是「这些帧真的存在」）⇒ 改成扫整个 `src/transport/` 目录。
+     断言方向是「文档提到的 ⊆ 实现 emit 的」，扫宽只会更宽松地通过，不会假绿。
+     教训与 §10 ⑦ 那次同类：**守卫盯着会变的东西，就会在每次无辜的重构上误红**，
+     而误红的结局通常是人去放宽它。
+2. **MCP 反向桥拆成三件 —— `createMcpServer` 441 → 47 行**（文件 564 → 409 行；
+   + `mcp-server-stdio.ts` 72 行 + `mcp-server-http.ts` 199 行）。
+   先例是**正向桥按传输分文件**（`integrations/mcp.ts` + `mcp-stdio.ts` + `mcp-http.ts`）——
+   反向桥此前把协议（`rpcError`/`rpcResult`/`dispatch`）、执行（`callTool`）、两条传输全塞进
+   441 行的 `createMcpServer` 闭包。拆后本文件留**协议 + 执行 + 装配**（都是顶层函数，闭包里的
+   无名块各得一名），两条传输各居其文件、各自是「一个宿主的生命周期」的一种。
+   - **关键设计是「注入式单向」而不是「照抄正向桥」**：协议与执行经 `McpCore`
+     （`dispatch`/`rpcError`/`trackCall`/`untrackCall`/`abortAll`）**注入**给传输，传输只从
+     `mcp-server.ts` 取**类型**。正向桥那条 `mcp.ts ↔ mcp-stdio.ts` 是**真实的值环**
+     （桥 re-export 连接器、连接器反向 import 桥的共享 helper），靠 ESM 函数提升与调用时机
+     **侥幸**无恙；反向桥的无环是**构造性**的 —— 这恰是第 4 件（文件级无环守卫）想固化的事。
+   - **「它为什么留在 engine」复核结论：仍然成立**，且这次以**真实 import 面**为据：
+     本文件需要 engine 侧 4 个值（`TraceRecorder` / `classifyError` / `buildToolRunContext` /
+     `tool-events` 载荷）+ integrations 侧 2 个值（`DEFAULT_PROTOCOL_VERSION` /
+     `createAnthropicClient`）；而 `integrations` 只许依赖 `core`、`transport` 够不到
+     `integrations` ⇒ **engine 是唯一能同时够到两边的层**。搬进 `integrations` 需要一条
+     `integrations → engine`（越权），并与既有 `engine → integrations` 成环。
+   - ⚠️ **顺带订正 AGENTS.md 一条失真文案**：原文说 `engine → integrations` 这条边「仅为取
+     默认 ModelClient」，实测用途至少两处（`loop.ts` 取 client + `mcp-server.ts` 取
+     `DEFAULT_PROTOCOL_VERSION`）。已在 `mcp-server.ts` 头注按实况改写。
+   - **不再往下拆传输**（这是个**反例**，写出来防止「见大就拆」）：`startHttpTransport`
+     172 行、`startStdioTransport` 57 行 —— 按判据属「一个宿主的完整生命周期」，
+     **该是一个协作者**；且比正向桥的同位函数**更瘦**（`createStreamableHttpMcpConnector`
+     265 行 / `createStdioMcpConnector` 235 行）。再拆只是把生命周期切碎，不产生新边界。
+3. **`#executeInner`（247 行）的编排归属：定案「不拆」**（本条**零代码改动** —— 产出是一份有依据的
+   裁定，因为「动之前先定归属」的答案就是「不该动」）。
+   - **它是什么**：`AsyncRunner` 的**状态机主体**。四层 `try` 是一条**资源获取 + 清理阶梯**，
+     每层绑定一份清理责任、且**顺序 load-bearing**：① 顶层（1367）兜「异步 store 任何 reject 都
+     不逃逸成 unhandled rejection」→ failed + save；② `#slots.acquire()` 之后那条（1389）的
+     finally → `finishedAt` + `safeSave` + `slots.release`；③ run 那一层（1424/1496）的
+     catch/finally → 取消意图裁定 + `releaseCombinedSignal` + `#runAborts.delete`。
+     **槽位必须在最内层 finally 释放**，否则落库抛错会永久泄漏并发槽位 —— 这条事实的可读性
+     **来自嵌套顺序本身**。
+   - **为什么这不是「超大函数」病**：`async.ts` 最大可调用体 247 ÷ 总行 1690 = **14.6%**，
+     远低于 55% 阈值 ⇒ 按判据这是「**大类**」病（可调用体 **40** 个），处理方式是
+     **抽协作者，别切方法**。而纯协作者**已经抽过六轮**：`slot-pool` / `approval-policy` /
+     `drain-gate` / `resume-policy` / `task-waiters` / `task-events`。
+   - **为什么编排搬不走**：`#executeInner` 触及 **14 个 runner 内部成员**（`store` / `app` /
+     `client` / `sessionStore` + `#slots` / `#runAborts` / `#cancels` / `#streams` /
+     `sessionInputs` + `#safeSave` / `#raceTimeout` / `#markSuspended` / `#unmarkSuspended` /
+     `#appendResumedSession`）—— 把编排外移等于把 `AsyncRunner` 重建一遍。
+   - **归属其实早已被钉死**：`tests/transport/dispatch-guard.test.ts` 就是那份判定的**可执行版本**
+     —— `this.#execute(` 只许出现在唯一派发口 `#dispatch`（且停机闸在它之前）、
+     `this.#executeInner(` 只许出现在 `#execute`（且 `active++` 在它之前）。即三分：
+     **`#dispatch` = 派发口 / `#execute` = 计数与开流包裹层 / `#executeInner` = 状态机主体**。
+     把主体的一部分搬出类，会**同时**让这条守卫失去前提。
+   - **考虑过但否掉的一处外移**：`callOpts` 装配（约 42 行，确是纯函数面：六个只读入参 → 一个
+     选项对象）。     否掉的理由是**单调用者**、且外移后**不产生可守卫的边界**（对比 `http-route.ts`
+     外移后立刻配了「免鉴权 405 顺序」的守卫）。留着它 `#executeInner` 仍是 247 行 ——
+     但那是「长度」，不是判据里的「病」。
+4. **文件级无环守卫 —— 关掉层内环盲区**（`tests/architecture/file-cycles.test.ts`）。
+   - **盲区是什么**：`layering.test.ts` 的 `layerOf()` 取**路径第一段**，是**层**粒度 ⇒
+     **同一层里两个文件互相 import，它一条边都看不见**。实测 src 有**三条**文件级强连通分量
+     （SCC），**全部在层内**，此前**没有任何守卫看得到**。
+   - **先复核三条环的真实性质**（这一步推翻了盘点报告初稿的结论）：初稿写「两个环的回边都是
+     `import type`」—— **错的**。逐条打开看导入语句：`integrations/mcp.ts:350/352` 是
+     `export { … } from './mcp-stdio.js'`（**re-export 值**），而 `mcp-stdio.ts` 又
+     **值导入**桥的 7 个 helper ⇒ 这是一条**真实的值环**（运行期环，靠 ESM 函数提升与调用
+     时机**侥幸**无恙）。另两条（`runtime/context ↔ run`、`engine/mcp-server ↔
+     mcp-server-{stdio,http}`）的回边才真的是 `import type`。**初稿错在没打开文件看**。
+   - **真值环要断**：把桥与两个连接器**共用**的协议面（7 个 helper + 4 个结构类型）抽到
+     `src/integrations/mcp-protocol.ts`，依赖成一条**单向 DAG**（桥 → 协议 ← 两个连接器；
+     桥 → 连接器**仅 re-export**）。公共面不变（`src/index.ts` 未改一字；`mcp.ts` 继续
+     转出这些符号）。顺带修正一处**测试夹具的注释**（`tests/engine/mcp-server.test.ts` 里
+     「摘掉 `mcp-server.ts` 里那两行」随第 2 件已失真）。
+   - **守卫口径是「只算值边」**：类型导入运行期擦除，**不构成运行期环** —— 别把「编译期有一条
+     `import type` 回边」写成「循环依赖」（`docs/guards.md` 同款纪律）。于是两条 type-only 环
+     **留着不算环**，只有真值环红。它同时兜住两件事：新增一条运行期环 ⇒ 红；把某条 `import type`
+     回边**改成值导入**（真值环就此产生）⇒ 红。
+   - **两条变异反向验证**：① 往 `mcp-protocol.ts` 注入一条值导入 ⇒ 红（报出 `mcp-protocol ↔
+     mcp-stdio`）；② 把 `runtime/context.ts` 真实的 `import type { Run }` 改成值导入 ⇒ 红
+     （报出 `context ↔ run`）—— 后者证明它读的是**真图**，不是「图是空的」侥幸全绿。
+   - **顺带咬出一个解析器陷阱**：头注里写出导入字面量会被**裸正则**读成一条**假边** ——
+     `mcp-protocol.ts` 初稿头注里那行 `export { … } from './mcp-stdio.js'` 就把刚断开的环
+     「测」了回来（`import-graph.py` 与 `layering.test.ts` 的 `relativeImports` 都按
+     `from '…'` 抓、**不剥注释**）。⇒ 本守卫**复用** `lib/source-scan.ts` 的 `scan()`（逐字
+     遮蔽注释 / 字符串 / 模板 / 正则，且由 `no-runtime-deps` 守卫单独验证过），并加一条
+     「注释里的导入字面量不算边」的自证用例钉死它。
+   - **附带发现（未修，如实登记）**：同一个陷阱对 `layering.test.ts` 的 `relativeImports`
+     也成立 —— 它只按 `from '…'` 抓。今天无害（造成假边的注释落在**同层**，而它只记跨层边），
+     但一条**跨层**的导入字面量写进注释就会造成「越权」误红。修法是把该守卫也切到 `scan()`；
+     因其反向验证证据是逐条按旧实现钉的，**留作后续单独一轮**，不并入本批。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

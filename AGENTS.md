@@ -45,7 +45,17 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   mcp-server.ts = MCP 反向桥（R8-P5：app 菜单暴露成 MCP server，
 │   │                        #   stdio + StreamableHTTP 只用标准库；落 engine 是因为 integrations 只许
 │   │                        #   依赖 core 装不下 TraceRecorder。每次 tools/call 一棵 trace 进 sinks，
-│   │                        #   抛错 → isError，与正向桥方向对称）
+│   │                        #   抛错 → isError，与正向桥方向对称）。**两个传输各居其文件**
+│   │                        #   （2026-09-28，与正向桥同款排布）：本文件留**协议 + 执行 + 装配**
+│   │                        #   （顶层的 rpcError/rpcResult/dispatch/callTool；createMcpServer 只做装配，
+│   │                        #   441 → 47 行）；传输构造（宿主生命周期）在 mcp-server-stdio.ts /
+│   │                        #   mcp-server-http.ts。⚠️ 协议与执行经 `McpCore` **注入**给传输 ——
+│   │                        #   传输只从本文件取**类型**，所以无环是**构造性**的（正向桥那条
+│   │                        #   `mcp.ts ↔ mcp-stdio.ts` 是**真实的值环**，靠 ESM 函数提升侥幸无恙，别照搬）
+│   │                        #   mcp-server-stdio.ts = stdio 传输：stdin/stdout 换行分隔 JSON-RPC，
+│   │                        #   `process.stdout` 的 EPIPE 必须吞（对端走了的次生现象，不是根因）
+│   │                        #   mcp-server-http.ts = StreamableHTTP 传输：POST 收 JSON-RPC、GET→405、
+│   │                        #   DELETE→200、`initialize` 发 mcp-session-id、客户端断连中止本次 signal
 │   ├── runtime/             # run 生命周期：run 状态机、上下文(ALS)、
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
@@ -73,10 +83,24 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   纯函数；三条顺序是全部内容 —— 免鉴权组的 405 先于鉴权、其余先鉴权再判
 │   │                        #   方法/路径（未鉴权不泄露路径是否存在）、approve / cancel / events 与 stream 都先于
 │   │                        #   通用 id 且「方法不对」压过「id 坏了」（DELETE /tasks/%zz/approve = 405，不是 400）
+│   │                        #   http-endpoints.ts = **端点体**（http.ts 拆分第三步）：走到一条路上
+│   │                        #   做什么 —— 派发表 handleRoute（穷尽性断言是 `const _never: never = route`；
+│   │                        #   免鉴权组也在这张表里，表**不认识鉴权**，闸在宿主侧）+ 九条 handleXxx
+│   │                        #   （读 body → 调 runner → 写响应 → 选状态码）。判据：`route.kind` /
+│   │                        #   `sse.event(` / 三个形状解析器都只许出现在本文件 —— 源码级钉在
+│   │                        #   tests/transport/http-boundary-guard.test.ts（连同「准入判定留在宿主」「派发表
+│   │                        #   穷尽断言在场」），退化时构建红
+│   │                        #   http-io.ts = **收发原语**（同一步的另半边）：sendJson / readBody /
+│   │                        #   parseJsonBody / 405 / 413 / 503 / 500 的机械动作，**零内部依赖**
+│   │                        #   （只 import node:http 的类型）—— 宿主与端点都引它 ⇒ 不可能成环是**构造性**的
+│   │                        #   （`HttpException` 刻意不在这里：它是宿主契约，搬过去会让原语层反向依赖宿主）
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
 │   │                        #   指标(metricsSink，满足 TraceSink)
+│   │                        #   mcp-protocol.ts = 桥与两个连接器**共用**的协议面（7 helper + 4 结构类型）：
+│   │                        #   2026-09-28 自 mcp.ts 抽出，为断开 `mcp.ts ↔ mcp-stdio.ts` 那条**真实值环**
+│   │                        #   （「层内也运行期无环」现由 tests/architecture/file-cycles.test.ts 钉住）
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥
