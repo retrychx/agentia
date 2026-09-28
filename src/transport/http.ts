@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseTraceparent } from '../core/trace.js';
-import { AsyncRunner, TaskApproveError, TaskStreamError } from './async.js';
+import { AsyncRunner, TaskApproveError, TaskCancelError, TaskStreamError } from './async.js';
 import type { AppCallable, TaskStreamFrame } from './async.js';
 import { parseApproveBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
 import { isPreAuthRoute, routeRequest } from './http-route.js';
@@ -30,6 +30,9 @@ import type { TaskRecord } from '../store/store.js';
  *                    → 200 TaskRecord；任务不存在 → 404；不在 suspended 状态 → 409；
  *                    body 非法 → 400。**停机中仍可用**（与 GET 轮询同理由：
  *                    挂起的任务只有人能推进，停机不该连「批准」也拒掉）。
+ * - POST /tasks/<id>/cancel   取消一个任务（在跑的真中断 / 在睡的不再醒 / 在排队的绝不起跑）。
+ *                    无 body。→ 200 TaskRecord；不存在 → 404；已终态、或在跑的 run 不在
+ *                    本进程 → 409。**停机中仍可用**（停机窗口正是最想取消在飞任务的时候）。
  * - GET  /healthz    健康检查 → 200 { ok, inFlight, uptimeMs, draining, suspended }；**不鉴权**
  *                    （探针不该带凭据）。停机中仍回 200（进程活着），就绪与否看 draining。
  *
@@ -635,6 +638,24 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
             return;
           }
           sendJson(res, 200, rec);
+          return;
+        }
+
+        // POST /tasks/<id>/cancel：取消（durable 配套 5 的另一半）。drain 期间仍允许 ——
+        // 与 approve 同理由，而且**停机窗口正是最想取消在飞任务的时候**。
+        case 'cancel': {
+          const taskId = route.taskId;
+          try {
+            const rec = await runner.cancel(taskId); // MaybePromise：异步 store 下必须 await
+            sendJson(res, 200, rec);
+          } catch (e) {
+            // 404（不存在）/ 409（已终态、或在跑的 run 不在本进程）是调用方语义
+            if (e instanceof TaskCancelError) {
+              sendJson(res, e.status, { error: errMessage(e) });
+              return;
+            }
+            sendInternalError(res, e);
+          }
           return;
         }
 

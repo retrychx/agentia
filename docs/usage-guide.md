@@ -584,6 +584,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
 | `GET /tasks/:id/stream` | — | **任务进度流（SSE）**：先在 `id:` 里给流序号，逐帧下发 `trace.event`（body 即 `TraceRecordEvent`），终态发 `task.end` 并关闭。断线重连带 `Last-Event-ID`（或 `?from=<序号>`）即可续订 —— 只补该序号之后的事件。缓冲超限先发一帧 `stream.truncated{droppedBefore}`；别的进程在跑的任务发 `stream.unavailable` 后收口（**不假装实时**）。任务不存在 → 404；方法不对 → 405。⚠️ 它的读者是**旁观者**：背压/断开只收口这条流，**不中止任务** |
 | `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；**挂起原因不是 `approval`**（含未挂起）→ 409；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
+| `POST /tasks/:id/cancel` | 无 body | 200 `TaskRecord`（取消：在跑的**真中断**、在睡的**不再醒**、在排队的**绝不起跑**）。落库 `status: 'cancelled'` + `error.type: 'aborted'`（取消不是失败，但原因可查）。任务不存在 → 404；已终态 → 409；**在跑但本进程没有它的句柄、或宿主不认 `signal`**（宽限 2s 内没收尾）→ 409 —— 取消**未发生**就如实说，不假装。**停机中仍可用**（停机窗口正是最想取消在飞任务的时候） |
 | `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
 | `GET /metrics` | — | 200 指标文本（Content-Type 跟 sink 的 `contentType` 走：缺省 `text/plain; version=0.0.4`，`export:'openmetrics'` 的 sink 发 `application/openmetrics-text`）；**需在 `createHttpHandler` 里传 `metrics`**，**不鉴权**（与 `/healthz` 同档），停机中也回 |
 

@@ -1,0 +1,484 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { AsyncRunner, executeRun } from '../../src/index.js';
+import type { AgentTool, AppCallable, AgentRunResult } from '../../src/index.js';
+import { TaskCancelError } from '../../src/transport/async.js';
+import { createHttpHandler } from '../../src/transport/http.js';
+import { endTurnMsg, mockClient, toolUseMsg } from '../helpers.js';
+
+/**
+ * `cancel` API（durable 配套 5 的另一半，spec §10 2026-09-28 ④）。
+ *
+ * 三件事是本文件存在的理由：
+ * ① **三种在服状态**（running / queued / suspended）各有一条真用例 —— 它们的语义不同，
+ *    一处漏了就是一处「假装取消」；
+ * ② **状态按意图落、不按机制落**：超时那条老路必须仍然落 `failed`（阳性对照，防我把
+ *    「加了 canceled 状态」顺手改成「所有 abort 都算取消」）；
+ * ③ `awaitTask` 的终态集合（原先手写两值）—— 漏了新终态的症状是**静默等到超时**。
+ *
+ * 在跑那条走**真引擎**（executeRun + mockClient + 一个尊重 `ctx.signal` 的工具），
+ * 与 approval/durable-timer 同一条纪律：宿主测试用假 app 会漏掉引擎与宿主的交界。
+ */
+
+const OBJ = { type: 'object', properties: {} } as const;
+
+/** 尊重 `ctx.signal` 的慢工具：取消一到就返回（不尊重 signal 的工具会吊住整个回合） */
+function abortAwareTool(spy: { calls: number }): AgentTool {
+  return {
+    name: 'slow',
+    description: '挂在 signal 上的慢工具',
+    inputSchema: OBJ,
+    run: (_input, ctx) =>
+      new Promise<string>((resolve) => {
+        spy.calls++;
+        const signal = ctx?.signal;
+        if (signal?.aborted) return resolve('aborted-before-start');
+        signal?.addEventListener('abort', () => resolve('aborted'), { once: true });
+      }),
+  };
+}
+
+/** 真引擎的取消：一次 run 挂在工具上 ⇒ cancel ⇒ 引擎以 aborted 收尾 ⇒ 记录落 cancelled */
+function engineApp(spy: { calls: number; script: Array<Record<string, unknown>> }): {
+  app: AppCallable;
+  seen: unknown[];
+} {
+  const { client, seen } = mockClient(spy.script);
+  return {
+    app: {
+      name: 'engine',
+      run: (messages, opts) =>
+        executeRun({ messages, client, tools: [abortAwareTool(spy)], ...opts }),
+    },
+    seen,
+  };
+}
+
+async function waitStatus(
+  runner: AsyncRunner,
+  taskId: string,
+  status: string,
+  budgetMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const rec = await runner.poll(taskId);
+    if (rec?.status === status) return;
+    if (Date.now() > deadline) {
+      throw new Error(`等任务 ${taskId} 进入 ${status} 超时（当前 ${rec?.status}）`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+async function listen(
+  app: AppCallable,
+  opts: { runner: AsyncRunner },
+): Promise<{ server: Server; base: string }> {
+  const server = createServer(createHttpHandler(app, { runner: opts.runner }));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as AddressInfo;
+  return { server, base: `http://127.0.0.1:${port}` };
+}
+
+const close = (server: Server): Promise<void> => new Promise((r) => server.close(() => r()));
+
+// biome-ignore lint/suspicious/noExplicitAny: 端点回的是运行时数据，逐字段断言时不必先窄化 unknown
+const readJson = (res: Response): Promise<any> => res.json();
+
+describe('cancel —— 在跑的 run：真中断 + 按意图落状态', () => {
+  it('cancel 一条在跑的：引擎以 aborted 收尾、记录落 cancelled + error.type aborted、槽位释放', async () => {
+    const spy = { calls: 0, script: [toolUseMsg('slow', {}, 'tu1'), endTurnMsg('不该走到这里')] };
+    const { app } = engineApp(spy);
+    const sinkCalls: string[] = [];
+    const runner = new AsyncRunner(app, {
+      concurrency: 1,
+      taskSinks: [
+        {
+          onFinished: (rec) => {
+            sinkCalls.push(rec.status);
+          },
+        },
+      ],
+    });
+
+    const t = runner.submit('跑起来');
+    await waitStatus(runner, t.taskId, 'running');
+    // 前置：工具真的挂在飞（否则后面证明不了「取消把它拽回来了」）
+    await waitStatus(runner, t.taskId, 'running');
+    assert.equal(spy.calls, 1, '前提：工具已进入在飞');
+
+    const rec = await runner.cancel(t.taskId);
+    assert.equal(rec.status, 'cancelled', '取消落 cancelled（不是 failed）');
+    assert.equal(rec.error?.type, 'aborted', '取消带结构化原因：取消不是失败，但原因要可查');
+    assert.equal(typeof rec.finishedAt, 'number', '取消是终态：finishedAt 要有');
+    assert.equal(runner.inFlight, 0, '槽位释放（停机/后续任务不被它挡住）');
+    assert.deepEqual(sinkCalls, ['cancelled'], 'onFinished 恰好一次、且说的是真话');
+    // 落库的也是终态（不是只在返回值里）
+    assert.equal((await runner.poll(t.taskId))?.status, 'cancelled');
+
+    // 阳性对照：没被取消的任务照常跑完（防「这道闸焊死」）
+    spy.script.push(endTurnMsg('正常收尾'));
+    const ok = runner.submit('不取消');
+    assert.equal((await runner.awaitTask(ok.taskId)).status, 'succeeded');
+  });
+
+  it('宿主不认 signal ⇒ 取消**未发生**：撤回意图 + 409（不假装成功）', async () => {
+    const runner = new AsyncRunner({
+      name: 'ignores-signal',
+      // 故意不看 signal、也永不返回：这正是「无法真中断」的那一类宿主。
+      // runTimeoutMs 那条路对同样情形是「放弃等待」（落 failed、释放槽位、底层照样跑完）——
+      // 取消这条路**刻意不同**：人手按的动作不能骗人（设计稿 §6 记了取舍）。
+      run: () => new Promise<never>(() => {}),
+    });
+    const t = runner.submit('y');
+    await waitStatus(runner, t.taskId, 'running');
+    await assert.rejects(
+      async () => runner.cancel(t.taskId),
+      (e: unknown) => e instanceof TaskCancelError && e.status === 409,
+      '宽限内没收尾 ⇒ 说出来，而不是落一条会被那条 run 覆盖回去的 cancelled',
+    );
+    assert.equal(
+      (await runner.poll(t.taskId))?.status,
+      'running',
+      '取消未发生 ⇒ 记录一个字节都不动（调用方拿到的 409 与记录一致）',
+    );
+  });
+
+  it('宿主返回的结果**说成功**、而取消先到 ⇒ 记录仍说真话：cancelled + error 由宿主侧补', async () => {
+    // 这一类宿主「半认」signal：`abort` 之后它确实返回了，但返回的是一个成功形状的结果。
+    // 只按结果落库的话，记录会说 succeeded —— 而调用方刚刚明确取消了它。
+    const app: AppCallable = {
+      name: 'lies-about-success',
+      run: (_messages, opts) =>
+        new Promise((resolve) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                run: { runId: 'r1', status: 'succeeded' as const },
+                result: {} as AgentRunResult,
+              }),
+            { once: true },
+          );
+        }),
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('取消我');
+    await waitStatus(runner, t.taskId, 'running');
+    const rec = await runner.cancel(t.taskId);
+    assert.equal(rec.status, 'cancelled', '结果说成功也不算数：意图是取消');
+    assert.equal(rec.error?.type, 'aborted', '原因必须补上（结果里没有 error 也要有）');
+  });
+
+  it('机制 ≠ 意图：runTimeoutMs 的那条老路**仍然**落 failed + timeout（阳性对照）', async () => {
+    const app: AppCallable = {
+      name: 'hang',
+      run: () => new Promise<never>(() => {}),
+    };
+    const runner = new AsyncRunner(app, { concurrency: 1, runTimeoutMs: 30 });
+    const t = runner.submit('超时');
+    const rec = await runner.awaitTask(t.taskId, { timeoutMs: 2_000 });
+    assert.equal(rec.status, 'failed', '超时不是取消');
+    assert.equal(rec.error?.type, 'timeout', '超时仍归 timeout 一类账');
+  });
+});
+
+describe('cancel —— 排队的任务：绝不起跑', () => {
+  it('取消一条 queued：一次都没跑，落 cancelled，onFinished 只触发一次（不重复记账）', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let calls = 0;
+    const app: AppCallable = {
+      name: 'gated',
+      async run() {
+        calls++;
+        if (calls === 1) await gate; // 第一个占住唯一的槽位
+        return {
+          run: { runId: `r-${calls}`, status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
+      },
+    };
+    const sinkCalls: string[] = [];
+    const runner = new AsyncRunner(app, {
+      concurrency: 1,
+      taskSinks: [
+        {
+          onFinished: (rec) => {
+            sinkCalls.push(rec.status);
+          },
+        },
+      ],
+    });
+
+    const first = runner.submit('占位');
+    await waitStatus(runner, first.taskId, 'running');
+    const queued = runner.submit('排队中'); // concurrency=1 ⇒ 它拿不到槽位，停在 queued
+    await waitStatus(runner, queued.taskId, 'queued');
+
+    const rec = await runner.cancel(queued.taskId);
+    assert.equal(rec.status, 'cancelled');
+    assert.equal(calls, 1, '排队的那个**一次都没跑**（这是本次顺带补上的洞）');
+    assert.deepEqual(
+      sinkCalls,
+      ['cancelled'],
+      '恰好一次（排队那支的记账交给还活着的那趟 #execute）',
+    );
+
+    release(); // 放掉占位任务
+    await runner.awaitTask(first.taskId);
+    // 再等一拍：即使槽位空出来，被取消的那条也**不许**起跑
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(calls, 1, '被取消的那条始终没跑（槽位空出来也不起跑）');
+    assert.equal(
+      (await runner.poll(queued.taskId))?.status,
+      'cancelled',
+      '状态没被谁覆盖回 queued',
+    );
+    // ⚠️ 这一条必须放在**收尾之后**：重复通知发生在「那趟 #execute 拿到槽位」时，
+    // 而那时才轮到它的 finally 跑 —— 只断言 cancel 返回那一刻会漏掉它（变异电池抓到过：零红）
+    assert.equal(
+      sinkCalls.filter((s) => s === 'cancelled').length,
+      1,
+      'onFinished 对这条取消只开火一次（两处都记账就会是两次）',
+    );
+  });
+});
+
+describe('cancel —— 挂起的任务：不唤醒（两种原因都算）', () => {
+  it('取消一条 timer 挂起：落 cancelled、目标时刻清掉、到期扫描不再捡、工具不再跑', async () => {
+    const gate = { at: Date.now() + 3_600_000 };
+    const spy = { calls: 0 };
+    const tool: AgentTool = {
+      name: 'wait_for_batch',
+      description: '等批处理作业',
+      inputSchema: OBJ,
+      run: (_i, ctx) => {
+        spy.calls++;
+        if (gate.at !== null) {
+          ctx!.deferUntil!(gate.at);
+          return 'deferred';
+        }
+        return 'ready';
+      },
+    };
+    const { client } = mockClient([toolUseMsg('wait_for_batch', {}, 'tu1'), endTurnMsg('到位了')]);
+    const app: AppCallable = {
+      name: 'timer',
+      run: (messages, opts) => executeRun({ messages, client, tools: [tool], ...opts }),
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('睡到明天');
+    const sleeping = await waitStatusRecord(runner, t.taskId, 'suspended');
+    assert.equal(sleeping.wakeAt, gate.at);
+    assert.equal(runner.suspendedSummary.timer, 1, '前提：读数里有一条在睡');
+
+    const rec = await runner.cancel(t.taskId);
+    assert.equal(rec.status, 'cancelled');
+    assert.equal(rec.wakeAt, undefined, '目标时刻清掉（没有「睡着的终态」这种东西）');
+    assert.equal(rec.suspendedReason, undefined);
+    assert.deepEqual(
+      runner.suspendedSummary,
+      { approval: 0, timer: 0, nextWakeAt: null },
+      '读数除名',
+    );
+
+    // 不唤醒：两条路（扫描 + 读路径）都不许把它叫起来 —— 判据是状态，翻转即失效
+    assert.equal(runner.resumePending(), 0, '到期扫描不捡它（它不是「在等」，是终态）');
+    assert.equal((await runner.poll(t.taskId))?.status, 'cancelled', '读路径也不唤醒');
+    assert.equal(spy.calls, 1, '工具没有被叫起来第二遍');
+  });
+
+  it('取消一条审批挂起：approve 之后也推不动它（409 语义由 approve 自己的闸给）', async () => {
+    const spy = { calls: 0 };
+    const tool: AgentTool = {
+      name: 'danger',
+      description: '需审批',
+      inputSchema: OBJ,
+      approval: 'required',
+      run: () => {
+        spy.calls++;
+        return 'done';
+      },
+    };
+    const { client } = mockClient([toolUseMsg('danger', {}, 'tu1'), endTurnMsg('批了')]);
+    const app: AppCallable = {
+      name: 'hitl',
+      run: (messages, opts) => executeRun({ messages, client, tools: [tool], ...opts }),
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('等我批');
+    await waitStatusRecord(runner, t.taskId, 'suspended');
+
+    const rec = await runner.cancel(t.taskId);
+    assert.equal(rec.status, 'cancelled');
+    assert.equal(spy.calls, 0, '审批挂起时工具还没跑过（与 timer 挂起不同）');
+    await assert.rejects(
+      () => Promise.resolve(runner.approve(t.taskId, { tu1: { approved: true } })),
+      /suspended|状态/,
+      '已取消的任务不能再被审批推进（approve 的 409 闸）',
+    );
+    assert.equal(spy.calls, 0, '没有被审批放行');
+  });
+});
+
+describe('cancel —— 终态与参数：说出「不行」而不是假装成功', () => {
+  it('已终态 ⇒ TaskCancelError(409)，且状态与 finishedAt 都不动；不存在 ⇒ 404', async () => {
+    const app: AppCallable = {
+      name: 'fast',
+      async run() {
+        return {
+          run: { runId: 'r1', status: 'succeeded' as const },
+          result: {} as AgentRunResult,
+        };
+      },
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('跑完');
+    const done = await runner.awaitTask(t.taskId);
+    const before = { status: done.status, finishedAt: done.finishedAt };
+
+    await assert.rejects(
+      async () => runner.cancel(t.taskId),
+      (e: unknown) => e instanceof TaskCancelError && e.status === 409,
+      '已终态要给 409（不静默 no-op）',
+    );
+    const after = await runner.poll(t.taskId);
+    assert.deepEqual(
+      { status: after?.status, finishedAt: after?.finishedAt },
+      before,
+      '409 之后记录一个字节都不动',
+    );
+
+    await assert.rejects(
+      async () => runner.cancel('task_nope'),
+      (e: unknown) => e instanceof TaskCancelError && e.status === 404,
+    );
+  });
+
+  it('awaitTask 在 cancelled 上**立刻返回**（终态集合走单一真源 —— 漏了它会静默等到超时）', async () => {
+    const gate = { at: Date.now() + 3_600_000 };
+    const tool: AgentTool = {
+      name: 'wait_for_batch',
+      description: '等批处理作业',
+      inputSchema: OBJ,
+      run: (_i, ctx) => {
+        ctx!.deferUntil!(gate.at!);
+        return 'deferred';
+      },
+    };
+    const { client } = mockClient([toolUseMsg('wait_for_batch', {}, 'tu1')]);
+    const app: AppCallable = {
+      name: 'timer',
+      run: (messages, opts) => executeRun({ messages, client, tools: [tool], ...opts }),
+    };
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('睡下');
+    await waitStatus(runner, t.taskId, 'suspended');
+    await runner.cancel(t.taskId);
+
+    // 判据是「立刻返回」：漏掉 cancelled 这条终态的话，这里会走满 1s 超时抛错（红成挂住）
+    const started = Date.now();
+    const rec = await runner.awaitTask(t.taskId, { timeoutMs: 1_000 });
+    assert.equal(rec.status, 'cancelled');
+    assert.ok(Date.now() - started < 1_000, '不许走满超时');
+  });
+});
+
+describe('cancel —— HTTP 路由', () => {
+  it('POST /tasks/<id>/cancel 生效；方法不符 405（Allow: POST）；坏 id 400 仍压不过 405；404 / 409 语义', async () => {
+    // 用**时间挂起**的任务做「可取消」的样本：它没有在飞 run ⇒ cancel 立刻收尾（不涉及宽限）
+    const gate = { at: Date.now() + 3_600_000 };
+    const tool: AgentTool = {
+      name: 'wait_for_batch',
+      description: '等批处理作业',
+      inputSchema: OBJ,
+      run: (_i, ctx) => {
+        ctx!.deferUntil!(gate.at!);
+        return 'deferred';
+      },
+    };
+    const { client } = mockClient([toolUseMsg('wait_for_batch', {}, 'tu1')]);
+    const app: AppCallable = {
+      name: 'timer',
+      run: (messages, opts) => executeRun({ messages, client, tools: [tool], ...opts }),
+    };
+    const runner = new AsyncRunner(app);
+    const { server, base } = await listen(app, { runner });
+    try {
+      const t = runner.submit('睡下');
+      await waitStatus(runner, t.taskId, 'suspended');
+
+      const ok = await fetch(`${base}/tasks/${t.taskId}/cancel`, { method: 'POST' });
+      assert.equal(ok.status, 200);
+      assert.equal((await readJson(ok)).status, 'cancelled');
+
+      const wrongMethod = await fetch(`${base}/tasks/${t.taskId}/cancel`, { method: 'GET' });
+      assert.equal(wrongMethod.status, 405);
+      assert.equal(wrongMethod.headers.get('allow'), 'POST');
+
+      const badId = await fetch(`${base}/tasks/%zz/cancel`, { method: 'DELETE' });
+      assert.equal(badId.status, 405, '方法不对就轮不到判 id（与 approve 同款排法）');
+
+      const missing = await fetch(`${base}/tasks/task_nope/cancel`, { method: 'POST' });
+      assert.equal(missing.status, 404);
+      const conflict = await fetch(`${base}/tasks/${t.taskId}/cancel`, { method: 'POST' });
+      assert.equal(conflict.status, 409, '已终态 ⇒ 409（第二条是幂等语义上的冲突，不是 500）');
+    } finally {
+      await runner.drain({ timeoutMs: 1_000 });
+      await close(server);
+    }
+  });
+
+  it('停机中仍可用（与 approve 同理由：停机窗口正是最想取消在飞任务的时候）', async () => {
+    const gate = { at: Date.now() + 3_600_000 };
+    const tool: AgentTool = {
+      name: 'wait_for_batch',
+      description: '等',
+      inputSchema: OBJ,
+      run: (_i, ctx) => {
+        ctx!.deferUntil!(gate.at!);
+        return 'deferred';
+      },
+    };
+    const { client } = mockClient([toolUseMsg('wait_for_batch', {}, 'tu1')]);
+    const app: AppCallable = {
+      name: 'timer',
+      run: (messages, opts) => executeRun({ messages, client, tools: [tool], ...opts }),
+    };
+    const runner = new AsyncRunner(app);
+    const { server, base } = await listen(app, { runner });
+    try {
+      const t = runner.submit('睡下');
+      await waitStatus(runner, t.taskId, 'suspended');
+      const draining = runner.drain({ timeoutMs: 500 });
+      const res = await fetch(`${base}/tasks/${t.taskId}/cancel`, { method: 'POST' });
+      assert.equal(res.status, 200, 'drain 期间取消照常受理');
+      assert.equal((await readJson(res)).status, 'cancelled');
+      assert.equal(await draining, true);
+    } finally {
+      await close(server);
+    }
+  });
+});
+
+/** 与 durable-timer.test.ts 同款：拿记录而不是 void */
+async function waitStatusRecord(
+  runner: AsyncRunner,
+  taskId: string,
+  status: string,
+  budgetMs = 10_000,
+) {
+  return (async () => {
+    await waitStatus(runner, taskId, status, budgetMs);
+    const rec = await runner.poll(taskId);
+    assert.ok(rec, `任务应存在：${taskId}`);
+    return rec;
+  })();
+}
