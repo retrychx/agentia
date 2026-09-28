@@ -139,7 +139,7 @@ const sink = sampleSink({ rate: 0.1, sinks: [/* 下游 */] });  // 只留 10%
 | 每次工具调用 +1.3~1.8 KB（缺省截断） | `npm run bench:trace` | 20 次工具调用 ≈ **50 KB** |
 | 每次工具调用 +1.3~1.8 KB（缺省截断） | 同上 | 100 次工具调用 ≈ **250 KB** |
 | `maxEventChars: false` + 大出参 | `PAYLOAD_ROWS=1000 npm run bench:trace` | 同样 5 次调用从 17 KB → **234 KB（13.7×）** |
-| 记账的数量上限 | `traceLimits.maxEvents` | 超限即停 + run 根两笔 `trace.truncated`（起点标记 `{limit}` + 收尾摘要 `{droppedEvents, limit}`）；两笔都**同时**进交付的 trace 与增量流 |
+| 记账的数量上限 | `traceLimits.maxEvents` | 超限即停 + run 根两笔 `trace.truncated`（起点标记 `{limit}` + 收尾摘要 `{droppedEvents, limit}`）；两笔都**同时**进交付的 trace 与增量流。⚠️ 这道闸管的是**事件**（`span.events`）——**属性**（`span.attributes`，`setAttribute`）**不在其中**，如实口径见 `tracer.ts` 的 `setAttribute` 注与 spec §10 ⑳ |
 
 算式：`每天 trace 量 ≈ 每天 run 数 × 每 run 字节 × rate`（再乘后端保留天数）。
 先用 `rate: 1` 跑一段，量出实际每日量，再拿目标容量反推 `rate`；

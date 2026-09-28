@@ -107,10 +107,14 @@ export type Suspension =
 export function suspendedResult<T>(
   ctx: {
     messages: MessageParam[];
-    progress: { iterations: number };
+    /**
+     * 段级进度簿记。`eventsDelivered` **必须从这里读**（不是 ctx 上的独立字段）：
+     * 它跨段共享、外层收尾也读同一份（见 `loop.ts` 的 catch 与外部深评 E4）。
+     * ⚠️ 别把它挪回 ctx 的顶层字段 —— 那样四个挂起出口会**静默报 false**
+     * （可选字段缺失不报错），2026-09-28 第一版就是这么改的，被既有用例当场抓住。
+     */
+    progress: { iterations: number; eventsDelivered?: boolean };
     typed: T | undefined;
-    /** 本段是否已把传入事件注入消息流（注入后又挂起 ⇒ 簿记可清，见 AgentLoopResult.eventsDelivered） */
-    eventsDelivered?: boolean;
   },
   suspension: Suspension,
   /** 挂起前那一回合的文本（循环中途挂起时给；恢复模式再次挂起时没有新回合，留空） */
@@ -132,7 +136,7 @@ export function suspendedResult<T>(
     suspendedReason: suspension.reason,
     // 只有时间挂起有目标时刻；判别联合让这一行不可能「说 timer 却没时刻」
     wakeAt: suspension.reason === 'timer' ? suspension.wakeAt : undefined,
-    eventsDelivered: ctx.eventsDelivered ?? false,
+    eventsDelivered: ctx.progress.eventsDelivered ?? false,
   };
 }
 
@@ -156,14 +160,29 @@ export function abortedResult<T = never>(iterations = 0): AgentLoopResult<T> {
  * 抛出被兜住的收尾：`cause` 是**任何**抛出来的东西（SDK 异常、类型错误、abort 信号……），
  * 出口处一律经 `classifyError` 翻成结构化 SpanError —— 「非正常收尾必带结构化 error」
  * 这条不变量落在这一处，而不是散在各 catch 里。
+ *
+ * ⚠️ `eventsDelivered` 必须由调用方**按事实**传入，不在这里硬写 `false`（外部深评 E4）：
+ * `false` 的含义是「本段没注入过事件」，而这条出口完全可能发生在注入**之后**
+ * （事件注入 → 后续回合请求失败 ⇒ 落到这里）。硬写就把「已注入」报成「未注入」——
+ * 该字段随 `rec.result` **落库、在导出面上**，消费者据此判断「这批事件进没进历史」，
+ * 报错方向恰好会让宿主以为该重投（重投 = 模型看到两条）。
+ *
+ * 当日为什么没被发现：`pendingEvents` 的清理在**终态**分支是无条件的（`async.ts`），
+ * 而这条出口只走终态 ⇒ 框架内部的簿记恰好被掩盖。它坏的是**对外字段的语义**，不是内部行为 ——
+ * 所以这是「如实类」修复：**零行为变更，一个字段不再说谎**。
  */
-export function failedResult<T = never>(cause: unknown, iterations: number): AgentLoopResult<T> {
+export function failedResult<T = never>(
+  cause: unknown,
+  iterations: number,
+  eventsDelivered?: boolean,
+): AgentLoopResult<T> {
   return loopResult<T>({
     stopReason: 'error',
     finalText: '',
     error: classifyError(cause),
     iterations,
     typed: undefined,
+    ...(eventsDelivered !== undefined ? { eventsDelivered } : {}),
   });
 }
 

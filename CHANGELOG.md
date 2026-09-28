@@ -174,6 +174,32 @@
   「这枚雷真的会炸」防真空 + 「改字段 payload 跟着变」防读副本。变异两条具名复红：
   ① 把 `snapshot()` 加回去；② 三个标量改读错来源。
   新增 `npm run bench:otlp`（`scripts/bench-otlp-snapshot.ts`，与 `bench:trace` 同档、不进 CI）。
+- **engine 层的四处「如实性」收口**（外部深评 E4 / E5 / E6 / E7）：
+  - **E4 · 请求失败出口不再硬写 `eventsDelivered: false`**：那条出口在 `loop.ts` 的 catch 里，
+    而 `eventsDelivered` 原先只挂在**内层** `LoopContext` 上 —— 外层够不到，于是只能硬写。
+    现在它挪到**跨段共享**的 `progress` 对象上（`turn.ts:233` 的注释本来就写着「抛错时调用方仍读得到」），
+    由 catch 按事实传入。**零行为变更**（`pendingEvents` 在终态分支本来就无条件清），
+    但**对外字段不再说谎**：它随 `rec.result` 落库、在导出面上，报错方向会让宿主以为该重投。
+    配回归用例（事件已注入 → 续跑段请求失败 ⇒ `eventsDelivered === true`）：**变异撤回传参即红**。
+  - **E5 · `stop reason` 的成败分类改成穷尽表**：`isSuccessStopReason` 的
+    `reason === 'end_turn' || …` 换成 `Record<AgentStopReason, boolean>` 表 ——
+    「往联合里加一个成员而没在表里表态」**在类型上写不出来**（实测 `TS2741: Property 'brand_new_reason'
+    is missing`），三处消费者（run 状态 / trace 状态 / 子 agent 交回判定）因此不可能各说各话。
+    ⚠️ 比原判要求的 `never` 断言更强：**编译期**就拦，且新增成员时逼你补一行语义。
+    配 `tests/types/stop-reason.types.ts`（类型级）：`@ts-expect-error` 是**正控** ——
+    谁把表放宽成 `Partial<Record<…>>` / 加 `?? false` 兜底，那条指令就变成未使用 ⇒ 类型检查红。
+  - **E6 · `budgetTokens` 的口径文案改准**：它**只估 `messages`** —— system prompt 与 tools schema
+    不在这个数里（`policy.ts` 只把 `messages` 喂给 `countTokens`），所以它是「对话历史多大」的尺子、
+    不是「这次请求多大」的尺子（真实 input tokens 恒 ≥ 它）。`types.ts` 与该行 `usage-guide` 同改。
+  - **E7 · `setAttribute` 的闸口径改准（只改口径，代码未动）**：报告写「无闸」，逐行复核后更准的说法是
+    「**不过 `maxEvents` 那道数量闸**、值**不截断**」；有界的部分写清楚（正文受 `maxEventChars` 截断、
+    条数受调用点上限约束）。⚠️ 并写明**为什么不顺手加截断**：属性是交付 trace 与增量流**共用的同一份载荷**，
+    而 `core/trace.ts` 那条折叠契约（按 `seq` 折回**逐字等于** `snapshot()`）的两端就是它们 ——
+    只截一侧就当场毁约（`tests/engine/trace-events.test.ts` 钉着它）。要收就收 run 入口那几条的入参大小。
+    ⚠️ **本批顺带订正上一批（#177 / ⑲）的两处计数错**：⑲ 写「P2 表 26 条：11 已落地 / 14 未做」是
+    **我的算术错**（逐行数出来是 8 / 17+1），且 ⑲ 的索引表**漏了整行 `K6`**（三态 `system` 的差异）。
+    索引表已补齐并逐行改成可数的状态，详见 `spec.md` §10 ⑳ 的订正段。**本批之后的 P2 账：
+    26 行 = 12 已落地 / 13 未做 / 1 有意为之。**
 
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /

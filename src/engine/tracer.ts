@@ -300,6 +300,23 @@ export class TraceRecorder {
     this.emit({ type: 'span.event', spanId: rootId, event: { ...marker } });
   }
 
+  /**
+   * 给 span 记一条属性（`key` 自由、`value` 三态）。
+   *
+   * ⚠️ **口径如实（2026-09-28 外部深评 E7）**：本方法**不过** `maxEvents` 那道数量闸
+   * （上面 `event()` 才过），属性值也**不做** `maxEventChars` 截断。所以「超限即停记」这句话
+   * 的射程是**事件**（`span.events`），不是属性（`span.attributes`）。
+   *
+   * 实际有界的部分（别把它读成「无界」）：`turn.ts` 的 `traceContent:'full'` 正文**确实**按
+   * `maxEventChars` 截断；属性**条数**受调用点上限约束（turns ≤ `maxIterations`、
+   * 一次工具调用 ≤ 2 条、run 根的 `tools.names` / `labels.*` 由调用方在 run 入口给）。
+   * 真正「由调用方决定大小」的是 run 入口那几条（`labels.*` 的值、`tools.names` 的拼接结果）。
+   *
+   * ⚠️ **别顺手给它加截断**：属性是**交付的 trace** 与增量流共用的同一份载荷，
+   * 而 `core/trace.ts` 那条折叠契约（按 `seq` 折回**逐字等于** `snapshot()`）的两端就是它们 ——
+   * 只截一侧就当场毁掉那条契约（`tests/engine/trace-events.test.ts` 钉着它）。
+   * 要收就收「run 入口那几条的入参大小」，见 §10 ⑳ 的取舍。
+   */
   setAttribute(id: SpanId, key: string, value: string | number | boolean): void {
     const span = this.index.get(id);
     if (!span) return;

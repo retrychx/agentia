@@ -740,7 +740,7 @@ if (result.stopReason === 'budget_exceeded') console.warn('这次 run 被预算�
 
 | 字段 | 说明 |
 |---|---|
-| `budgetTokens` | 预算（估算 input tokens）；缺省 60000 |
+| `budgetTokens` | 预算（**估算 `messages` 的** input tokens；**不含 system prompt 与 tools schema** —— 真实请求的 input tokens 恒 ≥ 这个数）；缺省 60000 |
 | `keepRecent` | compaction 保留的最近消息**条数**；缺省 20 |
 | `keepToolPairs` | context editing 保留的最近工具**对数**；缺省 1 |
 | `estimateTokens` | token 估算函数（预算决策用，非精确记账） |

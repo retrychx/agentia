@@ -111,8 +111,12 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   /**
    * 模型往返计数的外部持有者。抛错路径（请求失败）也要能报出**已发生**的往返次数，
    * 所以用对象就地累加，而不是只靠返回值。
+   *
+   * `eventsDelivered` 也住在这里（外部深评 E4）：它是**段级**事实，而外层收尾
+   * （`loop.ts` 的 catch ⇒ `failedResult`）读不到内层 `LoopContext` ——
+   * 之前它只挂在内层 ctx 上，于是那条出口只能硬写 `false`，把「已注入」报成「未注入」。
    */
-  progress?: { iterations: number } | undefined;
+  progress?: { iterations: number; eventsDelivered?: boolean } | undefined;
   /** 成本硬管控（C1）：整条 run 累计 token 上限；记账后判断，超限即停 */
   maxTotalTokens?: number | undefined;
   /** 成本硬管控（C1）：累计成本（美元）上限；依赖价格表，见 createBudgetGuard */
@@ -160,15 +164,11 @@ export interface LoopContext<S extends JsonSchema = JsonSchema> {
   /** 未定价模型去重（F2）：本循环作用域内每模型只回调一次 */
   unpricedSeen: Set<string>;
   budget: BudgetGuard | undefined;
-  progress: { iterations: number };
+  /** 与 `args.progress` **同一个对象**（buildLoopContext 装配时不复制）—— 内外都读这份 */
+  progress: { iterations: number; eventsDelivered?: boolean };
   /** submit_result 校验通过的结构化结果（先到先得，见 executeOneTool） */
   typed: SchemaType<S> | undefined;
   submitted: boolean;
-  /**
-   * 本段是否已把 `args.events` 注入消息流（deliverTaskEvents 置位；出口把它带进
-   * `AgentLoopResult.eventsDelivered` —— 宿主据此清/留 `TaskRecord.pendingEvents`）。
-   */
-  eventsDelivered: boolean;
 }
 
 /**
@@ -233,7 +233,6 @@ export function buildLoopContext<S extends JsonSchema>(args: AgentLoopArgs<S>): 
     progress: args.progress ?? { iterations: 0 }, // 就地累加，抛错时调用方仍读得到
     typed: undefined,
     submitted: false,
-    eventsDelivered: false,
   };
 }
 

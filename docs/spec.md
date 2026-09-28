@@ -4838,6 +4838,101 @@ task-events / anthropic / async）141/141 绿，`npm test` 三套件全过。
 
 **射程如实**：本节零代码改动；入库的 5 份文件入库前后逐份 `shasum -a 256` 比对，**逐字节一致**。
 
+### 2026-09-28 ⑳：**engine 层的四处「如实性」收口**（外部深评 E4 / E5 / E6 / E7）
+
+接的是 `docs/reviews/2026-09-28/README.md` §2.2 那四条「未做」（P2 表里 `engine/` 的全部剩余项）。
+四条**不同质**，逐条先说清它是什么性质 —— 这批里**三条不改行为**，只有一条动结构：
+
+**E4 · 请求失败出口硬写 `eventsDelivered: false`（如实类，零行为变更）**
+
+`failedResult(e, iterations)` 只收两个参数，而 `eventsDelivered` 位只挂在**内层**
+`LoopContext` 上（`agentLoop` 内部 `buildLoopContext` 造的那个），外层 `executeRun` 的 catch
+**够不到**它 —— 所以那条出口只能硬写 `false`。
+
+修法不是给它加个参数就完：**根因是「段级事实」被存在了段内对象上**。挪到 `progress` 上 ——
+它不是随手挑的容器，`turn.ts:233` 的既有注释写着「就地累加，**抛错时调用方仍读得到**」，
+`iterations` 与 `eventsDelivered` 是同一类事实（段级、跨函数、抛错后仍要可读），
+本来就该同住一处。改动面：`AgentLoopArgs.progress` 与 `LoopContext.progress` 加可选字段、
+`deliverTaskEvents` 置位改指 `ctx.progress`、catch 按事实传。
+
+**为什么当日没能发现**：`pendingEvents` 的清理在**终态**分支是无条件的（`async.ts`），
+而这条出口必走终态 ⇒ 框架内部簿记恰好被掩盖。它坏的是**对外字段**：`AgentLoopResult.eventsDelivered`
+随 `rec.result` 落库、在导出面上，宿主据此判「这批事件进没进历史」，报错方向**恰好会让它以为该重投**
+（重投 = 模型看到两条）。所以这是「如实类」：**内部行为一个字没变，是那个字段不再说谎**。
+
+**E5 · `stop reason` 的成败分类不是穷尽式的（形状类，改法比报告要求的更强）**
+
+报告要的是「加 `never` 穷尽断言」。实际做成**表**：`SUCCESS_STOP_REASON: Record<AgentStopReason, boolean>`。
+两条理由：
+- **`never` 断言是运行期的**（`const _never: never = reason` 只在真被调到时才红），
+  而 `Record` 是**编译期**的：往联合里加成员而不表态 ⇒ `tsc` 直接 `TS2741`。**更强，且免费**。
+- 表本身带语义（每一行都要写 `true/false` 并附注释），而 `never` 断言只证明「有人补了一行」。
+
+射程也要说准：报告写「要动 4 处」是**概数**。逐处看过之后，需要穷尽性的只有**分类点**一个
+（`isSuccessStopReason`），其余两处（`runtime/run.ts` 的状态、`engine/loop.ts` 的 trace 状态、
+`toolkit/subagent.ts` 的交回）**都经它**。所以「三处消费者各说各话」这个历史事故
+（`stop_sequence` 落地时 loop 判成功、Run 判失败）从今天起在类型上不可能重演。
+`engine/stop-reason.ts` 里那条 `if` 链**不在射程**：它的输入是**模型给的字符串**（不是我们的联合类型），
+穷尽性对它是错的概念。
+
+**E6 · `budgetTokens` 的口径文案不准（文案类，零行为变更）**
+
+`types.ts` 写「预算（估算 input tokens）」，而 `policy.ts` 只把 `messages` 喂给 `countTokens` ——
+system prompt 与 tools schema 同样进请求、却不在这个数里。选**改口径**而不是「把 system/tools 也计入」：
+后者是**行为变更**（更多 run 会触发压缩），而报告自己把这条列在 P2「结构性 / 一致性问题」，
+不是「压缩策略不对」。改后两边（`types.ts` 与 `usage-guide` 的表格）说的是同一件事，
+并写明「真实 input tokens 恒 ≥ 这个数」——这才是读它的人真正需要知道的那句话。
+
+**E7 · `setAttribute` 到底有没有闸（文案类，代码未动 —— 并写明为什么不加闸）**
+
+报告原判「`setAttribute` 不受 `maxEvents` 约束」，复核时它已被自己的第二轮修正为
+「**属性条数/总字节**不受**条数闸**约束」。本轮把这句准确的话落到**代码注**（`tracer.ts` 的 `setAttribute`）
+与 `observability.md` 那张表（原表只写「超限即停」，容易被读成「一切都不再记」）。
+
+⚠️ **为什么不做成「给属性也加闸/加截断」**（这是本条真正的取舍）：属性是**交付的 trace 与增量流
+共用的同一份载荷**，而 `core/trace.ts` 那条折叠契约 —— 「按 `seq` 折回必须**逐字等于** `snapshot()`」——
+的两端就是它们。只截一侧（或只拦一侧）就当场毁掉那条契约，而它有用例钉着
+（`tests/engine/trace-events.test.ts`）。要收，正确的位置是**run 入口那几条由调用方决定大小的入参**
+（`labels.*` 的值、`tools.names` 的拼接结果），那是另一次设计，不在「如实性收口」这轮。
+
+**验证**
+
+- E4：新回归用例（事件已注入 → 续跑段请求失败 ⇒ `eventsDelivered === true`，并带阳性对照
+  「工具跑过 2 次」证明真的进过续跑段）。**变异：撤回 catch 的传参 ⇒ 恰好那条红**，还原后
+  `sha256` 逐字节一致。⚠️ 这条用例的**第一版夹具是错的**：工具在续跑段又请求延后 ⇒ 本段在发请求
+  之前又挂起 ⇒ 脚本永远耗不尽 ⇒ 30s 超时（把「没走到出口」伪装成「用例写不出来」）。已改成只在第 1 次延后。
+  ⚠️ **本批最值得记的一处自我更正：E4 的第一版修出了真回归。** `eventsDelivered` 从
+  `LoopContext` 顶层搬走之后，**四个挂起出口**（`suspendedResult` 的 ctx 里那个**可选**字段
+  再没人传）全部**静默变成 `false`** —— 可选字段缺失不报错，`build` / `typecheck` / `biome` **全绿**。
+  抓住它的是**既有用例** `tests/transport/task-events-input.test.ts` 的「事件注入后正常循环里再挂起
+  ⇒ 簿记清掉」：`rec.pendingEvents` 该是 `undefined`，实测留住了那条事件。**「改完先跑三套件」的价值
+  就在这里 —— 类型检查对「漏读一个可选字段」是瞎的。** 修法：`eventsDelivered` 只留一个真源
+  （`progress`），`suspendedResult` 也改从 `ctx.progress` 读，并在那处写下「别挪回顶层字段」。
+- E5：**变异：往 `AgentStopReason` 加第 13 个成员 `'brand_new_reason'` ⇒ `npm run typecheck` 红**
+  （`TS2741 ... is missing ... but required in type 'Record<AgentStopReason, boolean>'`），还原后逐字节一致。
+  另配 `tests/types/stop-reason.types.ts` 的 `@ts-expect-error` 正控（表被放宽成 `Partial` 时它变成未使用 ⇒ 红）。
+- E6 / E7：零代码行为，验证 = 三套件全绿 + 文档门禁（`usage-guide` 表格与源码对账那条也在其中）。
+- 全链：`build` / `biome ci . --error-on-warnings` / `typecheck` / `typecheck:types` / `typecheck:tests` 全绿；
+  `npm test` 三套件全绿。
+
+**射程如实**：本批**不改任何运行时行为**（E4 改的是对外字段的取值来源、E5 等价重写、E6/E7 只改文字）。
+
+**⚠️ 顺带订正 ⑲ 的两处计数错（本批自查出来的）**
+
+⑲ 里我写「P2 表 26 条：**11 条已落地 / 14 条未做**」——**那是我的算术错**。逐行数出来是
+**8 已落地 / 17 未做 + 1 有意为之**（26 行）；「11」不能从任何逐行状态里数出来。
+更糟的是第二处：**⑲ 的索引表漏了整行 `K6`**（三态 `system` 的隐性差异没进使用者文档 ——
+函数形态不追加 `REPORT_HINT`，另两形态追加），而汇总却按 26 行写的 —— 数字与清单**互不自洽**。
+
+按本节的**只增不改**纪律，⑲ 的原文一字未动，订正落在两处：
+- **索引表**（`docs/reviews/2026-09-28/README.md` §2.2，那是「还剩什么」的真源）：补 `K6` 行、
+  逐行状态改成 `✅`/`❌` 可数、汇总改成 **12 / 13 + 1**，并在表下留一段订正说明；
+- 本条目（⑳）与 `CHANGELOG` 的 ⑳ 条各记一句。
+
+教训写下来：**汇总数字必须能从逐行状态里数出来**（`grep -c` 一次即可），
+不能凭印象写 —— 这与我在这里反复强调的「读数而非印象」是同一条，只是这次犯在自己身上。
+**本批之后的 P2 账**：26 行 = **12 已落地 / 13 未做 / 1 有意为之**。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

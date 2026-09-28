@@ -5,14 +5,14 @@
 >
 > **引用口径（重要）**：报告正文里写的「未修 / 存在 / 白算」是**当日判定**。要判「现在还成不成立」，
 > 看本表与 `docs/spec.md` §10 的落地条目（⑧–⑱）。⚠️ **不要把正文当现状读** —— 它至少已经有
-> 18 条被修掉了（其中 11 条是本目录入库前 24 小时内合的 PR）。
+> **20 条**被修掉了（P1 8 + P2 12）—— 准确计数看 §2 的两张表，那才是真源（⚠️ 本行早先写的「18 条」是我自己的算术错，见 `docs/spec.md` §10 ⑳ 的订正说明）。
 
 ## 0. 为什么入库（这条改了一个惯例）
 
 此前这类「给人读的复核报告」按仓库惯例**不随仓提交**（一直以 `??` 出现在 `git status`，
 归档进 `.workbuddy/`，而那目录被 `.gitignore` 忽略）。改成入库的两个理由：
 
-1. **剩余条目是真实的待办来源**（下面还有 15 条未做），不入库 ⇒ 只有当天在场的人还知道；
+1. **剩余条目是真实的待办来源**（下面还有 13 条未做），不入库 ⇒ 只有当天在场的人还知道；
 2. `spec.md` / `CHANGELOG.md` 里有 **7 处**引用这些报告（见 §3），而那 7 处此前指向一个
    **不在仓里**的文件 —— 「文档指向一个读不到的东西」本身就是坏引用。
 
@@ -29,7 +29,7 @@
 
 | 文件 | 行数 | 是什么 | 现在怎么读 |
 |---|---:|---|---|
-| `DEEP-AUDIT-VERIFIED-2026-09-28.md` | 138 | **最终确认清单**：33 条问题行**逐条回源复核后**的版本 | **要当施工清单就看这份**。P1 已清零；§1 的 P2 表见下方 §2.2（26 条，已落地 11） |
+| `DEEP-AUDIT-VERIFIED-2026-09-28.md` | 138 | **最终确认清单**：33 条问题行**逐条回源复核后**的版本 | **要当施工清单就看这份**。P1 已清零；§1 的 P2 表见下方 §2.2（26 条，已落地 12） |
 | `DEEP-AUDIT-2026-09-28.md` | 304 | 原始审计全貌（9 个模块分组 + 33 条问题行） | 问题清单已被上表取代；**独有价值**是 §3.2「现有验证手段盘点」/ §3.4「建议的四层验证策略」/ §1 逐模块叙述 / §3「刻意不动」论证 |
 | `DEEP-REVIEW-2026-09-28.md` | 287 | 更早一轮外部深评（对象 v0.9.4 @ `25c1983`） | 两条 P1 与 P2-1/P2-2/P3-1/P3-2 **全部已落地**（见 §2.3） |
 | `PR-164-REVIEW-2026-09-28.md` | 193 | 对 PR #164 的复核（同一条外部线） | 残余两条（§2 守卫盲区 / §4 折叠不变量）**均已落地**（见 §2.3） |
@@ -67,10 +67,10 @@ engine/stop-reason.ts` **仍为空**；`S3` = `statusOfStreamError` **仍有两�
 | `C5` | `maxTotalTokens` / `maxCostUsd` 未登记进 limits 表 | ✅ **已落地** | #172：登记（0 语义 = 「任何用量都超」）+ `NaN` 构造期响亮失败；同批补登另 3 个未登记旋钮 |
 | `C6` | `core/schema.ts` 无递归深度上限（环 ⇒ 爆栈） | ✅ **已落地** | #171：`assertNoSchemaCycle()` 前置抓环（祖先集，共享子树不算环）+ `MAX_SCHEMA_DEPTH` |
 | `E3` | 压缩失败的滞回额度被烧掉 | ✅ **已落地** | #170：改记「上次**成功**压缩的回合」 |
-| `E4` | `failedResult` 硬写 `eventsDelivered: false` | ❌ **未做**（半成品） | 类型已备（`loop-result.ts:79/91` 的 `eventsDelivered?: boolean` 已存在），但**唯一调用点 `loop.ts:427` 没传** ⇒ 零行为差异仍在。⚠️ 报告自己定性为「**如实类**、不当 P1、不必急于修」 |
-| `E5` | 新增 `stop_reason` 无 `never` 穷尽断言 | ❌ **未做** | `grep '_never\|: never' engine/types.ts engine/stop-reason.ts` **仍为空**（对比 `http-endpoints.ts` 有 `const _never: never`） |
-| `E6` | `budgetTokens` 口径文案说「input」但只估 messages | ❌ **未做** | `types.ts:96` 注释仍是「预算（估算 input tokens）」，`policy.ts:67` 仍只喂 `messages` |
-| `E7` | `setAttribute` 不受 `maxEvents` 约束 | ❌ **未做**（表述已修正） | `tracer.ts:303` 仍无条数闸。报告已按复核修正为「**属性条数/总字节**不受条数闸约束」（正文受 `maxEventChars` 截断 ⇒ 有界） |
+| `E4` | `failedResult` 硬写 `eventsDelivered: false` | ✅ **已落地** | #178：`eventsDelivered` 从**内层** `LoopContext` 挪到**跨段共享**的 `progress` 上（外层 catch 够不到内层 —— 那正是它只能硬写 `false` 的原因），catch 按事实传。**零行为变更**（终态分支本来就无条件清 `pendingEvents`），坏的是**对外字段**；配回归用例，**变异撤回传参即红** |
+| `E5` | 新增 `stop_reason` 无 `never` 穷尽断言 | ✅ **已落地** | #178：`===` 链换成 `Record<AgentStopReason, boolean>` **分类表** —— 往联合加成员不表态 ⇒ `tsc` 报缺属性（实测 `TS2741`）；比报告要的 `never` 断言**更强**（编译期就拦）。配 `tests/types/stop-reason.types.ts` 的 `@ts-expect-error` 正控 |
+| `E6` | `budgetTokens` 口径文案说「input」但只估 messages | ✅ **已落地** | #178：口径改准 —— 只估 `messages`（system prompt 与 tools schema 不在其中，真实 input tokens 恒 ≥ 它）；`types.ts` 与 `usage-guide` 两处同改 |
+| `E7` | `setAttribute` 不受 `maxEvents` 约束 | ✅ **已落地**（只改口径，代码未动） | #178：准确说法落进 `tracer.ts` 的 `setAttribute` 注与 `observability.md` 那张表（原表只写「超限即停」，易被读成「一切都不再记」）；⚠️ 并写明**为什么不加截断** —— 属性是交付 trace 与增量流**共用的同一份载荷**，折叠契约（按 `seq` 折回**逐字等于** `snapshot()`）的两端就是它们 |
 | `E8` | `'tool.input'/'tool.output'` 跨三层手写 | ✅ **已落地** | #174：常量落 **`core/trace.ts`**（⚠️ **不是**报告建议的 `engine/tool-events.ts` —— `integrations` 只许依赖 `core`，落 engine 够不着）+ 源码级守卫 |
 | `T4` | 非终态流的缓冲「永不淘汰」 | ❌ **未做**（但当日判据不完整） | 单流**条数**上限（`TASK_STREAM_DEFAULT_MAX_EVENTS = 500`，丢最旧 + `NaN` 闸）**在审计当时就已存在**（#115 起）—— 报告漏看了这一条；**仍然成立**的是「非终态流的**表项**不被回收」⇒ 挂起任务越多流表项越多（每个 ≤500 条 / ≈1MB）。要收就收表项，不是收条数 |
 | `T5` | 队列无深度上限、无背压信号 | ✅ **已落地** | #173：`maxQueued` + `TaskQueueFullError` ⇒ HTTP **503 + `Retry-After`**（判据是「真正在排队的深度」，不是「已受理未持槽数」） |
@@ -87,8 +87,13 @@ engine/stop-reason.ts` **仍为空**；`S3` = `statusOfStreamError` **仍有两�
 | `K3` | `Run.finish()` 无守卫（`suspended` 后可静默翻终态） | ❌ **未做** | `runtime/run.ts:68` `finish()` 仍无守卫（`start()` / `suspend()` 都有） |
 | `K4` | async 工厂被静默缓存为 Promise | ❌ **未做** | `container.ts` 仍无 thenable 检测 |
 | `K5` | 记忆回写全量读改写、无 CAS / 体积上限 | ❌ **未做** | `run.ts:367` `flushMemory` 仍 last-write-wins |
+| `K6` | 三态 `system` 的隐性差异没进使用者文档 | ❌ **未做** | `subagent.ts` 的 `resolveSubSystem`：函数形态 `return spec(task)`（**不追加** `REPORT_HINT`），`SystemPrompt` 与 `string` 两形态追加；`usage-guide.md:246` 只列三种形态、未提这个差异 |
 
-**P2 合计：11 条已落地 / 14 条未做 / 1 条「有意为之」（代码未动、性质已认）。**
+**P2 合计：12 条已落地 / 13 条未做 / 1 条「有意为之」（代码未动、性质已认）—— 共 26 行。**
+
+> ⚠️ **本表的两处订正（2026-09-28，`spec.md` §10 ⑳ 有完整说明）**：① 汇总行原先写「11 已落地 / 14 未做」——
+> 那是我自己的算术错，逐行数出来是 8 / 17+1（`P2` 表共 **26** 行）；② 入库时**漏了第 26 行 `K6`**（三态 `system` 的差异），
+> 现已补上。教训：**汇总数字要能从逐行状态里数出来**，不能凭印象写。
 
 ### 2.3 另外三份的残留项
 
@@ -133,9 +138,10 @@ engine/stop-reason.ts` **仍为空**；`S3` = `statusOfStreamError` **仍有两�
 
 ## 4. 下一轮从哪接
 
-1. **P2 表还有 14 条未做**（`E4`–`K5`），按「会不会真咬人」排序的话，值得先看：
-   `E5`（穷尽断言，加了新 `stop_reason` 没人红）、`K3`（`finish()` 无守卫 ⇒ 静默翻终态）、
-   `K4`（async 工厂静默给 Promise）、`S2`（无 usage 时成本静默恒 0）。
+1. **P2 表还有 13 条未做**（`T4` / `T6` / `S1`–`S3` / `S5` / `S6` / `K1`–`K6`），按「会不会真咬人」排序，
+   先看这四条：`K3`（`finish()` 无守卫 ⇒ `suspended` 后可静默翻终态）、`K4`（async 工厂被静默缓存成 Promise，
+   下游拿到的是 Promise）、`S2`（端点不给 usage ⇒ 成本静默恒 0，连「算不出」的信号都没有）、
+   `K6`（文档缺一句：函数形态的 `system` 不追加运行提示 —— 纯文档，最便宜）。
 2. `DEEP-AUDIT-2026-09-28.md` §3.2 / §3.4 那两节（验证手段盘点 / 四层验证策略）**从未被动过**，
    它是本仓质量门禁的下一步来源。
 3. 每落地一条，回来改 §2 的表 —— 详见 §0 的三条约定。

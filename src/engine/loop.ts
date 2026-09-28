@@ -97,7 +97,12 @@ function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | un
  *    `TaskRecord.pendingEvents` 里，等真正跑通的那次续跑再注入。
  */
 function deliverTaskEvents(
-  ctx: { messages: MessageParam[]; args: AgentLoopArgs; eventsDelivered: boolean },
+  ctx: {
+    messages: MessageParam[];
+    args: AgentLoopArgs;
+    /** 与 `args.progress` 同一个对象（LoopContext 的必要字段，故意要它的非 optional 形态） */
+    progress: { iterations: number; eventsDelivered?: boolean };
+  },
   events: readonly TaskEvent[] | undefined,
 ): void {
   if (!events || events.length === 0) return;
@@ -112,7 +117,8 @@ function deliverTaskEvents(
   }
   // 置位：出口把它带进结果（eventsDelivered），宿主据此清 pendingEvents ——
   // 注入过的簿记留到下一次续跑就是**重复注入**
-  ctx.eventsDelivered = true;
+  // 置在**跨段共享**的 progress 上（不是内层 ctx）：外层 catch 也要读它（外部深评 E4）
+  ctx.progress.eventsDelivered = true;
 }
 
 /**
@@ -324,7 +330,9 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     iterations: ctx.progress.iterations,
     typed: ctx.typed,
     error,
-    eventsDelivered: ctx.eventsDelivered,
+    ...(ctx.progress.eventsDelivered !== undefined
+      ? { eventsDelivered: ctx.progress.eventsDelivered }
+      : {}),
   });
 }
 
@@ -378,7 +386,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   for (const [k, v] of Object.entries(runConfigSnapshot(options)))
     recorder.setAttribute(rootId, k, v);
 
-  const progress = { iterations: 0 };
+  const progress = { iterations: 0, eventsDelivered: false };
   // fallback 链（R8-P2）在 **try 之外**解析 + 校验：坏环 / 死 client（持久化反序列化的
   // 空壳）是调用方的配置错，必须在 run 入口响亮抛 TypeError —— 放进 try 会被
   // failedResult 收成「一条失败的 run」，配置错就这样被记成了运行失败（静默降级的一种）。
@@ -424,7 +432,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     );
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报
-    result = failedResult(e, progress.iterations);
+    // eventsDelivered 同期照实传：这条出口可能发生在**事件注入之后**（见 failedResult 头注）
+    result = failedResult(e, progress.iterations, progress.eventsDelivered);
   }
 
   // suspended 不是失败：挂起段本身执行无误（「等人」不该被看板算成「失败」），
