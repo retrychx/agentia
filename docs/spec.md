@@ -4583,6 +4583,28 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    - 不把 `ownerId` 解析器挂进公开 API —— 它是内部标识，暴露出去等于承诺格式稳定。
    - 不改 `resume-policy.ts` 的 `own-process` / `suspended` 两条既有优先级（测试已钉住）。
 
+### 2026-09-28 ⑬：**schema 的环与深度护栏**（外部深评 C6）
+
+事实核验：`core/schema.ts` 的 `check()` 按 `properties` / `items` 递归，**没有任何深度/环判据**
+（`grep -rnE 'maxDepth|MAX_DEPTH' src/core/schema.ts` 命中 0）。自引用 schema 在 TS 里是自然的
+写法（`const s = {type:'object',properties:{}; s.properties.self = s}`），而症状是
+`RangeError: Maximum call stack size exceeded` —— 从**校验**里抛出来，看不出是 schema 有问题。
+
+⚠️ **本轮修正了原报告的一个口径**：只加「深度上限」并**不够**。递归深度是
+`min(schema 深度, 值深度)` ⇒ **环 + 浅值**根本不会爆栈（照常校验通过），深度闸抓不到它。
+所以两个机制各管一头：
+
+1. `assertNoSchemaCycle()`：**前置**遍历 schema 的三条边（properties.* / items /
+   additionalProperties），用**祖先集**判环（共享子树 = DAG 是合法写法，不能误报），
+   报错点名「哪条路径指回了它的祖先」；
+2. `MAX_SCHEMA_DEPTH = 256`：递归背板，兜「合法但深到失控」（真实 tool schema 深度是个位数，
+   256 不误伤；V8 栈在几千帧量级，256 足够早）。**不进 `limits.ts` 的 0 语义表**
+   （数量有界不是用户旋钮，与 `MAX_DELIVERED_EVENT_IDS` / `MAX_PENDING_EVENTS` 同档）。
+
+用例 `tests/core/schema-depth.test.ts`（4 条：环 + 浅值报环点路径 / DAG 不误报 / 60 层合法深度
+不误伤 / 300 层撞背板）。红证据：第一版只带深度闸时，「环 + 浅值」用例**实证红**
+（`必须抛出来（不是静默放行）`）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

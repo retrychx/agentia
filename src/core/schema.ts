@@ -2,6 +2,20 @@ import type { JsonSchema } from './tool.js';
 import { stringifySafe } from './json.js';
 
 /**
+ * `check()` 的**递归深度背板**（2026-09-28 外部深评 C6 收口）。
+ *
+ * 这道闸只管一件事：**别让递归钻到 V8 的栈溢出**（`RangeError: Maximum call stack size exceeded`
+ * 的症状没有辨识度 —— 调用方看到的是「校验不了」，而不是「这个 schema 有问题」）。
+ * 环本身由 `assertNoSchemaCycle()`（前置、与值深度无关）具名抓出来；这里只兜「合法但深到失控」
+ * 那种形态（要手搓几千层嵌套 schema 才够，属于事故级输入）。
+ *
+ * 256 的判据：真实 tool schema 的深度是**个位数**，256 是它的两个数量级以上 ⇒ 不误伤；
+ * 而 V8 的栈在几千帧量级 ⇒ 256 足够早地拦住。**数量有界不是用户旋钮**，不进 `core/limits.ts`
+ * 的 0 语义表（与 `MAX_DELIVERED_EVENT_IDS` / `MAX_PENDING_EVENTS` 同档）。
+ */
+const MAX_SCHEMA_DEPTH = 256;
+
+/**
  * Agentia —— 最小 JSON Schema 校验子集（v1 裸 JSON Schema；zod 为可选外挂，
  * 见 toolkit/zod.ts —— schema 上挂 __zodValidate 时先走它，core 本身不依赖 zod）。
  *
@@ -22,10 +36,51 @@ export function validateJsonSchema(schema: JsonSchema, input: unknown): string |
     const err = (zv as (input: unknown) => string | null)(input);
     if (err) return `$: ${err}`;
   }
-  return check(schema, input, '$');
+  assertNoSchemaCycle(schema);
+  return check(schema, input, '$', 0);
 }
 
-function check(schema: JsonSchema, value: unknown, path: string): string | null {
+/**
+ * **前置环检测**：`properties` / `items` / `additionalProperties` 这几条边里有环 ⇒ 具名报错。
+ *
+ * 为什么不是「只靠深度闸」：递归深度 = min(schema 深度, 值深度)，所以**环 + 浅值**根本不会爆栈
+ * （照常校验通过）—— 那是作者的一个合法但可疑的写法，不该被当成「输入非法」。真正要防的是
+ * 环**配深值**时钻进栈溢出，而那件事用深度闸只能兜住症状；这里直接点出病根（哪条路径上是环）。
+ *
+ * 用**祖先集**而不是全局 visited：共享子树（DAG，`{a: s, b: s}` 这种）是合法写法，不能报环。
+ */
+function assertNoSchemaCycle(root: JsonSchema): void {
+  const ancestors = new Set<object>();
+  const walk = (schema: unknown, path: string): void => {
+    if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return;
+    if (ancestors.has(schema)) {
+      throw new Error(
+        `schema 里有**环**（循环引用）：${path} 又指回了它自己的祖先。` +
+          '这会按值深度一路递归下去 —— 深值就是 RangeError: Maximum call stack size exceeded。' +
+          '修法：把自引用那段拆成不带环的子 schema，或改成显式的深度上限。',
+      );
+    }
+    ancestors.add(schema);
+    const s = schema as Record<string, unknown>;
+    for (const [key, sub] of Object.entries((s.properties as object | undefined) ?? {})) {
+      walk(sub, `${path}.properties.${key}`);
+    }
+    if (s.items !== undefined) walk(s.items, `${path}.items`);
+    if (typeof s.additionalProperties === 'object') {
+      walk(s.additionalProperties, `${path}.additionalProperties`);
+    }
+    ancestors.delete(schema);
+  };
+  walk(root, '$');
+}
+
+function check(schema: JsonSchema, value: unknown, path: string, depth = 0): string | null {
+  if (depth > MAX_SCHEMA_DEPTH) {
+    throw new Error(
+      `schema 递归超过 ${MAX_SCHEMA_DEPTH} 层（路径 ${path}）—— 校验在这里中止。` +
+        '（环由 assertNoSchemaCycle 前置抓；这里兜的是「合法但深到失控」的形态。）',
+    );
+  }
   const en = schema.enum;
   if (Array.isArray(en) && !en.some((v) => deepEqual(v, value))) {
     return `${path}: 值不在 enum 允许范围内（得到 ${preview(value)}）`;
@@ -33,9 +88,9 @@ function check(schema: JsonSchema, value: unknown, path: string): string | null 
 
   switch (schema.type) {
     case 'object':
-      return checkObject(schema, value, path);
+      return checkObject(schema, value, path, depth);
     case 'array':
-      return checkArray(schema, value, path);
+      return checkArray(schema, value, path, depth);
     case 'string':
       return typeof value === 'string' ? null : `${path}: 期望 string，得到 ${typeOf(value)}`;
     case 'number':
@@ -55,7 +110,12 @@ function check(schema: JsonSchema, value: unknown, path: string): string | null 
   }
 }
 
-function checkObject(schema: JsonSchema, value: unknown, path: string): string | null {
+function checkObject(
+  schema: JsonSchema,
+  value: unknown,
+  path: string,
+  depth: number,
+): string | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return `${path}: 期望 object，得到 ${typeOf(value)}`;
   }
@@ -69,7 +129,7 @@ function checkObject(schema: JsonSchema, value: unknown, path: string): string |
   const properties = schema.properties ?? {};
   for (const [key, sub] of Object.entries(properties)) {
     if (Object.hasOwn(obj, key)) {
-      const err = check(sub, obj[key], `${path}.${key}`);
+      const err = check(sub, obj[key], `${path}.${key}`, depth + 1);
       if (err) return err;
     }
   }
@@ -84,12 +144,17 @@ function checkObject(schema: JsonSchema, value: unknown, path: string): string |
   return null;
 }
 
-function checkArray(schema: JsonSchema, value: unknown, path: string): string | null {
+function checkArray(
+  schema: JsonSchema,
+  value: unknown,
+  path: string,
+  depth: number,
+): string | null {
   if (!Array.isArray(value)) return `${path}: 期望 array，得到 ${typeOf(value)}`;
   const items = schema.items;
   if (items && typeof items === 'object' && !Array.isArray(items)) {
     for (let i = 0; i < value.length; i++) {
-      const err = check(items as JsonSchema, value[i], `${path}[${i}]`);
+      const err = check(items as JsonSchema, value[i], `${path}[${i}]`, depth + 1);
       if (err) return err;
     }
   }

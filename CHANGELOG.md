@@ -76,7 +76,15 @@
   传给 `RunAgentOptions.toolTimeoutMs` 的 `NaN`、或任何超过上限的超时值，现在会**抛错**。
   这两种值此前的行为都与配置意图相反（一个静默变「立即超时」，一个静默变「不设超时」）。
 
-### 修复 · 复审收口（外部深评 2026-09-28，两条 P1）
+### 修复 · 复审收口（外部深评 2026-09-28）
+
+- **schema 的环与深度护栏**（C6）：`validateJsonSchema` 按 properties / items 递归，
+  **环 + 深值**会钻到 V8 的 `RangeError: Maximum call stack size exceeded` —— 症状没有辨识度
+  （看着像「校验不了」，而不是「schema 有环」）。现在两道闸：`assertNoSchemaCycle()` **前置**抓环
+  （与值深度无关，点名路径；用祖先集，**共享子树不算环**）+ `MAX_SCHEMA_DEPTH = 256` 兜
+  「合法但深到失控」。⚠️ 只加深度闸是**不够的**：递归深度 = min(schema 深度, 值深度)，
+  所以「环 + 浅值」根本不会爆栈（我也正是这么写出第一版红用例的）。
+
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /
   `approve` / `signalTask` / 到期唤醒 / **审批超时兜底** / **`resumePending` 的认领**）形状相同，
