@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { executeRun } from '../../src/index.js';
 import type { AgentTool, MessageParam, ToolResultBlockParam } from '../../src/index.js';
-import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
+import { mockClient, toolUseMsg, endTurnMsg, U } from '../helpers.js';
 import { createDeferRequest, resolveWakeAt } from '../../src/engine/defer.js';
 
 /**
@@ -264,5 +264,80 @@ describe('时间挂起（引擎侧）', () => {
     const body = out.body as { ok: boolean; errorKind?: string };
     assert.equal(body.ok, false);
     assert.equal(body.errorKind, 'threw');
+  });
+
+  it('同批有**没请求延后**的兄弟工具 ⇒ 事件记 discarded + 一条 console.warn，且醒来那个副作用**真的**再来一遍', async () => {
+    // 这条钉的是「整批语义」的代价（spec §10 ② 决策 3）：作废的是**整批** tool_result，
+    // 所以同回合里已经执行完的兄弟工具会在醒来重跑时再跑一遍。契约把它写成「看得见」的
+    // 三件东西 —— 事件里的 discarded 条数、一条 console.warn、以及**行为本身**。
+    // 前两件是信号，第三件才是事实：本项目最贵的一类错就是「只剩信号、行为没跟上」。
+    const gate: Gate = { at: Date.now() + 3_600_000 };
+    const wait = { calls: 0 };
+    const charge = { calls: 0 };
+    const { client } = mockClient([
+      {
+        id: 'm1',
+        model: 'claude-opus-5',
+        stop_reason: 'tool_use',
+        usage: U,
+        // 一个 assistant 消息带**两个** tool_use：模型只给延后的那个工具，兄弟是顺带的
+        content: [
+          { type: 'tool_use', id: 'tu1', name: 'wait_for_batch', input: {} },
+          { type: 'tool_use', id: 'tu2', name: 'charge_card', input: {} },
+        ],
+      },
+      endTurnMsg('到位了'),
+    ]);
+    const tools: AgentTool[] = [
+      waiterTool(wait, gate),
+      {
+        name: 'charge_card',
+        description: '有副作用的工具（醒来重跑时会被执行第二遍）',
+        inputSchema: OBJ,
+        run: () => {
+          charge.calls++;
+          return 'charged';
+        },
+      },
+    ];
+
+    // console.warn 用**手写替换 + finally 还原**（不引 mock 库）：断言的是「有没有这条告警、
+    // 它说的是不是这件事」。node:test 单文件内用例串行，替换窗口不会串到别的用例。
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...a: unknown[]) => {
+      warnings.push(a.map(String).join(' '));
+    };
+    let first: Awaited<ReturnType<typeof executeRun>>;
+    try {
+      first = await executeRun({ messages: [{ role: 'user', content: 'go' }], client, tools });
+    } finally {
+      console.warn = origWarn;
+    }
+
+    assert.equal(first.result.stopReason, 'suspended');
+    assert.equal(first.result.suspendedReason, 'timer');
+    assert.deepEqual(first.result.pendingApprovals, ['tu1'], '在等的只有**请求延后**的那条');
+    assert.equal(wait.calls, 1);
+    assert.equal(charge.calls, 1, '兄弟工具**真的执行过** —— 这正是要提示的代价');
+
+    const turn = first.result.trace.spans.find((s) => s.kind === 'llm.turn')!;
+    const body = turn.events.find((e) => e.name === 'defer.requested')!.body as {
+      discarded: number;
+      tool_use_ids: string[];
+    };
+    assert.equal(body.discarded, 2, '两条 tool_result 全被作废（含没请求延后的那条）');
+    assert.deepEqual(body.tool_use_ids, ['tu1']);
+
+    assert.equal(warnings.length, 1, '恰好一条告警（只有真存在兄弟时才提示）');
+    assert.match(warnings[0]!, /1 条没有请求延后/);
+    assert.match(warnings[0]!, /副作用会在醒来重跑时重复/);
+
+    // 行为这一半：醒来整批重跑 ⇒ 那个有副作用的兄弟**再跑一遍**（不是理论上的重复）
+    gate.at = null;
+    const resumed = await executeRun({ messages: first.result.suspendedMessages!, client, tools });
+    assert.equal(resumed.result.stopReason, 'end_turn');
+    assert.equal(charge.calls, 2, '副作用真的重复了（契约②的代价）');
+    assert.equal(wait.calls, 2);
   });
 });
