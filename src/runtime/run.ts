@@ -105,6 +105,7 @@ export class Run {
         pendingApprovals: undefined,
         suspendedReason: undefined,
         wakeAt: undefined,
+        eventsDelivered: false,
       };
       return;
     }

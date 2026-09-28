@@ -9,6 +9,32 @@
 
 ### 新增
 
+- **run 事件投入口（spec §10 2026-09-28 ⑥，定案 A3+B1）**：外部系统可以把一条**事件**
+  投给一条**挂起**的 run —— `AsyncRunner.signalTask(taskId, event)` 与
+  `POST /tasks/:id/events`（与 approve/cancel 对称），醒来时事件进消息历史。
+  - 🔒 **投毒面焊成窄的**：事件体是白名单 `{ eventId?, type, payload }`（全是字符串，
+    多一个字段 → 400；`payload` 上限与 `maxBodyBytes` 同口径 → 413）—— 外部永远不能
+    构造消息块，引擎把它渲染成**一条 user 文本消息**，在未决 tool_use 解决之后注入
+    （直接追加到历史末尾会破坏续跑判定：`tailToolUses` 只认末尾一条）。
+  - **只对挂起生效**：不存在 → 404；非 `suspended`（含已终态）→ 409；先落库再派发
+    （崩在窗口里不丢事件）；timer 挂起收到事件**提前醒**且不沿旧 `wakeAt`。
+  - **幂等**：给 `eventId` 就按它去重（`TaskRecord.deliveredEventIds`，随记录落库、
+    有界 FIFO）—— 重复投递 → 409；不给则重复投递 = 重复进历史（如实，不假装恰好一次）。
+  - **留痕**：续跑段 run 根记 `task.event { delivered, event_type, event_id? }`；
+    离开挂起态时挂起读数照常除名。
+  - 新增导出：`TaskEvent`（类型）；`RunInvocationOptions.events` / `TaskRecord.pendingEvents`
+    / `TaskRecord.deliveredEventIds` / `AgentRunResult.eventsDelivered`（全部加法，无破坏性）。
+    `eventsDelivered` 是引擎对「本段把事件真注入了没有」的如实报告 —— 宿主据此清簿记，
+    保证注入后再次挂起也不会在下次续跑**重复注入**（复审探针抓出的缝，已闭合）。
+- **sqlite 到期索引（spec §10 2026-09-28 ⑤ 落地）**：`TaskStore` 新增**可选**方法
+  `listDue?(before)`（接口加法，不破自定义 store），`SqliteTaskStore` 实现它
+  （派生列 `wake_at` + `(status, wake_at)` 索引；存量库构造期就地迁移并回填，
+  列漂移读时自愈）。`AsyncRunner` 的「到期唤醒」那一半扫描有索引走索引
+  （10k 记录：全表 list ~38ms → listDue ~0.1ms），没有回退全表、语义不变。
+  InMemory / File store **不实现**（它们的 list 本来就在内存里）。
+  ⚠️ `resumePending` 的其余三条职责（挂起读数重建 / 审批超时 / 孤儿认领）仍以全表
+  `list()` 为输入 —— listDue 只替代到期唤醒那一半。
+
 - **时间挂起（durable timer，spec §10 2026-09-28 ②）**：工具可以在**执行期**调
   `ctx.deferUntil(at)` 说「现在还不是时候，T 之后再问我」—— 引擎把该回合收尾成挂起
   （`stopReason: 'suspended'` + `suspendedReason: 'timer'` + 目标时刻 `wakeAt`），

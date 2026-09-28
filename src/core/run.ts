@@ -40,6 +40,32 @@ export type RunStatus =
 export type SuspendedReason = 'approval' | 'timer';
 
 /**
+ * run 事件（2026-09-28 ⑥，run 事件投入口）：外部系统投给一条**挂起** run 的一条输入
+ * （`AsyncRunner.signalTask` / `POST /tasks/:id/events`；审批是它的特例）。
+ *
+ * 白名单形状（设计稿 B1）：**全是字符串** —— 外部永远不能构造消息块，投毒面只到
+ * 「内容注入」为止（任意 `MessageParam` 透传 = 把伪造 assistant / tool_use 块的能力
+ * 交给外部，那是协议注入，明确不做）。续跑段由引擎把它渲染成**一条 user 文本消息**
+ * 注入消息流（见 `engine/resume-input.ts` 的 `renderTaskEvent` 与 `engine/loop.ts`）。
+ *
+ * 与 `transport/task-events.ts` 的 `TaskStreamEvent` 不是一回事：那个是**记账事件流**
+ * 的一帧（出站，`GET /tasks/:id/stream`），这个是**入站**输入。
+ */
+export interface TaskEvent {
+  /**
+   * 幂等键（可选）：给了就按它去重 —— 同一任务重复投递同一个 eventId ⇒ 409
+   * （与 cancel 的「已终态」同款：说出来，不静默）。去重簿记随 TaskRecord 落库
+   * （`deliveredEventIds`，有界 FIFO），跨进程/重启不丢。
+   * **不给则没有恰好一次**：重复投递 = 重复进消息历史（如实文档化，不假装）。
+   */
+  eventId?: string | undefined;
+  /** 事件类型（非空字符串，如 `payment.settled`）—— 进渲染文本与 trace 留痕 */
+  type: string;
+  /** 事件正文（字符串）。HTTP 侧的字节上限与 `maxBodyBytes` 同口径（整个 body 那一道闸） */
+  payload: string;
+}
+
+/**
  * run 的运行记录（供持久化 / 读取）。字段**必填但可为 undefined**：它们是框架在 run
  * 生命周期各阶段**总是写进对象**的状态（`toMeta()` 一次构造全量），「缺省」在这里不是
  * 一个有意义的语义 —— 与「可选入参」不同。这条区分由 tsconfig 的

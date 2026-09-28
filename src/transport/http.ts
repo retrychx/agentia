@@ -1,8 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseTraceparent } from '../core/trace.js';
-import { AsyncRunner, TaskApproveError, TaskCancelError, TaskStreamError } from './async.js';
+import {
+  AsyncRunner,
+  TaskApproveError,
+  TaskCancelError,
+  TaskEventError,
+  TaskStreamError,
+} from './async.js';
 import type { AppCallable, TaskStreamFrame } from './async.js';
-import { parseApproveBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
+import { parseApproveBody, parseEventBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
 import { isPreAuthRoute, routeRequest } from './http-route.js';
 import { sseWriter } from './sse.js';
 import { TaskInputError, normalizeMessages } from '../engine/spec.js';
@@ -33,6 +39,11 @@ import type { TaskRecord } from '../store/store.js';
  * - POST /tasks/<id>/cancel   取消一个任务（在跑的真中断 / 在睡的不再醒 / 在排队的绝不起跑）。
  *                    无 body。→ 200 TaskRecord；不存在 → 404；已终态、或在跑的 run 不在
  *                    本进程 → 409。**停机中仍可用**（停机窗口正是最想取消在飞任务的时候）。
+ * - POST /tasks/<id>/events   投递事件给挂起的任务（2026-09-28 ⑥，run 事件投入口）。
+ *                    body `{ eventId?, type, payload }`（白名单，全是字符串，多一个字段 → 400）
+ *                    → 200 TaskRecord；不存在 → 404；不在 suspended 状态、或同 eventId
+ *                    重复投递 → 409。**停机中仍可用**（与 approve 同理由：挂起的任务只有
+ *                    外部输入能推进）。
  * - GET  /healthz    健康检查 → 200 { ok, inFlight, uptimeMs, draining, suspended }；**不鉴权**
  *                    （探针不该带凭据）。停机中仍回 200（进程活着），就绪与否看 draining。
  *
@@ -651,6 +662,35 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
           } catch (e) {
             // 404（不存在）/ 409（已终态、或在跑的 run 不在本进程）是调用方语义
             if (e instanceof TaskCancelError) {
+              sendJson(res, e.status, { error: errMessage(e) });
+              return;
+            }
+            sendInternalError(res, e);
+          }
+          return;
+        }
+
+        // POST /tasks/<id>/events（run 事件投入口，2026-09-28 ⑥）：投一个事件给挂起的
+        // 任务 —— 事件落 `pendingEvents`、状态回 running，先落库再派发，醒来进消息历史。
+        // drain 期间仍允许（与 approve 同理由：挂起的任务只有外部输入能推进）。
+        case 'taskEvent': {
+          const taskId = route.taskId;
+          const body = await parseJsonBody(req, res, maxBodyBytes);
+          if (body === PARSE_FAILED) return;
+          const event = parseEventBody(body);
+          if (!event) {
+            sendJson(res, 400, {
+              error:
+                'body 需为 { eventId?: string, type: string, payload: string }（白名单：多一个字段即拒）',
+            });
+            return;
+          }
+          try {
+            const rec = await runner.signalTask(taskId, event);
+            sendJson(res, 200, rec);
+          } catch (e) {
+            // 404（不存在）/ 409（不在挂起态、同 eventId 重复投递）是调用方语义
+            if (e instanceof TaskEventError) {
               sendJson(res, e.status, { error: errMessage(e) });
               return;
             }

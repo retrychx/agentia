@@ -113,3 +113,48 @@
   同类边界）。
 - **不提前做到期索引**（§5：先量；测出来再说）。
 - **不做事件的历史查询面**（`GET /tasks/:id/events`）—— 事件进了消息历史，读记录即可看到。
+
+## 8. 实施记录（2026-09-28 落地）
+
+**形态**：A3+B1 按定案实施。`signalTask`（`src/transport/async.ts`）+ `POST /tasks/:id/events`
+（route/shapes/http 三件套各加一条，排法照抄 cancel）；sqlite `listDue`（派生列 `wake_at` +
+`(status, wake_at)` 索引 + 存量库就地迁移回填 + 读时自愈判据扩到两列）；runner 接线
+`#redispatch` 的到期唤醒那一半 `due ?? recs`。
+
+**对 §1 事实 4 的偏差（关键交界）**：事件**没有**「恢复前追加到 `rec.spec.messages` 末尾」——
+`tailToolUses` 只认末尾一条，追加 user 消息会把续跑判成新对话（同一批工具再跑一遍）、且
+tool_result 不再紧邻 tool_use。实际形态：事件随 record 走（`TaskRecord.pendingEvents`），
+引擎在续跑入口、未决 tool_use 解决之后注入；**再挂起的出口不注入**（注入了会毁掉下一次
+续跑判定），事件留在 pendingEvents 等跑通的那次。已记入 spec §10 2026-09-28 ⑥ 第 3/4 条。
+trace 留痕落点：引擎在注入时记到续跑段 run 根（runner 不持有 recorder；簿记在 record、
+留痕在引擎 —— 与 `approval.decided` 同款分工）。
+
+**测试清单**（`tests/transport/task-events-input.test.ts` 9 条 + route/shapes 纯件 +
+sqlite 3 条 + runner 探针 2 条）—— 八条门禁逐条有真用例。变异验证读数（关掉实现 ⇒ 恰好红）：
+
+| 变异 | 红的用例 |
+|---|---|
+| ① 状态闸放宽（去掉 suspended 检查） | 红 2：「running ⇒ 409 且记录不动…」+ HTTP「404 / 409」 |
+| ② 事件只落库不进历史（摘掉引擎注入） | 红 4：幂等/trace 留痕、无 eventId 重复进历史、approval 交界、HTTP 真到模型 |
+| ③ 同 eventId 不去重 | 红 1：「幂等：同 eventId 重复 ⇒ 409」 |
+| ④ listDue 接线回退（`due ?? recs` → `recs`） | 红 1：「listDue 是唯一输入源」（⚠️ 第一版探针只断言「被调用」，没咬住；补了「索引说空 ⇒ 全表里到点的也不捡」的反向用例后才咬住 —— 顺带发现 poll 的读路径惰性闸不经过 listDue，用 poll 断言会亲手把任务叫醒） |
+
+**bench（`scripts/bench-resume-scan.ts`，本机单次读数）**：sqlite 10k 档 —
+前：list 36.6ms / resume 32.6ms；后：list 37.8ms / **listDue 0.1ms** / resume 32.4ms。
+**`resume(ms)` 没有显著下降**（与 §5 的预判不同，如实记）：`resumePending` 的其余三条职责
+（读数重建 / 审批超时 / 孤儿认领）仍以全表 `list()` 为输入，它主导成本；listDue 只把
+「到期唤醒」那一半的输入降到 O（到期数）。这笔节省要兑现到 `resume(ms)` 上，需要拆开扫描
+职责或引入 `listActive` 式的窄查询 —— 记为开放项，不在本批。
+（bench 已加 `due` 列，口径注释写进脚本头。）
+
+**候选 7② 结论修正**：设计稿 §5 的选项是「做 / 不做」；实测落地后的诚实结论是「**缝焊对了、
+扫描还没变快**」——sqlite 侧触发条件成立所以做了，但触发条件里「宿主扫描间隔 ≲ 1s ⇒ 固定
+开销可观」的那笔账，在扫描职责拆开之前仍挂在全表 list() 上。spec §10 ⑤ 已补落地记。
+
+**复审补记（父 agent 复核，同日）**：探针实证抓到一处真缺陷 —— 续跑段注入事件后、正常
+循环里再次挂起（新一轮 approval/defer）时，`pendingEvents` 按「再挂起就留」保留 ⇒
+下次续跑同一事件**重复注入**（模型看到两条）。修法：引擎出口新增 `eventsDelivered`
+位（`AgentLoopResult` / `AgentRunResult`，结果记录类字段在场），runner 清/留簿记的判据
+从「是不是挂起出口」改成「注入过没有」。回归用例（runner 级全链）+ 变异复验（挂起分支
+不清 ⇒ 恰好该用例红）。另顺手订正 usage-guide 时间挂起小节里「没有 cancel API」的
+过时措辞（cancel 已随 #157 落地）。

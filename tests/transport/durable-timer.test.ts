@@ -483,3 +483,111 @@ describe('drain 与到期唤醒的竞态窗口', () => {
     );
   });
 });
+
+/**
+ * 到期索引（2026-09-28 ⑤ 落地）：store 提供 `listDue` 时，「到期唤醒」那一半的输入
+ * 走索引而不是全表过滤。这条用探针 store 钉两件事：
+ * ① `listDue` 真的被用了（回退到全表 = 优化静默失效，扫描成本回到 O(全表)）；
+ * ② `list()` **也**照常被调 —— 读数重建 / 审批超时 / 孤儿认领的输入仍是全表
+ *    （listDue 只替代到期唤醒那一半，换掉整个输入源是另一批职责的静默退化）。
+ */
+describe('resumePending × listDue（到期索引接线）', () => {
+  it('有 listDue 的 store：到期唤醒走它（探针断言），其余职责仍读全表', async () => {
+    const inner = new InMemoryTaskStore();
+    // 直接塞一条「在睡且到点」的记录（本用例测接线，不测引擎 —— 假 app 即可）
+    inner.save({
+      taskId: 'task_due',
+      status: 'suspended',
+      suspendedReason: 'timer',
+      suspendedSince: Date.now() - 60_000,
+      wakeAt: Date.now() - 1_000,
+      pendingApprovals: ['tu1'],
+      spec: { messages: [{ role: 'user', content: 'x' }], options: {}, source: 'async' },
+      createdAt: Date.now() - 60_000,
+    });
+    inner.save({
+      taskId: 'task_done',
+      status: 'succeeded',
+      spec: { messages: [{ role: 'user', content: 'x' }], options: {}, source: 'async' },
+      createdAt: Date.now() - 60_000,
+      finishedAt: Date.now() - 1_000,
+    });
+    const calls = { list: 0, listDue: 0 };
+    const store: import('../../src/index.js').TaskStore = {
+      save: (rec) => inner.save(rec),
+      get: (id) => inner.get(id),
+      byIdempotency: (key) => inner.byIdempotency(key),
+      list: () => {
+        calls.list++;
+        return inner.list();
+      },
+      listDue: (before) => {
+        calls.listDue++;
+        return inner
+          .list()
+          .filter((r) => r.status === 'suspended' && r.wakeAt !== undefined && r.wakeAt <= before);
+      },
+      clear: () => inner.clear(),
+    };
+    let runs = 0;
+    const app: AppCallable = {
+      name: 'probe',
+      async run() {
+        runs++;
+        return {
+          run: { runId: 'r1', status: 'succeeded' as const },
+          result: {} as import('../../src/index.js').AgentRunResult,
+        };
+      },
+    };
+    const runner = new AsyncRunner(app, { store });
+
+    assert.equal(runner.resumePending(), 1, '到期的那条被唤醒重派');
+    assert.deepEqual(calls, { list: 1, listDue: 1 }, '到期唤醒走索引；其余职责仍走全表');
+    await runner.awaitTask('task_due');
+    assert.equal(runs, 1, '到期记录被真派发');
+  });
+});
+
+it('listDue 的结果是到期唤醒那一半的**唯一**输入源（不是「调了它但还看全表」）', async () => {
+  // 变异验证抓出来的洞：只断言「listDue 被调过」钉不住接线 —— 实现回退成 `recs`
+  // （无视 listDue 的结果）时那条探针照样绿。这里的 store 刻意让 listDue 回**空**
+  // （索引说「没有到期的」），而全表里明明有一条到点的 —— 接线正确 ⇒ 不捡它。
+  const inner = new InMemoryTaskStore();
+  inner.save({
+    taskId: 'task_due',
+    status: 'suspended',
+    suspendedReason: 'timer',
+    suspendedSince: Date.now() - 60_000,
+    wakeAt: Date.now() - 1_000,
+    pendingApprovals: ['tu1'],
+    spec: { messages: [{ role: 'user', content: 'x' }], options: {}, source: 'async' },
+    createdAt: Date.now() - 60_000,
+  });
+  let runs = 0;
+  const store: import('../../src/index.js').TaskStore = {
+    save: (rec) => inner.save(rec),
+    get: (id) => inner.get(id),
+    byIdempotency: (key) => inner.byIdempotency(key),
+    list: () => inner.list(),
+    listDue: () => [], // 索引说：没有到期的
+    clear: () => inner.clear(),
+  };
+  const app: AppCallable = {
+    name: 'probe',
+    async run() {
+      runs++;
+      return {
+        run: { runId: 'r1', status: 'succeeded' as const },
+        result: {} as import('../../src/index.js').AgentRunResult,
+      };
+    },
+  };
+  const runner = new AsyncRunner(app, { store });
+  assert.equal(runner.resumePending(), 0, '索引说没有到期的 ⇒ 一条都不捡（哪怕全表里有）');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(runs, 0, '没有派发');
+  // 读记录走 store.get 而不是 poll：poll 的读路径有自己的**逐条**惰性闸（#lazyGates），
+  // 它不经过 listDue（单条记录谈不上索引）—— 用 poll 断言等于亲手把它叫醒
+  assert.equal(inner.get('task_due')?.status, 'suspended');
+});

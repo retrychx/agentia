@@ -3,7 +3,7 @@ import type { MessageParam } from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { classifyError } from '../engine/errors.js';
-import type { RunStatus } from '../core/run.js';
+import type { RunStatus, TaskEvent } from '../core/run.js';
 import { normalizeMessages, TaskInputError } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
@@ -156,6 +156,28 @@ export class TaskCancelError extends Error {
     this.status = status;
   }
 }
+
+/**
+ * `signalTask` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
+ * `suspended` 状态 / 同 eventId 已投递）。形状与 `TaskCancelError` 同款
+ * （module 级 export，不进公共导出面）。
+ */
+export class TaskEventError extends Error {
+  readonly status: 404 | 409;
+  constructor(status: 404 | 409, message: string) {
+    super(message);
+    this.name = 'TaskEventError';
+    this.status = status;
+  }
+}
+
+/**
+ * `deliveredEventIds` 簿记的条数上限（FIFO 裁最旧）。它是**去重簿记**不是审计日志：
+ * 256 条对「webhook 重试窗口」绰绰有余，而无界增长会让每条 TaskRecord 随事件量膨胀
+ * （记录随 trace 一起落库，每次 save 全文重写）。「数量有界」不是用户旋钮，不进
+ * `core/limits.ts` 的 0 语义表。
+ */
+const MAX_DELIVERED_EVENT_IDS = 256;
 
 /**
  * 取消的**宽限**：取消请求发出后，留给那次 run 自己收尾的时间。
@@ -691,6 +713,85 @@ export class AsyncRunner {
     return { ...rec };
   }
 
+  /**
+   * 投递一个事件给**挂起**的任务（2026-09-28 ⑥，run 事件投入口；
+   * `POST /tasks/:id/events` 的宿主方法侧，与 approve/cancel 对称）。
+   *
+   * 语义（设计稿 §3 逐条的落点）：
+   * - **只对 `suspended` 生效**：不存在 ⇒ 404；其余状态（含已终态）⇒ 409
+   *   （「不唤醒已终态」是这条状态闸的推论，与 approve 同款「状态不对要说出来」）；
+   * - **幂等**：`eventId` 给定时按 `rec.deliveredEventIds` 去重，重复 ⇒ 409
+   *   （簿记随记录落库，重启不丢；有界 FIFO，见 MAX_DELIVERED_EVENT_IDS）。
+   *   不给 `eventId` 就**没有恰好一次**：重复投递 = 重复进历史（如实，不假装）；
+   * - **投完即续跑**（两种挂起原因都算 —— 对 timer 挂起这就是「提前醒」）：
+   *   事件进 `rec.pendingEvents`、状态回 `running`，**先落库再派发**
+   *   （与 approve / #wakeDueInner 同一条纪律：崩在窗口里不能丢事件）。
+   *   事件**不**直接追加进 `rec.spec.messages` —— 续跑判定只认历史末尾一条
+   *   （`tailToolUses`），追加 user 消息会把续跑判成新对话；注入由引擎在
+   *   未决 tool_use 解决之后做（见 engine/loop.ts 的 deliverTaskEvents）；
+   * - **不沿旧 wakeAt**：记录上的旧目标时刻不动（闸都 gate 在 suspended 上，
+   *   状态一翻它就失效）；醒来重跑那一批时工具若再次 `deferUntil`，
+   *   `wakeAt` 由新回合重新落定；
+   * - drain 期间**仍允许**（与 approve 同理由：挂起的任务只有外部输入能推进）。
+   *
+   * 并发闸与 approve **不同款**：approve 共享在飞那次（决定是幂等合并），事件**串行成链**
+   * （两条并发事件是两条不同的输入，共享 = 静默丢一条）。与其它恢复路径
+   * （approve / 到期唤醒，各有自己的闸）的竞速：进闸后重读再判挡住绝大多数；
+   * 剩下的窄窗口与既有「approve × wakeDue 分闸」同类（那两条按挂起原因天然互斥，
+   * 事件两种原因都适用，是这个闸新盖的缝 —— 已记在 spec §10 2026-09-28 ⑥）。
+   */
+  signalTask(taskId: string, event: TaskEvent): Promise<TaskRecord> {
+    // 串行化（**不是** approve 那种「共享在飞那次」）：两个并发事件是**两条不同的输入**，
+    // 共享在飞那次 = 后一条被静默丢掉；各自读-改-写而不互斥 = 双派发（与 resumePending
+    // 的重入闸同一个 bug 类）。排成链：前一次落库完，这一次进闸后重读再判
+    // （那时若已派发则状态是 running ⇒ 409 如实说出来，调用方可重试）。
+    const prev = this.inflightSignals.get(taskId);
+    const run = Promise.resolve(prev)
+      .catch(() => undefined) // 前一次的 reject 已由它自己的调用方接走，这里只排队
+      .then(() => this.#signalInner(taskId, event))
+      .finally(() => {
+        // 只摘自己：链上可能已有更新的节点（无条件 delete 会摘掉别人的）
+        if (this.inflightSignals.get(taskId) === run) this.inflightSignals.delete(taskId);
+      });
+    this.inflightSignals.set(taskId, run);
+    return run;
+  }
+
+  /** 同一任务的在飞事件投递（signalTask 的重入闸，见上） */
+  private readonly inflightSignals = new Map<string, Promise<TaskRecord>>();
+
+  async #signalInner(taskId: string, event: TaskEvent): Promise<TaskRecord> {
+    const rec = await this.store.get(taskId);
+    if (!rec) throw new TaskEventError(404, `task 不存在: ${taskId}`);
+    if (rec.status !== 'suspended') {
+      throw new TaskEventError(
+        409,
+        `task ${taskId} 当前状态为 ${rec.status}，只有挂起的任务能接收事件`,
+      );
+    }
+    // 幂等去重（先判再改）：重复 ⇒ 409，记录一个字节不动（与 cancel 的「已终态」同款）
+    if (event.eventId !== undefined && rec.deliveredEventIds?.includes(event.eventId)) {
+      throw new TaskEventError(409, `事件 ${event.eventId} 已投递给 task ${taskId}（重复投递）`);
+    }
+    rec.pendingEvents = [...(rec.pendingEvents ?? []), event];
+    if (event.eventId !== undefined) {
+      const ids = [...(rec.deliveredEventIds ?? []), event.eventId];
+      rec.deliveredEventIds =
+        ids.length > MAX_DELIVERED_EVENT_IDS
+          ? ids.slice(ids.length - MAX_DELIVERED_EVENT_IDS)
+          : ids;
+    }
+    rec.status = 'running'; // 由 #executeInner 接管（acquireSlot → 恢复执行）
+    rec.ownerId = this.ownerId;
+    // 先落库再派发 —— 与 #approveInner 同一条真纪律：save 失败就绝不恢复执行
+    // （落不了库的事件不算投递：崩在窗口里会丢事件）。调用方拿到 reject，重试即可。
+    await this.store.save(rec);
+    // 离开挂起态（读数纪律②）：事件到了这就是「醒来」那一刻 —— 与 approve 的决定齐了同形
+    this.#unmarkSuspended(taskId);
+    void this.#execute(rec);
+    return { ...rec };
+  }
+
   /** 已受理但未达终态的任务数（queued + running）—— 健康检查与 drain 共用同一口径 */
   get inFlight(): number {
     return this.active;
@@ -966,16 +1067,21 @@ export class AsyncRunner {
     if (this.inflightResume) return this.inflightResume;
     const listed = this.store.list();
     const staleAfterMs = opts.staleAfterMs ?? 0;
-    if (isThenable(listed)) {
-      const run = Promise.resolve(listed)
-        .then((recs) => this.#redispatch(recs, staleAfterMs))
+    // 到期索引（2026-09-28 ⑤ 落地）：store 实现了 `listDue` 时，「到期唤醒」那一半的
+    // 输入走索引（只回到期的记录），否则回退全表过滤 —— 语义不变，只是扫描规模不同。
+    // ⚠️ 它**只**替代那一半的输入：挂起读数重建 / 审批超时 / 孤儿认领的职责
+    // 仍是全表 `list()`（它们要的不只是「到期的」），别把整个扫描的输入源换掉。
+    const dueListed = this.store.listDue === undefined ? undefined : this.store.listDue(Date.now());
+    if (isThenable(listed) || (dueListed !== undefined && isThenable(dueListed))) {
+      const run = Promise.all([listed, dueListed])
+        .then(([recs, due]) => this.#redispatch(recs, staleAfterMs, due))
         .finally(() => {
           this.inflightResume = null;
         });
       this.inflightResume = run;
       return run;
     }
-    const dispatched = this.#redispatch(listed, staleAfterMs);
+    const dispatched = this.#redispatch(listed, staleAfterMs, dueListed);
     if (isThenable(dispatched)) {
       const run = Promise.resolve(dispatched).finally(() => {
         this.inflightResume = null;
@@ -1005,7 +1111,11 @@ export class AsyncRunner {
    * 落地，返回数字（`submit`/`list` 那套「同步 store 保持同步门面」的约定不变）；只有
    * 真出现 thenable 才升级成 Promise，等所有认领落库后再统一派发。
    */
-  #redispatch(recs: TaskRecord[], staleAfterMs: number): number | Promise<number> {
+  #redispatch(
+    recs: TaskRecord[],
+    staleAfterMs: number,
+    due?: TaskRecord[] | undefined,
+  ): number | Promise<number> {
     const now = Date.now();
     // 挂起读数的对齐（读数纪律③）：扫描本来就拿到了全表，顺手把 `/healthz` 的读数
     // 按 store 重建一遍 —— 于是「漏了某个除名出口」只是下一次扫描前的偏差，不会永久漂移。
@@ -1029,8 +1139,11 @@ export class AsyncRunner {
     // 到期唤醒（durable timer）：在睡且到点的 timer 挂起 ⇒ 认领 + 重派（醒来重跑那一批）。
     // 与上面那条循环并列而不是合并：两条闸的**原因判据互斥**，各读各的一眼可见；
     // 合并成一个循环会让「谁的责任」藏进条件里。drain 之后不唤（#wakeDue 里那道闸）。
+    // 输入（2026-09-28 ⑤）：store 提供到期索引时 `due` 是「只回到期的」那一半 ——
+    // 仍过 `timerDue` 复核（索引口径是 status+wakeAt，原因那一半由这里兜，且
+    // #wakeDueInner 进闸后还会重读再判一次）。
     let woken = 0;
-    for (const rec of recs) {
+    for (const rec of due ?? recs) {
       if (!timerDue(rec, now)) continue;
       // 只算**真接管**的那些（drain / 已在飞 ⇒ 不算）—— 返回值是「推进了几条」的承诺
       if (this.#wakeDue(rec, now)) woken++;
@@ -1241,6 +1354,12 @@ export class AsyncRunner {
                 : {}),
             // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）
             ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
+            // 事件投入口（2026-09-28 ⑥）：挂起期间投递的事件随记录进引擎，由它在
+            // 未决 tool_use 解决之后注入消息流（为什么不能由宿主直接追加进
+            // spec.messages 的末尾：见 signalTask 与 engine/loop.ts 的注入点纪律）
+            ...(rec.pendingEvents !== undefined && rec.pendingEvents.length > 0
+              ? { events: rec.pendingEvents }
+              : {}),
             // 恢复段的 trace 是一棵**新树**，经 traceContext link 挂到上一段 runId
             // （spec §9.2 的入站关联机制）——「挂起段 → 恢复段 → …」在观测后端连成一条链。
             // 判定依据：本段是续跑段（isResume）且已有上一段 runId；首次执行两者皆无。
@@ -1288,6 +1407,12 @@ export class AsyncRunner {
               rec.wakeAt = out.result.wakeAt;
               // 挂起读数（纪律①）：与落库**同一个分支**登记，不另起一处判断
               this.#markSuspended(rec);
+              // 事件簿记（2026-09-28 ⑥ 复审收口）：**注入过**就清 —— 事件已在挂起历史里
+              // （suspendedMessages 含注入的 user 消息），簿记留着会让下次续跑**重复注入**
+              // （真探针实证过：模型看到同一事件两次）。没注入（续跑入口的再挂起出口在
+              // 注入点之前返回）则必须留住 —— 清掉就是丢事件。判据是结果上的
+              // `eventsDelivered` 位，不是「是不是挂起」这个粗粒度。
+              if (out.result.eventsDelivered) rec.pendingEvents = undefined;
             } else {
               // 取消：机制与 `runTimeoutMs` 一字不差（同一条 abort signal），**意图**不同 ——
               // 状态按意图落（超时 = failed、人取消 = cancelled）。意图从 `#cancels` 取，
@@ -1303,6 +1428,10 @@ export class AsyncRunner {
               rec.suspendedSince = undefined;
               rec.suspendedReason = undefined;
               rec.wakeAt = undefined;
+              // 事件簿记（2026-09-28 ⑥）：跑通到非挂起出口 ⇒ 引擎已把它们注入消息流
+              // （进历史了），簿记清掉。挂起分支按 `eventsDelivered` 判（注入过也清、
+              // 没注入才留 —— 见上面挂起分支的注释）。
+              rec.pendingEvents = undefined;
               // 离开挂起态（读数纪律②）：两处恢复路径负责「还没跑到终态」的那一半，
               // 这一支负责「跑到了终态」的那一半（兜底：恢复失败也会落到这里）
               this.#unmarkSuspended(rec.taskId);

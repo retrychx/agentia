@@ -148,6 +148,36 @@ describe('routeRequest —— /tasks/<id>（陷阱 ③）', () => {
   });
 });
 
+describe('routeRequest —— 事件投入口（2026-09-28 ⑥，与 approve/cancel 同款排法）', () => {
+  it('POST /tasks/<id>/events → taskEvent（id 剥掉 /events 再解码）', () => {
+    assert.deepEqual(routeRequest('/tasks/abc/events', 'POST', false), {
+      kind: 'taskEvent',
+      taskId: 'abc',
+    });
+    assert.deepEqual(routeRequest('/tasks/a%2Fb/events', 'POST', false), {
+      kind: 'taskEvent',
+      taskId: 'a/b',
+    });
+  });
+
+  it('先于通用 id 分支：GET /tasks/x/events 回 **405（Allow: POST）**，不是 404、也不走轮询', () => {
+    assert.deepEqual(routeRequest('/tasks/x/events', 'GET', false), {
+      kind: 'methodNotAllowed',
+      allowed: 'POST',
+      preAuth: false,
+    });
+  });
+
+  it('方法检查先于解码：DELETE /tasks/%zz/events 回 **405 而不是 400**；POST + 坏 id 才轮到 badTaskId', () => {
+    assert.deepEqual(routeRequest('/tasks/%zz/events', 'DELETE', false), {
+      kind: 'methodNotAllowed',
+      allowed: 'POST',
+      preAuth: false,
+    });
+    assert.equal(routeRequest('/tasks/%zz/events', 'POST', false).kind, 'badTaskId');
+  });
+});
+
 describe('isPreAuthRoute —— 免鉴权组的判定本身', () => {
   it('只有 healthz / metrics / preAuth 的 405 为真', () => {
     const yes: HttpRoute[] = [
@@ -159,6 +189,8 @@ describe('isPreAuthRoute —— 免鉴权组的判定本身', () => {
       { kind: 'run' },
       { kind: 'submit' },
       { kind: 'approve', taskId: 'x' },
+      { kind: 'cancel', taskId: 'x' },
+      { kind: 'taskEvent', taskId: 'x' },
       { kind: 'poll', taskId: 'x' },
       { kind: 'badTaskId' },
       { kind: 'notFound' },

@@ -8,7 +8,7 @@ import type { AgentStopReason } from './types.js';
 /**
  * Agentia —— 循环出口的**结果形状单源**（engine/loop.ts 的拆分第二步）。
  *
- * `AgentLoopResult` 属「结果/状态记录」型（`docs/guards.md` 的类型角色表）：9 个字段
+ * `AgentLoopResult` 属「结果/状态记录」型（`docs/guards.md` 的类型角色表）：10 个字段
  * **必须全在场**，值可以为 undefined —— 消费方按 `result.suspendedMessages === undefined`
  * 判「没挂起」，而「字段缺席」与「字段为 undefined」在 JSON / OTLP 上是两回事。
  *
@@ -56,6 +56,13 @@ export interface AgentLoopResult<T = unknown> {
    * 出口只保证这个位一定在场。
    */
   wakeAt: number | undefined;
+  /**
+   * 本段是否把传入的 `events`（run 事件投入口，2026-09-28 ⑥）**真注入了消息流**
+   * （字段在场）。宿主据此清 `TaskRecord.pendingEvents`：注入过 ⇒ 事件已在历史里，
+   * 簿记清掉（否则下次续跑会**重复注入**）；没注入（续跑入口的再挂起出口在注入点
+   * 之前返回）⇒ 簿记必须留住，等跑通的那次。
+   */
+  eventsDelivered: boolean;
 }
 
 /**
@@ -68,6 +75,8 @@ function loopResult<T>(f: {
   error: SpanError | undefined;
   iterations: number;
   typed: T | undefined;
+  /** 缺省 false（没注入过事件是绝大多数出口的真相） */
+  eventsDelivered?: boolean;
 }): AgentLoopResult<T> {
   return {
     stopReason: f.stopReason,
@@ -79,6 +88,7 @@ function loopResult<T>(f: {
     pendingApprovals: undefined,
     suspendedReason: undefined,
     wakeAt: undefined,
+    eventsDelivered: f.eventsDelivered ?? false,
   };
 }
 
@@ -95,7 +105,13 @@ export type Suspension =
 
 /** 挂起收尾（四处出口共用：循环中途挂起 / 恢复模式进来决定仍不齐 / 两处延后请求） */
 export function suspendedResult<T>(
-  ctx: { messages: MessageParam[]; progress: { iterations: number }; typed: T | undefined },
+  ctx: {
+    messages: MessageParam[];
+    progress: { iterations: number };
+    typed: T | undefined;
+    /** 本段是否已把传入事件注入消息流（注入后又挂起 ⇒ 簿记可清，见 AgentLoopResult.eventsDelivered） */
+    eventsDelivered?: boolean;
+  },
   suspension: Suspension,
   /** 挂起前那一回合的文本（循环中途挂起时给；恢复模式再次挂起时没有新回合，留空） */
   finalText = '',
@@ -116,6 +132,7 @@ export function suspendedResult<T>(
     suspendedReason: suspension.reason,
     // 只有时间挂起有目标时刻；判别联合让这一行不可能「说 timer 却没时刻」
     wakeAt: suspension.reason === 'timer' ? suspension.wakeAt : undefined,
+    eventsDelivered: ctx.eventsDelivered ?? false,
   };
 }
 
@@ -161,6 +178,7 @@ export function finishedResult<T>(f: {
   iterations: number;
   typed: T | undefined;
   error?: SpanError | undefined;
+  eventsDelivered?: boolean;
 }): AgentLoopResult<T> {
   return loopResult<T>({
     stopReason: f.stopReason,
@@ -168,5 +186,6 @@ export function finishedResult<T>(f: {
     error: f.error,
     iterations: f.iterations,
     typed: f.typed,
+    ...(f.eventsDelivered !== undefined ? { eventsDelivered: f.eventsDelivered } : {}),
   });
 }
