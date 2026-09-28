@@ -136,8 +136,9 @@ function isTerminalTask(rec: TaskRecord): boolean {
  * module 级 export —— 不进公共导出面（纯宿主内部实现细节）。
  */
 export class TaskApproveError extends Error {
-  readonly status: 404 | 409;
-  constructor(status: 404 | 409, message: string) {
+  /** 400 = 入参语义不合法（decisions 里有本任务待决之外的 id，2026-09-28 深评 P1-2） */
+  readonly status: 400 | 404 | 409;
+  constructor(status: 400 | 404 | 409, message: string) {
     super(message);
     this.name = 'TaskApproveError';
     this.status = status;
@@ -447,7 +448,10 @@ export class AsyncRunner {
         void this.#safeSave(rec, 'initial');
       });
     }
-    void this.#execute(rec);
+    // 派发走唯一入口（闸在 #dispatch 里）。本方法开头已有「停机中不接单 ⇒ 抛错」的**拒绝**语义
+    // （对调用方的承诺是 503，不是静默排期），这道闸只挡「进闸与派发之间刚开始停机」的窄窗口：
+    // 那条任务已落库成 queued，留给下次启动认领 —— 好过起在一个正在退出的进程里被硬切。
+    this.#dispatch(rec);
     // 返回浅拷贝：记录会被后台状态机原地推进，调用方拿到的是提交时刻的快照
     return { ...rec };
   }
@@ -701,6 +705,24 @@ export class AsyncRunner {
       );
     }
     const now = Date.now();
+    // 入参校验（2026-09-28 外部深评 P1-2）：本批只许批**本任务待决的** id。
+    // 不校验会怎样（实证：一次 approve 塞 5000 个无关键 ⇒ 记录从 246 字节撑到 419 KB）：
+    // 多出来的键照样写进 `rec.approvals`、随每次 save 全文重写落库、并随任务**永久保留**
+    // （终态也不清：审批记录是审计的一部分）⇒ 一个**认证调用方**单次请求就能把记录撑大，
+    // 反复调用可无限叠加。拒整批而不是挑着收：与 `parseApproveBody`（形状全有或全无）、
+    // `parseEventBody`（多一个字段即拒）同一条纪律 —— 调用方本来就该从记录的 `pendingApprovals`
+    // 里读要批哪些 id。
+    // ⚠️ 为什么**不需要**再给 `rec.approvals` 加常量上限：这条校验把键集钉死在 `pendingApprovals` 上，
+    // 而那个列表在挂起那一刻就固定了 ⇒ |approvals| ≤ |pendingApprovals|，本就有界。加上限会是
+    // 一段永远触发不到的死代码（那不是护栏，是噪音）。
+    const pendingIds = new Set(rec.pendingApprovals ?? []);
+    const unknownIds = Object.keys(decisions).filter((id) => !pendingIds.has(id));
+    if (unknownIds.length > 0) {
+      throw new TaskApproveError(
+        400,
+        `decisions 里有 ${unknownIds.length} 个 id 不在本任务的待决列表里（如 ${unknownIds[0]}）—— 整批拒掉，记录不动`,
+      );
+    }
     rec.approvals ??= {};
     for (const [id, d] of Object.entries(decisions)) {
       if (rec.approvals[id]) continue; // 逐 id 幂等：第一次决定赢
@@ -726,13 +748,9 @@ export class AsyncRunner {
     if (complete) {
       // 离开挂起态（读数纪律②）：决定齐了这就是「醒来」那一刻
       this.#unmarkSuspended(taskId);
-      // drain 竞态收口（与 #wakeDueInner 同款，2026-09-28 复审第二轮）：这道闸判在「进入」
-      // 时，这里隔着两个 store 往返的窗口 —— drain 若在这窗口内完成（active===0 返回），
-      // 被推进的任务会在停机**完成之后**才开跑。此刻状态已落库成 running：不派发，
-      // 记录留给下次启动的 resumePending 认领（at-least-once 兜底，与「先落库再派发」
-      // 的崩窗同形）。决定在记录里，不丢 —— 放行的是「重新排期」，不是「吞掉」。
-      if (this.#drain.isDraining) return { ...rec };
-      void this.#execute(rec);
+      // 派发走**唯一入口**（闸在 #dispatch 里判一次 —— 2026-09-28 外部深评 P1-1 的结构性修法）：
+      // 决定已经在记录里，停机窗口里放行的是「重新排期」（下次启动认领），不是「吞掉」。
+      this.#dispatch(rec);
     }
     return { ...rec };
   }
@@ -803,7 +821,11 @@ export class AsyncRunner {
     if ((rec.pendingEvents?.length ?? 0) >= MAX_PENDING_EVENTS) {
       throw new TaskEventError(
         409,
-        `task ${taskId} 的待注入事件已达上限（${MAX_PENDING_EVENTS} 条）—— 先让它跑起来（这些事件会在下次续跑注入）再投递；本次事件**没有**被记录。`,
+        `task ${taskId} 的待注入事件已达上限（${MAX_PENDING_EVENTS} 条）—— ${
+          rec.suspendedReason === 'approval'
+            ? '这条在等人工审批，而让它跑起来的唯一触发源是 approve（不在投递方手里）⇒ 要么等人批，要么 cancel 后重新提交'
+            : '等到点（或先 approve）它就会跑起来，这些事件会在下次续跑注入'
+        }；本次事件**没有**被记录。`,
       );
     }
     rec.pendingEvents = [...(rec.pendingEvents ?? []), event];
@@ -821,10 +843,9 @@ export class AsyncRunner {
     await this.store.save(rec);
     // 离开挂起态（读数纪律②）：事件到了这就是「醒来」那一刻 —— 与 approve 的决定齐了同形
     this.#unmarkSuspended(taskId);
-    // drain 竞态收口（与上面的 approve 同款、与 #wakeDueInner 同款）：窗口里完成停机 ⇒
-    // 不派发，事件留在 pendingEvents 上，下次启动的 resumePending 认领时注入。
-    if (this.#drain.isDraining) return { ...rec };
-    void this.#execute(rec);
+    // 派发走唯一入口（闸在 #dispatch 里）：停机窗口里不派发，事件留在 pendingEvents 上，
+    // 下次启动的 resumePending 认领时注入。
+    this.#dispatch(rec);
     return { ...rec };
   }
 
@@ -940,7 +961,11 @@ export class AsyncRunner {
     }
     // 离开挂起态（读数纪律②）—— 落在**落库成功之后**：落不了库就不算恢复（没派发，读数也不动）
     this.#unmarkSuspended(target.taskId);
-    void this.#execute(target);
+    // 派发走唯一入口（闸在 #dispatch 里）。⚠️ **这一条正是外部深评抓到的第四条路径**：
+    // `#expireAndResume`（审批超时自动全拒并恢复）与 `approve` 不同触发源、同一形状，
+    // 由 `poll()` 的惰性闸驱动 —— 而「停机中照常可轮询」是 HTTP 宿主的明确承诺
+    // （LB / K8s preStop / 前端轮询）⇒ 停机后照样能起新 run。
+    this.#dispatch(target);
     return target;
   }
 
@@ -1030,13 +1055,33 @@ export class AsyncRunner {
     }
     // 离开挂起态（读数纪律②）—— 落库成功之后才算醒来
     this.#unmarkSuspended(target.taskId);
-    // drain 竞态收口：#wakeDue 的 drain 闸判在「进入」时，这里隔着两个 store 往返的窗口 ——
-    // drain 若在这窗口内完成（active===0 返回），被唤醒的任务会在停机**完成之后**才开跑。
-    // 此刻状态已落库成 running：不派发，记录留给下次启动的 resumePending 认领
-    // （at-least-once 兜底，与「先落库再派发」的崩窗同形）。
-    if (this.#drain.isDraining) return target;
-    void this.#execute(target);
+    // 派发走唯一入口（闸在 #dispatch 里判一次 —— 它同时盖住「进入时」与「窗口里刚进入停机」
+    // 两个时点，这里不必再判一遍）。
+    this.#dispatch(target);
     return target;
+  }
+
+  /**
+   * **唯一的派发口**（2026-09-28 外部深评 P1-1 / P2-1 的结构性修法）。
+   *
+   * 为什么要有它：所有「先把状态落库成 `running`/`queued`、再派发 `#execute`」的路径
+   * （`submit` / `approve` / `signalTask` / 到期唤醒 / 审批超时兜底 / `resumePending` 的认领）
+   * **形状相同**，而停机闸原先散在各支里 —— 于是「这道闸覆盖几条路径」变成一份**靠人记**的清单：
+   * 第二批修了三支、第四支（审批超时兜底，走 `poll()`）与第五支（认领循环）漏了，两处都在
+   * `drain()` 返回 `true`（「排空干净」）之后**又起了新 run**（实证：`drain-race.test.ts`）。
+   *
+   * 修法：闸**只在这里判一次**，各支只管「先落库」的顺序（那条纪律不变）。
+   * 源码级穷尽守卫在 `tests/transport/dispatch-guard.test.ts`：`this.#execute(` 只许出现在本方法里 ——
+   * 第五次新增恢复路径时，构建就红，不靠记性。
+   *
+   * 语义：停机窗口里**不派发**。记录已落库（`running`/`queued` + 本进程 ownerId），
+   * 留给下次启动的 `resumePending` 认领（ownerId 含 pid ⇒ 新进程必认领）—— at-least-once 兜底，
+   * 与「先落库再派发」的崩窗同形；决定 / 事件都在记录里，不丢。
+   * ⚠️ 对调用方**不抛错**（`submit` 的「停机中不接单 ⇒ 503」在那之前的早返回里，不在这一层）。
+   */
+  #dispatch(rec: TaskRecord): void {
+    if (this.#drain.isDraining) return;
+    void this.#execute(rec);
   }
 
   /** 任务终态唤醒与等待：实现见 task-waiters.ts（`notify` / `wait`） */
@@ -1197,9 +1242,10 @@ export class AsyncRunner {
       const saved = this.store.save(rec);
       if (isThenable(saved)) {
         // 落库失败则**不派发**：认领没落地，派发等于把上面那个重复执行的窗口重新打开
-        claims.push(Promise.resolve(saved).then(() => void this.#execute(rec)));
+        claims.push(Promise.resolve(saved).then(() => this.#dispatch(rec)));
       } else {
-        void this.#execute(rec);
+        // 派发走唯一入口（闸在 #dispatch 里）—— 外部深评 P2-1：认领循环以前绕过了那道闸。
+        this.#dispatch(rec);
       }
     }
     if (claims.length === 0) return pending.length + expired + woken;
