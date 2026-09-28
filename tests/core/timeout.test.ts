@@ -1,6 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isTimeoutError, TIMED_OUT, TimeoutError, withTimeout } from '../../src/core/timeout.js';
+import {
+  backoffMs,
+  interruptibleSleep,
+  isTimeoutError,
+  MAX_TIMER_DELAY_MS,
+  TIMED_OUT,
+  TimeoutError,
+  withTimeout,
+} from '../../src/core/timeout.js';
 
 /**
  * 共享超时原语（2026-09-17 单源化，见 `docs/spec.md` §10 2026-09-17 ①）。
@@ -40,5 +48,80 @@ describe('core/timeout：共享超时原语（engine 与桥共用）', () => {
     assert.equal(isTimeoutError(new Error('x')), false);
     assert.equal(isTimeoutError(null), false);
     assert.equal(isTimeoutError('timeout'), false);
+  });
+});
+
+/**
+ * 定时器延迟的**上界**（2026-09-28）。
+ *
+ * 待守形状：超过 `2^31-1`ms（约 24.86 天）的延迟 Node **不会遵守** —— 它只在 stderr 留一行
+ * `TimeoutOverflowWarning`，随后把延迟**钳到 1ms**（实测：`delay=2^31` 在 200ms 内就触发、
+ * `delay=2^31-1` 如期不触发）。于是「配 30 天超时」变成「每个调用立即超时」、
+ * 「退避到限流窗口之后」变成「热重试」——**配置完全合法、行为完全相反**，且没人会看到那行警告。
+ *
+ * 为什么单源在 core：此前只有 `transport/scheduler.ts` 自备防线（every/at 各一条），
+ * 而五处直喂 `setTimeout` 的站点（`withTimeout` / `interruptibleSleep` / `#raceTimeout` /
+ * `composeSignal` / `DrainGate`）都没有 —— 「旋钮设了防，派生出来的等待没设防」。
+ *
+ * ⚠️ 分工是刻意的，别合并：**旋钮**（使用者配的）走 `assertTimerDelay`「拒」，
+ * **外部数据**（上游的 `retry-after`）走 `clampTimerDelay`「夹」。
+ */
+describe('定时器上界：拒绝坏值，而不是静默钳制', () => {
+  it('上限就是 Node 的 32 位有符号整数边界（2^31-1ms ≈ 24.86 天）', () => {
+    assert.equal(MAX_TIMER_DELAY_MS, 2_147_483_647);
+  });
+
+  it('withTimeout：超上限 / NaN 抛错；边界内与原「非正」语义都不受影响', async () => {
+    await assert.rejects(
+      () => withTimeout(Promise.resolve('x'), MAX_TIMER_DELAY_MS + 1),
+      /超过 Node 定时器延迟上限/,
+      '超上限的延迟 Node 不遵守（钳到 1ms）⇒ 必须响亮拒绝，不能静默变成「立即超时」',
+    );
+    await assert.rejects(
+      () => withTimeout(Promise.resolve('x'), Number.POSITIVE_INFINITY),
+      /定时器延迟上限/,
+    );
+    await assert.rejects(
+      () => withTimeout(Promise.resolve('x'), Number.NaN),
+      /不能是 NaN/,
+      'NaN 会被那句 `!(x > 0)` 静默读成「不设超时」，与使用者「我设了个预算」正好相反',
+    );
+    // 边界内合法：promise 立刻 settle，不会真等 24.86 天
+    assert.equal(await withTimeout(Promise.resolve('ok'), MAX_TIMER_DELAY_MS), 'ok');
+    // 阳性对照：上界校验不得动到「非正 = 不设超时」这条既有语义
+    assert.equal(await withTimeout(Promise.resolve('ok'), 0), 'ok');
+    assert.equal(await withTimeout(Promise.resolve('ok'), -1), 'ok');
+  });
+
+  it('interruptibleSleep：超上限 / NaN 抛错（同步抛，不是 reject）；非正仍是「不睡」', async () => {
+    assert.throws(
+      () => interruptibleSleep(MAX_TIMER_DELAY_MS + 1),
+      /超过 Node 定时器延迟上限/,
+      '超上限 ⇒ 睡 1ms 后立刻醒：「退避」静默变「热重试」',
+    );
+    assert.throws(
+      () => interruptibleSleep(Number.NaN),
+      /不能是 NaN/,
+      'NaN 穿透 `ms <= 0`（NaN <= 0 是 false）直落 setTimeout ⇒ 同样被钳到 1ms',
+    );
+    // 阳性对照：「不睡」这条既有语义（先于 aborted 检查，被本文件与 sse-text-stats 钉着）
+    await interruptibleSleep(0);
+    await interruptibleSleep(-1);
+  });
+
+  it('backoffMs：上游给的荒谬 retry-after 被**夹**到上限 —— 不抛（那不是使用者的错）', () => {
+    // 秒数形态：`Retry-After: 99999999` ⇒ 1e11 ms ⇒ 直通 setTimeout 就会被钳成 1ms
+    assert.equal(backoffMs(1, '99999999'), MAX_TIMER_DELAY_MS);
+    // HTTP-date 形态（可指到几个月后）同样夹
+    assert.equal(
+      backoffMs(1, new Date(Date.now() + 3_000_000_000).toUTCString()),
+      MAX_TIMER_DELAY_MS,
+    );
+    // 阳性对照：正常值一个字节都不动
+    assert.equal(backoffMs(1, '2'), 2000);
+    // 指数退避那条路：底数封顶 8000，再叠 ±25% 抖动 ⇒ 落在 [6000, 10000]
+    // （⚠️ 别断言 `<= 8000` —— 那是把「封顶」误当成「结果上界」，会 flaky 红）
+    const exp = backoffMs(9, null);
+    assert.ok(exp >= 6000 && exp <= 10_000, `指数退避应落在 [6000,10000]，实测 ${exp}`);
   });
 });

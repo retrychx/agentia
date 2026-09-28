@@ -92,7 +92,7 @@ export const LIMIT_SEMANTICS = [
     zero: 'unlimited',
     zeroClause: '0 = 不限',
     badValue: 'throws',
-    note: 'NaN/Infinity 会被 setTimeout 钳到 1ms ⇒ 每个任务立即「超时」失败，且 NaN 会绕过 `< 0` 静默通过；所以要「不限」必须显式传 0。',
+    note: 'NaN/Infinity 会被 setTimeout 钳到 1ms ⇒ 每个任务立即「超时」失败，且 NaN 会绕过 `< 0` 静默通过；所以要「不限」必须显式传 0。⚠️ 2026-09-28 补上界：**超过 2^31-1ms（约 24.86 天）同样会被钳到 1ms**，构造期一并拒掉 —— 此前只查「非负有限」，于是「配 30 天超时 = 每个任务立即超时」这种配置合法、行为相反的坑能静默上线（上限单源在 core/timeout.ts）。',
   },
   {
     knob: 'AsyncRunner.approvalTimeoutMs',
@@ -110,7 +110,7 @@ export const LIMIT_SEMANTICS = [
     zero: 'unlimited',
     zeroClause: '非正 = 一直等',
     badValue: 'none',
-    note: '**历史事故现场**：`http.ts` 的优雅停机把剩余预算算成 `timeoutMs - elapsed` 再交给它，deadline 已过时算出 1 或 0 ⇒ 旧读法（`0` = 已到点）让它跨过 deadline 后**永不返回**。现在 `http.ts` 自己先判「已到点就认账」，不把 0 交给下游去猜。',
+    note: '**历史事故现场**：`http.ts` 的优雅停机把剩余预算算成 `timeoutMs - elapsed` 再交给它，deadline 已过时算出 1 或 0 ⇒ 旧读法（`0` = 已到点）让它跨过 deadline 后**永不返回**。现在 `http.ts` 自己先判「已到点就认账」，不把 0 交给下游去猜。⚠️ 2026-09-28：`NaN` 与超过 2^31-1ms 的预算在闸口拒掉（超上限会被钳到 1ms ⇒「等 30 天排空」变成「1ms 后返回 false」，而 `false` 的语义是「宿主必须退出」，静默拿到它代价很高）。',
   },
   {
     knob: 'mapWithConcurrency.limit',
@@ -165,8 +165,8 @@ export const LIMIT_SEMANTICS = [
     unit: 'ms',
     zero: 'disabled',
     zeroClause: '非正 = 不设超时（原样透传）',
-    badValue: 'none',
-    note: '`toolTimeoutMs` 的底座。⚠️ 漏透传这个值不是「少一层保险」而是**反的**：`withTimeout(p, 0)` 直接返回原 promise = 永不超时，同时 MCP 桥找不到引擎预算又起自己的 60s 兜底 ⇒ 双计时器、双账本（`toolkit/subagent.ts` / `skill.ts` 的透传注释指的就是这条）。',
+    badValue: 'throws',
+    note: '`toolTimeoutMs` 的底座。⚠️ 漏透传这个值不是「少一层保险」而是**反的**：`withTimeout(p, 0)` 直接返回原 promise = 永不超时，同时 MCP 桥找不到引擎预算又起自己的 60s 兜底 ⇒ 双计时器、双账本（`toolkit/subagent.ts` / `skill.ts` 的透传注释指的就是这条）。⚠️ 2026-09-28 起 `NaN` 与超过 2^31-1ms 的值在入口拒掉（`assertTimerDelay`）：`NaN` 会**静默**落进上面那句「非正 = 不设超时」（判据是 `!(x > 0)`，NaN 满足），与「我设了个预算」的预期正好相反；超上限则被钳到 1ms ⇒ 每个工具调用立即超时。`0` / 负数仍是合法的「不设超时」。',
   },
 
   {
@@ -186,8 +186,8 @@ export const LIMIT_SEMANTICS = [
     unit: 'ms',
     zero: 'immediate',
     zeroClause: '非正 = 不睡',
-    badValue: 'none',
-    note: '⚠️ 这一判**先于** aborted 检查 —— 别把它「修」成「已中止就该 reject」。2026-09-19 外部复核把它当一致性缺口改反过一次，被 `tests/core/timeout.test.ts` + `tests/core/sse-text-stats.test.ts` 拦住。',
+    badValue: 'throws',
+    note: '⚠️ 这一判**先于** aborted 检查 —— 别把它「修」成「已中止就该 reject」。2026-09-19 外部复核把它当一致性缺口改反过一次，被 `tests/core/timeout.test.ts` + `tests/core/sse-text-stats.test.ts` 拦住。⚠️ 2026-09-28 起 `NaN` 与超 2^31-1ms 在入口拒掉（`assertTimerDelay`，判在「非正」**之前** —— `NaN <= 0` 是 false，不先挡就会穿透直落 `setTimeout(NaN)`，被钳成 1ms ⇒「退避」变成「立刻重试」）。上游给的荒谬 `Retry-After` 不走这条：它在 `backoffMs` 里被**夹**到上限（外部数据不该把一次 429 升级成硬失败）。',
   },
   {
     knob: 'metricsSink.intervalMs',
@@ -262,7 +262,7 @@ export const LIMIT_SEMANTICS = [
     zero: 'invalid',
     zeroClause: '必须为正有限数（0 会空转）',
     badValue: 'throws',
-    note: '`setInterval(0)` 退化成「尽快重复」的空转循环（Node 钳到 1ms，仍是每毫秒一轮忙轮询）；超过 2^31-1ms 会被**静默**钳到 1ms，同款失败。',
+    note: '`setInterval(0)` 退化成「尽快重复」的空转循环（Node 钳到 1ms，仍是每毫秒一轮忙轮询）；超过 2^31-1ms 的延迟**不会被遵守**（Node 只在 stderr 留一行 `TimeoutOverflowWarning`，随后钳到 1ms），同款失败。上限单源 2026-09-28 上提到 core/timeout.ts，与其余五处直喂 `setTimeout` 的站点共用。',
   },
   {
     knob: 'createAnthropicClient.timeout',
@@ -271,7 +271,7 @@ export const LIMIT_SEMANTICS = [
     zero: 'invalid',
     zeroClause: '不设 = 不限；0 = 非法',
     badValue: 'throws',
-    note: '「不限」的表达方式是**不传**，不是传 0 —— 与 `runTimeoutMs` 的读法**相反**（那个要求显式传 0）。',
+    note: '「不限」的表达方式是**不传**，不是传 0 —— 与 `runTimeoutMs` 的读法**相反**（那个要求显式传 0）。⚠️ 2026-09-28 补上界：超过 2^31-1ms 的值同样被钳到 1ms ⇒「30 天超时」变成「每个请求立即超时」，构造期一并拒掉。',
   },
   {
     knob: 'metricsSink.windowSize',

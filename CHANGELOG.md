@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+### 修复 · 定时器上限单源（2026-09-28 ⑪）
+
+- **超过 `2^31-1`ms（≈24.86 天）的定时器延迟不再是「配置合法、行为相反」**：Node 不会遵守它
+  （只在 stderr 留一行 `TimeoutOverflowWarning`，随后把延迟钳到 **1ms**），于是「配 30 天超时」
+  会变成「每个调用立即超时」、「退避到限流窗口之后」会变成「热重试打风暴」。此前防线只在
+  `Scheduler.every` / `at`，而**派生出来的等待**（`withTimeout` ← 引擎 `toolTimeoutMs`；
+  `interruptibleSleep` ← 重试退避；`AsyncRunner.runTimeoutMs`；`createAnthropicClient.timeout`；
+  `DrainGate.waitForIdle` ← `drain` 的等待预算）一律只查「非负 / 有限」。现在上限单源在
+  `core/timeout.ts`（`MAX_TIMER_DELAY_MS`），五处站点在**构造期 / 入口**一并拒绝。
+- **`NaN` 也拒**（同一处校验）：`withTimeout(p, NaN)` 此前被那句 `!(x > 0)` 静默读成
+  「不设超时」（与「我设了个预算」正好相反，桥还会因此起自己的 60s 兜底 ⇒ 双计时器、双账本）；
+  `interruptibleSleep(NaN)` 此前穿透「非正」判直落 `setTimeout(NaN)`（同样被钳到 1ms）。
+- **上游的 `Retry-After` 走「夹」不走「拒」**：`Retry-After: 99999999` 不是使用者的错，
+  为它把一次 429 升级成硬失败是错的；现在被夹到上限，不再静默变成「1ms 后立刻重试」。
+- **`cancel` 的 409 文案分成两种说法**（`AsyncRunner`）：原先一律说「正在运行但**不在本进程**」，
+  而同一判据还覆盖「**已在本进程受理、正在等并发槽位**」（四条恢复路径先置 `running` 再派发，
+  句柄要到拿到槽位才登记）—— 对它说反话。现在两支分开措辞。**闸不放开**（放开会让
+  `onFinished` 双发）。
+- ⚠️ **`limits` 表的 `withTimeout.ms` / `interruptibleSleep.ms` 的 `badValue` 由 `none` 改 `throws`**：
+  传给 `RunAgentOptions.toolTimeoutMs` 的 `NaN`、或任何超过上限的超时值，现在会**抛错**。
+  这两种值此前的行为都与配置意图相反（一个静默变「立即超时」，一个静默变「不设超时」）。
+
 ### 修复 · 复审收口（外部深评 2026-09-28，两条 P1）
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /

@@ -1,3 +1,5 @@
+import { assertTimerDelay } from '../core/timeout.js';
+
 /**
  * 优雅停机的**等待闸** —— 从 AsyncRunner 里抽出的第三个协作件（slot-pool → approval-policy → 这里）。
  *
@@ -30,6 +32,13 @@ export class DrainGate {
    */
   async waitForIdle(idle: () => boolean, timeoutMs: number): Promise<boolean> {
     this.draining = true; // 必须最先置位：新单要立刻被挡住，而不是等到排空之后
+    // 等待预算的坏值先挡（NaN / 超 2^31-1ms，见 core/timeout.ts 的 assertTimerDelay）。
+    // 为什么这里必须挡：超上限的预算 Node **不会遵守**（stderr 一行警告后钳到 1ms），
+    // 于是「等 30 天排空」变成「1ms 后返回 false」—— 而 `false` 对宿主的语义是
+    // 「本进程此后不再推进任何任务、必须退出」（见类头注释与 AsyncRunner.drain 的契约），
+    // 静默地拿到它代价很高。非正数不在此列：`<= 0` = 「一直等」是既有合法读法。
+    // 置于 draining 置位**之后**：校验抛错也要先把停机态立住，否则新单还会被接进来。
+    assertTimerDelay(timeoutMs, 'DrainGate.waitForIdle 的 timeoutMs（drain 等待预算）');
     if (idle()) return true;
     const drained = new Promise<boolean>((resolve) => this.waiters.push(() => resolve(true)));
     if (timeoutMs <= 0) return drained;

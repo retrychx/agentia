@@ -10,6 +10,7 @@ import type { AgentRunResult, AgentTool, MessageParam } from '../../src/index.js
 import type { TaskRecord, TaskStore } from '../../src/index.js';
 import type { PersistFailureInfo } from '../../src/index.js';
 import { TaskInputError } from '../../src/engine/spec.js';
+import { MAX_TIMER_DELAY_MS } from '../../src/core/timeout.js';
 import { mockClient, toolUseMsg, endTurnMsg, waitFor } from '../helpers.js';
 
 /** 模拟 fsStore/sqliteStore 这类**同步** store：终态落库时同步抛错（磁盘满、库锁） */
@@ -551,13 +552,21 @@ describe('AsyncRunner', () => {
     release(); // 放掉第一次被放弃的执行（其结果无人接收）
   });
 
-  it('runTimeoutMs 校验：负数 / NaN / Infinity 抛错（NaN、Infinity 会被 setTimeout 钳到 1ms，每任务立即「超时」）', () => {
+  it('runTimeoutMs 校验：负数 / NaN / Infinity / 超 2^31-1ms 抛错（都会被 setTimeout 钳到 1ms，每任务立即「超时」）', () => {
     assert.throws(() => new AsyncRunner(fakeApp(), { runTimeoutMs: -1 }), /runTimeoutMs/);
     assert.throws(() => new AsyncRunner(fakeApp(), { runTimeoutMs: Number.NaN }), /runTimeoutMs/);
     assert.throws(
       () => new AsyncRunner(fakeApp(), { runTimeoutMs: Number.POSITIVE_INFINITY }),
       /runTimeoutMs/,
     );
+    // 上界（2026-09-28）：此前只查「非负有限」，于是「配 30 天超时」这种**完全合法**的配置
+    // 会让每个任务立即超时失败；现在构造期就拒（上限单源在 core/timeout.ts）。
+    assert.throws(
+      () => new AsyncRunner(fakeApp(), { runTimeoutMs: MAX_TIMER_DELAY_MS + 1 }),
+      /超过 Node 定时器延迟上限/,
+    );
+    // 阳性对照：边界内（恰好 2^31-1）合法
+    assert.doesNotThrow(() => new AsyncRunner(fakeApp(), { runTimeoutMs: MAX_TIMER_DELAY_MS }));
   });
 
   it('异步 store 的 byIdempotency reject：同步门面必须订阅，不得逃逸成 unhandled rejection', async () => {

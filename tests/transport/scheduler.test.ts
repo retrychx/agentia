@@ -302,7 +302,7 @@ describe('Scheduler', () => {
     assert.equal(calls.length - before, 1, '缺省 1：首个任务占满闸门后不再派发');
   });
 
-  it('every / at：超过 2^31-1ms 的延迟会被 Node 静默钳到 1ms —— 构造期抛错', () => {
+  it('every / at：超过 2^31-1ms 的延迟 Node 不会遵守（stderr 一行 TimeoutOverflowWarning + 钳到 1ms）—— 构造期抛错', () => {
     const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
     // 约 34 天：不挡的话 setInterval 退化成每 1ms 空转
     assert.throws(() => scheduler.every(3_000_000_000, 'x'), /定时器上限/);

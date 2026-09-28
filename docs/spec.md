@@ -4433,6 +4433,57 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
      `JSON.parse` / 摘掉 `cleanup()` / `unwrap` 改值判定 / `withDeadline` 抛普通 `Error` /
      `exposeErrors=false` 泄漏 ……），每条**恰好红在对的那条用例**上，且还原后源文件逐字节一致。
 
+### 2026-09-28 ⑪：**定时器上限单源 + 两处如实收口**（五处直喂 `setTimeout` 的站点补上界 / `cancel` 409 文案分两支）
+
+来源：`DEEP-AUDIT-VERIFIED-2026-09-28.md`（**未随本仓提交**，与三份复核报告同惯例）经**两轮外部复核**
+并入后的 P1 收窄结果。完整审计与「逐条复核」两端都在那两份未跟踪文档里，这里只记定案。
+
+1. **Node 定时器延迟的物理上限必须是单源**（`2^31-1`ms ≈ 24.86 天）。超上限的延迟**不会「等那么久」**：
+   Node 只在 stderr 留一行 `TimeoutOverflowWarning`，随后把延迟**钳到 1ms** —— 实测（Node 22）：
+   `delay = 2^31` 在 200ms 内就触发、`delay = 2^31-1`（边界内）如期不触发。于是「配 30 天超时」
+   变成「每个调用立即超时」、「退避到限流窗口之后」变成「热重试打风暴」。
+   - **本仓此前只防了「旋钮」**：`transport/scheduler.ts` 的 every/at 各有闸（2026-09-19 复审加的），
+     而**派生出来的等待**没有 —— 五处直喂 `setTimeout` 的站点（`withTimeout` / `interruptibleSleep` /
+     `#raceTimeout` 的 `runTimeoutMs` / `composeSignal` 的 client `timeout` / `DrainGate.waitForIdle`）
+     一律只查「非负 / 有限」。这正是要消灭的形状：**配置完全合法、行为完全相反，且没人会看那行警告**。
+   - `MAX_TIMER_DELAY_MS` 上提到 `core/timeout.ts`（`scheduler.ts` 改为 import，不再自备一份），
+     配两个函数，**分工刻意分开、别合并**：`assertTimerDelay`（**拒** —— 旋钮的坏值必须响亮，
+     否则修法会被写成「补一个静默语义」）；`clampTimerDelay`（**夹** —— 外部数据：
+     `Retry-After: 99999999` 不是使用者的错，为它把一次 429 升级成硬失败是错的，放它直通才是真危害）。
+   - **`NaN` 要单独判、且必须排在调用点的「非正」早返回之前**：`withTimeout` 的判据是 `!(x > 0)`
+     ⇒ `NaN` 满足它、被静默读成「不设超时」（与「我设了个预算」正好相反，且桥会因此起自己的 60s
+     兜底 ⇒ 双计时器、双账本）；`interruptibleSleep` 的判据是 `ms <= 0` ⇒ `NaN` **不**满足它、
+     穿透直落 `setTimeout(NaN)`（同样被钳到 1ms）。**同一个坏值在两个原语里的落点相反** ——
+     这就是它必须统一在入口挡掉的理由。
+2. **`cancel` 的 409 文案分两支**（同一条判据下的两种情形，原文案一律说「不在本进程」）：
+   四条恢复路径（approve / 到期唤醒 / 事件投递 / 崩溃重投）都**先**把状态置 `running`、再 `#dispatch`，
+   而 `#runAborts` 要到 `#slots.acquire()` 之后才登记 ⇒ 中间整个窗口里任务「状态是 running、
+   句柄还没有，但**明明在本进程**」。新增 `AsyncRunner.#executions`（**纯诊断**集合，`#execute` 的
+   存活区间）与 `#runAborts` 取差集，据此换文案。
+   - ⚠️ **闸不放开**（这一步只改文案 + 给可区分信号）：放开会让等槽位那趟 `#execute` 的 finally
+     双发 `onFinished` —— 正是 §10 的变异 **M23**（`#cancelSettled` 只按 `wasQueued` 记账）。
+3. **措辞订正：「静默」不准**。此前写「超上限会被**静默**钳到 1ms」—— 不是静默，Node 会打
+   `TimeoutOverflowWarning`，准确说法是**警告落在没人看的 stderr**。已改 `scheduler.ts` 三处注释、
+   `core/limits.ts` 两处 note、`anthropic.ts` 一处头注、`usage-guide.md` 一句、`scheduler.test.ts`
+   一条用例名。**`CHANGELOG.md` 与本文的历史条目不动**（追加式日志）。
+   顺带修掉一条**不实注释**：`scheduler.ts` 原先写着「`runTimeoutMs` 在 async.ts 有同款防线」，
+   而当时那边只查「非负有限」—— 现在那句承诺才真的成立。
+4. **`limits` 表同步**：`withTimeout.ms` / `interruptibleSleep.ms` 的 `badValue` 由 `none` 改 `throws`
+   （`RunAgentOptions.toolTimeoutMs` 这条链上的 `NaN` 从此不再是「静默不设超时」），
+   `AsyncRunner.runTimeoutMs` / `createAnthropicClient.timeout` / `AsyncRunner.drain.timeoutMs` /
+   `Scheduler.every.intervalMs` 的 note 补上界。**没有新增旋钮**（`MAX_TIMER_DELAY_MS` 是常量而非旋钮）
+   ⇒ `tests/limits.test.ts` 的 `PROBES` 穷尽表不动。
+5. **反向验证 11/11**：逐条改坏实现（上界判断失效 / `NaN` 判断失效 / 五处站点各摘掉校验 /
+   `#executions` 不登记 / 判据恒真 / 判据恒假），每条**恰好红在对的那条用例**上，还原后 4 个源文件
+   逐字节一致。基线**跑 3 遍**才继续 —— 这条纪律抓到了一条我自己写的 `<= 8000` 断言
+   （`backoffMs` 的 ±25% 抖动可以让结果到 10000，会把「底数封顶」误读成「结果上界」）。
+6. **刻意不做**（理由与做的理由同等重要）：
+   - 不给 `engine/retry.ts` 的 `RetryOptions.maxDelayMs` 加构造期上界 —— 超出本次范围；若它产出
+     超限值，`interruptibleSleep` 会**响亮抛错**（而不是静默热重试），已够。
+   - 不在 `RunAgentOptions` 层另加一遍 `toolTimeoutMs` 校验 —— `withTimeout` 是构造性覆盖点，
+     再加一层就是两处写同一件事。
+   - 不动 `backoffDelay` 的抖动公式（那是策略，不是坏值）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

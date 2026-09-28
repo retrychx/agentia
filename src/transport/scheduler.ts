@@ -3,6 +3,7 @@ import type { AsyncRunner } from './async.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import { isThenable } from '../store/store.js';
 import { zeroClauseOf } from '../core/limits.js';
+import { MAX_TIMER_DELAY_MS } from '../core/timeout.js';
 
 /**
  * Agentia —— 定时触发（spec §6.3 定时事件）。
@@ -19,10 +20,11 @@ import { zeroClauseOf } from '../core/limits.js';
  */
 
 /**
- * Node 定时器延迟的上限：2^31-1ms（约 24.86 天）。超过会被**静默**钳到 1ms
- * （只打一条 TimeoutOverflowWarning）—— every/at 都在注册前挡掉（2026-09-19 复审发现）。
+ * Node 定时器延迟的上限（`2^31-1`ms ≈ 24.86 天）**单源在 `core/timeout.ts`**。
+ * 2026-09-28 上提：此前是这里自备一份而其余五处直喂 `setTimeout` 的站点无防线，
+ * 于是「旋钮设了防、派生出来的等待没设防」。现在本文件的 every/at 与那五处
+ * 共用同一常量与同一校验（`assertTimerDelay`）。
  */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface Job {
   id: string;
@@ -74,9 +76,11 @@ export class Scheduler {
       );
     }
     if (intervalMs > MAX_TIMER_DELAY_MS) {
-      // Node 的定时器延迟是 32 位有符号整数：超过 2^31-1ms（约 24.86 天）会被**静默**
-      // 钳到 1ms —— 周期任务退化成每毫秒空转（每个 tick 都对 store 打一轮）。这是
-      // 配置错误，与上面的 0 同款处理（runTimeoutMs 在 async.ts 有同款防线）。
+      // Node 的定时器延迟是 32 位有符号整数：超过 2^31-1ms（约 24.86 天）**不会被遵守** ——
+      // Node 只在 stderr 留一行 TimeoutOverflowWarning，随后把延迟钳到 1ms，周期任务退化成
+      // 每毫秒空转（每个 tick 都对 store 打一轮）。这是配置错误，与上面的 0 同款处理。
+      // （此前的注释写「runTimeoutMs 在 async.ts 有同款防线」—— 与当时的实现不符；
+      // 2026-09-28 把那道防线真的补上了，五处站点现在都走 assertTimerDelay。）
       throw new Error(
         `Scheduler.every 的 intervalMs 超过定时器上限（约 24.86 天），收到 ${intervalMs}`,
       );
@@ -125,7 +129,8 @@ export class Scheduler {
     const id = randomUUID();
     const delay = Math.max(0, when.getTime() - Date.now());
     if (delay > MAX_TIMER_DELAY_MS) {
-      // 与 every() 同款防线：超 2^31-1ms 会被静默钳到 1ms ⇒「30 天后」变成「立即触发」，
+      // 与 every() 同款防线：超 2^31-1ms 的延迟**不会被遵守**（Node 只在 stderr 留一行
+      // TimeoutOverflowWarning，然后把延迟钳到 1ms）⇒「30 天后」变成「立即触发」，
       // 定时语义直接作废。远期单发请拆成多次自检（或落库后由宿主自己的 cron 驱动）。
       throw new Error(
         `Scheduler.at 的目标时刻超过定时器上限（约 24.86 天后），收到 ${when.toISOString()}`,
