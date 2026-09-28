@@ -1,5 +1,6 @@
 import type { Trace, SpanError } from '../core/trace.js';
 import type { RunStatus } from '../core/run.js';
+import type { TaskEvent } from '../core/run.js';
 import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import type { ApprovalDecisions } from './async.js';
@@ -92,5 +93,32 @@ export function parseApproveBody(
   return {
     decisions,
     ...(o.decidedBy !== undefined ? { decidedBy: o.decidedBy as string } : {}),
+  };
+}
+
+/**
+ * 解析 `POST /tasks/<id>/events` 的 body（2026-09-28 ⑥，run 事件投入口）；
+ * 形状不合法返回 undefined（调用方回 400）。
+ *
+ * **白名单**（B1）：只接受 `{ eventId?, type, payload }` 三个键，**多一个字段即拒** ——
+ * 这是外部输入第一次进入消息历史，「能救则救」在这里等于放行协议注入面
+ * （与 parseApproveBody 的「全有或全无」同一条纪律）。三个值全是字符串：
+ * 外部永远不能构造消息块。
+ */
+export function parseEventBody(body: unknown): TaskEvent | undefined {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const o = body as Record<string, unknown>;
+  for (const key of Object.keys(o)) {
+    if (key !== 'eventId' && key !== 'type' && key !== 'payload') return undefined;
+  }
+  if (typeof o.type !== 'string' || o.type === '') return undefined;
+  if (typeof o.payload !== 'string') return undefined;
+  if (o.eventId !== undefined && (typeof o.eventId !== 'string' || o.eventId === '')) {
+    return undefined;
+  }
+  return {
+    type: o.type,
+    payload: o.payload,
+    ...(o.eventId !== undefined ? { eventId: o.eventId as string } : {}),
   };
 }

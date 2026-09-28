@@ -23,6 +23,7 @@ import type { MessageParam } from '../../src/core/message.js';
 /** AgentLoopResult 的字段全集（顺序无关，比对时排序） */
 const FIELDS = [
   'error',
+  'eventsDelivered',
   'finalText',
   'iterations',
   'pendingApprovals',
@@ -46,7 +47,7 @@ function httpError(status: number, message = `HTTP ${status}`): Error {
 }
 
 describe('字段在场 —— 形状不变量', () => {
-  it('四个出口都把 9 个字段写全（缺席 ≠ undefined）', () => {
+  it('四个出口都把 10 个字段写全（缺席 ≠ undefined）', () => {
     const all = [
       suspendedResult(ctxOf([userMsg('go')]), { reason: 'approval', pending: ['tu-1'] }),
       suspendedResult(ctxOf([userMsg('go')]), {

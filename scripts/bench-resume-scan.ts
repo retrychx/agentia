@@ -127,20 +127,27 @@ try {
 // ── sqlite：这里 `list()` **每次都是真查询**（不像 file store 从内存 Map 返回）─────────────
 // 用 :memory:（省掉磁盘抖动；形状与 file store 一列之差：status 是列 + json）。
 // ⚠️ 读写同一进程、单连接 —— 多进程共库时的锁等待不在本基准范围内。
+//
+// 2026-09-28 ⑤ 落地后补的 `due` 列：`store.listDue(now)`（到期索引，派生列 + (status, wake_at)
+// 索引）的代价 —— 它是 O(到期数) 而不是 O(全表)。⚠️ 但 `resume` **不会**因此显著下降：
+// resumePending 的扫描还干别的事（挂起读数重建 / 审批超时 / 孤儿认领），那些职责的输入
+// 仍是全表 list() —— listDue 只替代「到期唤醒」那一半的输入（见 async.ts #redispatch）。
+// 这列数字回答的是「如果只扫到期的，要多少钱」（= 将来拆扫描职责时能省下的那笔）。
 const { SqliteTaskStore } = await import('../src/store/sqliteStore.js');
-console.log('\nsqlite（:memory:；list 每次真查询）');
-console.log('     N    挂起  list(ms)  resume(ms)');
+console.log('\nsqlite（:memory:；list 每次真查询；due = listDue 到期索引）');
+console.log('     N    挂起  list(ms)   due(ms)  resume(ms)');
 for (const n of SIZES) {
   const store = new SqliteTaskStore(':memory:');
   const suspended = Math.max(1, Math.floor(n / 10));
   for (let i = 0; i < n; i++) store.save(rec(i, i < suspended));
   const list = timeIt(() => store.list().length);
+  const due = timeIt(() => store.listDue(Date.now()).length);
   const runner = new AsyncRunner(noopApp, { store });
   const resume = await timeResume(runner);
   if (resume.value !== 0) throw new Error(`不该唤醒任何记录，实际 ${resume.value}`);
   console.log(
     `${String(n).padStart(6)}  ${String(suspended).padStart(5)}  ${list.ms
       .toFixed(1)
-      .padStart(8)}  ${resume.ms.toFixed(1).padStart(10)}`,
+      .padStart(8)}  ${due.ms.toFixed(1).padStart(8)}  ${resume.ms.toFixed(1).padStart(10)}`,
   );
 }

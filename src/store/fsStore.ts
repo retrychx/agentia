@@ -28,6 +28,9 @@ import type { TaskRecord, TaskStore } from './store.js';
  * 跨进程协调（锁/队列）属于部署层职责，不在本实现内。
  */
 export class FileTaskStore implements TaskStore {
+  // 刻意**不实现** `listDue`（到期索引）：记录常驻内存 Map（构造期 load 之后 `list()` 只是
+  // snapshot），每轮扫描本来就便宜 —— 它真正贵的全表读在构造期，索引管不到那里
+  // （实测读数见 spec §10 2026-09-28 ⑤）。runner 对缺失的 listDue 回退全表，语义不变。
   private readonly byTask = new Map<string, TaskRecord>();
   private readonly byKey = new Map<string, string>(); // idempotencyKey → taskId
 

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -201,6 +202,109 @@ describe('SqliteTaskStore', () => {
       await gotReleased;
     } finally {
       await holder.terminate();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('SqliteTaskStore.listDue（到期索引，2026-09-28 ⑤ 落地）', () => {
+  /** 一条在睡（或不在睡）的记录 */
+  const sleeping = (
+    id: string,
+    wakeAt: number | undefined,
+    status: 'suspended' | 'succeeded' = 'suspended',
+  ): TaskRecord =>
+    rec({
+      taskId: id,
+      status,
+      suspendedReason: status === 'suspended' ? ('timer' as const) : undefined,
+      ...(wakeAt !== undefined ? { wakeAt } : {}),
+    });
+
+  it('只回「在睡且到点」的：未来 wakeAt / 无 wakeAt / 终态都不回', () => {
+    const store = new SqliteTaskStore(':memory:');
+    try {
+      const now = Date.now();
+      store.save(sleeping('due-1', now - 1_000)); // 到点 ⇒ 回
+      store.save(sleeping('due-2', now)); // 恰好等于 ⇒ 也回（边界是「不晚于现在」，见 wake-policy）
+      store.save(sleeping('future', now + 3_600_000)); // 没到点 ⇒ 不回
+      store.save(sleeping('approval-waiting', undefined)); // 等审批（无 wakeAt）⇒ 不回
+      store.save(sleeping('done', now - 1_000, 'succeeded')); // 终态 ⇒ 不回
+      const due = store.listDue(now);
+      assert.deepEqual(
+        due.map((r) => r.taskId),
+        ['due-1', 'due-2'],
+        '恰好回到期的两条（按写入顺序）',
+      );
+      assert.equal(due[0]?.wakeAt, now - 1_000, '记录完整读出（含 wakeAt）');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('存量库就地迁移：旧表（无 wake_at 列）构造期补列 + 从 json 回填，旧的在睡任务能醒', () => {
+    const { dir, file } = tmpFile('legacy.db');
+    try {
+      // 造一座「上一个版本」的库：四列旧 schema，wakeAt 只在 json 里
+      const require_ = createRequire(import.meta.url);
+      const { DatabaseSync } = require_('node:sqlite') as typeof import('node:sqlite');
+      const raw = new DatabaseSync(file);
+      const legacy = rec({
+        taskId: 'legacy-sleeper',
+        status: 'suspended',
+        suspendedReason: 'timer',
+        wakeAt: Date.now() - 1_000,
+      });
+      raw.exec(
+        'CREATE TABLE tasks (task_id TEXT PRIMARY KEY, idempotency_key TEXT, status TEXT, json TEXT)',
+      );
+      raw
+        .prepare('INSERT INTO tasks (task_id, idempotency_key, status, json) VALUES (?, ?, ?, ?)')
+        .run(legacy.taskId, null, 'suspended', JSON.stringify(legacy));
+      raw.close();
+
+      const store = new SqliteTaskStore(file); // 构造期迁移：补列 + 回填
+      try {
+        assert.deepEqual(
+          store.listDue(Date.now()).map((r) => r.taskId),
+          ['legacy-sleeper'],
+          '旧库里在睡的任务不补回填就再也醒不来 —— 迁移必须带上它',
+        );
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('派生列漂移在读时自愈：外部把 wake_at 改掉 ⇒ get 之后 listDue 恢复一致', () => {
+    const { dir, file } = tmpFile('drift.db');
+    try {
+      const store = new SqliteTaskStore(file);
+      const recDue = rec({
+        taskId: 'drifted',
+        status: 'suspended',
+        suspendedReason: 'timer',
+        wakeAt: Date.now() - 1_000,
+      });
+      store.save(recDue);
+      // 外部（DBA / 手改）把派生列改了：json 与列不一致
+      const require_ = createRequire(import.meta.url);
+      const { DatabaseSync } = require_('node:sqlite') as typeof import('node:sqlite');
+      const raw = new DatabaseSync(file);
+      raw.prepare('UPDATE tasks SET wake_at = NULL WHERE task_id = ?').run('drifted');
+      raw.close();
+
+      assert.deepEqual(store.listDue(Date.now()), [], '漂移期间：列说不醒（索引口径）');
+      store.get('drifted'); // 读时自愈（与 status 列同一条纪律：判据是「列 ≠ json」）
+      assert.deepEqual(
+        store.listDue(Date.now()).map((r) => r.taskId),
+        ['drifted'],
+        '自愈后索引口径与 json 重新一致',
+      );
+      store.close();
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

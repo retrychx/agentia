@@ -334,6 +334,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 | `beforeFlush` | `(trace, result) => void \| Promise<void>`：**sinks 冲刷之前**的最后一笔（run 正常收尾后调一次，抛错被吞）。给「**拿到结果才判得出**的结论」用的缝 —— 典型是 `defineEval` 的 score：等 `app.run` 返回再 `attachScore`，`metricsSink` 早在导出那一刻聚完账，分数就永远进不了指标。读 trace 就够的判断不必用它，写进 sinks 里即可（见 §6 判官配方） |
 | `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `suspended` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
+| `events` | run 事件（`TaskEvent[]`，`{ eventId?, type, payload }` 全是字符串）：挂起期间投递、随 `TaskRecord` 落库的事件，续跑段由引擎在**未决 tool_use 解决之后**渲染成 user 文本消息注入消息流（异步宿主经 `signalTask` 自动带，见 §6.6「事件投递」）；手工续跑时也可直接给 |
 
 返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`；
 `stopReason === 'suspended'`（挂起：等人工审批 / 等一个时刻）时另有 `suspendedMessages`（完整消息历史，末尾是含未决 tool_use 的 assistant 消息）、`pendingApprovals`（待决 tool_use_id 列表）与 `suspendedReason`（`'approval'` / `'timer'`），未挂起时三者皆为 `undefined`。
@@ -493,7 +494,7 @@ const app = await createApp({ ... });
 | API | 说明 |
 |---|---|
 | `createHttpHandler` | `(req,res)` handler：`POST /run` 同步（带 `Accept: text/event-stream` 则 SSE 流式）、`POST /tasks` 异步、`GET /tasks/:id`、`GET /healthz`；返回值另带 `drain()` 与 `runner` |
-| `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `approve` / `resumePending` / `drain`）；`approve(taskId, decisions, { decidedBy? })` 审批挂起任务（HITL，见 §6.6「人工审批」） |
+| `AsyncRunner` | 异步任务宿主（`submit` / `poll` / `awaitTask` / `approve` / `signalTask` / `cancel` / `resumePending` / `drain`）；`approve(taskId, decisions, { decidedBy? })` 审批挂起任务（HITL，见 §6.6「人工审批」）；`signalTask(taskId, event)` 投事件给挂起任务（见 §6.6「事件投递」） |
 | `TaskSink` | 任务完成回调 `{ onFinished(rec) }`，配 `AsyncRunner({ taskSinks })`；抛错被吞 |
 | `HttpException` | 鉴权钩子抛出以自定 HTTP 状态与响应体（抛别的错误一律按 401 处理） |
 | `Scheduler` | 定时触发（`every` / `at`） |
@@ -585,6 +586,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | `GET /tasks/:id/stream` | — | **任务进度流（SSE）**：先在 `id:` 里给流序号，逐帧下发 `trace.event`（body 即 `TraceRecordEvent`），终态发 `task.end` 并关闭。断线重连带 `Last-Event-ID`（或 `?from=<序号>`）即可续订 —— 只补该序号之后的事件。缓冲超限先发一帧 `stream.truncated{droppedBefore}`；别的进程在跑的任务发 `stream.unavailable` 后收口（**不假装实时**）。任务不存在 → 404；方法不对 → 405。⚠️ 它的读者是**旁观者**：背压/断开只收口这条流，**不中止任务** |
 | `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；**挂起原因不是 `approval`**（含未挂起）→ 409；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
 | `POST /tasks/:id/cancel` | 无 body | 200 `TaskRecord`（取消：在跑的**真中断**、在睡的**不再醒**、在排队的**绝不起跑**）。落库 `status: 'cancelled'` + `error.type: 'aborted'`（取消不是失败，但原因可查）。任务不存在 → 404；已终态 → 409；**在跑但本进程没有它的句柄、或宿主不认 `signal`**（宽限 2s 内没收尾）→ 409 —— 取消**未发生**就如实说，不假装。**停机中仍可用**（停机窗口正是最想取消在飞任务的时候） |
+| `POST /tasks/:id/events` | `{ eventId?, type, payload }` —— **白名单**：全是字符串，多一个字段 → 400；`payload` 的字节上限就是 `maxBodyBytes` 那一道闸（超限 413） | 200 `TaskRecord`（事件投递：把一条事件投给**挂起**的任务，投完即续跑，事件渲染成一条 user 文本消息进消息历史 —— 见 §6.6「事件投递」）。任务不存在 → 404；**不在 `suspended` 状态**（含已终态）→ 409；同 `eventId` 重复投递 → 409（不给 `eventId` 则没有恰好一次：重复投递 = 重复进历史）。**停机中仍可用**（与审批同理由：挂起的任务只有外部输入能推进） |
 | `GET /healthz` | — | 200 `HealthResponse`；**不鉴权**，停机中也回 200 |
 | `GET /metrics` | — | 200 指标文本（Content-Type 跟 sink 的 `contentType` 走：缺省 `text/plain; version=0.0.4`，`export:'openmetrics'` 的 sink 发 `application/openmetrics-text`）；**需在 `createHttpHandler` 里传 `metrics`**，**不鉴权**（与 `/healthz` 同档），停机中也回 |
 
@@ -1499,13 +1501,42 @@ const waitForBatch: AgentTool = {
    `suspended: { approval, timer, nextWakeAt }` 就是运维要看的那半（口径 = **本进程**看得见的
    记录；无时间挂起时 `nextWakeAt` 是 `null`，不是 `0`）。
 
-**没有 `cancel` API**：今天要「叫停一条在睡的 run」，靠宿主自己 `abort` 在飞请求 + 不再唤醒它
-（取消语义是独立一件，见 spec §10 2026-09-28 ② 决策 6）。对一条 `timer` 挂起调 `approve()`
+**取消**：`runner.cancel(taskId)` / `POST /tasks/:id/cancel`（见 §6.6 与上面的路由表）——
+对一条在睡的 run 调 `cancel` 就是「不再醒」的合法出路（落终态 `cancelled`，两条唤醒闸
+随之失效）。对一条 `timer` 挂起调 `approve()`
 会回 409（原因不对，不是状态不对）。
 
-**已知边界**：`resumePending()` 是 **O(全表)** 扫描（挂起数上量后每次重启/每轮扫描都要读全表；
-触发条件与候选实现见设计稿 §6）；`wakeAt` 到点后**必须有人读**才会醒（没人调
-`resumePending()` / `poll()` 的宿主里，任务不会自己动 —— 与审批超时同一条纪律）。
+**已知边界**：`resumePending()` 的扫描是 **O(全表)**（挂起读数重建 / 审批超时 / 孤儿认领
+三条职责的输入仍是全表）；其中「到期唤醒」那一半在 **sqlite** 上走 `listDue` 到期索引
+（派生列 + `(status, wake_at)` 索引，O(到期数) 而不是 O(全表) —— 实测 10k 记录：
+全表 list ~38ms vs listDue ~0.1ms；file / memory store 的 list 本来就在内存里，不实现）。
+`wakeAt` 到点后**必须有人读**才会醒（没人调 `resumePending()` / `poll()` 的宿主里，
+任务不会自己动 —— 与审批超时同一条纪律）。
+
+#### 事件投递（run 事件投入口：webhook / 外部系统叫醒一条挂起的 run）
+
+审批是「人等决定」的特例；**事件投递**是一般形：外部系统（webhook、另一个模块、定时
+巡查脚本）把一条**事件**投给一条挂起的任务，任务醒来时事件进消息历史。
+
+- 入口两个（与 approve/cancel 对称）：宿主方法 `runner.signalTask(taskId, event)` 与
+  `POST /tasks/:id/events`。事件体是**白名单** `{ eventId?, type, payload }` ——
+  **全是字符串**，多一个字段即 400。这是外部输入第一次进入消息历史：外部永远不能构造
+  消息块（投毒面只到「内容注入」为止），事件由引擎渲染成**一条 user 文本消息**，
+  在未决 tool_use 解决之后注入（直接追加到历史末尾会破坏续跑判定，见 spec §10 ⑥）。
+- **只对挂起生效**：任务不存在 → 404；不在 `suspended` 状态（含已终态）→ 409。
+  投完即续跑（先落库再派发：崩在窗口里不丢事件）；对 timer 挂起这就是**提前醒**
+  （不沿旧 `wakeAt` —— 醒来重跑那一批时工具可以重新 `deferUntil` 落定新时刻）；
+  对审批挂起，决定仍不齐就再挂起（零模型调用），事件留在 `TaskRecord.pendingEvents`
+  里等真正跑通的那次续跑注入。
+- **幂等**：给了 `eventId` 就按它去重（簿记在 `TaskRecord.deliveredEventIds`，随记录
+  落库、有界 FIFO 256 条）—— 同一任务重复投递同一个 `eventId` ⇒ 409。**不给
+  `eventId` 就没有恰好一次**：重复投递 = 重复进历史（webhook 重试场景请带上 id）。
+- **留痕**：注入时续跑段的 run 根记 `task.event` 事件（`{ delivered, event_type,
+  event_id? }`）；离开挂起态时 `/healthz` 的挂起读数照常除名。
+
+**已知边界**：事件由**收到它的那个进程**派发（落库先于派发，所以进程崩了不丢 ——
+重启后由 `resumePending` 认领续跑）；事件不进**会话历史**（会话只存对话轮次，
+事件属于 run 的内部过程，完整过程在 trace 里）。
 
 #### 内容护栏
 

@@ -27,8 +27,13 @@ describe('SSE 帧名：文档 ⇐ 实现（单向，文档不许说谎）', () =
   const emitted = new Set([...http.matchAll(/sse\.event\('([^']+)'/g)].map((m) => m[1]));
   const guide = readFileSync(join(repoRoot, 'docs', 'usage-guide.md'), 'utf8');
 
-  /** run 根的 attribute，不是 SSE 帧（见文件头） */
-  const NOT_A_FRAME = new Set(['trace.truncated']);
+  /**
+   * 不是 SSE 帧的名字（见文件头）：
+   * - `trace.truncated` 是 run 根的 attribute（tracer 度量闸超限时的记账）；
+   * - `task.event` 是**续跑段 run 根的 trace 事件名**（2026-09-28 ⑥ 事件投入口的留痕），
+   *   与 SSE 的 `task.end` 帧同名族但不是帧 —— 它由 engine/loop.ts 的 recorder.event 发出。
+   */
+  const NOT_A_FRAME = new Set(['trace.truncated', 'task.event']);
 
   it('usage-guide 里每个带点前缀的反引号帧名都必须真被 emit', () => {
     const mentioned = new Set(

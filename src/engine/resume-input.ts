@@ -1,4 +1,5 @@
 import type { MessageParam, ToolUseBlock } from '../core/message.js';
+import type { TaskEvent } from '../core/run.js';
 
 /**
  * Agentia —— 续跑入口的**读取件**（engine/loop.ts 的拆分第三步）。
@@ -38,4 +39,16 @@ export function textOfParam(message: MessageParam): string {
     .filter((b) => b.type === 'text')
     .map((b) => (b as { text?: string }).text ?? '')
     .join('\n');
+}
+
+/**
+ * run 事件 → **一条 user 文本消息**（2026-09-28 ⑥ 的 B1：外部永远不能构造 block ——
+ * 进来的只有文本，投毒面只到「内容注入」为止）。
+ *
+ * `eventId` **不进正文**：它是投递簿记（幂等去重依据），不是内容 —— 模型不需要知道
+ * 去重键，把它放进去只会给「同一件事换 id 再投一次」留语义噪音。留痕走 trace
+ * （`task.event` 事件，见 loop.ts 的注入点），不进消息。
+ */
+export function renderTaskEvent(ev: TaskEvent): MessageParam {
+  return { role: 'user', content: `[事件 type=${ev.type}]\n${ev.payload}` };
 }

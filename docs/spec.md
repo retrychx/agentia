@@ -4054,6 +4054,71 @@ try 块里 catch 看不到（块级作用域），首轮写成那样直接 Refer
 （形态与 file 同类，但 `list()` 是 SCAN）。**要拍板 7② 之前**：sqlite 的数字够了（它是最贵的一侧），
 但别把 file 的数当全局证据。
 
+**已落地（2026-09-28 ⑥ 同批）**：sqlite 侧触发了（`list()` 是真查询且线性增长），形态按上面
+定案的那条走 —— `TaskStore` 加**可选** `listDue?(before)`（接口加法，不破自定义 store），
+`SqliteTaskStore` 用**派生列 `wake_at` + `(status, wake_at)` 索引**实现（不选 `json_extract`：
+它仍要对扫到的每一行解析 JSON，是 O（全表） 的 C 版；派生列与 `status` 列同一条「多一份真源」
+取舍 —— save 单写点维护 + 读时自愈判据扩到两列 + 存量库构造期就地迁移并回填）。
+InMemory / File **不实现**（注释写明为什么：它们的 list 本就在内存）。
+runner 侧接线是 `#redispatch` 的到期唤醒那一半：`listDue?.(now) ?? list()` 的过滤输入 ——
+⚠️ **只**那一半（挂起读数重建 / 审批超时 / 孤儿认领仍以全表为输入），探针用例
+（`durable-timer.test.ts`）钉「listDue 的结果是该半的唯一输入源」。
+**实测偏差如实记**：`resumePending` 的总耗时**没有**显著下降（10k 档前后都是 ~33ms）——
+全表 `list()` 仍是其余三条职责的输入，它主导成本；listDue 把「到期唤醒」那半的输入降到
+O（到期数）（10k 档 list 37.8ms vs listDue 0.1ms），这笔节省只有在「扫描职责被拆开 / 出现
+`listActive` 式的窄查询」之后才会兑现到 `resume(ms)` 上。这是「先把缝焊对」的一批，
+不是「扫描已经变快」的一批。
+
+### 2026-09-28 ⑥：**run 事件投入口**（候选 2 落地，定案 A3+B1）—— 外部输入第一次进消息历史，入口焊成窄的
+
+设计稿：`docs/plans/2026-09-28-event-input-and-due-index.md`（§3 七条语义 / §4 八条门禁逐条有
+真用例 + 变异验证，见该稿「实施记录」）。决策与取舍：
+
+1. **形态 A3**：宿主方法 `runner.signalTask(taskId, event)` + HTTP 路由
+   `POST /tasks/:id/events`（与 approve/cancel 完全对称：方法承载语义、路由是它的 HTTP 皮）。
+   webhook 只能走 HTTP，而同进程模块不该被迫起 HTTP 请求。
+2. **事件体 B1（白名单 `{ eventId?, type, payload }`，全是字符串）**：渲染成**一条 user 文本
+   消息**进历史。B2（任意 `MessageParam`）/ B3（冒充 tool_result）**明确不做** —— 那是把
+   「伪造 assistant / tool_use 块」的能力交给外部，投毒面从内容注入升级成协议注入；
+   approve 今天只收布尔正是同一个理由。`parseEventBody` 多一个字段即拒（400），
+   `payload` 上限与 `maxBodyBytes` 同口径（413），走既有 authenticate（不是免鉴权组）。
+3. **对设计稿 §1 事实 4 的偏差（如实记）**：设计稿说「事件在恢复前追加到 `rec.spec.messages`
+   末尾」。**这么做会坏**：续跑判定 `tailToolUses` 只认历史**末尾一条** —— 事件消息成了末尾，
+   未决 tool_use 就不在末尾，续跑被判成新对话（同一批工具再跑一遍、审批决定作废），
+   且 tool_result 不再紧邻 tool_use（协议残缺）。所以事件**随 record 走**
+   （`TaskRecord.pendingEvents`，与 approvals 同一通道），由引擎在 `loop.ts` 的续跑入口、
+   未决 tool_use **解决之后**注入消息流（`deliverTaskEvents`）。
+4. **「再挂起」出口不注入**：恢复段若又挂起（审批决定仍不齐 / 工具再次 defer），注入会把
+   user 消息留在历史末尾、毁掉**下一次**续跑判定 —— 所以那两个出口不经过注入点，事件留在
+   `pendingEvents` 里等真正跑通的那次续跑（不清簿记 = 不丢事件）。推论：`submit_result`
+   提前落定那条路在有待注入事件时**不**直接收尾 —— 事件是新输入，让模型看到再决定。
+5. **幂等口径**：给 `eventId` 按 `TaskRecord.deliveredEventIds` 去重（随记录落库 ⇒ 跨进程/
+   重启不丢；有界 FIFO 256 条 —— 去重簿记不是审计日志，超界后同 id 重投会再进一次历史，
+   如实）。重复 ⇒ **409**（与 cancel 的「已终态」同款：说出来，不静默）。不给 `eventId`
+   就没有恰好一次：重复投递 = 重复进历史，文档如实写（webhook 场景请带 id）。
+6. **并发闸与 approve 不同款**：approve 的并发是「共享在飞那次」（决定幂等合并）；事件的并发
+   **串行成链**（两条并发事件是两条不同输入，共享 = 静默丢一条）。与 approve/wakeDue 的
+   跨闸竞速：进闸后重读再判挡住绝大多数；残余窄窗口与既有「approve × wakeDue 分闸」同类
+   （那两条按挂起原因天然互斥，事件两种原因都适用，是这个闸新盖的缝）—— 多进程下的
+   同类边界同 ④ 已记的口径。
+7. **trace 留痕的落点**：`task.event { delivered, event_type, event_id? }` 由**引擎**在注入时
+   记到续跑段 run 根（runner 不持有 recorder —— 这是与 approve 的 `approval.decided` 同款的
+   分工：决定/事件的**簿记**在 record，**留痕**在引擎经 options 拿到数据后自己记）。
+   「delivered 恒 true」是有意的：只在真正进历史那一刻记，投递但尚未注入（再挂起）不记。
+8. **payload 上限不另设旋钮**：HTTP 侧就是 `maxBodyBytes` 那道闸（413 同口径）；程序侧
+   （`signalTask`）的调用方是同进程代码（与 submit 的 messages 同档信任），不设第二道。
+   因此 `core/limits.ts` 不新增条目（无新「0 语义」旋钮）。
+
+**同日复审补记（重复注入缝）**：父 agent 复审时用探针实证了一处真缺陷 —— 续跑段
+**注入事件后**、正常循环里再次挂起（新一轮 approval/defer）时，`suspendedMessages`
+已含注入的事件消息，而 `pendingEvents` 按「再挂起就保留」留在 record 上 ⇒ 下次续跑
+**同一事件再注入一次**（模型看到两条）。修法：引擎出口如实报告「我注入了没有」——
+`AgentLoopResult` / `AgentRunResult` 新增 `eventsDelivered` 位（结果/状态记录类，
+字段在场）；runner 清簿记的判据从「是不是挂起出口」改成「注入过没有」（挂起分支：
+`eventsDelivered` 真 ⇒ 清，假 ⇒ 留）。回归用例（runner 级全链：注入 → 再挂起 →
+到点唤醒 ⇒ 模型看到恰好一条）+ 变异复验（挂起分支不清 ⇒ 该用例红）。
+`loop-result.ts` 的形状不变量测试随之 9 → 10 字段，api.html 的 AgentRunResult 行同步。
+
 ## 11. 开放项
 
 - **菜单漂移的严格模式与结果级字段**（§10 2026-09-27 ⑧ 未做的那两件）：① `menuDrift: 'fail'`

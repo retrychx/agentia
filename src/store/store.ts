@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
 import type { SpanError } from '../core/trace.js';
-import type { RunStatus, SuspendedReason } from '../core/run.js';
+import type { RunStatus, SuspendedReason, TaskEvent } from '../core/run.js';
 import type { ApprovalDecision } from '../core/tool.js';
 import type { RunSpec } from '../engine/spec.js';
 
@@ -79,6 +79,21 @@ export interface TaskRecord {
    * 记录离开挂起态时一并清掉（`#executeInner` 的终态分支与两条恢复路径）。
    */
   wakeAt?: number | undefined;
+  /**
+   * 挂起期间投递、**尚未注入消息历史**的事件（2026-09-28 ⑥，run 事件投入口）。
+   * **随记录落库**（重启不丢；先落库再派发那条纪律的载体）。续跑段由引擎在未决
+   * tool_use 解决之后渲染成 user 文本消息注入（见 `engine/loop.ts` 的注入点纪律），
+   * 跑通（不再挂起）后由宿主清掉 —— 它们已进历史；再次挂起则**保留**（那次续跑
+   * 没有注入它们，清掉就是丢事件）。
+   */
+  pendingEvents?: TaskEvent[] | undefined;
+  /**
+   * 已投递事件的 eventId 簿记（幂等去重依据；**随记录落库** ⇒ 跨进程/重启不丢）。
+   * 有界：最多保留 `MAX_DELIVERED_EVENT_IDS`（`transport/async.ts`）条，超出 FIFO 裁
+   * 最旧 —— 它是去重簿记，不是审计日志；超出上限后同 id 重投会再进一次历史（如实：
+   * 簿记有界，恰好一次的承诺也就有界）。
+   */
+  deliveredEventIds?: string[] | undefined;
 }
 
 export interface TaskStore {
@@ -87,10 +102,26 @@ export interface TaskStore {
   /** 幂等键 → 最近一次任务（last-wins） */
   byIdempotency(key: string): MaybePromise<TaskRecord | undefined>;
   list(): MaybePromise<TaskRecord[]>;
+  /**
+   * **可选**：到期索引（2026-09-28 ⑤ 落地）—— 只回「`suspended` 且 `wakeAt <= before`」
+   * 的记录（`wakeAt` 缺失的不回）。`AsyncRunner` 的扫描在**到期唤醒那一半**用它替代全表
+   * 过滤（`listDue?.(now) ?? list()` 的输入），没有实现的 store 回退全表，语义不变。
+   *
+   * 实现与否的分判（spec §10 2026-09-28 ⑤ 的实测）：`list()` 是**真查询**的 store
+   * （sqlite：10k 记录一轮 ~105ms 线性增长）值得实现；记录本就在内存的（InMemory /
+   * File —— list 只是返回 Map snapshot）**不实现**，回退路径就是它们的现状。
+   *
+   * ⚠️ 它**不能**替代 `list()` 本身：`resumePending` 的扫描还干别的事（挂起读数重建 /
+   * 审批超时 / 孤儿认领），那些职责的输入仍是全表。
+   */
+  listDue?(before: number): MaybePromise<TaskRecord[]>;
   clear(): MaybePromise<void>;
 }
 
 export class InMemoryTaskStore implements TaskStore {
+  // 刻意**不实现** `listDue`（到期索引）：记录本就在内存 Map 里，`list()` 只是返回 snapshot ——
+  // 到期过滤的成本与全表相同，索引无利可省（实测与触发条件见 spec §10 2026-09-28 ⑤）。
+  // AsyncRunner 的扫描对缺失的 listDue 回退全表过滤，语义不变。
   private readonly byTask = new Map<string, TaskRecord>();
   private readonly byKey = new Map<string, string>(); // idempotencyKey → taskId
   /** 记录条数上限；Infinity = 不限（缺省，保持旧行为） */

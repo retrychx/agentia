@@ -31,6 +31,7 @@ import type {
 } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import type { SpanError, SpanId } from '../core/trace.js';
+import type { TaskEvent } from '../core/run.js';
 import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
 import { createDeferRequest } from './defer.js';
@@ -133,6 +134,12 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   onUnpricedModel?: ((info: { model: string; spanId: string }) => void) | undefined;
   /** 人工审批决定（HITL）：以 tool_use_id 为键；恢复挂起的 run 时由宿主传入 */
   approvals?: Record<string, ApprovalDecision> | undefined;
+  /**
+   * 挂起期间投递的事件（2026-09-28 ⑥；语义见 RunInvocationOptions.events）：
+   * 由 loop.ts 的续跑入口在**未决 tool_use 解决之后**注入消息流（本文件不消费它 ——
+   * 注入时机的纪律在 loop.ts，那里才知道 tool_result 已落定）。
+   */
+  events?: TaskEvent[] | undefined;
 }
 
 /**
@@ -156,6 +163,11 @@ export interface LoopContext<S extends JsonSchema = JsonSchema> {
   /** submit_result 校验通过的结构化结果（先到先得，见 executeOneTool） */
   typed: SchemaType<S> | undefined;
   submitted: boolean;
+  /**
+   * 本段是否已把 `args.events` 注入消息流（deliverTaskEvents 置位；出口把它带进
+   * `AgentLoopResult.eventsDelivered` —— 宿主据此清/留 `TaskRecord.pendingEvents`）。
+   */
+  eventsDelivered: boolean;
 }
 
 /**
@@ -220,6 +232,7 @@ export function buildLoopContext<S extends JsonSchema>(args: AgentLoopArgs<S>): 
     progress: args.progress ?? { iterations: 0 }, // 就地累加，抛错时调用方仍读得到
     typed: undefined,
     submitted: false,
+    eventsDelivered: false,
   };
 }
 

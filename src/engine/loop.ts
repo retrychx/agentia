@@ -10,10 +10,11 @@ import type {
   SchemaType,
 } from '../core/tool.js';
 import type { SpanError, SpanId } from '../core/trace.js';
+import type { TaskEvent } from '../core/run.js';
 import { withCurrentSpan } from './span-scope.js';
 import type { AgentLoopResult } from './loop-result.js';
 import { abortedResult, failedResult, finishedResult, suspendedResult } from './loop-result.js';
-import { tailToolUses, textOfParam } from './resume-input.js';
+import { tailToolUses, renderTaskEvent, textOfParam } from './resume-input.js';
 import { detectMenuDrift, menuSignature } from './menu-drift.js';
 import {
   DEFAULT_MAX_ITERATIONS,
@@ -75,6 +76,39 @@ import { isSuccessStopReason } from './types.js';
  */
 function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | undefined {
   return policy?.forRun ? policy.forRun() : policy;
+}
+
+/**
+ * 事件注入（2026-09-28 ⑥，run 事件投入口）：挂起期间投递的事件（`args.events`，
+ * 随 `TaskRecord.pendingEvents` 落库到这里）在**未决 tool_use 解决之后**渲染成
+ * user 文本消息追加进消息流，每条并在父 span 上记一条 `task.event` 事件留痕
+ * （投毒面是「看得见」的第一道防线）。
+ *
+ * 为什么注入点在 loop 而不是宿主往 `rec.spec.messages` 末尾追加：
+ * ① `tailToolUses` 只认历史**末尾一条** —— 末尾被一条 user 事件消息占住，
+ *    未决 tool_use 就不在末尾了，续跑会被判成新对话（同一批工具再跑一遍）；
+ * ② 协议要求 tool_result 紧邻 tool_use —— 事件只能排在 tool_result **之后**；
+ * ③ 再次挂起的出口**不**走这里（调用方在 suspended/deferred 分支直接返回）——
+ *    注入了会把 user 消息留在历史末尾，毁掉下一次续跑判定；那种情况下事件留在
+ *    `TaskRecord.pendingEvents` 里，等真正跑通的那次续跑再注入。
+ */
+function deliverTaskEvents(
+  ctx: { messages: MessageParam[]; args: AgentLoopArgs; eventsDelivered: boolean },
+  events: readonly TaskEvent[] | undefined,
+): void {
+  if (!events || events.length === 0) return;
+  const where = ctx.args.parentSpanId ?? '';
+  for (const ev of events) {
+    ctx.args.recorder.event(where, 'task.event', {
+      delivered: true,
+      event_type: ev.type,
+      ...(ev.eventId !== undefined ? { event_id: ev.eventId } : {}),
+    });
+    ctx.messages.push(renderTaskEvent(ev));
+  }
+  // 置位：出口把它带进结果（eventsDelivered），宿主据此清 pendingEvents ——
+  // 注入过的簿记留到下一次续跑就是**重复注入**
+  ctx.eventsDelivered = true;
 }
 
 /**
@@ -157,8 +191,14 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       });
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
-    if (ctx.submitted) {
+    // 事件注入（2026-09-28 ⑥）：在 tool_result **落定之后**进历史（纪律见 deliverTaskEvents）。
+    // 上面两个再挂起出口刻意**不**经过这里 —— 事件留在 pendingEvents 里等下一次续跑。
+    deliverTaskEvents(ctx, args.events);
+    if (ctx.submitted && (args.events === undefined || args.events.length === 0)) {
       // 恢复的回合里 submit_result 校验通过：直接落定（finalText 取该 assistant 消息的文本块）
+      // ⚠️ 有待注入事件时**不**直接落定：事件是新输入，落定等于让模型对着旧信息收尾 ——
+      // 注入后接着进正常循环，让模型看到事件再决定（可以再 submit_result，先到先得）。
+      // （能进这个分支 ⇒ 无事件 ⇒ tail 的下标与原先一致：刚 push 的 tool_results 之前那条）
       const tail = ctx.messages[ctx.messages.length - 2]; // 刚 push 了 tool_results，前一条是那条 assistant
       // iterations 0：本段没发过模型请求（恢复的工具执行不计往返）
       return finishedResult({
@@ -168,6 +208,10 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
         typed: ctx.typed,
       });
     }
+  } else {
+    // 防御：事件只投给挂起任务 ⇒ 经宿主来的必有未决 tool_use（走上面分支）；
+    // 手工直传 `events` 给 app.run 而没有未决 tool_use 时，照样注入（诚实：给了就进历史）
+    deliverTaskEvents(ctx, args.events);
   }
 
   for (let iteration = 0; iteration < args.maxIterations; iteration++) {
@@ -276,6 +320,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     iterations: ctx.progress.iterations,
     typed: ctx.typed,
     error,
+    eventsDelivered: ctx.eventsDelivered,
   });
 }
 
@@ -370,6 +415,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
         priceOverrides: options.priceOverrides,
         onUnpricedModel: options.onUnpricedModel,
         approvals: options.approvals,
+        events: options.events,
       }),
     );
   } catch (e) {
@@ -395,6 +441,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     pendingApprovals: result.pendingApprovals,
     suspendedReason: result.suspendedReason,
     wakeAt: result.wakeAt,
+    eventsDelivered: result.eventsDelivered,
   };
 }
 

@@ -8,7 +8,7 @@ import type {
 } from '../core/tool.js';
 import type { SpanError, Trace, TraceContext } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
-import type { SuspendedReason } from '../core/run.js';
+import type { SuspendedReason, TaskEvent } from '../core/run.js';
 
 /**
  * engine 对模型端的最小结构面（R4 多模型）：消息形态见 core/message.js 的自有类型族，
@@ -279,6 +279,12 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 其 tool_use 在这里**没有**决定 ⇒ 该回合整体挂起（见 AgentTool.approval）。
    */
   approvals?: Record<string, ApprovalDecision>;
+  /**
+   * 挂起期间投递的事件（2026-09-28 ⑥；语义见 `RunInvocationOptions.events`）：
+   * 续跑段在未决 tool_use 解决之后渲染成 user 文本消息注入消息流，并在 run 根
+   * 记 `task.event` 事件留痕（`{ delivered, event_type, event_id? }`）。
+   */
+  events?: TaskEvent[];
 }
 
 export interface AgentRunResult<T = unknown> {
@@ -321,4 +327,11 @@ export interface AgentRunResult<T = unknown> {
    * 批就是什么时候），所以它恒为 undefined。
    */
   wakeAt: number | undefined;
+  /**
+   * 本段是否把传入的 `events`（run 事件投入口，2026-09-28 ⑥）**真注入了消息历史**
+   * （字段在场）。宿主（`AsyncRunner`）据此清 `TaskRecord.pendingEvents`：注入过 ⇒ 事件
+   * 已在历史里，簿记清掉（否则注入后再次挂起的场景会在下次续跑**重复注入**）；
+   * 续跑入口的再挂起出口在注入点之前返回（false），簿记留住等跑通的那次。
+   */
+  eventsDelivered: boolean;
 }

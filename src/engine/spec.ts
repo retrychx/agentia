@@ -1,6 +1,7 @@
 import type { MessageParam } from '../core/message.js';
 import type { AgentTool, ApprovalDecision, ModelClient, ModelPricing } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
+import type { TaskEvent } from '../core/run.js';
 import type { TraceContext, TraceRecordEvent } from '../core/trace.js';
 import type { ContextPolicy, ModelFallbackLink } from './types.js';
 import type { RetryOptions } from './retry.js';
@@ -107,6 +108,14 @@ export interface RunInvocationOptions {
    * 截断只影响记账，回给模型的 tool_result 永远完整。见 `RunAgentOptions.maxEventChars`。
    */
   maxEventChars?: number | false;
+  /**
+   * 挂起期间投递的事件（2026-09-28 ⑥，run 事件投入口）：随 `TaskRecord.pendingEvents`
+   * 落库（纯数据、可序列化，重启不丢），续跑段由引擎在**未决 tool_use 解决之后**
+   * 渲染成 user 文本消息注入消息流（为什么不是宿主直接追加到消息末尾：续跑判定
+   * 只认历史**末尾一条**，追加 user 消息会把续跑判成新对话 —— 见 engine/loop.ts）。
+   * 手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 `app.run`。
+   */
+  events?: TaskEvent[];
   /**
    * 人工审批决定（HITL）：以 tool_use_id 为键。恢复 `suspended` 任务时由
    * 异步宿主随记录传入（纯数据、可序列化，随 `TaskRecord` 落库）；手工续跑
