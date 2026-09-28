@@ -1,5 +1,6 @@
 import { capabilityKindOf } from '../core/trace.js';
 import type { SpanId, Trace, TraceId } from '../core/trace.js';
+import { TOOL_OUTPUT_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
 /**
@@ -553,7 +554,7 @@ export class MetricsState {
         this.models.set(model, acc);
         // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）—— 能力指标的另一路数据源
         for (const e of span.events) {
-          if (e.name !== 'tool.output') continue;
+          if (e.name !== TOOL_OUTPUT_EVENT) continue;
           const body = e.body as Record<string, unknown> | null;
           if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
           const label = this.labelFor('tool', body.tool);

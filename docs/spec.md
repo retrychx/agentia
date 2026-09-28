@@ -4681,6 +4681,42 @@ task-events / anthropic / async）141/141 绿，`npm test` 三套件全过。
 「排空后再收」那一段显形；三条都含各自对应那条）；还原后 `src/transport/async.ts` 逐字节
 一致、基线复跑全绿。**外加一条真回归的现场记录**：把 `acquire` 换成同步快路径时，
 `cancel.test.ts` 的前置断言红了 —— 那不是 bug，是**时序位移**被既有用例抓住（见第 3 条的 ⚠️）。
+### 2026-09-28 ⑯：**工具 I/O 事件名单源**（外部深评 E8）
+
+事实核验（**我自己的读数**）：`'tool.input'` / `'tool.output'` 在 `src/` 里共 **12 处取值**
+（engine 6：turn 2 / mcp-server 2 / replay 2；eval 4：export 3 / harvest 1；integrations 2），
+报告写的「7 处」偏小、方向（跨三层）是对的。另有 2 处**不是**取值：`core/trace.ts` 的一行注释、
+`eval/harvest.ts` 里**生成出去的用例源码文本**。
+
+为什么这不是「重复三次的小问题」：`integrations/report.ts` 与 `metrics-state.ts` 都**按名字过滤**
+`tool.output`。改名漏一处 ⇒ 那两处过滤恒空 ⇒ **报表说「没有工具调用」，而 trace 里明明有**，
+且 `tsc` / `npm test` 全绿（与 `limits.ts` 头注记的「计数会过期」同族：**退化时没有东西会红**）。
+
+修法：
+
+1. 常量 `TOOL_INPUT_EVENT` / `TOOL_OUTPUT_EVENT` + 类型 `ToolIoEventName` 落在 **`core/trace.ts`**
+   —— 它本来就是「事件名」的词汇表所在地（`SpanEvent.name` 的注释一直写着这两个名字）。
+   ⚠️ **报告建议的落点（`engine/tool-events.ts`，与载荷构造器同处）不可行**：
+   `integrations` 只许依赖 `core`（`tests/architecture/layering.test.ts`），拿不到 engine 的导出
+   —— 那样 integrations 侧只能再手写一份，等于把「单源」补成「两处」。所以**名字（core）与
+   载荷构造器（engine）分开**，代价是同一个概念分居两个文件，收益是三层都能引。
+2. **11 处取值 + 6 处 import** 改引常量（turn / mcp-server / replay / export / harvest /
+   metrics-state / report）。`eval/export.ts` 的过滤函数签名由字面量联合改成 `ToolIoEventName`。
+3. `eval/harvest.ts` 那处**生成出去的代码文本保留字面量**：生成的脚本不 import 本仓常量，
+   改成 `TOOL_INPUT_EVENT` 会得到一个引用了不存在标识符的脚本（跑起来才炸）—— 已就地写明理由。
+4. 新增**源码级守卫** `tests/architecture/tool-event-names.test.ts`：自带最小遮蔽器，
+   ⚠️ **刻意不复用** `lib/source-scan.ts` —— 那个扫描器按设计把字符串逐字遮蔽（它的活是读
+   模块说明符），而本守卫猎的正是「代码位置的字符串字面量」，复用会把要猎的东西一起遮掉
+   （假阴性，最危险的方向）。三条自证样本：代码里**必须**看见 / 行注释·块注释·模板字面量段里
+   **必须**看不见 / 模板 `${ … }` 的**表达式段是代码必须**看见 —— 第三条是**第一版写错的地方**
+   （整段模板一起遮 ⇒ `${'tool.input'}` 那个字面量消失），被样本当场抓出。白名单按「**文件 +
+   恰好条数**」（不许静默变大），另加走查文件数下限与**射程钉**（曾经带字面量的 8 个文件必须在
+   走查范围里 —— 计数下限只保证「够多」，不保证「够到了该够的那几个」）。
+
+**证据**：守卫 4 条全绿；**变异三条全部具名复红** —— ① 往 `integrations/report.ts` 又手写一处
+`'tool.output'` ⇒ 恰好「全 src 只有单源文件允许」那 1 条红；② 把 `TOOL_OUTPUT_EVENT` 的值改成
+`'tool.output.v2'` ⇒ 「常量值就是那两个字符串」+ 条数那条红；③ 把遮蔽器退回「整段遮掉 `${}`」
+⇒ **恰好自证样本红**（守卫自身的守卫在岗）。三条还原后 `sha256` 逐字节一致。
 
 ## 11. 开放项
 

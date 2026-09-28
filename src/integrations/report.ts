@@ -1,5 +1,6 @@
 import { capabilityKindOf } from '../core/trace.js';
 import type { Trace, Usage } from '../core/trace.js';
+import { TOOL_OUTPUT_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
 /**
@@ -172,7 +173,7 @@ export function buildRunReport(trace: Trace): RunReport {
 
     // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）
     for (const e of span.events) {
-      if (e.name !== 'tool.output') continue;
+      if (e.name !== TOOL_OUTPUT_EVENT) continue;
       const body = e.body as Record<string, unknown> | null;
       if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
       const a = acc(`tool:${body.tool}`);

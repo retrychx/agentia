@@ -5,6 +5,7 @@ import { validateJsonSchema } from '../core/schema.js';
 import { TIMED_OUT, isTimeoutError, withTimeout } from '../core/timeout.js';
 import type { AgentTool, ModelClient, ToolRunContext } from '../core/tool.js';
 import type { SpanError, TraceSink } from '../core/trace.js';
+import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
 import { DEFAULT_PROTOCOL_VERSION } from '../integrations/mcp.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import { classifyError } from './errors.js';
@@ -187,7 +188,7 @@ async function callTool(
   // tool_use_id 与引擎同义（同名工具并行时靠 id 配对入参/出参事件）
   const use = { type: 'tool_use' as const, id: randomUUID(), name: tool.name, input: args };
   const startedAt = Date.now();
-  recorder.event(capId, 'tool.input', toolInputPayload(use));
+  recorder.event(capId, TOOL_INPUT_EVENT, toolInputPayload(use));
   // 超时「放弃等待」的通知信号（与引擎 executeOneTool 同款：判超时分支里 abort）
   const abandonAc = new AbortController();
   const toolCtx: ToolRunContext = buildToolRunContext({
@@ -231,7 +232,7 @@ async function callTool(
   }
   recorder.event(
     capId,
-    'tool.output',
+    TOOL_OUTPUT_EVENT,
     toolOutputPayload({ use, ok, errorKind, startedAt, now: Date.now(), content }),
   );
   recorder.end(

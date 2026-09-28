@@ -1,5 +1,6 @@
 import type { MessageParam } from '../core/message.js';
 import type { Span, Trace } from '../core/trace.js';
+import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT, type ToolIoEventName } from '../core/trace.js';
 import { stringifySafe } from '../core/json.js';
 
 /**
@@ -58,7 +59,7 @@ interface ToolIoEvent {
   content: string | undefined;
 }
 
-function toolEvents(turn: Span, name: 'tool.input' | 'tool.output'): ToolIoEvent[] {
+function toolEvents(turn: Span, name: ToolIoEventName): ToolIoEvent[] {
   const out: ToolIoEvent[] = [];
   for (const e of turn.events) {
     if (e.name !== name) continue;
@@ -116,7 +117,7 @@ export function exportRun(trace: Trace): ExportRecord {
     // assistant 文本：只记真值（output.text，R8-P3a）；缺了不造占位（占位文本进训练数据是投毒）。
     // 缺口判定：纯 tool_use 回合**本来就没文本**（引擎只在文本非空时记 output.text），
     // 不算缺口；没有 tool_use 又没有文本的回合（终端回合）缺文本才是真缺口。
-    const inputs = toolEvents(turn, 'tool.input');
+    const inputs = toolEvents(turn, TOOL_INPUT_EVENT);
     // ⚠️ 宽容读取（`?.`）：trace 经 JSONL / 手搓对象回来时可能没有 `attributes`
     // 字段（类型上说必填、运行时不是）—— CLI 那份移植副本一直这么读，两侧产物必须一致。
     const text = turn.attributes?.['output.text'];
@@ -137,7 +138,7 @@ export function exportRun(trace: Trace): ExportRecord {
     // tool_result 配对：按 tool_use_id 配本回合的 tool.output；缺输出的补 is_error 占位
     // （协议要求每个 tool_use 都有配对 tool_result —— 残缺历史喂训练是静音投毒）
     if (usedIds.length > 0) {
-      const outputs = toolEvents(turn, 'tool.output');
+      const outputs = toolEvents(turn, TOOL_OUTPUT_EVENT);
       const byId = new Map(outputs.map((o) => [o.toolUseId, o]));
       const results: Array<Record<string, unknown>> = [];
       for (const [i, id] of usedIds.entries()) {

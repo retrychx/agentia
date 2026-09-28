@@ -1,5 +1,6 @@
 import type { MessageParam, TextBlockParam } from '../core/message.js';
 import type { Span, Trace } from '../core/trace.js';
+import { TOOL_INPUT_EVENT } from '../core/trace.js';
 import { stringifySafe } from '../core/json.js';
 
 /**
@@ -45,7 +46,7 @@ interface ToolInputEvent {
 function toolInputsOf(turn: Span): ToolInputEvent[] {
   const out: ToolInputEvent[] = [];
   for (const e of turn.events) {
-    if (e.name !== 'tool.input') continue;
+    if (e.name !== TOOL_INPUT_EVENT) continue;
     const b = (e.body ?? {}) as Record<string, unknown>;
     // 缺 `tool` 的事件**跳过**，不回填占位名：伪造的 'unknown' 会在生成的脚本里变成一个
     // 真的（且断言必然通过的）工具调用 —— 骨架自我自洽、永不报错，比缺一条更坏。
@@ -201,6 +202,9 @@ export function harvestEvalCase(input: HarvestEvalCaseInput): string {
     "      .filter((s) => s.kind === 'llm.turn' && s.parentSpanId === trace.rootSpanId)",
     '      .sort((a, b) => a.startedAt - b.startedAt)',
     '      .flatMap((s) =>',
+    // ⚠️ 这一行是**生成出去的代码文本**（写进 harvested 用例的源码），不是本仓的取值 ——
+    // 所以它保留字面量：生成的脚本不 import 本仓常量，改成 `TOOL_INPUT_EVENT` 会得到一个
+    // 引用了不存在标识符的脚本（跑起来才炸）。源码级守卫正是按这个理由给它白名单。
     "        s.events.filter((e) => e.name === 'tool.input').map((e) => (e.body || {}).tool),",
     '      );',
     `    assert.deepEqual(tools, ${JSON.stringify(toolSeq)});`,

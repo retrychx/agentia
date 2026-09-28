@@ -31,6 +31,7 @@ import type {
 } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import type { SpanError, SpanId } from '../core/trace.js';
+import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
 import type { TaskEvent } from '../core/run.js';
 import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
@@ -605,7 +606,7 @@ async function executeOneTool<S extends JsonSchema>(
   // 的完整处理时长，是「哪一步慢」的可信基线。并行工具各记各的（tool_use_id 配对）。
   const toolStartedAt = Date.now();
   // tool_use_id 一并记账：同名工具并行时，重放只有靠 id 才能把入参出参正确配对
-  args.recorder.event(turnId, 'tool.input', toolInputPayload(use, args.maxEventChars));
+  args.recorder.event(turnId, TOOL_INPUT_EVENT, toolInputPayload(use, args.maxEventChars));
   // 审批决定的审计账（HITL）：谁、什么时候、以什么理由批/拒，等审批等了多久。
   // waitedMs 需要 requestedAt（挂起时刻，由宿主在挂起时回填）—— 手工直传
   // approvals 而没有 requestedAt 时不记 waitedMs（不编造）。
@@ -735,7 +736,7 @@ async function executeOneTool<S extends JsonSchema>(
   // 记账面外移到 tool-events.ts：截断上限不对称（失败更短）、耗时四路径都记且非负、errorKind 有值才在场
   args.recorder.event(
     turnId,
-    'tool.output',
+    TOOL_OUTPUT_EVENT,
     toolOutputPayload({
       use,
       ok,
