@@ -180,6 +180,24 @@ export class TaskEventError extends Error {
 const MAX_DELIVERED_EVENT_IDS = 256;
 
 /**
+ * `pendingEvents`（待注入事件缓冲）的**条数上限**（2026-09-28 复审第三轮，定案 **B**）。
+ *
+ * 为什么要有：`deliveredEventIds` 那侧是有界的（256），缓冲这侧原先没有 —— 而它不需要攻击者
+ * 就能长：投方每次投一条、这条 run 每次都在恢复段**再次挂起**（再挂起出口刻意不注入事件，
+ * 见 spec §10 ⑥ 第 4 条）⇒ 每条都留在记录上，而记录随 trace 一起落库、每次 save 全文重写。
+ *
+ * 为什么是「满了拒绝」而不是「丢最旧」（A 的反面）：缓冲**在下次跑通时就注入并清空**，所以
+ * 上限只管「一个挂起窗口里能攒多少」。丢最旧必须**同时**把该 id 从 `deliveredEventIds` 摘掉，
+ * 否则发件方重投会拿到「已投递」的 409 而事件其实已经没了 —— 那是最坏的一种谎。宁可不收下
+ * 并说出来（调用方拿到 409 就能改主意：先让这条 run 真走起来）。
+ *
+ * 为什么是 64：一个挂起窗口里等到的输入，量级与 `deliveredEventIds` 的重试窗口（256）同类，
+ * 取它的 1/4 —— 容得下真实的 webhook 突发（一次重试窗口里几十条），又不足以把挂起任务当队列灌。
+ * **数量有界不是用户旋钮**（与 MAX_DELIVERED_EVENT_IDS 同档），不进 `core/limits.ts` 的 0 语义表。
+ */
+const MAX_PENDING_EVENTS = 64;
+
+/**
  * 取消的**宽限**：取消请求发出后，留给那次 run 自己收尾的时间。
  *
  * 尊重 signal 的 client 是毫秒级收尾（SDK 一收到 abort 就 reject，run 随即以 `stopReason:
@@ -778,6 +796,15 @@ export class AsyncRunner {
     // 幂等去重（先判再改）：重复 ⇒ 409，记录一个字节不动（与 cancel 的「已终态」同款）
     if (event.eventId !== undefined && rec.deliveredEventIds?.includes(event.eventId)) {
       throw new TaskEventError(409, `事件 ${event.eventId} 已投递给 task ${taskId}（重复投递）`);
+    }
+    // 缓冲上限（2026-09-28 复审第三轮，定案 B：满了**说出来**，不静默丢）。
+    // 判据次序 状态 ⇒ 幂等 ⇒ 容量：重复投递的那条本来就在缓冲里，报「重复投递」比报「满了」有用;
+    // 两种 409 的**区别必须让调用方看得见** —— 重复投递是「已经在里面了」，满了是「没收下」。
+    if ((rec.pendingEvents?.length ?? 0) >= MAX_PENDING_EVENTS) {
+      throw new TaskEventError(
+        409,
+        `task ${taskId} 的待注入事件已达上限（${MAX_PENDING_EVENTS} 条）—— 先让它跑起来（这些事件会在下次续跑注入）再投递；本次事件**没有**被记录。`,
+      );
     }
     rec.pendingEvents = [...(rec.pendingEvents ?? []), event];
     if (event.eventId !== undefined) {
