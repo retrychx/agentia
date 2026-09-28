@@ -199,18 +199,22 @@ describe('工具 I/O 事件名的跨层单源（E8）', () => {
 
   it('遮蔽器自证：代码里的看见、注释与模板里的看不见（含阳性对照）', () => {
     // 没有这组，「0 处违规」不可证伪 —— 遮蔽器一旦错位吞掉后面的代码，本守卫会假绿
+    // ⚠️ 样本里的 `$` 用变量拼：`${` 直接出现在**普通字符串**里会触发 biome 的
+    // noTemplateCurlyInString（「想写模板却写成了字符串」），而 CI 的 lint 是
+    // `biome ci --error-on-warnings` ⇒ 一条 warning 就让整条 lint 门禁红（踩过）。
+    const D = '$';
     const sample = [
       "const a = 'tool.input';", // 代码位置 → 必须看见
       "// 注释里写 'tool.output' 不算", // 行注释 → 必须看不见
       "/* 块注释里写 'tool.input' 也不算 */", // 块注释 → 必须看不见
-      "const b = `模板里写 'tool.output' 也不算`;", // 模板字面量 → 必须看不见
-      "const c = `${'tool.input'}`;", // 模板的 ${} **里面是代码** → 必须看见（嵌套判据）
+      "const b = `模板字面量段里写 'tool.output' 也不算`;", // 模板字面量段 → 必须看不见
+      `const c = \`${D}{'tool.input'}\`;`, // 模板的**表达式段是代码** → 必须看见（嵌套判据）
     ].join('\n');
     const masked = maskNonCode(sample);
     assert.equal(
       (masked.match(/'tool\.input'/g) ?? []).length,
       2,
-      '代码位置的两处必须都看得见（含 ${} 嵌套里那处）',
+      '代码位置的两处必须都看得见（含模板表达式段里那处）',
     );
     assert.equal((masked.match(/'tool\.output'/g) ?? []).length, 0, '注释与模板里的两处必须看不见');
   });
