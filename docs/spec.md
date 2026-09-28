@@ -3839,7 +3839,7 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
 （结果形状现在 **9 个字段**全在场）、`RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`、
 `AsyncRunner.suspendedSummary`；新 trace 事件 `defer.requested{wake_at, tool_use_ids, discarded}`。
 
-门禁（**9 条变异逐条亲跑**，全部被**具名**用例抓住；`trap` 还原 + 还原自检 + 复绿）：
+门禁（**11 条变异逐条亲跑**，全部被**具名**用例抓住；`trap` 还原 + 还原自检 + 复绿）：
 
 - `tests/engine/defer.test.ts`：`resolveWakeAt`（将来性 + 非有限数的响亮拒绝，带阳性对照）
   + 回合级收集器（多条取最早、同一条重复请求取更早）+ 引擎侧四例：整批挂起（工具**真跑过**、
@@ -3847,11 +3847,27 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
   醒来仍未成熟 ⇒ 以**本次**请求再挂一次、非法时刻 ⇒ is_error 不挂起（含台账 `errorKind: 'threw'`）。
 - `tests/transport/wake-policy.test.ts`：`timerDue` 三条边界（到点即醒 / 只在挂起且原因是 timer /
   缺 `wakeAt` 永不到点）+ `summarizeSuspended`（空集给 `null` 不给 `0`；只有等审批时不退化）。
-- `tests/transport/durable-timer.test.ts`：宿主侧七例 —— 睡下时落库与读数进位、未到点不捡而到点
-  唤醒并重跑、drain 后不唤醒（附「新进程照常唤醒」对照）、审批超时不误伤 timer（附「换成
+- `tests/transport/durable-timer.test.ts`：宿主侧**八例** —— 睡下时落库与读数进位、未到点不捡而到点
+  唤醒并重跑、**读路径的惰性唤醒**（`poll` / `GET /tasks/:id` 自己叫醒到点的任务 —— 这条用例
+  **一次都不调** `resumePending`，把「到期判定挂在读路径上」单独钉住）、drain 后不唤醒（附
+  「新进程照常唤醒」对照）、审批超时不误伤 timer（附「换成
   `approval` 就被兜底」对照）、`/healthz` 的 `suspended` 段、与候选 3 的交界（醒来时
   `menu.drift` 事件 + run 根属性照出）、session 与链路口径（会话只一份 / link 上一段 / 不被
   工具块毒化）。
+- ⚠️ **盘点补出两处「零红的新闸」**（同日按「摘掉它有没有用例会红」逐条问出来的；两处都是
+  **本批新加的**判据，却因为既有用例只覆盖了它的兄弟而无人守）：
+  1. **读路径的 `#lazyGates` timer 分支**：到期判定有**两个**调用点（全表扫描 / 读路径），
+     既有用例只钉了扫描那个 ⇒ 摘掉读路径那半行**全绿**。已补阳性用例（见上）+ 变异 **M10**
+     （摘掉那行 ⇒ 恰好那条红）。
+  2. **`deferUntil` 的不转发归类**（`engine/forwarded.ts`）：那条「引擎自装配的键一个都不许漏进来」
+     的断言**手抄了五个键名**，新增的第六个键没人补 ⇒ 把它挪进转发组照样全绿。已把清单改成
+     **从夹具派生 + 数量下限**（下限 6 是故意的停顿点：新增不转发键时会被迫做一次「要不要转发」
+     的判断），并配变异 **M11**（清单 + 取值对象一起挪 ⇒ 恰好那条新断言红，**旧的键集断言仍绿**
+     —— 这正是「新断言多守了一层」的证据）。
+- **一处文档措辞订正**：设计稿 §4 写的是「`snapshot()` 与 `/healthz` 各加一段」，而本仓
+  **从来没有 runner 级 `snapshot()`**（`snapshot()` 是 metrics 侧与 tracer 的名字）——
+  读数实际落在 `AsyncRunner.suspendedSummary` 这个 getter 上，`/healthz` 读它。日期档正文
+  一字不动，订正指针加在那份稿子的 §8（本轮只动了 §8 的**新增块**）。
 - ⚠️ **一处用例自己的缺陷被变异电池抓出并当场修掉**：`timerDue` 的「原因」夹具原先写
   `suspendedReason: 'approval', wakeAt: undefined` —— 摘掉原因判据的变异**一条红都没有**
   （缺时刻那一条也在拦 ⇒ 等于没钉住原因这一半）。改成带一个过去的 `wakeAt`（宿主手写 /
