@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { AsyncRunner, InMemoryTaskStore, executeRun } from '../../src/index.js';
-import type { AgentTool, AppCallable, TaskRecord } from '../../src/index.js';
+import {
+  AsyncRunner,
+  InMemorySessionStore,
+  InMemoryTaskStore,
+  executeRun,
+} from '../../src/index.js';
+import type { AgentTool, AppCallable, MessageParam, TaskRecord } from '../../src/index.js';
 import { createHttpHandler } from '../../src/transport/http.js';
 import { endTurnMsg, mockClient, toolUseMsg } from '../helpers.js';
 
@@ -31,8 +36,8 @@ function timerApp(
   script: Array<Record<string, unknown>>,
   spy: { calls: number },
   gate: Gate,
-): { app: AppCallable } {
-  const { client } = mockClient(script);
+): { app: AppCallable; seen: unknown[] } {
+  const { client, seen } = mockClient(script);
   const tools: AgentTool[] = [
     {
       name: 'wait_for_batch',
@@ -53,6 +58,7 @@ function timerApp(
       name: 'timer',
       run: (messages, opts) => executeRun({ messages, client, tools, ...opts }),
     },
+    seen,
   };
 }
 
@@ -323,5 +329,60 @@ describe('AsyncRunner 时间挂起（durable timer）', () => {
     const root = trace.spans.find((s) => s.kind === 'run')!;
     assert.equal(root.attributes['menu.drift'], 'missing:wait_for_batch', 'run 根属性也在');
     assert.equal(spy.calls, 1, '工具已不在菜单里 ⇒ 一次都没再执行（unknown tool 回给模型）');
+  });
+
+  it('带 session 的任务睡下 → 醒来：会话只一份、链路续上、会话不被工具块毒化', async () => {
+    // 这条钉的是 `isResume` 的判据：它原先只看 `approvals`，而**时间挂起醒来时没有任何决定** ——
+    // 只认 approvals 的话，恢复段会被当成「首次执行」：① 会话历史再 prepend 一遍（token 复利、
+    // 历史翻倍）；② 恢复段 trace 不 link 上一段（观测上断链）；③ 成功后把整段扩展历史
+    // （含未决 tool_use）写回会话（留下孤立 tool_use，下一轮直接撞 API 400）。
+    const spy = { calls: 0 };
+    const gate: Gate = { at: Date.now() + 3_600_000 };
+    const { app, seen } = timerApp(
+      [toolUseMsg('wait_for_batch', {}, 'tu1'), endTurnMsg('最终回复')],
+      spy,
+      gate,
+    );
+    const sessionStore = new InMemorySessionStore();
+    sessionStore.append('s1', [
+      { role: 'user', content: '旧问题' },
+      { role: 'assistant', content: '旧答复' },
+    ]);
+    const runner = new AsyncRunner(app, { sessionStore });
+    const t = runner.submit('新指令', { options: { sessionId: 's1' } });
+    const sleeping = await waitStatus(runner, t.taskId, 'suspended');
+    const firstRunId = sleeping.runId!;
+
+    await backdate(runner, t.taskId);
+    gate.at = null;
+    assert.equal(runner.resumePending(), 1);
+    const done = await runner.awaitTask(t.taskId);
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.result?.finalText, '最终回复');
+
+    // ① 恢复段发给模型的 messages：会话历史恰好一份（翻倍就是 token 复利）
+    assert.equal(seen.length, 2, '挂起段 + 恢复段各一次模型调用');
+    const resumeMsgs = (seen[1] as { messages: MessageParam[] }).messages;
+    assert.equal(
+      resumeMsgs.filter((m) => m.content === '旧问题').length,
+      1,
+      '恢复段不得重复 prepend 会话历史',
+    );
+
+    // ② 链路：恢复段是一棵新 trace，经 link 挂到上一段 runId（「挂起段 → 恢复段」连成一条链）
+    const root = done.result!.trace.spans.find((s) => s.kind === 'run')!;
+    assert.equal(root.links?.[0]?.traceId, firstRunId, '恢复段要 link 上一段（否则观测上断链）');
+
+    // ③ 会话 = 旧历史 + 本轮输入 + 最终回复：无 tool 块残留
+    const history = sessionStore.load('s1');
+    assert.deepEqual(history, [
+      { role: 'user', content: '旧问题' },
+      { role: 'assistant', content: '旧答复' },
+      { role: 'user', content: '新指令' },
+      { role: 'assistant', content: '最终回复' },
+    ]);
+    for (const m of history) {
+      assert.equal(typeof m.content, 'string', '会话历史只存对话轮次（不得混入 tool 块）');
+    }
   });
 });
