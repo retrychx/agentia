@@ -20,6 +20,9 @@
     （崩在窗口里不丢事件）；timer 挂起收到事件**提前醒**且不沿旧 `wakeAt`。
   - **幂等**：给 `eventId` 就按它去重（`TaskRecord.deliveredEventIds`，随记录落库、
     有界 FIFO）—— 重复投递 → 409；不给则重复投递 = 重复进历史（如实，不假装恰好一次）。
+  - **待注入缓冲也有上限（64 条）**：满了 → 409，且**不收下**（文案说清「本次事件没有被
+    记录」）—— 定案 B「说出来，不静默」。**不选「丢最旧」**：丢缓冲若不同时摘
+    `deliveredEventIds`，发件方重投会拿到「已投递」的 409 而事件其实已经没了（静默丢事件）。
   - **留痕**：续跑段 run 根记 `task.event { delivered, event_type, event_id? }`；
     离开挂起态时挂起读数照常除名。
   - 新增导出：`TaskEvent`（类型）；`RunInvocationOptions.events` / `TaskRecord.pendingEvents`
