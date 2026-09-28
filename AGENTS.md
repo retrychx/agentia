@@ -98,6 +98,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
 │   │                        #   指标(metricsSink，满足 TraceSink)
+│   │                        #   mcp-protocol.ts = 桥与两个连接器**共用**的协议面（7 helper + 4 结构类型）：
+│   │                        #   2026-09-28 自 mcp.ts 抽出，为断开 `mcp.ts ↔ mcp-stdio.ts` 那条**真实值环**
+│   │                        #   （「层内也运行期无环」现由 tests/architecture/file-cycles.test.ts 钉住）
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥

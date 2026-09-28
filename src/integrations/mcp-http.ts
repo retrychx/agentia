@@ -6,13 +6,13 @@ import {
   isJsonRpcResponse,
   unwrap,
   withDeadline,
-} from './mcp.js';
-import type { Guard, McpConnector, McpToolInfo } from './mcp.js';
+} from './mcp-protocol.js';
+import type { Guard, McpConnector, McpToolInfo } from './mcp-protocol.js';
 
 /**
  * MCP **StreamableHTTP 连接器**（内置默认件之一）：一个 endpoint，POST JSON-RPC。
- * 桥与共享 helper 在 `mcp.ts`；本文件只含 HTTP 传输。module 级 export，
- * 公共面仍由 `mcp.ts` re-export（`src/index.ts` 不变）。
+ * 桥在 `mcp.ts`、与桥共用的协议面在 `mcp-protocol.ts`；本文件只含 HTTP 传输。
+ * module 级 export，公共面仍由 `mcp.ts` re-export（`src/index.ts` 不变）。
  */
 
 export interface StreamableHttpMcpConnectorOptions {

@@ -1,6 +1,7 @@
-import { TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
+import { MCP_DEFAULT_TIMEOUT_MS, withDeadline } from './mcp-protocol.js';
+import type { McpClientLike } from './mcp-protocol.js';
 
 /**
  * Agentia —— MCP 桥（D1）+ 两个内置连接器（spec §10 决策记录）。
@@ -13,7 +14,9 @@ import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
  * `createStdioMcpConnector` / `createStreamableHttpMcpConnector`。二者只用标准库
  * （`node:child_process` + 全局 `fetch`），**不新增任何第三方依赖**。
  * 2026-09-20 起两个连接器各居其文件（`mcp-stdio.ts` / `mcp-http.ts`，纯结构拆分、
- * 零行为变化），本文件保留桥 + 共享 helper 并 re-export —— 公共面不变。
+ * 零行为变化），本文件保留桥并 re-export —— 公共面不变。
+ * 2026-09-28 起桥与连接器**共用**的结构类型与 helper 抽到 `mcp-protocol.ts`（为了断开
+ * `mcp.ts ↔ mcp-stdio.ts` 那条**值环**，见该文件头注），本文件从那里 import 并继续 re-export。
  *
  * 用法（接入点是 `AppOptions.tools` 这条**裸工具缝**）：
  * ```ts
@@ -28,37 +31,6 @@ import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
  * 不做（YAGNI，见 spec §10）：`sampling`（server 反向请求模型）、`resources` / `prompts`
  * 原语（只做 tools）、连接池。
  */
-
-/** MCP server 的 `tools/list` 条目（结构面子集：多出来的字段一律忽略） */
-export interface McpToolInfo {
-  name: string;
-  description?: string;
-  /** MCP 协议里已是 JSON Schema → 直接当框架的 `inputSchema` 用 */
-  inputSchema?: unknown;
-}
-
-/**
- * MCP client 的最小结构面：任何实现了 `tools/list` + `tools/call` 的客户端都能接，
- * 无需继承、无需 import 任何 SDK（duck-typed，与 `RedisLike` 同款）。
- *
- * 约定：`callTool` 失败请**抛错**（框架会包成 `is_error` 的 tool_result 回给模型，
- * 不中断 run —— 与本地工具抛错同语义）。MCP 协议层的 `isError: true` 请由连接器
- * 转成抛错，否则模型看不到失败。
- */
-export interface McpClientLike {
-  listTools(): Promise<McpToolInfo[]>;
-  /**
-   * `opts.abandoned`：裁判（引擎 `toolTimeoutMs` / 桥兜底超时）**放弃等待**的通知信号。
-   * 放弃 ≠ 取消 —— 但连接器应借此清掉这次调用的簿记（stdio 的 pending 条目、
-   * HTTP 的在飞 fetch），否则「server 活着但不回包」时每超时一次就泄漏一条。
-   * 只实现两个参数的旧客户端依然兼容（可选参数，鸭子类型）。
-   */
-  callTool(
-    name: string,
-    args: Record<string, unknown>,
-    opts?: { abandoned?: AbortSignal },
-  ): Promise<unknown>;
-}
 
 export interface McpToolsOptions {
   /**
@@ -81,9 +53,6 @@ export interface McpToolsOptions {
   timeoutMs?: number;
 }
 
-/** 缺省超时：MCP server 可能去连外部系统，60s 是「明显卡死」与「慢但正常」的分界 */
-export const MCP_DEFAULT_TIMEOUT_MS = 60_000;
-
 /**
  * 工具名归一化：MCP 名可含 `-` / `.` / `/` / 空格等（对 LLM API 不友好或非法）
  * → 一律转 `_`，并把连续分隔符收成一个（`foo..bar` → `foo_bar`）。
@@ -96,26 +65,6 @@ function normalizeToolName(raw: string): string {
     .replace(/[^A-Za-z0-9_]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return cleaned;
-}
-
-/**
- * 给一次 MCP 调用套超时。⚠️ 与引擎的工具超时同样是**放弃等待**而非取消 ——
- * MCP 的 `notifications/cancelled` 属于连接器职责，桥这一层拿不到取消句柄。
- *
- * 实现是 `core/timeout.ts` 共享原语的**薄封装**（2026-09-17 单源化，见 spec §10 2026-09-17 ①）：
- * 「一次调用只有一个预算判定」在引擎与桥之间只允许有一份实现。此前桥自带一份**纯竞速**
- * 版本，于是 2026-09-14 的「超时是硬的」收紧只落进引擎，桥继续把**超预算**的调用记成成功。
- *
- * 转导导出（module 级，**不进公共面**）只为可测：`tests/timeoutLiveness.test.ts` 拿它验
- * 「截止计时器不得 unref」—— 那是「被 await 的超时到底会不会触发」的唯一分界点。
- */
-export async function withDeadline<T>(p: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  const out = await withTimeout(p, timeoutMs);
-  if (out === TIMED_OUT) {
-    // 类型化超时（code='timeout'）⇒ 引擎记 errorKind='timeout'，与它自己判的超时同一类账。
-    throw new TimeoutError(`MCP 工具 "${label}" 调用超时（超过 ${timeoutMs}ms）`);
-  }
-  return out;
 }
 
 /**
@@ -251,7 +200,7 @@ export async function mcpTools(
  *     （`transport/http.ts` 的 `node:http`、`store/sqliteStore.ts` 的 `node:sqlite`、
  *      `runtime/context.ts` 的 `node:async_hooks`、`engine/tracer.ts` 的 `node:crypto`）；
  *   - 需要**第三方客户端** → 只留 duck-typed 缝、框架永不 import
- *     （`store/redisStore.ts` 的 `RedisLike`，以及本文件的 `McpClientLike`）。
+ *     （`store/redisStore.ts` 的 `RedisLike`，以及 `mcp-protocol.ts` 的 `McpClientLike`）。
  *
  * `spawn`（`node:child_process`）与 `fetch`（Node 18+ 全局）都是标准库 ⇒ 内置**不增加**
  * 任何第三方依赖。「零运行时依赖」那条口径（= 不依赖第三方包，见 `package.json` 三个依赖
@@ -261,90 +210,23 @@ export async function mcpTools(
  * 自研传输。这里给出的只是**默认件** —— 与 `FileTaskStore` / `SqliteTaskStore` 之于
  * `TaskStore` 完全同构（默认件内置 + 缝保留 + 特殊后端仍由用户带 client）。
  *
- * 2026-09-20 结构拆分：两个连接器实现各居 `mcp-stdio.ts` / `mcp-http.ts`（零行为变化），
- * 下方是它们与桥共用的公共面与 helper（module 级 export），连接器工厂从这里 re-export。
+ * 2026-09-20 结构拆分：两个连接器实现各居 `mcp-stdio.ts` / `mcp-http.ts`（零行为变化）。
+ * 2026-09-28：与桥共用的结构类型与 helper 移居 `mcp-protocol.ts`（断开值环），
+ * 下方统一 re-export —— 公共面仍由本文件出口。
  */
 
-/**
- * 连接器公共面：`McpClientLike` + 一个关闭句柄（两个内置连接器都返回它）。
- *
- * 缝的形状没有变化 —— 需要自己的传输（官方 SDK / 远程 server / 复用长连接）时，
- * 实现 `McpClientLike` 两个方法即可，不必碰这里。
- */
-export interface McpConnector extends McpClientLike {
-  /**
-   * 释放底层资源，**幂等**；stdio 侧**保证返回时子进程已终止**：
-   * 先 SIGTERM，宽限期（{@link MCP_CLOSE_GRACE_MS}）后 SIGKILL，然后**等真正的 `'exit'`**
-   * （2026-09-18 收紧：此前到点即返回、不等 reap，会留下孤儿进程而调用方无从知晓）。
-   * HTTP 侧 = 尽力 `DELETE` 终止会话（server 不认也无所谓，失败不抛）。
-   *
-   * 关闭后再调用 `listTools` / `callTool` 会抛出可读错误（不静默挂死）。
-   */
-  close(): Promise<void>;
-}
-
-/**
- * 缺省 `clientInfo`（`initialize` 握手要发，协议要求该字段存在）。
- *
- * **刻意不写框架自身版本**：`integrations` 层不 import 公共面（`AGENTIA_VERSION` 在
- * `src/index.ts`），且 `scripts/release-surface.mjs` 的发版面按**精确版本串**计数 ——
- * 这里多一处版本字面量会让它的 count 断言失配。需要真实版本请自行传 `clientInfo`。
- */
-export const DEFAULT_CLIENT_INFO: { name: string; version: string } = {
-  name: 'agentia',
-  version: '0.0.0',
-};
-
-/** `initialize` 缺省请求的协议版本（e2e 已验证的版本；要对齐新版 server 请显式传） */
-export const DEFAULT_PROTOCOL_VERSION = '2024-11-05';
-
-/**
- * 装配期超时的落点：**握手 + `tools/list`**。
- *
- * 为什么不给 `callTool` 也套一个：一次调用只有一个裁判（见 `McpToolsOptions.timeoutMs`）。
- * 走 `mcpTools` 时 `callTool` 由引擎 / 桥判定；而握手与 `tools/list` 发生在**装配期**，
- * 没有任何别的裁判 —— server 卡住会让 `createApp` 永久挂起，必须在这里兜住。
- */
-export type Guard = <T>(p: Promise<T>, label: string) => Promise<T>;
-
-/** 把可能很大的值截成可读片段（错误消息要能进日志，不能是一兆的 JSON） */
-export function brief(value: unknown, max = 200): string {
-  let s: string;
-  try {
-    s = typeof value === 'string' ? value : JSON.stringify(value);
-  } catch {
-    s = String(value);
-  }
-  if (typeof s !== 'string') s = String(value);
-  return s.length > max ? `${s.slice(0, max)}…` : s;
-}
-
-/** JSON-RPC 错误对象 → `Error`（`code` 进文案：`classifyError` 只认数值 `status`，这里不冒充它） */
-export function jsonRpcError(err: unknown): Error {
-  if (typeof err === 'object' && err !== null) {
-    const { code, message } = err as { code?: unknown; message?: unknown };
-    return new Error(`MCP error ${String(code)}: ${String(message)}`);
-  }
-  return new Error(`MCP error: ${brief(err)}`);
-}
-
-/** server 混进 stdout / SSE 的非 JSON 行 */
-export function isJsonRpcResponse(msg: unknown): msg is {
-  id: number;
-  result?: unknown;
-  error?: unknown;
-} {
-  return (
-    typeof msg === 'object' && msg !== null && typeof (msg as { id?: unknown }).id === 'number'
-  );
-}
-
-/** 从一条已解析的报文里取结果；带 `error` 则抛 */
-export function unwrap(msg: { result?: unknown; error?: unknown }, method: string): unknown {
-  if (msg.error !== undefined) throw jsonRpcError(msg.error);
-  if (!('result' in msg)) throw new Error(`MCP ${method}：响应里既没有 result 也没有 error`);
-  return msg.result;
-}
+// 与连接器共用的协议面（结构类型 + helper）：定义在 mcp-protocol.ts，此处 re-export 保持公共面
+export {
+  DEFAULT_CLIENT_INFO,
+  DEFAULT_PROTOCOL_VERSION,
+  MCP_DEFAULT_TIMEOUT_MS,
+  brief,
+  isJsonRpcResponse,
+  jsonRpcError,
+  unwrap,
+  withDeadline,
+} from './mcp-protocol.js';
+export type { Guard, McpClientLike, McpConnector, McpToolInfo } from './mcp-protocol.js';
 
 // 两个内置连接器（2026-09-20 起各居其文件；公共面不变，index.ts 仍从这里取）
 export { createStdioMcpConnector, MCP_CLOSE_GRACE_MS } from './mcp-stdio.js';

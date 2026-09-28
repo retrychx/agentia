@@ -278,6 +278,27 @@
     「一个宿主的生命周期」，该是一个协作者，且比正向桥同位函数（265 / 235 行）更瘦。
   - **行为零变化**：MCP 反向桥单测 22/22 全过，`npm run e2e:mcp:server` 全绿。
 
+- **`#executeInner`（247 行）的编排归属 = 定案「不拆」**（**零代码改动**，产出是一份有依据的裁定）：
+  `async.ts` 最大可调用体 247 ÷ 总行 1690 = **14.6%**、可调用体 **40** 个 ⇒ 按判据属「**大类**」病
+  （抽协作者，**别切方法**），而纯协作者已抽过六轮（`slot-pool` / `approval-policy` / `drain-gate` /
+  `resume-policy` / `task-waiters` / `task-events`）。它触及 **14 个 runner 内部成员**，外移编排
+  等于重建 `AsyncRunner`；且调用结构**早已被** `tests/transport/dispatch-guard.test.ts` **钉死**
+  （`#dispatch` = 派发口 / `#execute` = 计数与开流包裹层 / `#executeInner` = 状态机主体）。
+  唯一成块的纯件 `callOpts` 装配（~42 行）因「单调用者 + 不产生可守卫边界」也判为不外移。
+
+- **文件级无环守卫 + 断开 MCP 正向桥的**真实值环** —— 第 4 件**：
+  - 新增 `tests/architecture/file-cycles.test.ts`：`layering.test.ts` 的 `layerOf()` 取路径第一段，
+    **层内环是盲区**；本守卫建**文件级值边图**（Tarjan SCC）断言**运行期无环**。口径只算**值边** ——
+    `import type` 运行期擦除、不构成环（`runtime/context ↔ run`、`engine/mcp-server ↔
+    mcp-server-{stdio,http}` 两条 type-only 环**留着**）。两条变异反向验证过（注入值边 / 把真实
+    `import type` 改成值导入 ⇒ 各恰好 1 条红）；另加「注释里的导入字面量不算边」自证。
+  - 断环：桥（`integrations/mcp.ts`）与两个连接器**共用**的协议面（7 helper + 4 结构类型）
+    抽到新文件 `src/integrations/mcp-protocol.ts` —— 此前 `mcp.ts` re-export 连接器（值）+
+    连接器反向取 helper（值）是一条**真实的值环**（靠 ESM 函数提升侥幸无恙）。抽后成单向 DAG，
+    **公共面不变**（`src/index.ts` 未改；`mcp.ts` 继续转出这些符号）。
+  - ⚠️ 盘点报告初稿写「两条环的回边都是 `import type`」**是错的** —— 实测 `mcp.ts:350/352` 是
+    **re-export 值**。结论与修法见 `docs/spec.md` §10 2026-09-28 ⑩ 第 4 条。
+
 ### 迁移
 
 - **升级前停在 `awaiting_approval` 的任务记录**（`FileTaskStore` / `SqliteTaskStore` /
