@@ -124,6 +124,14 @@
   配**源码级守卫** `tests/architecture/tool-event-names.test.ts`（自带遮蔽器，与
   `lib/source-scan.ts` 相反 —— 那个按设计遮蔽字符串）：三条自证样本 + 白名单按「文件 + 恰好
   条数」+ 射程钉 + 走查下限；变异三条全部具名复红（含「守卫自身的守卫」：遮蔽器退化）。
+- **删掉内部死方法 `TaskEventStreams.forget`**（外部深评「forget(taskId) 未处理」那条的收口）：
+  全仓**零调用点**（`grep -rn 'forget(' src/ tests/ packages/ examples/ scripts/` 命中的
+  `scheduler.ts` 那 4 处是它自己的**局部函数** `const forget = (taskId) => inFlight.delete(taskId)`，
+  操作的是 `inFlight`，与事件流无关）。§10 上一轮已如实登记它「不该为它写测试 —— 那等于锁死
+  死代码」，本轮直接把它**删掉**：淘汰这件事唯一的真实机制就是 `#evictTerminal`（按 LRU 丢终态流、
+  有订阅者的不丢）。原地留一段注释说明「它曾经在、为什么删、真要再加回来该怎么设计」。
+  ⚠️ 这一条**不是**「补文档」：删掉公开方法会让它的名字从 API 面消失，对使用者是**无感**的
+  （它从未从 `src/index.ts` 导出），但少一个「代码里有、文档里承诺、实际永不发生」的错位。
 
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /
