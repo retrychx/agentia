@@ -4397,6 +4397,38 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
      `createMcpServer({ transport: 'stdio' })`），c8 只采父进程。实测：单跑该测试文件仍是 22%，
      而用例 **22/22 全过**。该数字**拆分前就存在**（同一段代码内联在 `mcp-server.ts` 里）——
      别照着它去补测试。
+6. **未覆盖功能分支的定向补测（同轮尾巴，纯测试、零语义变化）**。做了一轮**覆盖率复查**，
+   纠正了读法，再按「可达 / 不可达」分流补测：
+   - **先纠正口径**：c8（v8-to-istanbul）的 branch **不是 if/else 两条臂** —— 全仓 4244 条
+     条目**全是 1 个 location**，`b[id]` 是「该块被进入的次数」，`0` = 这条路径**从未走到**。
+     它比语句覆盖**更细**：抓得到 `if (done) return;` 这种「语句被算作覆盖、但那一步没走过」的守卫。
+   - **基线**：语句 295 未覆盖 / 函数 11 未调用 / 块 347 未走到（用例 1465）。
+   - **补掉的 7 条**（都是**正常输入下可达**、此前一次没走过的**功能**分支；跨 3 个文件 +8 条用例）：
+     `toolkit/subagent.ts:92` —— `spec.system` 的**函数形态**（三态联合里唯一「框架不追加
+     REPORT_HINT、作者全权」的一态，`(task) => SystemParam` 此前一次没走过）；
+     `engine/trace-diff.ts:81 / 187 / 189`，并一并带出 **`:205`** —— `errorEqual` 的三元组比较
+     此前所有用例两侧都没有 error，那句 `x.type === y.type && …` **从未执行过**；现在同时钉住
+     「两侧 error 内容逐字相同 ⇒ 不算差异」（即**比内容不比对象引用**）；
+     `transport/async.ts:498 / 504` —— 事件缓冲**溢出**时重放之前先发 `truncated` 帧；
+     以及**任务已终态之后**才连上来时「重放缓冲 + 立刻补 `end` 收口」；
+     `transport/http-endpoints.ts:560` —— SSE 的 `stream.truncated` 帧。
+   - **订正我上一轮的错报**：`http-endpoints.ts:563` 的 `unavailable` **本来就是覆盖的**
+     （`taskStream.test.ts` 的跨进程用例）。把它和 `560` 并列说成「两条都没覆盖」是错的。
+   - **两条「看着像缺口、核实后不该补」**（如实登记，且它们与「补掉的」同等重要）：
+     `TaskEventStreams.forget`（`task-events.ts:214`）**未从 `src/index.ts` 导出**、全仓无人
+     调用（`#evictTerminal` 是自己 `streams.delete`）⇒ 它是**内部死方法**，为它写测试等于
+     **锁死死代码**；`AsyncRunner.byIdempotency`（`async.ts:537`）是零文档的**纯透传**一行，
+     而 store 级行为已由四套存储测试覆盖 ⇒ 断言接近**恒真**。另 8 个「从未被调用的函数」
+     全是**只读访问器**（`currentSpan` / `runId` / `windowsSamples` / `toMeta` /
+     `context.delete·keys` / `store.clear` / `container.registered`），无一含分支 —— 同样不凑数。
+   - **结果**：语句 295 → **287**、块 347 → **338**（分支 91.82% → **92.04%**）、
+     用例 1465 → **1473**；函数那一档**刻意不动**（98.28%）。
+   - **7/7 变异反向验证**：逐条改坏实现（短路函数形态 / 把 status 差改名 / 把 `errorEqual`
+     改成比引用 / 不发 truncated 帧 / 给 truncated 帧改名 / 不补 end 帧），每条**恰好红在对的
+     那条用例**上，且还原后源文件逐字节一致。
+   - ⚠️ **本轮踩到并记下的读数陷阱**：c8 `--reporter json` 落的
+     `coverage/coverage-final.json` **会被定向跑（`--include` 少数文件）覆盖** —— 拿它当全量
+     数据会读出「语句 71.13%」这种**完全失真**的数（实测踩到）。核对前先删该文件、重跑全量。
    - **变异反向验证 17/17**：逐条改坏实现（`content-length` 换 `.length` / 空 body 直接
      `JSON.parse` / 摘掉 `cleanup()` / `unwrap` 改值判定 / `withDeadline` 抛普通 `Error` /
      `exposeErrors=false` 泄漏 ……），每条**恰好红在对的那条用例**上，且还原后源文件逐字节一致。

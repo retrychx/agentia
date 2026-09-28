@@ -366,6 +366,37 @@ describe('子 agent 防御分支', () => {
     );
   });
 
+  it('spec.system 传函数：(task) 收到主 agent 填的任务对象、返回值直接作为 system，框架不追加 REPORT_HINT', async () => {
+    // spec.system 是**三态**联合（string / SystemPrompt 实例 / 函数）；前两态各有用例，
+    // 函数态此前一次都没走过 —— 而它是**唯一**「框架不插手」的形态（作者全权，见
+    // subagent.ts 的 JSDoc：函数形态按任务动态拼，框架不附加）。
+    // 反向验证：摘掉 `resolveSubSystem` 的 `typeof spec === 'function'` ⇒ 函数落到末尾的
+    // 字符串模板（被 toString 成 "function …"）⇒ 本用例红在「system 不是函数返回的那句」。
+    let gotTask: Record<string, unknown> | undefined;
+    const { seen, client } = mockClient([endTurnMsg('报告')]);
+    const { ctx } = makeCtx(client);
+    const tool = subagentToTool(
+      researcherCapability({
+        system: (task) => {
+          gotTask = task;
+          return `动态角色：${String(task.task)}`;
+        },
+      }),
+      () => [],
+    );
+
+    const out = await tool.run({ task: '查一下' }, ctx);
+    assert.equal(out, '报告');
+    assert.deepEqual(gotTask, { task: '查一下' }, '函数形态应收到主 agent 填的任务对象');
+    const params = seen[0] as { system: unknown };
+    assert.equal(params.system, '动态角色：查一下', '函数形态的返回值应原样作为子循环的 system');
+    assert.doesNotMatch(
+      JSON.stringify(params.system),
+      /运行提示/,
+      '函数形态由作者全权 —— 框架不得追加 REPORT_HINT（只有 string / 实例两态才追加）',
+    );
+  });
+
   it('子运行挂起（suspended）且 loop.error 为 undefined ⇒ 兜底 agent_error 收尾', async () => {
     // 与 skill 同款兜底分支：子循环里 approval:'required' 的工具无决定 ⇒ 挂起
     // （suspendedResult 的 error 恒为 undefined）⇒ `loop.error ??` 兜底必须给出结构化原因。
