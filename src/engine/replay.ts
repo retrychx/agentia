@@ -1,5 +1,6 @@
 import type { ContentBlockParam, MessageParam } from '../core/message.js';
 import type { Span, SpanId, Trace } from '../core/trace.js';
+import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
 
 /**
@@ -145,8 +146,8 @@ function expandTurns(
     const pairs: Array<{ id: string; output: ToolEventIO | undefined }> = [];
 
     if (includeToolIO) {
-      const inputs = eventsOf(turn, 'tool.input');
-      const outputs = eventsOf(turn, 'tool.output');
+      const inputs = eventsOf(turn, TOOL_INPUT_EVENT);
+      const outputs = eventsOf(turn, TOOL_OUTPUT_EVENT);
       const used = new Set<number>();
       for (const input of inputs) {
         // 配对优先级：同 id 精确匹配 > 同名最早未配对 > 最早未配对。

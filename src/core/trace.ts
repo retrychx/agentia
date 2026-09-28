@@ -33,13 +33,37 @@ export interface SpanError {
 }
 
 /**
+ * 工具**入参**事件的 `SpanEvent.name`（`TOOL_OUTPUT_EVENT` 是它的另一半）。
+ *
+ * 为什么单源在 `core/`（2026-09-28 外部深评 E8）：这两个名字跨 **engine → eval →
+ * integrations** 三层被手写（12 处取值）—— 改名要改三遍，而漏一处不是「少记一条」，
+ * 是**静默归零**：事件在引擎里叫 A、报表按 B 过滤 ⇒ 报表说「没有工具调用」，而 trace 里
+ * 明明有（`integrations/report.ts` 与 `metrics-state.ts` 那两处都按名字过滤）。
+ *
+ * ⚠️ 报告建议的落点（`engine/tool-events.ts`，与载荷构造器同处）**不可行**：
+ * `integrations` 只许依赖 `core`（`tests/architecture/layering.test.ts`），拿不到 engine 的
+ * 导出 —— 那样 integrations 侧只能再手写一份，等于把「单源」补成「两处」。
+ * 所以词汇表落在最底层：**载荷构造器（engine）与名字（core）分开**，谁都能引。
+ */
+export const TOOL_INPUT_EVENT = 'tool.input';
+export const TOOL_OUTPUT_EVENT = 'tool.output';
+
+/** 工具 I/O 事件名的联合 —— `eval/export.ts` 的工具事件过滤器按它取参数 */
+export type ToolIoEventName = typeof TOOL_INPUT_EVENT | typeof TOOL_OUTPUT_EVENT;
+
+/**
  * 结构化事件（日志）。工具入参/出参**正文默认截断**（入参/成功出参 2000 字符、失败出参 1000），
  * 完整正文需显式开启：`RunInvocationOptions.maxEventChars: false`（缺省关）。
  * 脱敏**不在框架内** —— 那是 sink 缝外的事（spec §9.3），框架只保证出口形状。
  */
 export interface SpanEvent {
   time: number;
-  name: string; // 例如 'tool.input' / 'tool.output' / 'compaction'
+  /**
+   * 事件名。工具 I/O 的两条走 `TOOL_INPUT_EVENT` / `TOOL_OUTPUT_EVENT` 常量
+   * （见上：这个名字是跨层契约，不许在别处再写一遍字面量）；
+   * 其余（`'compaction'` 等）目前仍是字面量，尚未单源 —— 如实记在这里，别当已成网。
+   */
+  name: string;
   body: unknown;
 }
 
