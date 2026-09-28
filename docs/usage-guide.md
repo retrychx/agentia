@@ -296,7 +296,7 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 | `toolTimeoutMs` | 缺省单工具超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run |
 | `maxToolConcurrency` | 缺省同回合并行工具上限；不设 = 不限（全并行） |
 | `maxEventChars` | 缺省 trace 事件正文截断上限（可被单次 run 覆盖）：数字 = 入参/出参统一用该上限，`false` = **不截断**（完整正文进 trace，面板里能展开看全文）；不设 = 框架缺省 |
-| `traceLimits` | **记账的数量上限** `{ maxEvents? }`（可被单次 run 覆盖）：整条 trace 的事件总数闸。超限即停止记账，并在交付时于 run 根写一笔 `trace.truncated{droppedEvents, limit}` —— 缺口位置可预测（尾巴）且**有计数**。与管**长度**的 `maxEventChars` 正交（一个管「多长」、一个管「多少」）；不设 = 不限（全量记账是本框架的承诺）。坏值（NaN / 负数 / 小数）在 run 入口抛 `TypeError` |
+| `traceLimits` | **记账的数量上限** `{ maxEvents? }`（可被单次 run 覆盖）：整条 trace 的事件总数闸。超限即停止记账，并在 run 根留**两笔** `trace.truncated` —— **起点标记** `{limit}`（断点在这里）＋ **收尾摘要** `{droppedEvents, limit}`（丢了多少），两笔**同时**进交付的 trace 与 `onTraceEvent` 增量流。缺口位置可预测（尾巴）且**有计数**。与管**长度**的 `maxEventChars` 正交（一个管「多长」、一个管「多少」）；不设 = 不限（全量记账是本框架的承诺）。坏值（NaN / 负数 / 小数）在 run 入口抛 `TypeError` |
 
 ### `app.run(messages, opts?: RunAppOptions)`
 
@@ -1534,8 +1534,10 @@ const waitForBatch: AgentTool = {
 - **待注入缓冲有上限（64 条）**：满了 → 409，且**不收下**（「本次事件没有被记录」，与
   「重复投递」（那条本来就在里面）是两种不同的 409）。缓冲在下次跑通时注入并清空 ——
   上限只管「一个挂起窗口里能攒多少」；满了说明该先让这条 run 走起来，而不是拿它当队列。
-- **留痕**：注入时续跑段的 run 根记 `task.event` 事件（`{ delivered, event_type,
-  event_id? }`）；离开挂起态时 `/healthz` 的挂起读数照常除名。
+- **留痕**：注入时续跑段的 run 根记 `task.event` 事件（`{ injected, event_type,
+  event_id? }` —— `injected` 的口径是「注入进本段消息流」，**不等于**「模型已看到」：
+  该段若在首个模型请求前就中止/失败，事件不进持久化历史，但这条留痕仍成立）；
+  离开挂起态时 `/healthz` 的挂起读数照常除名。
 
 **已知边界**：事件由**收到它的那个进程**派发（落库先于派发，所以进程崩了不丢 ——
 重启后由 `resumePending` 认领续跑）；事件不进**会话历史**（会话只存对话轮次，
@@ -1588,11 +1590,11 @@ const callable = {
 | 同键去重的能力边界 | `idempotencyKey` 的去重分三档：**同步 store** 下 `submit` 当场返回既有记录；**异步 store**（Redis / SQLite 等）下 `submit` 是同步门面、无法 await，去重靠**进程内认领表**，只覆盖「**同进程内并发提交**」（2026-09-21 修复前这里会两次都执行）；**跨进程并发**与**终态之后重提同键**仍是 at-least-once —— store 的 idem 索引是 last-wins（重提即新任务，`redisStore` / `fsStore` / `sqliteStore` 头注释同口径）。要严格一次，请让副作用自身幂等（或在 store 层做唯一约束） |
 | 增量出口与 sink 是**两条缝** | `onTraceEvent` 是「运行期逐笔」，`sinks` 是「收尾拿整棵」——消费者与保证都不同：sink 的抛错被吞但仍会**投递**（有兜底语义），`onTraceEvent` **不保证送达**（宿主自己的流断了就断了，没有重试/重放）。要「一条都不能少」用 `sinks`；要「现在就看到」用 `onTraceEvent` |
 | 任务进度流的边界（内存 / 跨进程） | `GET /tasks/:id/stream` 的事件缓冲在**跑任务的进程内存**里：每任务最近 500 条（可用 `AsyncRunner` 的 `streamBufferEvents` 调，须为正整数，坏值构造期抛错），超限丢**最旧**并先发一帧 `stream.truncated`；终态流只留最近 16 条。**跨进程**（队列消费者在别的进程）时没有实时流：发一帧 `stream.unavailable` 后**立即收口** —— 任务已终态则补 `task.end`（随后关连接）；**非终态**则补一帧 `stream.closed`（流级收尾，不是伪造终态）并关连接，客户端此后应转去轮询 `GET /tasks/:id`。要跨进程实时请用 `onTraceEvent` 把事件转发到宿主自己的总线（Redis Streams / Kafka） |
-| `traceLimits` 与 `maxEventChars` 各管一头 | `maxEventChars` 管**单个事件正文多长**（既有），`traceLimits.maxEvents` 管**整条 trace 多少个事件**（本版）。两者正交、都「不设 = 不限」；上限触发时**丢弃量写在 run 根的 `trace.truncated`** 上（不静默）。⚠️ 实测 `maxEventChars: false` + 大出参会让 trace 放大 **13.7×**（`npm run bench:trace` 可复现）—— 先收长度再谈采样，收益顺序比反过来大 |
+| `traceLimits` 与 `maxEventChars` 各管一头 | `maxEventChars` 管**单个事件正文多长**（既有），`traceLimits.maxEvents` 管**整条 trace 记多少条记录事件**（本版）。两者正交、都「不设 = 不限」；超限即**停止记账**，并在 run 根留**两笔** `trace.truncated`：**起点标记** `{limit}`（断点在这里）+ **收尾摘要** `{droppedEvents, limit}`（丢了多少）—— 两笔**同时**进交付的 trace 与 `onTraceEvent` 增量流（⇒ 按 `seq` 折回仍逐字等于收尾那份；两笔簿记**不占** `maxEvents` 配额）。⚠️ 实测 `maxEventChars: false` + 大出参会让 trace 放大 **13.7×**（`npm run bench:trace` 可复现）—— 先收长度再谈采样，收益顺序比反过来大 |
 | **采样是导出决策，不是记账决策** | 采样在 `sink` 外做（配方见 `docs/observability.md` 2.3）：被采样掉的 trace 在框架内**仍然完整记账**，只是没发给下游。所以别拿「有采样」当「可以少记账」；也正因如此，出站 `traceparent` 的 flags 恒 `00`（记录/导出决策发生在收尾之后，运行期不可知——不替下游声明） |
 | 菜单漂移只**标记**、不判失败 | 续跑时未决 tool_use 的工具不在当前菜单 ⇒ 三处信号（`menu.drift` 事件 / 父 span attribute / `console.warn`），run **照常收尾**（那些 tool_use 以 `unknown tool` 回给模型）。**射程如实标注**：判据只看**名字** —— 「工具还在、schema 变了」能被 `tools.menuHash` 比出来，但**不会**在续跑时报 `menu.drift`；**只改 `description`** 连签名都不变（有意：润色文案不算漂移）。严格模式（带具名 error 的收尾）与「结果级字段」记在 spec §11 开放项 |
 | `approve` 只收**待决的** id（多一个 → 400 整批拒） | `decisions` 的键必须都在该任务的 `pendingApprovals` 里（调用方从记录的 `pendingApprovals` 读）。多出任何一个 ⇒ **400 + 整批拒 + 记录一字不动**。不校验的代价（已修，2026-09-28 外部深评）：多出来的键会写进 `TaskRecord.approvals`，随每次 `save` 全文重写、且终态也不清 ⇒ 一个**认证调用方**单次请求就能把记录撑大（实证：一次 5000 个无关键 = +419 KB），反复调用可无限叠加 |
-| `TaskRecord.approvals` 有界但**不清** | 键集被 `pendingApprovals` 钉死（挂起那一刻固定）⇒ 天然有界，**不需要**常量上限；但**终态也不清**（审批记录是审计的一部分）—— 想减负请换 store 的清理/TTL 策略 |
+| `TaskRecord.approvals` 有界但**不清** | 单次 approve 能写的键被钉在当前 `pendingApprovals` 里 ⇒ 单次输入无法放大体积；跨多轮挂起会累计**历次**待决的并集（每轮都对应真跑出来的模型回合），增长只随真实运行发生 ⇒ 天然有界，**不需要**常量上限；但**终态也不清**（审批记录是审计的一部分）—— 想减负请换 store 的清理/TTL 策略 |
 | 缺省内存 store 不淘汰 | 长跑宿主请设 `InMemoryTaskStore({ maxRecords })` 或换 `FileTaskStore` / `SqliteTaskStore` |
 | 能力引用两种粒度 | `tools` 写 **provider token** = 整片能力菜单；写 `'<token>/<能力名>'` = 只引单个能力（@Tool/@Skill/@SubAgent/@Prompt 都可点名，装配期校验，名字不存在即抛错并列出可用名单） |
 | 能力名有格式校验 | 装饰器能力名（`name` 或缺省的方法名）必须匹配 `^[A-Za-z0-9_-]{1,64}$`（与 MCP 桥同口径），非法名在 `createApp` **装配期即抛错** —— 含空格/点/中文的名字会让模型 API 400，宁可在启动期拦住 |
@@ -1608,6 +1610,7 @@ const callable = {
 | 运行时是 Node | 按 Node ≥ 18 设计与测试（`engines` 写明，CI 在 18/20/22 上守）；**未对 Deno / edge 做验证**。`SqliteTaskStore` 需 Node ≥ 22.5（`node:sqlite`），未提供时构造期抛可读报错 |
 | 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不做进程级决策）；信号处理是宿主的 |
 | 停机可能切断 SSE | `drain()` 超时后会强制关闭仍开着的 SSE 流，其 run 以 `stopReason='aborted'` 收尾 —— 客户端应把断流当作可重试 |
+| `drain()` 之后本进程不再推进任何任务（单向闩） | 置位后**没有复位路径**，且 `false`（排空超时）同样意味着**宿主必须退出**：停机窗口里已落库的记录（`running`/`queued` + 本进程 ownerId）在本进程内**没有自愈路径** —— `resumePending` 按 `own-process` 跳过、`submit` 已整体关闭 ⇒ 只能等下一次启动认领（ownerId 含 pid）。宿主若不退出，那些记录会一直停在 `running`（`awaitTask` 不返回、`GET /tasks/:id/stream` 还会说 `not-in-this-process`）。首次被拒时有 `[agentia] 停机中：…` 的 `console.warn`（可 grep），别忽略 |
 | 鉴权失败即断连 | 未通过鉴权时在读到 body 之前就回响应，连接**不可复用**（显式 `connection: close`）；这是「不收body省资源」的代价 |
 | 预算护栏不是硬实时 | 一回合记账完才判，实际用量可能超上限一个回合的量；并行子循环（一回合多个子 agent）各自过闸，超支上限是「**每个在飞分支**各一个回合」而非「总共一个回合」；模型自然收尾的那回合超限**不算失败**（只留 `budget.exceeded` 事件） |
 | `maxCostUsd` 依赖价格表 | 模型不在价格表内（且未用 `priceOverrides` 覆盖）时成本恒为 0，这条护栏**不触发** —— 要无条件兜底用 `maxTotalTokens`。**失效会响**：turn 上会记 `usage.unpriced` 事件、指标有 `model_unpriced_turns_total`、可回调 `onUnpricedModel` |
@@ -1677,6 +1680,7 @@ const callable = {
 | 长跑内存涨 | 缺省内存 store 不淘汰；设 `InMemoryTaskStore({ maxRecords })` 或换耐久 store |
 | 鉴权钩子抛错，客户端只看到「未通过鉴权」 | 这是设计：非 `HttpException` 的错误原文只进服务端日志（要回给调用方就抛 `HttpException(status, body)`） |
 | 停机后 `POST /tasks` 回 503 | `drain()` 已被调用（或注入的 runner 已 drain）—— 这是「拒新单」的正常行为，任务没丢 |
+| `drain()` 之后有些任务停在 `running` 不动 | **宿主没退出**。`drain()` 是**单向闩**：返回之后本进程不再推进任何任务，且没有任何复位路径。停机窗口里被拒掉的记录已落库（`running`/`queued` + **本进程的 ownerId**）⇒ 本进程的 `resumePending` 按 `own-process` 跳过、`submit` 已整体关闭 ⇒ **本进程内没有自愈路径**，只能等**下一次启动**认领（ownerId 含 pid）。所以 `drain()` 返回 `false`（排空超时）同样意味着「必须退出」——参考宿主都是 `await drain(...)` 后 `process.exit(...)`。首次被拒时会打一条 `[agentia] 停机中：…` 的 `console.warn`（可 grep），别忽略它 |
 | `stopReason` 是 `budget_exceeded`、任务被判失败 | 这是设计（护栏拦下的 run **没跑完**）。只想「记一笔」不想改结局，就自己用 `createBudgetGuard` 读 trace |
 | 工具超时了，副作用却还是发生了 | 超时是「放弃等待」不是强制取消。引擎放弃时会 abort `ToolRunContext.abandoned`（@SubAgent/@Skill 已靠它自中止）—— 你自己的工具要真停就监听它 |
 | 用 OpenAI 端点没看到打字机效果 | 端点没按 `stream:true` 回 `event-stream`（回了一整份 JSON）—— 适配器按响应形态解析，此时退回一次性 |

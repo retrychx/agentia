@@ -44,13 +44,11 @@ describe('派发口守卫（源码级）：`this.#execute(` 只许出现在 #dis
       `this.#execute( 出现 ${sites.length} 处 —— 派发必须一律走 #dispatch（闸只在那里判一次）`,
     );
     const at = code.indexOf('this.#execute(');
-    const window = code.slice(Math.max(0, at - 400), at);
+    // 窗口要够宽：闸与派发之间还夹着「拒绝要出声」那段 warn（见 PR #164 复核 §1）
+    const window = code.slice(Math.max(0, at - 1800), at);
     assert.match(window, /#dispatch\(rec: TaskRecord\): void \{/, '唯一调用点必须在 #dispatch 里');
-    assert.match(
-      window,
-      /if \(this\.#drain\.isDraining\) return;/,
-      '#dispatch 的停机闸必须排在派发之前',
-    );
+    // 只断言**位置**（闸出现在派发之前），不钉花括号写法 —— 钉格式的守卫会在无害的改版式上红
+    assert.match(window, /if \(this\.#drain\.isDraining\)/, '#dispatch 的停机闸必须排在派发之前');
   });
 
   it('各恢复路径都走唯一入口（次数下限，防有人把某一支改回裸派发）', () => {
@@ -58,6 +56,33 @@ describe('派发口守卫（源码级）：`this.#execute(` 只许出现在 #dis
     assert.ok(
       calls.length >= 7,
       `this.#dispatch( 只出现 ${calls.length} 次 —— submit + 六条恢复路径都该走它`,
+    );
+  });
+
+  it('旁路守卫：`this.#executeInner(` 也只许出现在 `#execute` 里', () => {
+    // 2026-09-28 PR #164 复核 §2：#execute 是**唯一**做「同步认领 + 开流 + active++」的地方，
+    // 之后才把手交给 #executeInner。新加一条恢复路径时若直接调 `this.#executeInner(rec)`，
+    // 会**同时**绕过两样东西 —— 上面那道停机闸（本 PR 修的就是这一类），以及 `active++`
+    // 与 `#streams.open`（后果：`drain()` 会在一条 run 真在跑的时候返回 true；
+    // `GET /tasks/:id/stream` 对着一条正在跑的任务说 `not-in-this-process`）。
+    // 只钉 `this.#execute(` 拦不住它 —— 那是同一个旁路的另一半，所以也钉住。
+    const sites = code.match(/this\.#executeInner\(/g) ?? [];
+    assert.equal(
+      sites.length,
+      1,
+      `this.#executeInner( 出现 ${sites.length} 处 —— 它只能由 #execute 调（认领/开流/计数都在那里）`,
+    );
+    const at = code.indexOf('this.#executeInner(');
+    const window = code.slice(Math.max(0, at - 700), at);
+    assert.match(
+      window,
+      /async #execute\(rec: TaskRecord\): Promise<void> \{/,
+      '唯一调用点必须在 #execute 里',
+    );
+    assert.match(
+      window,
+      /this\.active\+\+;/,
+      '在飞计数必须先于 #executeInner（否则 drain 漏掉在跑的 run）',
     );
   });
 });

@@ -282,7 +282,8 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   /**
    * 挂起期间投递的事件（2026-09-28 ⑥；语义见 `RunInvocationOptions.events`）：
    * 续跑段在未决 tool_use 解决之后渲染成 user 文本消息注入消息流，并在 run 根
-   * 记 `task.event` 事件留痕（`{ delivered, event_type, event_id? }`）。
+   * 记 `task.event` 事件留痕（`{ injected, event_type, event_id? }` —— `injected`
+   * 的口径是「注入进本段消息流」，不等于「模型已看到」）。
    */
   events?: TaskEvent[];
 }

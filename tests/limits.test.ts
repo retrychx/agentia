@@ -234,11 +234,14 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
       0,
       '0 必须读作「一条都不记」—— 若读成「不限」，这里会是 1 条 e 事件',
     );
-    // 但「少记了」这件事本身必须留下痕迹（有计数才叫可解释）：设计上交付时补一笔摘要
-    const trunc = events.find((e) => e.name === 'trace.truncated');
-    assert.ok(trunc, 'maxEvents:0 也应留一笔 trace.truncated —— 否则使用者会以为 trace 是完整的');
-    assert.equal((trunc.body as { limit: number }).limit, 0, '摘要里的 limit 应如实反映生效的上限');
-    assert.ok((trunc.body as { droppedEvents: number }).droppedEvents >= 1, '丢了多少条必须有计数');
+    // 但「少记了」这件事本身必须留下痕迹（有计数才叫可解释）：设计上是**两笔**同名簿记
+    // （起点标记 `{ limit }` 标断点 + 收尾摘要 `{ droppedEvents, limit }` 报计数，见 `TraceLimits`）
+    const marks = events.filter((e) => e.name === 'trace.truncated');
+    assert.equal(marks.length, 2, 'maxEvents:0 应留两笔 trace.truncated（起点标记 + 收尾摘要）');
+    assert.deepEqual(marks[0]!.body, { limit: 0 }, '起点标记只带上限 —— 断点在这里');
+    const summary = marks[1]!.body as { limit: number; droppedEvents: number };
+    assert.equal(summary.limit, 0, '摘要里的 limit 应如实反映生效的上限');
+    assert.ok(summary.droppedEvents >= 1, '丢了多少条必须有计数');
     return 'disabled';
   },
 
