@@ -70,6 +70,27 @@ function markdownFiles(dir: string, prefix = ''): string[] {
 /** 反引号里 7–40 位十六进制 —— 提交引用的**候选**（能不能当提交由 git 判，不靠这个正则） */
 const SHA_IN_BACKTICKS = /`([0-9a-f]{7,40})`/g;
 
+/**
+ * **历史快照目录**（前缀，相对 `docs/`）：`docs/reviews/<日期>/` —— 逐字入库的外部复核报告
+ * （2026-09-28 起，见 `docs/spec.md` §10 ⑲ 与 `docs/reviews/2026-09-28/README.md` §0）。
+ *
+ * 对它们**只做「是不是 commit 对象」的判定，不做「在不在主干上」的判定**。
+ *
+ * 为什么这是对的（而不是给腐化开后门）：那些 SHA 记录的是**复核当时**的提交，而本仓一律
+ * squash 合并 ⇒ 分支提交**必然**不在 main 的祖先链上（这正是本守卫存在的理由，见文件头注）。
+ * 换句话说，本目录里出现「不在主干上的 SHA」是**它的正常形态**，不是引用腐化 ——
+ * 要求它们可解析，等于要求把快照**改写成今天的视角**，与「逐字保留」的约定直接冲突、
+ * 也与这份文档的用途（读者要的是「当时那份代码在哪」）冲突。
+ *
+ * ⚠️ **豁免不静默**：下面 `archived` 计数把「走了这条路」记下来，并**钉住目录非空** ——
+ * 否则目录被删/改名之后，这段豁免会变成一段没人察觉的**死豁免**（下一次有人把真引用写坏，
+ * 只要写在这个前缀下就永远不被拦），那才是真正的后门。
+ *
+ * 实测走这条豁免的形态（2026-09-28）：`DEEP-REVIEW-2026-09-28.md` 里的 `3c6898f`
+ * （「待注入事件缓冲的上限」那个分支提交，squash 后即从主干消失）——本守卫上线当天就抓到它。
+ */
+const HISTORICAL_PREFIXES = ['reviews/'];
+
 test('docs/** 引用的提交必须真在主干上（引用不得腐化）', () => {
   const base = baseRef();
   assert.ok(
@@ -79,8 +100,12 @@ test('docs/** 引用的提交必须真在主干上（引用不得腐化）', () 
 
   const offenders: string[] = [];
   let resolved = 0;
+  /** 走了「历史快照」豁免的**文件**数 —— 只用来钉住豁免不空转（见 HISTORICAL_PREFIXES 注释） */
+  let archived = 0;
 
   for (const rel of markdownFiles(DOCS)) {
+    const historical = HISTORICAL_PREFIXES.some((p) => rel.startsWith(p));
+    if (historical) archived += 1;
     const md = readFileSync(join(DOCS, rel), 'utf8');
     const seen = new Set<string>();
     for (const m of md.matchAll(SHA_IN_BACKTICKS)) {
@@ -88,14 +113,24 @@ test('docs/** 引用的提交必须真在主干上（引用不得腐化）', () 
       if (seen.has(sha)) continue;
       seen.add(sha);
       // 解析不成 commit ⇒ 它只是某个十六进制词，不是提交引用，跳过
+      // （历史快照里被 GC 掉的分支提交也走这里：那时它连对象都不是了，本就无从解析）
       if (git(['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]) === null) continue;
       resolved += 1;
+      // 历史快照只判到「是个 commit 对象」为止，不再判在不在主干上（理由见 HISTORICAL_PREFIXES）
+      if (historical) continue;
       // 非零退出 = 不是祖先 ⇒ 引用了一个不在主干上的提交
       if (git(['merge-base', '--is-ancestor', sha, base]) === null) {
         offenders.push(`docs/${rel}: ${sha}`);
       }
     }
   }
+
+  // 豁免不得空转：一个文件都没命中 ⇒ 目录被删/改名了 —— 那这段豁免就是「写在这个前缀下的
+  // 坏引用永远不被拦」的后门。要么修前缀，要么删掉豁免。
+  assert.ok(
+    HISTORICAL_PREFIXES.length === 0 || archived > 0,
+    'HISTORICAL_PREFIXES 的历史快照豁免零命中（docs/ 下没有匹配的文件）—— 这是死豁免，不是豁免',
+  );
 
   // 下限的作用**不是**「防整节被删」，而是**探浅克隆**：浅克隆下历史不可见 ⇒ resolved 归零 ⇒
   // 上面的循环一个都验不了、本守卫空转。实测值 6（2026-09-23，docs 全量）。
