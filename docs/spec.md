@@ -3734,6 +3734,14 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
 ⚠️ 实测（生产路径真跑，非单测）：挂起段 run 根 `tools.names='danger'`、续跑段 `='safe'` ——
 **跨段比对菜单版本**靠的就是这两个 attribute 的差。
 
+**2026-09-28 复审补记两条**：① **次序收口** —— 续跑入口的漂移检测原先排在 abort 判定
+**之前**：一条已取消的续跑（不会再跑任何工具）也照发 `menu.drift` 事件 + `console.warn`，
+纯噪音。已改为 abort 判定先行；变异（次序换回）恰好咬死「已取消的续跑不发漂移信号」用例
+（另有阳性对照：未取消的同款续跑照发）。② **措辞订正** —— `menuSignature` 的注释原先写
+「签名覆盖 schema ⇒ 能被两段签名比出来」，易被读成续跑时**自动**比；实际比对是**离线的**
+（跨段 hash 对比由人/外部工具做，代码里没有任何一处自动比两段签名），注释已点明。
+「签名变了自动报」若要做，是把两段 hash 的比对接进续跑入口 —— 动公共信号面，留给后续立项。
+
 ### 2026-09-28 ①：**挂起改成「一个状态 + 一个原因」**（`awaiting_approval` → `suspended` + `suspendedReason`）—— durable timer（候选 1）的前置
 
 背景：起草候选 1（`wakeAt` 挂起）时按 `docs/plans/2026-09-27-durable-wake-at.md` 的核证清单
@@ -3891,6 +3899,12 @@ e2e `npm run e2e:mcp:server`（与 e2e:mcp 同档，不进 verify-all）。公�
   `resumePending` 认领 —— at-least-once 兜底，与「先落库再派发」的崩窗同形）。
   回归用例用可控闸把窗口撑开（save 挂起 → drain 完成 → 放开 ⇒ 不得派发）；
   变异（摘掉复判）恰好咬死该用例。
+- **同日复审补记（defer 吃掉 abort）**：回合内「工具请求延后」与「run 被中止」
+  （runTimeoutMs 到点 / cancel）同时成立时，原先 deferred 分支先返回 ⇒ run 挂成 timer，
+  **取消/超时的意图被吃掉**（timer 到点会自己醒接着跑 —— 审批挂起要人来推、且 cancel
+  能翻转 suspended，timer 没有这下一棒）。已修：deferred 分支先判 `signal.aborted`，
+  abort 赢（落 `aborted` + 结构化 error，不产生挂起历史）。变异（摘掉该判定）恰好咬死
+  `defer.test.ts` 的「defer × abort」用例。
 
 ### 2026-09-28 ③：**旧记录的读时归一**（迁移垫片）—— 六个读回点收成唯一入口
 

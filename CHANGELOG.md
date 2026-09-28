@@ -24,8 +24,11 @@
     （本进程口径，与 `inFlight` 同一张表；无时间挂起时 `nextWakeAt` 是 `null` 不是 `0`），
     另有 `AsyncRunner.suspendedSummary`。
   - 🛑 **停机**：`drain()` 之后**不再唤醒**睡着的 run（停机 = 不再往前推）；重启后由新进程的
-    首次 `resumePending` 唤醒。**不提供 `cancel` API**：取消靠宿主自己 abort 在飞请求 + 不唤醒
-    （独立立项，见 spec §10 2026-09-28 ② 决策 6）。
+    首次 `resumePending` 唤醒。取消用 `AsyncRunner.cancel` / `POST /tasks/<id>/cancel`
+    （见下「取消 API」）—— 对睡着的 run 它就是「不再醒」的合法出路。
+  - ⛔ **abort 优先于延后**：同回合里工具请求了延后、而 run 又被中止（`runTimeoutMs` 到点 /
+    `cancel`），run 以 `aborted` 收尾、**不**挂成 timer —— 否则会到点自己醒来接着跑，
+    等于把取消/超时吃掉。
   - 新增字段（**全部加法，无破坏性**）：`ToolRunContext.deferUntil`、`AgentRunResult.wakeAt`、
     `RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`。另顺手修两处：
     `resumePending` 跳过挂起记录时的原因不再是 `'terminal'` 而是 `'suspended'`（诊断不说错话）；

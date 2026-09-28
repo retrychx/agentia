@@ -102,6 +102,13 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
   // （不发请求、零花费）。
   const resumeUses = tailToolUses(ctx.messages);
   if (resumeUses.length > 0) {
+    // 已取消：不执行任何工具（副作用不该在取消后发生），按 aborted 收尾。
+    // 放在漂移检测**之前**：已取消的续跑不会再跑任何工具，菜单对不对得上它都不在乎 ——
+    // 先发 menu.drift 事件 + console.warn 是纯噪音（还会误导读成「这条要续跑」）。
+    if (args.signal?.aborted) {
+      return abortedResult();
+    }
+    const drift = detectMenuDrift(resumeUses, args.tools, { resultSchema: args.resultSchema });
     // 菜单漂移（R8 候选 3 / durable 调研 §4.1 + §6 候选 3）：**续跑**时未决 tool_use 引用的
     // 工具在当前菜单里找不到了 —— 上一段与这一段跑在不同的代码版本上（删了 / 改名了一个工具）。
     // 这与回合内「模型编了个不存在的工具名」不同类：那个模型拿一句 `unknown tool` 就能自我
@@ -115,7 +122,6 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     //   ③ `console.warn`（运维面立即看见，与「sink 失败落 warn」同款，见 spec §10 2026-09-27 ②）
     // 「严格失败」若要做，是把这里换成带具名 error 的收尾 —— 那要动公共选项面 + limits 真源表，
     // 留给后续决策，别在这里先斩后奏。
-    const drift = detectMenuDrift(resumeUses, args.tools, { resultSchema: args.resultSchema });
     if (drift.missing.length > 0) {
       const where = args.parentSpanId ?? '';
       args.recorder.event(where, 'menu.drift', {
@@ -135,10 +141,6 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           '—— 这条 run 是上一段代码版本留下的；这些 tool_use 会以 "unknown tool" 回给模型、' +
           'run 照常收尾（trace 上记了 menu.drift 事件与属性）。要按原样续跑就把它们加回菜单。',
       );
-    }
-    // 已取消：不执行任何工具（副作用不该在取消后发生），按 aborted 收尾
-    if (args.signal?.aborted) {
-      return abortedResult();
     }
     // 工具事件记到父 span：被恢复的回合属于挂起段的旧 trace，本段没有对应 llm.turn
     const outcome = await executeTurnTools(ctx, args.parentSpanId ?? '', resumeUses, null);
@@ -216,6 +218,16 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending }, finalText);
     }
     if (outcome.kind === 'deferred') {
+      // abort 优先于挂起（2026-09-28 复审收口）：本回合若已被中止（runTimeoutMs 到点 /
+      // cancel），意图是「停」—— 不能挂成 timer 之后到点再醒，那等于把取消/超时**吃掉**
+      // （审批挂起要人来推、timer 会自己醒，所以这条判据对 deferred 比对 approval 更要紧；
+      // 审批那条由 cancel 对 suspended 的翻转兜底，timer 没有这兜底的下一棒）。
+      if (args.signal?.aborted) {
+        stopReason = 'aborted';
+        error = abortedError();
+        finished = true;
+        break;
+      }
       // 时间挂起（durable timer）：与上面同形 —— 这批工具**跑过但结果作废**
       // （defer.requested 已记在 turn span 上），assistant 消息留在历史末尾，
       // 醒来后由续跑入口重跑这一批。error 保持 undefined。
