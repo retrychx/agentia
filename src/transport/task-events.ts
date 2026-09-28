@@ -210,12 +210,16 @@ export class TaskEventStreams {
     this.#evictTerminal();
   }
 
-  /** 丢弃某条流（终态 LRU 用） */
-  forget(taskId: string): void {
-    this.streams.delete(taskId);
-  }
-
-  /** 终态流超过保留条数 ⇒ 从最旧的开始丢（Map 的插入序即 LRU 序；恢复段 `open()` 会把它当新流） */
+  /**
+   * 终态流超过保留条数 ⇒ 从最旧的开始丢（Map 的插入序即 LRU 序；恢复段 `open()` 会把它当新流）。
+   *
+   * ⚠️ 这里**曾经**还有一个公开方法 `forget(taskId)`（「丢弃某条流」）。2026-09-28 外部深评
+   * 复核时确认它**全仓零调用点**（`grep` 命中的 `forget()` 全是 `scheduler.ts` 里那个操作
+   * `inFlight` 的同名**局部函数**，与此无关）—— 删掉，不留死承诺。
+   * 淘汰这件事**唯一的真实机制就是本方法**：终态流按 LRU 丢、有订阅者的不丢。
+   * 将来若真要「外部显式丢弃某条流」，请连同**谁在什么场景会调**一起设计再加回来
+   * （报告当初的建议「给 forget 写个测试」是反的：那等于给死代码上锁）。
+   */
   #evictTerminal(): void {
     const doneIds: string[] = [];
     for (const [taskId, s] of this.streams) {
