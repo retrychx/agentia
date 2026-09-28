@@ -15,7 +15,20 @@ import type { SpanError } from './trace.js';
  * 两件事）：状态只说「它在等」，等什么由 `SuspendedReason` 说 —— 判据（审批超时 / 能否
  * 审批）落在**原因**上，于是「时间挂起被审批超时提前叫醒」这类误伤在类型上就写不出来。
  */
-export type RunStatus = 'queued' | 'running' | 'suspended' | 'succeeded' | 'failed';
+export type RunStatus =
+  | 'queued'
+  | 'running'
+  | 'suspended'
+  | 'succeeded'
+  | 'failed'
+  /**
+   * 被**取消**（宿主调 `runner.cancel`）—— 终态，但与 `failed` **分开**：
+   * 取消不是失败（引擎侧 `abortedResult` 的注释早就这么写），运维读数不该把
+   * 「人按的」与「跑挂的」混成一类（`GROUP BY status` 是第一读者）。
+   * 机制上是 `abort signal`（与 `runTimeoutMs` 同一条），差别在**意图** ——
+   * 状态按意图落：超时仍是 `failed`。
+   */
+  | 'cancelled';
 
 /**
  * 挂起原因 —— 「等人工审批」与「等一个时刻」是两种挂起，判据必须分开：
