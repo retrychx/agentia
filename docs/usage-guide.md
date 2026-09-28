@@ -364,6 +364,18 @@ ctx.get('profil');    // ✗ 编译期报错（键不存在）
 
 动态键（运行期算出来的 `string`）拿不到字面量联合，按文档断言：`ctx.get(key as BlackboardKey)`。
 
+#### 嵌套能力**共用同一块黑板**（不隔离，有意为之）
+
+`@SubAgent` / `@Skill` 的执行体跑在**同一个** `RunContext` 上：单例 ALS 只在 run 创建时进一次
+（`runtime/context.ts` 的 `withRunContext` 全仓只有 `src/runtime/run.ts` 那一个调用点），子循环不会再进一层。
+
+- **所以**：子 agent / 技能里 `RunContext.current()?.get('k')` 读到的就是**父 run 的那块黑板**
+  （同一份 `Map`），子 agent 写的键父 run 也看得见 —— 这是**有意**的，「把你的发现留在黑板上」
+  正是子 agent 的用法（也是 `@Skill` 第二参能拿到 ctx 的原因）。
+- **代价是「没有隔离」**：并发跑的两个子 agent 若写同一个键，是**后者覆盖前者**（last-wins），
+  与跨 run 记忆 `flushMemory` 的取舍同款。要隔离就**自己命名空间**（`agentA.state` /
+  `agentB.state`），框架不替你拆键、也不做深拷贝。（「要不要按子树隔离」是开放项，见 `spec.md` §11。）
+
 ### 5.2 schema 即单一事实来源：`fromZod<T>`
 
 ```ts
@@ -503,6 +515,14 @@ const app = await createApp({ ... });
 | `FileTaskStore` | JSONL 耐久存储（`compact()` 可压实日志） |
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；客户端结构面 `get` / `set` / `del` / `keys`（或 `scanIterator`），外加设 TTL 时必需的 `expire`。`set` **只传两参** —— 尾参的选项形状两家相反：ioredis 认位置参数 `('EX', n)`、node-redis 认对象 `{ EX: n }`，取任何一种都会在另一家上失效（ioredis 会把对象字符串化成 `"[object Object]"` 报语法错；**node-redis 的 `SET` 只声明三个形参，位置参数被静默丢弃**）。所以 TTL 一律走 `expire(key, seconds)`（两家同名同形）；设了 `ttlSeconds > 0` 却没给 `expire` 时**构造期抛错**，不静默丢掉 TTL |
+
+**`compact()` / `close()` 是接口上的可选能力，但由宿主按需调**：`FileTaskStore.compact()`
+（压实 JSONL：一 task 一行、丢掉历史覆写行）与 `SqliteTaskStore.close()` 此前只活在具体类上 ——
+宿主拿到的若是 `TaskStore` 类型（DI / 工厂 / 配置驱动选 store 都是这形态），想调只能 `as` 强转，
+而强转**不报错**（换 store 后没有那个方法，要到运行期才炸）。现在它们在 `TaskStore` 上是**可选成员**，
+调用点写 `store.compact?.()` 即可（`tsc` 知道它可能有、也可能没有）。
+⚠️ 框架**刻意不替你调**：`drain()` 不关 store（同一个 store 可能被调度器或另一个宿主共用，
+关掉它是**宿主的**生命周期决定）。压实频率建议低频（如 cron 每小时一次）。
 
 #### gRPC 宿主（第 4 个宿主，**框架不内置**）
 

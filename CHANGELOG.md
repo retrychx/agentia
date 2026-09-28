@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### 变更 · store 的可选能力进接口（S5）+ 两处如实口径（K1 / T6）（2026-09-28 ㉓）
+
+- **`TaskStore` 增加两个可选成员**（`store/store.ts`）：`compact?()` 与 `close?()`。
+  `FileTaskStore.compact()` / `SqliteTaskStore.close()` 此前只活在具体类上，宿主拿到接口类型时
+  只能 `as` 强转（换 store 后运行期才炸）。现在调用点写 `store.compact?.()` 即可。
+  **框架不替你调**：`drain()` 不关 store（可能是共享的，关掉是宿主的生命周期决定），压实同理归宿主。
+  类型级守卫在 `tests/types/store-surface.types.ts`（`npm run typecheck:types`）。
+- **文档写明「嵌套能力共用一块黑板、不隔离」**（`usage-guide` §5.1，零代码改动）：
+  `@SubAgent` / `@Skill` 与父 run 是同一份 `RunContext`（`withRunContext` 全仓单点调用），
+  子 agent 写的键父 run 看得见（有意）；并发子 agent 写同一键是 last-wins（与 `flushMemory` 同款取舍），
+  要隔离请自己命名空间。「按子树隔离」保留为 `spec.md` §11 开放项。
+- **初始 `save` 不 await：定案不改**（外部深评 T6，报告已自行降级 P3）：
+  `submit` 是**同步门面**（await 会把它变成 async = 破坏性变更，只换来「多等一个网络往返」）；
+  「静默吞错」这一半已有处置（迟到的 reject 转成任务 failed，且只在任务未被推进时改判）并用例守着
+  （`tests/transport/async.test.ts`）。判据与承重理由写进 `spec.md` §10 ㉓。
+
+
 ### 修复 · 四条「静默失效」收口（2026-09-28 ㉒）
 
 来源：`DEEP-AUDIT-VERIFIED-2026-09-28.md` 的 P2 表（`S1` / `S2` / `S3` / `S6`），
