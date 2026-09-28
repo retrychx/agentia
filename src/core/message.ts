@@ -169,6 +169,17 @@ export interface MessageUsage {
   output_tokens: number;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  /**
+   * 上游**根本没回报 usage**（整条流 / 整个响应都没带计量）时为 `true` ——
+   * 此时上面那些 `0` 是**替身值**，不是读数（2026-09-28 外部深评 S2）。
+   * 缺省 `undefined` = 上游真的回报了。
+   *
+   * 为什么必须显式标出来：`0` 与「不知道」在数值上无法区分，而成本估算拿到的就是
+   * 这个 `0` —— 于是 `maxCostUsd` 这条护栏**静默失效**（花销看起来恒为 0），
+   * 连「算不出成本」的信号都没有。引擎侧据此在 llm.turn span 上记 `usage.missing`
+   * 事件（见 `engine/turn.ts` 的 `recordTurnUsage`），报告与指标各有一处出声。
+   */
+  unreported?: true;
 }
 
 /** 一次模型往返的最终响应（`ModelClient.messages.stream().finalMessage()` 的产物） */

@@ -11,6 +11,7 @@ import {
 } from './mcp-protocol.js';
 import type { Guard, McpConnector, McpToolInfo } from './mcp-protocol.js';
 import { abortError } from '../core/timeout.js';
+import { frameLimitText, MAX_FRAME_CHARS } from '../core/line-framing.js';
 
 /**
  * MCP **stdio 连接器**（内置默认件之一）：spawn 子进程、换行分隔 JSON-RPC。
@@ -132,6 +133,23 @@ export function createStdioMcpConnector(
 
     p.stdout?.setEncoding('utf8');
     p.stdout?.on('data', (chunk: string) => {
+      // 分帧上限（2026-09-28 外部深评 S6）：对端一直吐不带换行的字节 ⇒ 缓冲无界增长
+      // ⇒ 先 OOM 再谈协议。这不是罕见输入：stdout 混日志的 server 本来就常见，
+      // 而**一个不换行的日志行**正是这形态。
+      // 超限的处置：一次性拒绝全部在途请求（`fail` 置 fatal）并**终止子进程** ——
+      // 帧边界已经丢了，再读下去既救不回那条「一行」，也答不出任何在途请求。
+      if (buf.length + chunk.length > MAX_FRAME_CHARS) {
+        buf = '';
+        p.stdout?.destroy();
+        p.kill();
+        fail(
+          new Error(
+            `MCP server 的 stdout 单条报文超过分帧上限（${frameLimitText()}）—— ` +
+              '对端没有按换行分隔报文（或吐了一条巨型「日志行」）；已丢弃缓冲并终止连接',
+          ),
+        );
+        return;
+      }
       buf += chunk;
       for (;;) {
         const nl = buf.indexOf('\n');

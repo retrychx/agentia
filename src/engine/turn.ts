@@ -451,6 +451,14 @@ export function recordTurnUsage<S extends JsonSchema>(
   const { args } = ctx;
   const billedModel = model ?? args.model;
   const usage = message.usage ? usageFromAnthropic(message.usage) : undefined;
+  // 上游**没给** usage（2026-09-28 外部深评 S2）：上面那些 0 是替身值，成本估算会把它
+  // 读成「真的只花了 0」⇒ `maxCostUsd` 静默失效、连「算不出」的信号都没有。
+  // 记一条事件出声 —— 报告（`usageMissingTurns`）与指标（`model_usage_missing_turns_total`）
+  // 各有一处据此计数。**不是** `usage.unpriced`：那个说的是「模型不在价格表里」，
+  // 与「上游根本没报计量」是两回事，混在一起会把两条排障方向搅成一团。
+  if (usage && message.usage?.unreported) {
+    args.recorder.event(turnId, 'usage.missing', { model: billedModel });
+  }
   if (usage) {
     const cost = costEstimate(billedModel, usage, ctx.pricing);
     usage.costEstimate = cost;

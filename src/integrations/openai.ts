@@ -12,7 +12,7 @@ import type {
   ToolUseBlock,
   ToolUseBlockParam,
 } from '../core/message.js';
-import { resolveMaxRetries } from './adapter-options.js';
+import { resolveMaxRetries, statusOfStreamError } from './adapter-options.js';
 import { textOf } from '../core/text.js';
 import { sseLines } from '../core/sse.js';
 import { backoffMs, interruptibleSleep } from '../core/timeout.js';
@@ -418,38 +418,9 @@ interface StreamAccumulator {
   usage?: OpenAIUsage;
 }
 
-/**
- * 流内 error 分片的 type/code → HTTP status。
- *
- * 与 `anthropic.ts` 的 `statusOfStreamError` 同款、同目的：兼容端点（DeepSeek 等）
- * 常把限流/内部故障塞进 **HTTP 200** 的流里，不给非 2xx。不反推成 status，
- * 引擎就无法识别这是可重试的限流，重试层照样不生效。
- */
-function statusOfStreamError(err: { type?: string; code?: string | null }): number {
-  const key = `${err.type ?? ''} ${err.code ?? ''}`.toLowerCase();
-  if (key.includes('rate_limit') || key.includes('insufficient_quota') || key.includes('too_many'))
-    return 429;
-  // 4xx 档：这些是**改配置才有救**的病因（上下文超限 / 模型名错 / 鉴权 / 内容策略），
-  // 一律 500 + retryable 会让引擎白重试 3 次（3 次网络请求 + 3 倍等待），
-  // 且 trace 记成 `server` 而非 `api` —— 排障方向被带偏。
-  //
-  // 注意**两边口径已对齐**（2026-09-20）：anthropic.ts 的同名函数同样把
-  // `invalid_request_error` / `authentication_error` / `permission_error` /
-  // `not_found_error` 归 400（不细分 401/403/404）。这里仍用 includes 而不是枚举：
-  // OpenAI 兼容生态的类型多得多（以上全部来自真实兼容端点的错误码）。
-  if (
-    key.includes('invalid_request') ||
-    key.includes('context_length') ||
-    key.includes('model_not_found') ||
-    key.includes('does_not_exist') ||
-    key.includes('content_filter') ||
-    key.includes('authentication') ||
-    key.includes('permission')
-  ) {
-    return 400;
-  }
-  return 500;
-}
+// 「流内 error 分片 → HTTP status」的判定在 `adapter-options.ts`（与 anthropic.ts
+// **共用一份**，2026-09-28 外部深评 S3：此前两份实现靠注释互相喊话对齐）——
+// 别在这里再写一份。
 
 /**
  * 消费 `text/event-stream` 并组装成 Message。
@@ -588,6 +559,9 @@ function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): Me
       // OpenAI 形态无 cache 计量：恒 0
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
+      // 端点忽略了 stream_options.include_usage（或压根没回）⇒ 上面是**替身 0**，
+      // 如实标出来让「成本恒 0」有信号（2026-09-28 外部深评 S2）
+      ...(acc.usage ? {} : { unreported: true as const }),
     },
   } as Message;
 }
@@ -656,6 +630,8 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
       // OpenAI 形态无 cache 计量：恒 0
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
+      // 非流式同理：没回 usage 时不静默填 0（2026-09-28 外部深评 S2）
+      ...(data.usage ? {} : { unreported: true as const }),
     },
   } as Message;
 }

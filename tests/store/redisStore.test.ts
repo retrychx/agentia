@@ -183,7 +183,8 @@ describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
     };
 
     const ttlStore = new RedisTaskStore(spy, { ttlSeconds: 60 });
-    const a = rec({ idempotencyKey: 'k' });
+    // 终态记录才拿到查询窗口（S1）：非终态那一档见下面那个专门的用例
+    const a = rec({ idempotencyKey: 'k', status: 'succeeded' });
     await ttlStore.save(a);
     // 逐条钉死 argv：node-redis 的 SET 会丢掉位置参数，TTL 只能在 EXPIRE 上
     assert.deepEqual(calls, [
@@ -394,7 +395,7 @@ describe('node-redis 的 SET 只认 options 对象 —— TTL 必须走 expire�
   it('ttlSeconds > 0：TTL 落到记录与幂等索引上；SET 只许两参（位置参数 TTL 会被静默丢弃）', async () => {
     const client = new NodeRedisFake();
     const store = new RedisTaskStore(client, { prefix: 'nr:', ttlSeconds: 60 });
-    const a = rec({ idempotencyKey: 'k' });
+    const a = rec({ idempotencyKey: 'k', status: 'succeeded' }); // 终态才有窗口（S1）
     await store.save(a);
 
     assert.equal(client.map.get(`nr:task:${a.taskId}`)?.ex, 60, 'task 记录必须带 TTL');
@@ -414,6 +415,34 @@ describe('node-redis 的 SET 只认 options 对象 —— TTL 必须走 expire�
       ],
       'TTL 必须经 EXPIRE 逐键施加',
     );
+  });
+
+  it('S1：非终态（queued / running / suspended）**拿不到** TTL —— 挂起的任务不能被查询窗口吃掉', async () => {
+    const client = new NodeRedisFake();
+    const store = new RedisTaskStore(client, { prefix: 's1:', ttlSeconds: 60 });
+
+    // 非终态 = 还在跑 / 还在等人：记录与幂等索引都必须活过整个等待窗口
+    for (const status of ['queued', 'running', 'suspended'] as const) {
+      const r = rec({ idempotencyKey: `k-${status}`, status });
+      await store.save(r);
+      assert.equal(
+        client.map.get(`s1:task:${r.taskId}`)?.ex,
+        undefined,
+        `${status}：非终态记录不得带 TTL（TTL 一到记录就没了，「批了它」的决定无家可归）`,
+      );
+      assert.equal(
+        client.map.get(`s1:idem:k-${status}`)?.ex,
+        undefined,
+        `${status}：非终态记录的幂等索引不得带 TTL（索引先过期 ⇒ 同键重提绕过去重、把在跑的任务再跑一遍）`,
+      );
+    }
+
+    // 窗口从**进终态那一次写**起算 —— 不是创建时刻，也不是每次状态推进
+    const done = rec({ status: 'suspended' });
+    await store.save(done);
+    assert.equal(client.map.get(`s1:task:${done.taskId}`)?.ex, undefined, '挂起中：还没有窗口');
+    await store.save({ ...done, status: 'succeeded' });
+    assert.equal(client.map.get(`s1:task:${done.taskId}`)?.ex, 60, '进终态：窗口才落上');
   });
 
   it('无 ttlSeconds：一条 EXPIRE 都不发（记录永不过期，保持既有缺省）', async () => {
@@ -448,7 +477,7 @@ describe('RedisTaskStore 客户端形态兼容（ioredis / node-redis 真实参�
       const client = make();
       // 无 TTL：只传两参（显式 undefined 会被 ioredis 序列化成空串 → 语法错）
       const plain = new RedisTaskStore(client, { prefix: `${name}:` });
-      const a = rec({ idempotencyKey: 'k' });
+      const a = rec({ idempotencyKey: 'k', status: 'succeeded' });
       await plain.save(a);
       assert.deepEqual(await plain.get(a.taskId), a, `${name}: 无 TTL 读写`);
       assert.equal((await plain.byIdempotency('k'))?.taskId, a.taskId);
@@ -456,7 +485,7 @@ describe('RedisTaskStore 客户端形态兼容（ioredis / node-redis 真实参�
 
       // 带 TTL：SET + EXPIRE 在两家客户端上都真的生效；记录与幂等索引都带 TTL
       const ttlStore = new RedisTaskStore(client, { prefix: `${name}:`, ttlSeconds: 60 });
-      const b = rec({ idempotencyKey: 'k2' });
+      const b = rec({ idempotencyKey: 'k2', status: 'succeeded' }); // 终态才有窗口（S1）
       await ttlStore.save(b);
       assert.deepEqual(await ttlStore.get(b.taskId), b, `${name}: 带 TTL 读写`);
       assert.equal(client.map.get(`${name}:task:${b.taskId}`)?.ex, 60);

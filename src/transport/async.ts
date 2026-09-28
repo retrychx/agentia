@@ -5,6 +5,7 @@ import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { classifyError } from '../engine/errors.js';
 import type { RunStatus, TaskEvent } from '../core/run.js';
+import { isTerminalStatus } from '../core/run.js';
 import { normalizeMessages, TaskInputError } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
@@ -130,7 +131,10 @@ export class TaskStreamError extends Error {
  * 流必须**继续开着**（关掉的话「等审批结果的前端」正好在最需要的时候断线）。
  */
 function isTerminalTask(rec: TaskRecord): boolean {
-  return rec.status !== 'queued' && rec.status !== 'running' && rec.status !== 'suspended';
+  // 判定外移到 core/run.ts 的 `isTerminalStatus`（单一真源，2026-09-28 外部深评 S1）：
+  // 这里原本是负向枚举（`status !== 'queued' && …`），而 Redis store 那边压根没判 ——
+  // 同一事实两份读数，写法还不一样。那两处现在都调同一个函数。
+  return isTerminalStatus(rec.status);
 }
 
 /**
