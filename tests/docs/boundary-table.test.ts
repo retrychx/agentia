@@ -127,7 +127,7 @@ type Entry =
   | { key: string; gap: string; candidate: string };
 
 /**
- * 登记表（89 条，与 §7 的行一一对应）。
+ * 登记表（90 条，与 §7 的行一一对应）。
  *
  * `pin` 的 `marker` 是目标用例 `it(...)` 标题里的**一段原文**（或脚本里的原文），
  * A3 会逐条断言它在场 —— 引用一条其实不相关的用例会当场红。
@@ -596,6 +596,13 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'tests/runtime/memory.test.ts',
   },
   {
+    key: '同 keys 的并发回写不合并',
+    pin: {
+      file: 'tests/runtime/memory.test.ts',
+      marker: '并发丢写被抓：读之后别人写过同一份 store ⇒ 本次回写被拒、一个字都不写、并出声',
+    },
+  },
+  {
     key: '内容护栏不给实现',
     choice: '只给缝（入参包 app.run / 工具前 middleware / 出参包返回值或 sinks）：策略是宿主的',
   },
@@ -664,7 +671,7 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
   it('解析器没退化：§7 至少有 70 行（解析崩了会红，而不是空转绿）', () => {
     assert.ok(
       rows.length >= 70,
-      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 88 行）`,
+      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 89 行）`,
     );
   });
 

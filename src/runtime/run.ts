@@ -211,6 +211,14 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
   const ctx = new RunContext(run);
   const memory = options.memory;
   const session = options.session;
+  // 记忆 store 的形状检查走**入口**（不在下面那个 try 里）：半个 CAS 是装配错误，
+  // 要与「store 故障」（那类辅助动作失败只降级不击穿）分开 —— 前者当场抛，后者照旧吞。
+  if (memory) {
+    assertMemoryStoreShape(memory.store);
+    if (!hasMemoryCas(memory.store)) noticeMissingMemoryCasOnce(memory.store);
+  }
+  /** 水合时读到的版本句柄：回写照它做 CAS（没 CAS 的 store 恒 undefined） */
+  let memoryRev: unknown;
   return withRunContext(ctx, async () => {
     try {
       options.contextInit?.(ctx);
@@ -218,7 +226,7 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         // 水合是辅助动作：store 故障（Redis 挂掉等）不得杀死本次 run ——
         // 与下面 flushMemory 对称（那里已有同款防护）。失败即当「无记忆」继续跑。
         try {
-          await hydrateMemory(memory, ctx);
+          memoryRev = await hydrateMemory(memory, ctx);
         } catch {
           /* ignore：辅助动作失败不影响 run */
         }
@@ -245,7 +253,7 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         // 回写是辅助动作：失败不得把已成功的 run 翻成 failed（会丢结果与 trace），
         // 与下面失败路径的 flushMemory 同款防护。
         try {
-          await flushMemory(memory, ctx);
+          await flushMemory(memory, ctx, memoryRev);
         } catch {
           /* ignore */
         }
@@ -266,7 +274,7 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       if (memory) {
         // 失败路径也回写；save 自身出错不掩盖原始错误
         try {
-          await flushMemory(memory, ctx);
+          await flushMemory(memory, ctx, memoryRev);
         } catch {
           /* ignore */
         }
@@ -363,23 +371,83 @@ async function flushSinks(sinks: TraceSink[] | undefined, trace: Trace): Promise
   }
 }
 
-/** 水合：store 值注入 blackboard；contextInit 已写的同名 key 不覆盖（用户种子优先） */
+/** 水合：store 值注入 blackboard；contextInit 已写的同名 key 不覆盖（用户种子优先）。
+ *  返回本次读到的**版本句柄**（没实现 CAS 的 store 恒为 `undefined`）—— 回写时原样递回。 */
 async function hydrateMemory(
   memory: { store: MemoryStore; keys: string[] },
   ctx: RunContext,
-): Promise<void> {
-  const loaded = await memory.store.load(memory.keys);
-  for (const key of memory.keys) {
+): Promise<unknown> {
+  const { store, keys } = memory;
+  let loaded: Record<string, unknown>;
+  let rev: unknown;
+  if (typeof store.loadWithRev === 'function') {
+    const snapshot = await store.loadWithRev(keys);
+    loaded = snapshot.values;
+    rev = snapshot.rev;
+  } else {
+    loaded = await store.load(keys);
+  }
+  for (const key of keys) {
     // Object.hasOwn 而非 `in`：`in` 会命中 Object.prototype 的继承属性 ——
     // key='toString'/'constructor' 之类会把原型上的函数当成记忆值水合进黑板
     if (Object.hasOwn(loaded, key) && !ctx.has(key)) ctx.set(key, loaded[key]);
   }
+  return rev;
 }
 
-/** 回写：blackboard 里这些 key 的当前值存回 store */
+/** CAS 能力是否在场。成对性由 `assertMemoryStoreShape` 在入口保证，这里只看有没有 */
+function hasMemoryCas(store: MemoryStore): boolean {
+  return typeof store.loadWithRev === 'function' && typeof store.saveIfRev === 'function';
+}
+
+/**
+ * 入口形状检查：版本号的两个成员**必须成对**实现。
+ *
+ * 为什么半个 CAS 要当场拒（而不是「当作不支持、退回 last-write-wins」）：只实现 `loadWithRev`
+ * 看起来是「读到了版本、很上心」，但只要回写不走 CAS，覆盖照样静默发生 —— 白多一次读，
+ * 却给出「这件事有据可查」的错觉。这是本仓反复收口的那类失败（**看起来在岗、其实不在岗**），
+ * 所以在入口响亮失败，与 `resolveTraceLimits` / 各构造期校验同款（坏值不静默降级）。
+ */
+function assertMemoryStoreShape(store: MemoryStore): void {
+  const hasRead = typeof store.loadWithRev === 'function';
+  const hasWrite = typeof store.saveIfRev === 'function';
+  if (hasRead === hasWrite) return;
+  throw new TypeError(
+    `MemoryStore 的版本号能力必须成对实现：${hasRead ? '只实现了 loadWithRev' : '只实现了 saveIfRev'} —— ` +
+      '半个 CAS 与「不支持」等效（回写仍会静默覆盖别人的改动），却让「有没有被覆盖」看起来有据可查。' +
+      '两个都实现（冲突时框架不写 + 出声），或两个都不实现（默认 last-write-wins，框架检测不到覆盖）。',
+  );
+}
+
+/** 已提示过「这个 store 没有版本号」的实例 —— 一次性（每个 store 实例一次，不是每次 run 都吵） */
+const casNoticeSent = new WeakSet<MemoryStore>();
+
+/**
+ * 没有版本号的 store：**出声降级**（一次性提示）。
+ *
+ * 为什么要有这一句：默认路径（last-write-wins）下同 keys 的并发 run 会丢写，而框架
+ * **没有任何依据**发现它（版本号是唯一依据）—— 于是「我们在用这个 store」这件事本身就
+ * 值得说一声，让宿主自己决定要不要补 CAS。每个实例只吵一次：提示是给「装配的人」看的，
+ * 不是每轮都给日志刷屏。
+ */
+function noticeMissingMemoryCasOnce(store: MemoryStore): void {
+  if (casNoticeSent.has(store)) return;
+  casNoticeSent.add(store);
+  console.warn(
+    '[agentia] 记忆 store 未实现 loadWithRev / saveIfRev（版本号）⇒ 回写是 last-write-wins：' +
+      '同 keys 的并发 run 之间**丢写不会被发现**。要能发现请实现这两个成员' +
+      '（见 usage-guide「并发 run 共用同一 keys」）。本提示每个 store 实例只说一次。',
+  );
+}
+
+/** 回写：blackboard 里这些 key 的当前值存回 store。
+ *
+ *  有版本号（CAS）时走 `saveIfRev`：被拒（`committed !== true`）就**不写**并出声 ——
+ *  不合并、不重试（合并语义是 store 与宿主的决定，框架不替你猜）；没版本号时退回 `save`。 */
 async function flushMemory(
   memory: { store: MemoryStore; keys: string[] },
   ctx: RunContext,
+  rev: unknown,
 ): Promise<void> {
   // 无原型对象：`entries['__proto__'] = v` 在 {} 上会走 Object.prototype 的 setter
   // （改掉原型而非建属性），该 key 的回写值会静默丢失
@@ -387,5 +455,19 @@ async function flushMemory(
   for (const key of memory.keys) {
     if (ctx.has(key)) entries[key] = ctx.get(key);
   }
-  await memory.store.save(entries);
+  const { store } = memory;
+  if (typeof store.saveIfRev === 'function') {
+    const outcome = await store.saveIfRev(entries, rev);
+    // 判据是 `!== true`（不是 `=== false`）：`saveIfRev` 忘返回结果（`undefined`）时
+    // 按「没提交」处理 —— 宁可多报一次，也不把「不知道写没写」记成写成功。
+    if (outcome?.committed !== true) {
+      console.warn(
+        `[agentia] 记忆回写被拒绝（${outcome?.reason ?? '未确认'}，一个字都没写）: ` +
+          `keys=[${memory.keys.join(', ')}] —— 同一份 store + keys 上有并发的 run 在你读之后写过` +
+          '（这就是 lost update 的本体：接着写就是覆盖掉它的改动）。本轮结果未落库，重新 load 后重写即可。',
+      );
+    }
+    return;
+  }
+  await store.save(entries);
 }

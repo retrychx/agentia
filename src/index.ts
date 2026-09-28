@@ -177,7 +177,7 @@ export { createOpenAIClient } from './integrations/openai.js';
 export { createAnthropicClient } from './integrations/anthropic.js';
 export type { AnthropicClientOptions } from './integrations/anthropic.js';
 export { InMemoryMemoryStore } from './runtime/memory.js';
-export type { MemoryStore } from './runtime/memory.js';
+export type { MemorySnapshot, MemoryStore, MemoryWriteResult } from './runtime/memory.js';
 export { InMemorySessionStore } from './runtime/session.js';
 export type { SessionStore } from './runtime/session.js';
 export { RedisTaskStore } from './store/redisStore.js';
