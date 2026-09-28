@@ -56,7 +56,8 @@
     "e2e:mcp:server": "tsx scripts/e2e-mcp-server.ts",
     "e2e:soak": "tsx scripts/e2e-soak.ts",
     "bench:trace": "tsx scripts/bench-trace-cost.ts",
-    "bench:assembly": "tsx scripts/bench-app-assembly.ts"
+    "bench:assembly": "tsx scripts/bench-app-assembly.ts",
+    "bench:otlp": "tsx scripts/bench-otlp-snapshot.ts"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

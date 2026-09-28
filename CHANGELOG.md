@@ -132,6 +132,23 @@
   有订阅者的不丢）。原地留一段注释说明「它曾经在、为什么删、真要再加回来该怎么设计」。
   ⚠️ 这一条**不是**「补文档」：删掉公开方法会让它的名字从 API 面消失，对使用者是**无感**的
   （它从未从 `src/index.ts` 导出），但少一个「代码里有、文档里承诺、实际永不发生」的错位。
+- **OTLP 导出不再每次 flush 白算分位**（S4）：`metrics-otlp.ts` 原来每次 flush 调一次
+  `state.snapshot()`，却只从结果里读 `runs` / `failed` / `costUsd` **三个标量** —— 而这三个
+  **本来就是 `MetricsState` 的公开字段**；它对 capabilities / models / runLabels 全是**直接遍历公开 map**
+  （`grep latencyP50\|latencyP95 src/integrations/metrics-otlp.ts` → 空），一个分位字段都不读。
+  而 `snapshot()` 会为**每个**组合各算 p50 + p95，`percentile()` 的实现是 `[...ring].sort()`。
+  实测（`npm run bench:otlp`，满 1024 窗口 / 30 个组合）：单个 p50+p95 **233.8 µs**、
+  `snapshot()` 整体 **5929.6 µs**、而 `buildOtlpPayload()` 只要 **41.6 µs** ⇒ 白算 **99.3%**，
+  且**每个 flush 都付一次**（拉取式 Prometheus 侧无此问题：那里确实要分位）。
+  修法**不是**报告建议的「让 `snapshot()` 的分位可选 / 另给一个不算分位的视图」—— 那是给一个
+  本不该存在的调用加开关。OTLP 只需要三个公开字段，**删掉这次调用**即可，依赖面同时变诚实：
+  它不再依赖 `MetricsSnapshot`（Prometheus 侧渲染的产物）这个形状。**无行为变更**（payload 逐字段不变，
+  1322 条框架用例全绿）。配**行为级**守卫 `tests/architecture/otlp-no-snapshot.test.ts`：
+  把 `state.snapshot` 换成会抛的桩再跑导出路径（⚠️ 不用源码扫描 —— 被守的源码注释里**本来就写着
+  `state.snapshot()`**，靠遮蔽器区分注释与代码等于把守卫的成败押在遮蔽器上）；含阳性对照
+  「这枚雷真的会炸」防真空 + 「改字段 payload 跟着变」防读副本。变异两条具名复红：
+  ① 把 `snapshot()` 加回去；② 三个标量改读错来源。
+  新增 `npm run bench:otlp`（`scripts/bench-otlp-snapshot.ts`，与 `bench:trace` 同档、不进 CI）。
 
 
 - **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /

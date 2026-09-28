@@ -75,7 +75,15 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
   const p = opts.prefix;
   const now = nanos(Date.now());
   const start = nanos(opts.startedAtMs);
-  const s = state.snapshot();
+  // ⚠️ 这里**不许**调 `state.snapshot()`（行为级钉在 tests/architecture/otlp-no-snapshot.test.ts：
+  // 它在调用前把 `state.snapshot` 换成会抛的桩，再断言本函数照样出全量 payload ——
+  // 是行为断言而非源码扫描，因为本注释自己就写着 `state.snapshot()`）。
+  // 本函数对 state 的读法全是「公开字段 / 公开 map 直接遍历」：三个标量（runs / failed / costUsd）、
+  // tokens / runStat / runLabels / capabilities / models / scores / 两个 exemplar。
+  // 而 snapshot() 会把**分位数**一起算完（满 1024 窗口 30 个组合：实测 p50+p95 单个 232µs、
+  // 整体 5734µs）—— 本文件一个分位都不读，这笔钱是纯白算，且每个 flush 都付一次。
+  // 更根本的是依赖方向：OTLP 不该依赖 MetricsSnapshot 这个形状（那是 Prometheus 侧渲染的产物），
+  // 它只该依赖 MetricsState 的公开读面。删掉调用后，两边的耦合面就是「state 的公开字段」本身。
   // OTLP 数据模型：Metric 身份 = name(+type/unit)。**同名**数据点必须合并进一个 Metric
   // 的 dataPoints —— 规范里同名多 Metric 是 semantic error（consumer 可拒收整批），
   // 同名 Metric 各带一份 description 同样冲突。对照 Prometheus 侧 render() 的 family()：
@@ -161,10 +169,10 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
     });
   };
 
-  sum(`${p}runs_total`, s.runs, 'run 总数', []);
+  sum(`${p}runs_total`, state.runs, 'run 总数', []);
   sum(
     `${p}runs_failed_total`,
-    s.failed,
+    state.failed,
     '失败的 run 数',
     [],
     true,
@@ -182,7 +190,7 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
   sum(`${p}tokens_total`, state.tokens.cacheCreation, tokensHelp, [
     strAttr('kind', 'cache_creation'),
   ]);
-  sumDouble(`${p}cost_usd_total`, s.costUsd, '累计成本估算（美元）', []);
+  sumDouble(`${p}cost_usd_total`, state.costUsd, '累计成本估算（美元）', []);
   // 归因标签（R8-P4）：与 Prometheus 侧同四个家族，dataPoint 自带 attributes；
   // 同名数据点收进同一个 Metric（takeMetric 的职责），这里只管逐 combo 发点
   for (const combo of [...state.runLabels.keys()].sort()) {
