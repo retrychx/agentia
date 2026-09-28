@@ -7,6 +7,55 @@
 
 ## [Unreleased]
 
+### 修复 · 复审收口（外部深评 2026-09-28，两条 P1）
+
+- **停机窗口里的派发收成唯一入口**（P1-1 / P2-1）：所有「先落库再派发」的路径（`submit` /
+  `approve` / `signalTask` / 到期唤醒 / **审批超时兜底** / **`resumePending` 的认领**）形状相同，
+  而停机闸原先散在各支里 ⇒ 「覆盖几条路径」成了**靠人记**的清单：上一批修了三支，第四支
+  （审批超时兜底，由 `GET /tasks/:id` 的惰性闸驱动，而「停机中照常可轮询」是宿主的明确承诺）
+  与第五支（认领循环）漏了 —— 两处都在 `drain()` 返回 `true`（「排空干净」是 SIGTERM 决策依据）
+  之后**又起了新 run**。现在闸只在 `#dispatch()` 里判一次；配**源码级穷尽守卫**
+  （`this.#execute(` 与 `this.#executeInner(` 各只许出现在自己的那一个家里）⇒ 新增恢复路径而
+  绕过派发口时构建红，不靠记性。实证：`tests/transport/drain-race.test.ts`（五条路径各一条
+  用例 + 阳性对照）。
+- **`approve` 只许批本任务待决的 id**（P1-2）：原先 `decisions` 里多出来的键照样写进
+  `rec.approvals`（随每次 `save` 全文重写、并随任务**永久保留** —— 终态也不清），一次调用就能把
+  记录从 246 字节撑到 419 KB（实证），反复调用可无限叠加。现在多出任何一个 id ⇒
+  **400 + 整批拒 + 记录一字不动**（与 `parseApproveBody`「全有或全无」、`parseEventBody`
+  「多一个字段即拒」同一纪律）。**不加常量上限**：单次 approve 能写的键被钉在当前
+  `pendingApprovals` 里，跨轮累计也只随真实挂起轮次增长 —— 单次输入无法放大体积。
+- 缓冲满的 409 文案按挂起原因分两种说法（`approval`：唯一触发源是 approve、不在投递方手里；
+  `timer`：到点自己醒来，approve 对它不适用）。
+- **trace 截断在两条缝上都看得见**（P3-1）：`traceLimits.maxEvents` 超限后，run 根上会留**两笔**
+  `trace.truncated` —— **起点标记** `{ limit }`（第一笔丢弃那一刻，标「从这里起有缺」）与
+  **收尾摘要** `{ droppedEvents, limit }`（交付时的最终计数）。两笔**同时**进交付的 trace 与
+  `onTraceEvent` / `subscribe` 增量流 ⇒ 「按 `seq` 折回**逐字等于** `snapshot()`」那条折叠契约
+  在截断下**无例外地**成立（此前它在设了上限且真截断时是假的：摘要从不出现在增量流里，
+  只是默认不设上限所以没人碰到）。两笔簿记**不占** `maxEvents` 配额（截断时事件数上限是
+  `maxEvents + 2`）。⚠️ 起点标记会进交付的 trace —— 有意的：让制品自己标出「从这里断的」。
+- **`task.event` 留痕的 `delivered` 改名 `injected`**（P3-2，**可观测面变更**）：口径修正为
+  「注入进本段消息流」—— 原名超前于事实（该段若在首个模型请求前中止/失败，事件不进
+  持久化历史，但 trace 上已写着 delivered）。消费这条 trace 事件的下游请同步改字段名。
+
+### 修复 · PR #164 复核收口（2026-09-28 ⑨）
+
+- **停机窗口的拒绝不再静默**：`#dispatch()` 在停机中拒掉一条派发时，会打**一条**
+  `[agentia] 停机中：…` 的 `console.warn`（说清「谁、什么状态、谁来认领、宿主该做什么」；
+  只报一条 —— 窗口里所有记录的原因完全相同）。此前是一条裸 `return`，运维只看到一个停在
+  `running` 的任务，无从解释。
+- **`drain()` 的契约写全了**：它是**单向闩**（置位后没有复位路径）⇒ 返回 `false`（排空超时）
+  同样意味着**宿主必须退出**。否则停机窗口里已落库的记录（`running`/`queued` + 本进程 ownerId）
+  在本进程内**没有自愈路径**：`resumePending` 按 `own-process` 跳过、`submit` 已关闭 ⇒
+  只能等下一次启动认领（探针实证：认领数 0、`awaitTask` 不返回）。订正 `drain-gate.ts` 里
+  「false 不改任何共享状态」那句（`draining` 恰恰是保持置位的），并给 usage-guide §7 加一行
+  「`drain()` 之后有些任务停在 `running` 不动」。
+- **守卫补上 `#executeInner` 这个旁路**：只钉 `this.#execute(` 拦不住它 —— 绕过它会**同时**
+  绕过停机闸与 `active++` / `#streams.open`（`drain()` 会在一条 run 真在跑时返回 `true`）。
+- **文案订正**：`submit` 的「进闸与派发之间刚开始停机的窄窗口」**不存在**（`submit` 全同步，
+  没有插入点 —— 走 `#dispatch` 是结构一致性，不是行为依赖）；`sse-frames.test.ts` 把
+  `trace.truncated` 说成「run 根的 attribute」（它是**事件**）；`api.html` 的
+  `createHttpHandler` 行补上 ⑦ 新增的语义级 400。
+
 ### 新增
 
 - **run 事件投入口（spec §10 2026-09-28 ⑥，定案 A3+B1）**：外部系统可以把一条**事件**
@@ -23,7 +72,8 @@
   - **待注入缓冲也有上限（64 条）**：满了 → 409，且**不收下**（文案说清「本次事件没有被
     记录」）—— 定案 B「说出来，不静默」。**不选「丢最旧」**：丢缓冲若不同时摘
     `deliveredEventIds`，发件方重投会拿到「已投递」的 409 而事件其实已经没了（静默丢事件）。
-  - **留痕**：续跑段 run 根记 `task.event { delivered, event_type, event_id? }`；
+  - **留痕**：续跑段 run 根记 `task.event { injected, event_type, event_id? }`（口径是
+    「注入进本段消息流」—— 本轮改名，见上方 [Unreleased] 的 P3-2 条目）；
     离开挂起态时挂起读数照常除名。
   - 新增导出：`TaskEvent`（类型）；`RunInvocationOptions.events` / `TaskRecord.pendingEvents`
     / `TaskRecord.deliveredEventIds` / `AgentRunResult.eventsDelivered`（全部加法，无破坏性）。

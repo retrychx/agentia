@@ -136,8 +136,9 @@ function isTerminalTask(rec: TaskRecord): boolean {
  * module 级 export —— 不进公共导出面（纯宿主内部实现细节）。
  */
 export class TaskApproveError extends Error {
-  readonly status: 404 | 409;
-  constructor(status: 404 | 409, message: string) {
+  /** 400 = 入参语义不合法（decisions 里有本任务待决之外的 id，2026-09-28 深评 P1-2） */
+  readonly status: 400 | 404 | 409;
+  constructor(status: 400 | 404 | 409, message: string) {
     super(message);
     this.name = 'TaskApproveError';
     this.status = status;
@@ -447,7 +448,15 @@ export class AsyncRunner {
         void this.#safeSave(rec, 'initial');
       });
     }
-    void this.#execute(rec);
+    // 派发走唯一入口（闸在 #dispatch 里）—— ⚠️ 这里是**结构一致性**，不是行为依赖：
+    // 本方法开头那道 `isDraining` 检查（拒绝语义：对调用方的承诺是抛错 / 503，不是静默排期）
+    // 与这一行之间**没有 await** —— `submit` 是**全同步**的（异步 store 的 `save` 也只是挂个
+    // `.catch`，不 await）⇒ JS 不可能在中间插入 drain 的置位 ⇒ `#dispatch` 那道闸在**本方法内
+    // 永远不触发**。（2026-09-28 PR #164 复核 §3：此前的注释与提交信息把它说成「挡进闸与派发
+    // 之间刚开始停机的窄窗口」，那是个不存在的窗口。）
+    // 仍然走它：**「派发一律走唯一入口」这条纪律不该有例外** —— 少一个例外，就少一处将来
+    // 新增恢复路径时会漏的枚举。
+    this.#dispatch(rec);
     // 返回浅拷贝：记录会被后台状态机原地推进，调用方拿到的是提交时刻的快照
     return { ...rec };
   }
@@ -701,6 +710,26 @@ export class AsyncRunner {
       );
     }
     const now = Date.now();
+    // 入参校验（2026-09-28 外部深评 P1-2）：本批只许批**本任务待决的** id。
+    // 不校验会怎样（实证：一次 approve 塞 5000 个无关键 ⇒ 记录从 246 字节撑到 419 KB）：
+    // 多出来的键照样写进 `rec.approvals`、随每次 save 全文重写落库、并随任务**永久保留**
+    // （终态也不清：审批记录是审计的一部分）⇒ 一个**认证调用方**单次请求就能把记录撑大，
+    // 反复调用可无限叠加。拒整批而不是挑着收：与 `parseApproveBody`（形状全有或全无）、
+    // `parseEventBody`（多一个字段即拒）同一条纪律 —— 调用方本来就该从记录的 `pendingApprovals`
+    // 里读要批哪些 id。
+    // ⚠️ 为什么**不需要**再给 `rec.approvals` 加常量上限：单次 approve 能新写的键 ⊆ 当前
+    // `pendingApprovals`（挂起那一刻固定）。跨多轮挂起它会累计**历次**待决的并集
+    // （决定是审计，终态也保留），但每一轮都对应真跑出来的模型回合与 tool_use ——
+    // 调用方的单次输入无法放大体积，增长只能随真实运行发生。再加常量上限是一段
+    // 永远触发不到的死代码（那不是护栏，是噪音）。
+    const pendingIds = new Set(rec.pendingApprovals ?? []);
+    const unknownIds = Object.keys(decisions).filter((id) => !pendingIds.has(id));
+    if (unknownIds.length > 0) {
+      throw new TaskApproveError(
+        400,
+        `decisions 里有 ${unknownIds.length} 个 id 不在本任务的待决列表里（如 ${unknownIds[0]}）—— 整批拒掉，记录不动`,
+      );
+    }
     rec.approvals ??= {};
     for (const [id, d] of Object.entries(decisions)) {
       if (rec.approvals[id]) continue; // 逐 id 幂等：第一次决定赢
@@ -726,13 +755,9 @@ export class AsyncRunner {
     if (complete) {
       // 离开挂起态（读数纪律②）：决定齐了这就是「醒来」那一刻
       this.#unmarkSuspended(taskId);
-      // drain 竞态收口（与 #wakeDueInner 同款，2026-09-28 复审第二轮）：这道闸判在「进入」
-      // 时，这里隔着两个 store 往返的窗口 —— drain 若在这窗口内完成（active===0 返回），
-      // 被推进的任务会在停机**完成之后**才开跑。此刻状态已落库成 running：不派发，
-      // 记录留给下次启动的 resumePending 认领（at-least-once 兜底，与「先落库再派发」
-      // 的崩窗同形）。决定在记录里，不丢 —— 放行的是「重新排期」，不是「吞掉」。
-      if (this.#drain.isDraining) return { ...rec };
-      void this.#execute(rec);
+      // 派发走**唯一入口**（闸在 #dispatch 里判一次 —— 2026-09-28 外部深评 P1-1 的结构性修法）：
+      // 决定已经在记录里，停机窗口里放行的是「重新排期」（下次启动认领），不是「吞掉」。
+      this.#dispatch(rec);
     }
     return { ...rec };
   }
@@ -803,7 +828,11 @@ export class AsyncRunner {
     if ((rec.pendingEvents?.length ?? 0) >= MAX_PENDING_EVENTS) {
       throw new TaskEventError(
         409,
-        `task ${taskId} 的待注入事件已达上限（${MAX_PENDING_EVENTS} 条）—— 先让它跑起来（这些事件会在下次续跑注入）再投递；本次事件**没有**被记录。`,
+        `task ${taskId} 的待注入事件已达上限（${MAX_PENDING_EVENTS} 条）—— ${
+          rec.suspendedReason === 'approval'
+            ? '这条在等人工审批，而让它跑起来的唯一触发源是 approve（不在投递方手里）⇒ 要么等人批，要么 cancel 后重新提交'
+            : '这条在等定时到点（approve 对它不适用）—— 到点它会自己醒来，缓冲里的事件在醒来那段注入；等不了就 cancel 后重新提交'
+        }；本次事件**没有**被记录。`,
       );
     }
     rec.pendingEvents = [...(rec.pendingEvents ?? []), event];
@@ -821,10 +850,9 @@ export class AsyncRunner {
     await this.store.save(rec);
     // 离开挂起态（读数纪律②）：事件到了这就是「醒来」那一刻 —— 与 approve 的决定齐了同形
     this.#unmarkSuspended(taskId);
-    // drain 竞态收口（与上面的 approve 同款、与 #wakeDueInner 同款）：窗口里完成停机 ⇒
-    // 不派发，事件留在 pendingEvents 上，下次启动的 resumePending 认领时注入。
-    if (this.#drain.isDraining) return { ...rec };
-    void this.#execute(rec);
+    // 派发走唯一入口（闸在 #dispatch 里）：停机窗口里不派发，事件留在 pendingEvents 上，
+    // 下次启动的 resumePending 认领时注入。
+    this.#dispatch(rec);
     return { ...rec };
   }
 
@@ -879,6 +907,17 @@ export class AsyncRunner {
    * `resumePending` 续跑（所以 drain 不是「丢弃」，是「不再往前推」）。
    * - `timeoutMs` 缺省 0 = 一直等。
    * - 等待的是**所有已受理**的任务（queued 的也在内），不只是正在占槽位的那些。
+   *
+   * ⚠️ **这是一道单向闩：置位之后本进程不再推进任何任务，且没有复位路径**（`DrainGate` 只有
+   * 置位，没有复位）。所以 `false`（排空超时）的含义不只是「还有在飞的」——它同时给宿主
+   * 加了一条义务：**必须让进程退出**。理由（2026-09-28 PR #164 复核 §1，有探针实证）：
+   * 停机窗口里被 `#dispatch` 拒掉的记录**已经落库**（`running`/`queued` + **本进程的 ownerId**），
+   * 而本进程的 `resumePending` 会按 `own-process` 跳过它们（见 resume-policy.ts），`submit` 又
+   * 已整体关闭 ⇒ 本进程内**没有任何自愈路径**。宿主若在 `false` 之后继续服务，这些记录会永远
+   * 停在 `running`：`awaitTask` 不返回，`GET /tasks/:id/stream` 还会告诉客户端
+   * `not-in-this-process`（说不对话：记录里的 ownerId 正是本进程）。只有**下一次进程启动**
+   * 才会有人认领它们（ownerId 含 pid）。参考宿主（`examples/` 各示例的 `src/main.ts`）都是
+   * `await drain(...)` 之后 `process.exit(...)`，与本条契约一致。
    */
   async drain(opts: { timeoutMs?: number } = {}): Promise<boolean> {
     // 实现已外移到 drain-gate.ts（写前保留的契约注释仍在本方法上）
@@ -940,7 +979,11 @@ export class AsyncRunner {
     }
     // 离开挂起态（读数纪律②）—— 落在**落库成功之后**：落不了库就不算恢复（没派发，读数也不动）
     this.#unmarkSuspended(target.taskId);
-    void this.#execute(target);
+    // 派发走唯一入口（闸在 #dispatch 里）。⚠️ **这一条正是外部深评抓到的第四条路径**：
+    // `#expireAndResume`（审批超时自动全拒并恢复）与 `approve` 不同触发源、同一形状，
+    // 由 `poll()` 的惰性闸驱动 —— 而「停机中照常可轮询」是 HTTP 宿主的明确承诺
+    // （LB / K8s preStop / 前端轮询）⇒ 停机后照样能起新 run。
+    this.#dispatch(target);
     return target;
   }
 
@@ -1030,14 +1073,56 @@ export class AsyncRunner {
     }
     // 离开挂起态（读数纪律②）—— 落库成功之后才算醒来
     this.#unmarkSuspended(target.taskId);
-    // drain 竞态收口：#wakeDue 的 drain 闸判在「进入」时，这里隔着两个 store 往返的窗口 ——
-    // drain 若在这窗口内完成（active===0 返回），被唤醒的任务会在停机**完成之后**才开跑。
-    // 此刻状态已落库成 running：不派发，记录留给下次启动的 resumePending 认领
-    // （at-least-once 兜底，与「先落库再派发」的崩窗同形）。
-    if (this.#drain.isDraining) return target;
-    void this.#execute(target);
+    // 派发走唯一入口（闸在 #dispatch 里判一次 —— 它同时盖住「进入时」与「窗口里刚进入停机」
+    // 两个时点，这里不必再判一遍）。
+    this.#dispatch(target);
     return target;
   }
+
+  /**
+   * **唯一的派发口**（2026-09-28 外部深评 P1-1 / P2-1 的结构性修法）。
+   *
+   * 为什么要有它：所有「先把状态落库成 `running`/`queued`、再派发 `#execute`」的路径
+   * （`submit` / `approve` / `signalTask` / 到期唤醒 / 审批超时兜底 / `resumePending` 的认领）
+   * **形状相同**，而停机闸原先散在各支里 —— 于是「这道闸覆盖几条路径」变成一份**靠人记**的清单：
+   * 第二批修了三支、第四支（审批超时兜底，走 `poll()`）与第五支（认领循环）漏了，两处都在
+   * `drain()` 返回 `true`（「排空干净」）之后**又起了新 run**（实证：`drain-race.test.ts`）。
+   *
+   * 修法：闸**只在这里判一次**，各支只管「先落库」的顺序（那条纪律不变）。
+   * 源码级穷尽守卫在 `tests/transport/dispatch-guard.test.ts`：`this.#execute(` 与
+   * `this.#executeInner(` 都只许出现在自己的那一个家里 —— 第五次新增恢复路径时构建就红，
+   * 不靠记性。（钉两个而不是一个：`#executeInner` 是同一个旁路的另一半，绕过它还会连带
+   * 绕过 `active++` 与 `#streams.open`，见那份用例的注释。）
+   *
+   * 语义：停机窗口里**不派发**。记录已落库（`running`/`queued` + 本进程 ownerId），
+   * 留给下次启动的 `resumePending` 认领（ownerId 含 pid ⇒ 新进程必认领）—— at-least-once 兜底，
+   * 与「先落库再派发」的崩窗同形；决定 / 事件都在记录里，不丢。
+   * ⚠️ 「留给下次启动」成立的前提是**宿主真的退出**（见 `drain()` 的契约：单向闩 + 本进程内
+   * 无自愈路径）。所以这里的拒绝**不静默**：首次拒绝打一条 `console.warn` 说清「谁、什么状态、
+   * 谁来认领、宿主该做什么」—— 否则运维只看到一个停在 `running` 的任务，无从解释。
+   * ⚠️ 对调用方**不抛错**（`submit` 的「停机中不接单 ⇒ 503」在那之前的早返回里，不在这一层）。
+   */
+  #dispatch(rec: TaskRecord): void {
+    if (this.#drain.isDraining) {
+      // **不静默**（2026-09-28 PR #164 复核 §1）：这里的拒绝等于「本进程此后不再推进任何任务」，
+      // 而它此前是一条裸 `return` —— 运维只会看到一个停在 `running` 的任务，无从解释它为什么不跑
+      // （`drain()` 的契约见上：宿主此刻必须退出，记录留给下次启动认领）。
+      // 只报一次：停机窗口里每条被拒记录各报一条会把日志刷满，而它们的原因完全相同。
+      if (!this.#dispatchRefusedWarned) {
+        this.#dispatchRefusedWarned = true;
+        console.warn(
+          `[agentia] 停机中：已拒绝派发 task ${rec.taskId}（记录已落库成 ${rec.status}）—— ` +
+            '本进程此后不再推进任何任务，它留给下次启动的 resumePending 认领；' +
+            '宿主必须在 drain() 之后退出，否则这条记录会一直停在 running（见 usage-guide §7）',
+        );
+      }
+      return;
+    }
+    void this.#execute(rec);
+  }
+
+  /** 「停机窗口里拒绝派发」的告警是否已出过（每次停机只报一条，见 `#dispatch`） */
+  #dispatchRefusedWarned = false;
 
   /** 任务终态唤醒与等待：实现见 task-waiters.ts（`notify` / `wait`） */
   /** 排空通知：只在确无在飞任务时唤醒等待者（drain 的唯一出口）—— 判定在 drain-gate.ts */
@@ -1197,9 +1282,10 @@ export class AsyncRunner {
       const saved = this.store.save(rec);
       if (isThenable(saved)) {
         // 落库失败则**不派发**：认领没落地，派发等于把上面那个重复执行的窗口重新打开
-        claims.push(Promise.resolve(saved).then(() => void this.#execute(rec)));
+        claims.push(Promise.resolve(saved).then(() => this.#dispatch(rec)));
       } else {
-        void this.#execute(rec);
+        // 派发走唯一入口（闸在 #dispatch 里）—— 外部深评 P2-1：认领循环以前绕过了那道闸。
+        this.#dispatch(rec);
       }
     }
     if (claims.length === 0) return pending.length + expired + woken;

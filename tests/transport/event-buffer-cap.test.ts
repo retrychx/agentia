@@ -119,6 +119,38 @@ describe('signalTask —— 待注入事件的上限（满了说出来，不静�
     await sleep(20);
   });
 
+  it('满了的 409 文案按挂起原因分叉（P2-2）：approval 指去 approve / cancel，timer 不许提 approve', async () => {
+    const store = new InMemoryTaskStore();
+    // approval 挂起：唯一触发源是 approve，不在投递方手里 —— 文案必须这么说（指路要指得通）
+    await store.save({
+      ...suspended('task_ap_full', events(CAP)),
+      suspendedReason: 'approval',
+      wakeAt: undefined,
+      pendingApprovals: ['tu1'],
+    } as TaskRecord);
+    // timer 挂起：approve 对它是 409（原因闸）—— 文案**不许**指那条不存在的路
+    await store.save(suspended('task_tm_full', events(CAP)));
+    const runner = new AsyncRunner(app, { store });
+
+    const errA = await runner
+      .signalTask('task_ap_full', { type: 'x', payload: 'y' })
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    assert.match((errA as TaskEventError).message, /审批/, 'approval：要点名「在等人审批」');
+    assert.match((errA as TaskEventError).message, /approve/, 'approval：触发源是 approve');
+
+    const errT = await runner
+      .signalTask('task_tm_full', { type: 'x', payload: 'y' })
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    assert.match((errT as TaskEventError).message, /到点|醒/, 'timer：指「等到点」');
+    assert.doesNotMatch(
+      (errT as TaskEventError).message,
+      /先 approve/,
+      'timer 挂起 approve 是 409 —— 文案不许指一条走不通的路',
+    );
+  });
+
   it('判据次序：缓冲满 + 同 eventId 重复 ⇒ 报「重复投递」（那条本来就在里面）', async () => {
     const store = new InMemoryTaskStore();
     await store.save(suspended('task_dup', events(CAP, true), true));

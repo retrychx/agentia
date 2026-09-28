@@ -46,9 +46,16 @@ function fold(events: TraceRecordEvent[], status: SpanStatus): Trace {
       span.events.push(e.event);
     } else if (e.type === 'span.attribute') {
       span.attributes[e.key] = e.value;
-    } else {
+    } else if (e.type === 'span.link') {
       // links 是「有才在」的键：只有真的收到 span.link 才创建（与 core/trace.ts 的缺席=空语义一致）
       span.links = [...(span.links ?? []), e.link];
+    } else {
+      // **编译期穷尽性断言**（与 http.ts 的 SSE 帧分派同款）：`TraceRecordEvent` 新增帧类型时，
+      // 这里**编译失败**。此前最后那支是无条件 `else`（默认按 link 处理）—— 一个不认识的新帧
+      // 会被当成 `undefined` link 塞进树里，而折叠断言在某些 run 形状下**照样绿**：那种守卫
+      // 比没有更糟（它给的是「已覆盖」的错觉）。
+      const _never: never = e;
+      void _never;
     }
   }
   // totalUsage 的口径 = 各 llm.turn 的自身计量求和（capability 的 usage 是子孙聚合，不重复计入）
@@ -100,7 +107,9 @@ const endTurn = (i: number) => ({
   content: [{ type: 'text', text: `第 ${i} 轮` }],
 });
 
-async function runWithEvents(opts: { parallel?: boolean; traceContext?: boolean } = {}) {
+async function runWithEvents(
+  opts: { parallel?: boolean; traceContext?: boolean; maxEvents?: number } = {},
+) {
   const events: TraceRecordEvent[] = [];
   const app = await createApp({
     name: 'trace-events',
@@ -108,6 +117,9 @@ async function runWithEvents(opts: { parallel?: boolean; traceContext?: boolean 
     providers: [{ provide: 'tools', useClass: Tools }],
     toolSources: ['tools'],
     onTraceEvent: (e) => events.push(e),
+    // 记账数量闸（PR #164 复核 §4）：截断簿记走的是普通 `span.event` 帧，
+    // 于是「折回逐字等于 snapshot」在**设了上限且真截断**的 run 上同样成立。
+    ...(opts.maxEvents !== undefined ? { traceLimits: { maxEvents: opts.maxEvents } } : {}),
   });
   const { result } = await app.run([{ role: 'user', content: '跑' }], {
     client: scriptedClient([
@@ -149,6 +161,23 @@ describe('记账事件（增量出口）', () => {
     assert.ok(
       events.some((e) => e.type === 'span.link'),
       'span.link 事件缺席 —— addLink 漏了派发（折叠就会丢 links）',
+    );
+    assert.deepEqual(fold(events, trace.status), trace);
+  });
+
+  it('折叠不变量：traceLimits.maxEvents 超限截断下同样成立（截断簿记两缝同源）', async () => {
+    // 默认不设上限 ⇒ 上面那三条折叠用例**永远碰不到截断路径**。这条把「设了上限 + 真丢弃」
+    // 跑一遍：截断簿记（run 根的起点标记 `{limit}` 与收尾摘要 `{droppedEvents, limit}`）
+    // 必须与其余记账**同源** —— 只在一条缝上出现，这条不变量就成了假话（PR #164 复核 §4
+    // 的原始缺陷形态：marker 派给增量流却不进 span.events，而用例只断言「marker 出现了」）。
+    const { events, trace } = await runWithEvents({ maxEvents: 3 });
+    const book = events.filter(
+      (e) => e.type === 'span.event' && e.event.name === 'trace.truncated',
+    );
+    assert.equal(book.length, 2, '起点标记 + 收尾摘要，两笔都必须在增量流里');
+    assert.ok(
+      trace.spans.some((s) => s.events.some((e) => e.name === 'trace.truncated')),
+      '交付的 trace 里也要有 —— 否则「少记了多少可数」在收尾那份上不成立',
     );
     assert.deepEqual(fold(events, trace.status), trace);
   });

@@ -13,4 +13,7 @@ coverage/
 packages/cli/CHANGELOG.md
 
 # 本地 AI 助手的工作目录（项目级 memory / skill，属个人环境产物，不入库）
+# ⚠️ 两个名字都要写：`.workbuddy-ai/` 是旧名，实际落盘用的是 `.workbuddy/` ——
+# 少了后者，`git add -A` 会把个人环境产物扫进提交（2026-09-28 ⑨ 顺手补）
 .workbuddy-ai/
+.workbuddy/

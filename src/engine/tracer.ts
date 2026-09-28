@@ -17,18 +17,32 @@ import { zeroClauseOf } from '../core/limits.js';
 /**
  * 记账的**数量上限**（spec §9.4 的答案里「让少记了数据可数」那一半）。
  *
- * 只有 `maxEvents` 一个旋钮，而且它管的是**整条 trace 的事件总数**
- * （`tool.input` / `tool.output` / `score` / … 都算）—— 因为成本就是整条 trace 的量。
+ * 只有 `maxEvents` 一个旋钮，而且它管的是**整条 trace 的记录事件数**
+ * （`tool.input` / `tool.output` / `score` / … 都算，截断簿记那两笔不算）
+ * —— 因为成本就是整条 trace 的量。
  * 与 `maxEventChars`（**单个事件正文长度**）是两个正交的旋钮，各有各的家：
  * 一个管「多长」，一个管「多少」；两个都「不设 = 不限」。
  *
- * 超限后的行为是**停止记账 + 记一笔 `trace.truncated`**（交付时写在 run 根上：
- * `{ droppedEvents, limit }`）—— 缺口位置可预测（尾巴），且有计数 ⇒ 可解释。
+ * 超限后：**停止记账**（记录事件不再进 trace），并在 run 根上留**两笔**同名 `trace.truncated`
+ * 簿记 —— 按 body 区分（两笔都同时出现在交付的 trace 与增量流里，见下）：
+ * - **起点标记** `{ limit }`：第一笔丢弃那一刻写下，标「从这里起有缺」（位置信号）；
+ * - **收尾摘要** `{ droppedEvents, limit }`：`snapshot()` 交付时才写得出的最终计数。
+ * 缺口位置可预测（尾巴），且有计数 ⇒ 可解释。
+ *
+ * ⚠️ 两笔都**必须**进 `span.events`（而不是只派给增量订阅者）：`core/trace.ts` 那条
+ * **折叠规则**（按 `seq` 折回逐字等于 `snapshot()`）是钉住的契约，只在一条缝上出现的事件
+ * 会让它在「设了上限且真截断」的 run 上变成假话。纯 `onTraceEvent` 的消费者因此也不再
+ * 面对一个静默的洞（2026-09-28 外部深评 P3-1；落点由 PR #164 复核 §4 定为「两缝同源」）。
+ *
  * 刻意**不做**环形缓冲（丢最旧、留最近）：那会让 trace 中间出现空洞，
  * 而空洞比「尾巴截断」难解释得多（「这一回合怎么没有工具事件」）。
  */
 export interface TraceLimits {
-  /** 整条 trace 的事件总数上限；`0` = 一条都不记（有意义的值，仍有计数）；不设 = 不限 */
+  /**
+   * **记录事件**的条数上限；`0` = 一条都不记（有意义的值，仍有计数）；不设 = 不限。
+   * ⚠️ 这个计数**不含**上面那两笔 `trace.truncated` 簿记（它们是「关于记账」的簿记，不是被
+   * 记录的事实）⇒ 真截断时这条 trace 的事件数最多 `maxEvents + 2`。
+   */
   maxEvents?: number;
 }
 
@@ -81,6 +95,12 @@ export class TraceRecorder {
   private recordedEvents = 0;
   /** 因超限被丢弃的事件数（交付时写进 run 根的 `trace.truncated`） */
   private droppedEvents = 0;
+  /**
+   * 收尾摘要是否已派给增量出口。`snapshot()` 交付时派**一次**（见该方法的注释）：
+   * 一次 run 只交付一次，但这个方法可以被调用多次（错误出口 / MCP / 引擎各一处），
+   * 重复派发会让增量流里出现两条摘要 ⇒ 折回的树与交付的树又对不上。
+   */
+  private truncationSummarySent = false;
   /** 记账事件订阅者（增量出口，见 `core/trace.ts` 的 `TraceRecordEvent`） */
   private readonly listeners: Array<(e: TraceRecordEvent) => void> = [];
   /**
@@ -239,9 +259,10 @@ export class TraceRecorder {
   event(id: SpanId, name: string, body: unknown): void {
     const span = this.index.get(id);
     if (!span) return; // 未知 span 静默忽略（见类注释的容错策略）—— 增量出口同样不派发
-    // 数量闸（traceLimits.maxEvents）：超限即**停止记账**，并只记一个计数 ——
-    // 计数在 snapshot() 交付时写成 run 根的 `trace.truncated`（见 TraceLimits 的注释）。
+    // 数量闸（traceLimits.maxEvents）：超限即**停止记账**（记录事件不再进 trace）——
+    // 但「缺口」本身要**在两条缝上都看得见**（2026-09-28 外部深评 P3-1；PR #164 复核 §4 改了落点）。
     if (this.maxEvents !== undefined && this.recordedEvents >= this.maxEvents) {
+      if (this.droppedEvents === 0) this.#markTruncationStart();
       this.droppedEvents += 1;
       return;
     }
@@ -249,6 +270,34 @@ export class TraceRecorder {
     const event = { time: Date.now(), name, body };
     span.events.push(event);
     this.emit({ type: 'span.event', spanId: id, event: { ...event } });
+  }
+
+  /**
+   * 截断**开始**那一刻的簿记（只在第一笔丢弃时调一次）：在 run 根上记一条
+   * `trace.truncated { limit }` —— 它**同时进 `span.events` 与增量流**（两处同一份载荷）。
+   *
+   * 为什么要进 `span.events`（而不是「只派给增量订阅者」）：`core/trace.ts` 那条**折叠规则**
+   * 是钉住的契约 —— 「按 `seq` 折回必须逐字等于 `snapshot()`」。只要有一笔只出现在增量流里、
+   * 不出现在交付的 trace 里（或反过来），那条契约在**设了 `maxEvents` 且真截断**的 run 上就是假的。
+   * 这个 bug 的形态很隐蔽：默认不设上限 ⇒ 折叠用例永远碰不到 ⇒ 全绿。
+   *
+   * 两条纪律：
+   * - **不占** `recordedEvents` 配额（那是「被记录的事实」的上限；本事件是**关于**记账的簿记）
+   *   ⇒ 截断时 trace 的事件数最多 `maxEvents + 2`（本条 + 收尾摘要）；
+   * - 落在 **run 根**，不是「当时正在记的那条 span」：配额是**整条 trace 的**，「从哪里断」
+   *   因此是 trace 级的陈述，不是某条 span 的属性。
+   *
+   * 与收尾摘要的分工（两者同名 `trace.truncated`，按 body 区分，见 `TraceLimits` 的注释）：
+   * 这条是**位置**信号（`{ limit }`，断点在这里），收尾摘要是**计数**（`{ droppedEvents, limit }`）。
+   */
+  #markTruncationStart(): void {
+    const rootId = this.rootSpanId;
+    if (!rootId) return; // 没有 run 根（不该发生）：与收尾摘要的 `root?` 同款，不记也不派
+    const root = this.index.get(rootId);
+    if (!root) return;
+    const marker = { time: Date.now(), name: 'trace.truncated', body: { limit: this.maxEvents } };
+    root.events.push(marker);
+    this.emit({ type: 'span.event', spanId: rootId, event: { ...marker } });
   }
 
   setAttribute(id: SpanId, key: string, value: string | number | boolean): void {
@@ -316,16 +365,25 @@ export class TraceRecorder {
       events: [...s.events],
       ...(s.links ? { links: [...s.links] } : {}),
     }));
-    // 截断摘要：**交付时**写在 run 根上（与 totalUsage 同族 —— 都是「跑完才算得出的结论」，
-    // 不是记账动作）。所以它**不在**增量事件流里：折叠不变量管的是「记账动作不丢不重」，
-    // 而这是一个派生结论，增量消费者靠 `droppedEvents > 0` 自己判（见 TraceLimits）。
+    // 截断摘要：**交付时**才写得出的结论（与 totalUsage 同族），写在 run 根上。
+    // 它也**走增量出口**（2026-09-28 PR #164 复核 §4）：否则「按 seq 折回的那棵树」会少这一笔
+    // —— 只要设了 `maxEvents` 且真截断，`core/trace.ts` 那条折叠规则就是**假的**（此前没有
+    // 用例覆盖到：默认不设上限，折叠用例永远碰不到截断）。同一对象两处用 ⇒ 时间戳逐字一致；
+    // 只派一次 ⇒ 重复交付不会让增量流里多出一条。
     if (this.droppedEvents > 0) {
       const root = spans.find((s) => s.spanId === this.rootSpanId);
-      root?.events.push({
-        time: Date.now(),
-        name: 'trace.truncated',
-        body: { droppedEvents: this.droppedEvents, limit: this.maxEvents },
-      });
+      if (root) {
+        const summary = {
+          time: Date.now(),
+          name: 'trace.truncated',
+          body: { droppedEvents: this.droppedEvents, limit: this.maxEvents },
+        };
+        root.events.push(summary);
+        if (!this.truncationSummarySent) {
+          this.truncationSummarySent = true;
+          this.emit({ type: 'span.event', spanId: this.rootSpanId, event: { ...summary } });
+        }
+      }
     }
     return {
       traceId: this.traceId,

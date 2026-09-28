@@ -185,12 +185,24 @@ const REGISTRY: ReadonlyArray<Entry> = [
     key: 'traceLimits 与 maxEventChars 各管一头',
     pin: {
       file: 'tests/engine/trace-limits.test.ts',
-      marker: '超限即停止记账，并写一笔带计数的 trace.truncated（不静默）',
+      marker: '超限即停止记账，并在 run 根留两笔 trace.truncated（起点标记 + 收尾摘要，不静默）',
     },
   },
   {
     key: '采样是导出决策，不是记账决策',
     choice: '采样刻意不内建（配方见 observability.md 2.3）；被采样掉的 trace 在框架内仍完整记账',
+  },
+  {
+    key: '`approve` 只收**待决的** id（多一个 → 400 整批拒）',
+    pin: {
+      file: 'tests/transport/approve-limits.test.ts',
+      marker: '多出来的 id ⇒ 整批拒（400），记录**一字不动**（不写进 approvals、状态不变）',
+    },
+  },
+  {
+    key: '`TaskRecord.approvals` 有界但**不清**',
+    choice:
+      '有意为之的取舍：单次 approve 能写的键被钉在当前 pendingApprovals 里（单次输入无法放大体积；跨轮累计历次待决的并集，增长只随真实运行）⇒ 天然有界（**不加**常量上限 —— 那会是永远触发不到的死代码）；终态也不清 —— 审批记录是审计的一部分',
   },
   {
     key: '缺省内存 store 不淘汰',
@@ -272,6 +284,13 @@ const REGISTRY: ReadonlyArray<Entry> = [
     pin: {
       file: 'tests/transport/host-hardening.test.ts',
       marker: '收口长连 SSE：drain 会关掉仍挂着的流，并中止对应 run（不再后台空烧 token）',
+    },
+  },
+  {
+    key: '`drain()` 之后本进程不再推进任何任务（单向闩）',
+    pin: {
+      file: 'tests/transport/drain-race.test.ts',
+      marker: '拒绝要出声（不静默）：停机窗口里被拒的派发打一条 warn —— 且只有一条',
     },
   },
   {

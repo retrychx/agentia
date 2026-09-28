@@ -352,8 +352,8 @@ describe('signalTask —— 事件进历史与幂等', () => {
     const root = done.result!.trace.spans.find((s) => s.kind === 'run')!;
     const evs = root.events.filter((e) => e.name === 'task.event');
     assert.equal(evs.length, 2);
-    assert.deepEqual(evs[0]!.body, { delivered: true, event_type: 'batch.done', event_id: 'e1' });
-    assert.deepEqual(evs[1]!.body, { delivered: true, event_type: 'batch.done', event_id: 'e2' });
+    assert.deepEqual(evs[0]!.body, { injected: true, event_type: 'batch.done', event_id: 'e1' });
+    assert.deepEqual(evs[1]!.body, { injected: true, event_type: 'batch.done', event_id: 'e2' });
   });
 
   it('不给 eventId：重复投递 = 重复进历史（如实，没有恰好一次）', async () => {
@@ -401,7 +401,7 @@ describe('signalTask —— 事件进历史与幂等', () => {
     const evs = root.events.filter((e) => e.name === 'task.event');
     assert.equal(evs.length, 2);
     for (const e of evs) {
-      assert.deepEqual(e.body, { delivered: true, event_type: 'batch.progress' });
+      assert.deepEqual(e.body, { injected: true, event_type: 'batch.progress' });
     }
   });
 });

@@ -193,9 +193,12 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 
 三项落地（都不是「默认改小」，而是「让代价可见 / 可算」）：
 
-1. **数量上限 + 丢弃计数**：`traceLimits.maxEvents` 超限即停止记账，交付时在 run 根写
-   `trace.truncated{droppedEvents, limit}` —— 与 OTLP `partialSuccess` 那条同因：
-   「少了一半数据」必须有人能收到。**不做**环形缓冲（中间空洞比尾巴截断难解释得多）。
+1. **数量上限 + 丢弃计数**：`traceLimits.maxEvents` 超限即停止记账，并在 run 根留**两笔**
+   `trace.truncated`：起点标记 `{limit}`（断点）+ 收尾摘要 `{droppedEvents, limit}`（丢弃量）
+   —— 与 OTLP `partialSuccess` 那条同因：「少了一半数据」必须有人能收到。
+   ⚠️ 两笔都**同时**进交付的 trace 与 `onTraceEvent` 增量流（2026-09-28 ⑨ 定的口径）：
+   只在一条缝上出现的事件，会让「按 `seq` 折回逐字等于 snapshot」那条契约变成假话。
+   两笔簿记**不占** `maxEvents` 配额（**不做**环形缓冲：中间空洞比尾巴截断难解释得多）。
 2. **采样留在缝外**（`docs/observability.md` 2.3，实现见 `examples/observability`）：
    本轮补的是**可算**（容量换算表）与**可数**（`sampleSink(...).dropped()` + `onDrop`）——
    不数的话「被采样掉」与「本来没跑」在监控上无法区分。
@@ -2588,8 +2591,11 @@ CI 必需检查名里**（「verify-all 8 步」），加检查一律折进已�
 
 **决定**：**默认全量记账 + 截断默认开 + 采样留在缝外 + 代价可数**。
 新增只有一件框架侧的东西：`traceLimits.maxEvents`（整条 trace 的事件总数闸）——
-超限即**停止记账**，交付时在 run 根写 `trace.truncated{droppedEvents, limit}`（**不静默**，
-与 OTLP `partialSuccess` 那条同因）。**不做**环形缓冲：中间空洞比「尾巴截断」难解释得多。
+超限即**停止记账**，run 根上留**两笔** `trace.truncated`：**起点标记** `{limit}`（断点在这里，
+第一笔丢弃那一刻写下）＋**收尾摘要** `{droppedEvents, limit}`（交付时的最终计数）。
+两笔**同时**进交付的 trace 与 `onTraceEvent` / `subscribe` 增量流，所以「按 `seq` 折回**逐字等于**
+`snapshot()`」这条折叠契约在截断下**无例外地**成立（**不静默**，与 OTLP `partialSuccess`
+那条同因；定案与实证见 §10 2026-09-28 ⑨）。**不做**环形缓冲：中间空洞比「尾巴截断」难解释得多。
 与 `maxEventChars` 的分工写死：**一个管「多长」、一个管「多少」**，各有各的家
 （正是本仓在收的「一个词两个语义」那种债，不能再造一个）。
 配套：`observability.md` 2.3 补**容量换算表**（实测数字 → 每日量 → 倒推 `rate`），
@@ -4126,10 +4132,13 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    跨闸竞速：进闸后重读再判挡住绝大多数；残余窄窗口与既有「approve × wakeDue 分闸」同类
    （那两条按挂起原因天然互斥，事件两种原因都适用，是这个闸新盖的缝）—— 多进程下的
    同类边界同 ④ 已记的口径。
-7. **trace 留痕的落点**：`task.event { delivered, event_type, event_id? }` 由**引擎**在注入时
+7. **trace 留痕的落点**：`task.event { injected, event_type, event_id? }` 由**引擎**在注入时
    记到续跑段 run 根（runner 不持有 recorder —— 这是与 approve 的 `approval.decided` 同款的
    分工：决定/事件的**簿记**在 record，**留痕**在引擎经 options 拿到数据后自己记）。
-   「delivered 恒 true」是有意的：只在真正进历史那一刻记，投递但尚未注入（再挂起）不记。
+   `injected` 恒 true 是有意的：只在注入那一刻记，投递但尚未注入（再挂起）不记。
+   ⚠️ 口径是「注入进本段消息流」，**不是**「模型已看到」：该段若在首个模型请求之前
+   中止/失败，事件不进持久化历史（终态分支无条件清簿记），留痕仍成立（它记的是注入动作）。
+   （原名 `delivered` —— 外部深评 P3-2 指出它超前于事实，2026-09-28 ⑧ 改名。）
 8. **payload 上限不另设旋钮**：HTTP 侧就是 `maxBodyBytes` 那道闸（413 同口径）；程序侧
    （`signalTask`）的调用方是同进程代码（与 submit 的 messages 同档信任），不设第二道。
    因此 `core/limits.ts` 不新增条目（无新「0 语义」旋钮）。
@@ -4156,7 +4165,98 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
 用例 `tests/transport/event-buffer-cap.test.ts`（4 条：边界 63→64、满了不动记录、
 判据次序、HTTP 409 语义），变异验证见 PR。
 
+### 2026-09-28 ⑦：**外部深评的两条 P1 收口**（派发口收成唯一入口 + `approve` 入参校验）
+
+来源：外部深评（另一 agent 独立复核 `main@25c1983` + 本批分支，报告文件由它产出、**未随本仓
+提交**）。两条我都用**探针复核过**（不是照单全收），修法上各有一处取舍：
+
+1. **P1-1 / P2-1：停机窗口的派发散在七处 ⇒ 收成唯一入口**。事实核验：`#wakeDueInner` /
+   `#approveInner` / `#signalInner` 有闸，而 `#expireAndResumeInner`（审批超时兜底，由 `poll()` →
+   `#lazyGates()` 驱动 —— 而「停机中照常可轮询」是 HTTP 宿主的明确承诺）与 `#redispatch` 的认领
+   循环**没有** ⇒ 两处都能在 `drain()` 返回 `true` 之后起新 run。我复现的读数与报告一致
+   （`drain()`→`true` 之后 `app.run` 计数 1）。修法是结构级的：`#dispatch(rec)` 唯一入口、闸只在那里
+   判一次，各支只管「先落库再派发」的顺序；`submit` **也**走它（它的早返回负责抛错/503 语义）。
+   ⚠️ **订正（2026-09-28 ⑨）**：这里原写「窄窗口里宁可把任务留给下次启动认领」—— 那个窄窗口
+   **不存在**：`submit` 是**全同步**的（开头那道 `isDraining` 检查与 `#dispatch` 之间没有 await，
+   异步 store 的 `save` 也不 await）⇒ JS 不可能在中间插入 drain 的置位。走 `#dispatch` 是
+   **结构一致性**（派发口不设例外），不是行为依赖。真会撞上这道闸的是 approve / signalTask /
+   到期唤醒 / 审批超时兜底 / 认领循环那五条（它们中间隔着 store 往返）。
+   配**源码级穷尽守卫**（`this.#execute(` 与 `this.#executeInner(` 各只许出现在自己的那一个家里
+   + 真空护栏；⑨ 起补上第二个 —— 绕过它还会连带绕过 `active++` 与 `#streams.open`）。
+   ⚠️ 洞见如实记：这不是「漏写一行」，是**枚举靠人记** —— 所以修法必须把清单变成可执行的
+   （守卫用例），否则同一类失效模式会在下一次新增恢复路径时重演。
+2. **P1-2：`approve` 不校验 `pendingApprovals`**。事实核验：任意 id 都写进 `rec.approvals`，
+   `approvalsComplete` 只判「待决的都齐了」、对多出来的键沉默；那些键随每次 `save` 全文重写、
+   且**终态也不清**。实证：一次 5000 个无关键 ⇒ 记录 246 字节 → 419 220 字节。修法两件里
+   **只采纳一件**：**入参校验**（多出任何一个 ⇒ `TaskApproveError(400)` + 整批拒 + 记录一字不动，
+   与 `parseEventBody`「多一个字段即拒」同纪律）；报告建议的**常量上限刻意不加** —— 单次
+   approve 能新写的键被钉死在当前 `pendingApprovals`（挂起那一刻固定）里；跨多轮挂起
+   `approvals` 累计的是**历次**待决的并集（审计保留），但每轮都对应真跑出来的模型回合 ——
+   调用方单次输入无法放大体积，加上限会是一段永远触发不到的死代码（不是护栏，是噪音）。
+   理由写在这里与代码注释里。
+3. **同报告其余条目的处置**：P2-2（缓冲满的 409 对「等审批」是死路）⇒ 已改文案，按
+   `suspendedReason` 分两种说法；P3-1 / P3-2 当时先收进 §11 开放项 ⇒ **同日 ⑧ 已落地**。
+
+### 2026-09-28 ⑧：**外部深评两条 P3 收口 + ⑦ 的两处措辞订正**（父 agent 复审 f0c1eec 后补）
+
+1. **P3-1：截断在增量出口不再是静默的洞**。`tracer` 的事件闸原先只累计数、不派出 ——
+   纯 `onTraceEvent` 消费者看不见任何缺口（旧注释「增量消费者靠 droppedEvents > 0 自己判」
+   是假话：增量帧里根本没有这个字段）。修法：`event()` 的闸在**第一笔丢弃**时 `emit` 一条
+   一次性 marker（`span.event` / `trace.truncated` / `{ limit }`，不占 trace 本体的事件数）——
+   「从哪条 seq 起缺」由 marker 自身的位置给出，最终计数仍在收尾 snapshot 的 run 根
+   （派生结论不进增量流）。只派一次：逐笔派等于用事件洪水汇报「事件太多」。
+   变异复验：摘掉 emit ⇒ `trace-limits.test.ts` 的 marker 用例具名复红。
+2. **P3-2：`task.event.delivered` → `injected`**。原词超前于事实（记在「推进内存数组」那一刻，
+   而该段可能在首个模型请求前中止 ⇒ 事件不进持久化历史、trace 却写着 delivered）。
+   改名后的口径是「注入进本段消息流」—— 注入动作本身，不承诺模型已看到。
+   影响面：loop.ts 注入点、types.ts 注释、usage-guide §6.6、本文件 ⑥ 第 7 条、plans 设计稿。
+   变异复验：改回 delivered ⇒ `task-events-input.test.ts` 两条留痕用例复红。
+3. **⑦ 的两处措辞订正**（复审 f0c1eec 抓到，都是「注释/文案说了假话」类）：
+   - 「`|approvals| ≤ |pendingApprovals|`」不成立 —— 跨多轮挂起 `approvals` 累计历次待决的
+     并集（审计保留），会大于**当前**待决列表。有界的真论证是「单次输入无法放大、增长只能
+     随真实挂起轮次发生」。代码注释 / usage-guide §7 / §10 ⑦ 第 2 条三处同步订正。
+   - 缓冲满 409 文案的 timer 分支写了「（或先 approve）」—— 但 approve 对 timer 挂起
+     就是 409（原因闸），指了一条不存在的路。改为「到点自己醒来；等不了就 cancel 后重新提交」。
+
+### 2026-09-28 ⑨：**PR #164 的复核收口**（折叠不变量 / 守卫盲区 / 停机拒绝出声 / 三处文案）
+
+来源：PR #164 合入 main 之后（squash 合入提交 `a0b5380`）的独立复核（报告
+`PR-164-REVIEW-2026-09-28.md`，**未随本仓提交**）。四件，按「会不会真咬人」排序；
+每条都有读数或可复现的用例：
+
+1. **折叠不变量在截断下是假的 ⇒ 截断簿记改成「两缝同源」**（P1，而且是个**先前就有**的洞）。
+   `core/trace.ts` 那条折叠规则（按 `seq` 折回**逐字等于** `snapshot()`）在「设了 `maxEvents`
+   且真截断」时**一直**不成立：收尾摘要**不**经 `emit()` 派出，⑧ 的起点标记也只派进增量流、
+   不进 `span.events` ⇒ 两个视图各缺一笔、谁也不等于谁。此前没人发现，是因为**默认不设上限**
+   —— 折叠用例永远碰不到截断路径。修法：起点标记**记进 run 根 span 的事件**（两处同一份载荷），
+   收尾摘要**也在交付那一刻派一次**（`#truncationSummarySent` 保证只派一次）。
+   ⇒ 折叠规则**无例外地**成立；`trace-events.test.ts` 补了一条「设上限 + 真截断」的折叠用例
+   （这一条必须显式跑截断，默认路径必然绿）。折叠侧的帧类型分派同时改成**编译期穷尽**
+   （`const _never: never = e`）—— 此前最后那支是无条件 `else`（默认按 link 处理），
+   不认识的新帧会被当成 `undefined` link 塞进树里，而断言在某些 run 形状下照样绿。
+   ⚠️ 取舍如实记：起点标记因此**会进交付的 trace**（截断时事件数上限是 `maxEvents + 2`）。
+   这是有意的 —— 让制品自己标出「从这里断的」，比只在增量流里说一遍更有用。
+2. **守卫盲区 `#executeInner`**（P2）。源码守卫只钉了 `this.#execute(`，而 `#executeInner` 是同一个
+   旁路的另一半：新加一条恢复路径时若直接调它，会**同时**绕过停机闸与 `active++` / `#streams.open`
+   （后果：`drain()` 会在一条 run 真在跑的时候返回 `true`）。守卫补上对应断言。
+3. **停机窗口的拒绝要出声 + 写下宿主的义务**（P2）。`#dispatch` 的拒绝此前是一条裸 `return`。
+   探针（`drain()` 返回 `false` 且宿主没有退出）：记录停在 `running`、`resumePending` 按
+   `own-process` 跳过（认领数 0）、`submit` 已整体关闭 ⇒ 本进程内**没有自愈路径**，
+   `awaitTask` 永不返回。修法：首次拒绝打一条 `[agentia] 停机中：…` 的 `console.warn`
+   （只一条，用例在 `drain-race.test.ts`），并把「`drain()` 是**单向闩** ⇒ 返回之后宿主必须退出」
+   写进 `drain()` 的契约、`drain-gate.ts` ② 与 usage-guide §7（新增一行「`drain()` 之后有些
+   任务停在 `running` 不动」）。⚠️ 顺带订正 `drain-gate.ts` ② 那句「超时返回 false 但**不改任何
+   共享状态**」—— `draining` 恰恰是保持置位的，那句话会被读成相反的意思。
+4. **三处文案说了假话**（P3）：`submit` 的「窄窗口」不存在（见 ⑦ 的订正）；`sse-frames.test.ts`
+   把 `trace.truncated` 说成「run 根的 **attribute**」（它是**事件**，且会作为 `trace.event`
+   帧体流经 SSE）；`api.html` 的 `createHttpHandler` 行漏了 ⑦ 新增的语义级 400。
+
 ## 11. 开放项
+
+- **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
+  **⇒ 同日 ⑧ 已落地**（截断开始那一刻 `emit` 一条一次性 `trace.truncated` marker，见 §10 ⑧）。
+- **`task.event.delivered` 的时点超前于事实**（2026-09-28 外部深评 P3-2）：
+  **⇒ 同日 ⑧ 已落地**（改名 `injected`，口径「注入进本段消息流」，见 §10 ⑧）。
 
 - **事件缓冲 `pendingEvents` 要不要有上限**（2026-09-28 复审第二轮发现的分叉，**未做**）：
   同一条记录上的 `deliveredEventIds` 是有界 FIFO（256，理由写在 `async.ts` 那个常量的注释里：

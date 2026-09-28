@@ -82,6 +82,10 @@ function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | un
  * 事件注入（2026-09-28 ⑥，run 事件投入口）：挂起期间投递的事件（`args.events`，
  * 随 `TaskRecord.pendingEvents` 落库到这里）在**未决 tool_use 解决之后**渲染成
  * user 文本消息追加进消息流，每条并在父 span 上记一条 `task.event` 事件留痕
+ * （`injected: true` —— 口径是「**注入进本段消息流**」，不是「模型已看到」：
+ * 该段若在首个模型请求之前就中止/失败，事件不进持久化历史（终态分支无条件清
+ * 簿记，见 async.ts），但这条留痕仍然成立 —— 它记的是注入动作本身。
+ * 2026-09-28 外部深评 P3-2：原名 `delivered` 超前于事实）。
  * （投毒面是「看得见」的第一道防线）。
  *
  * 为什么注入点在 loop 而不是宿主往 `rec.spec.messages` 末尾追加：
@@ -100,7 +104,7 @@ function deliverTaskEvents(
   const where = ctx.args.parentSpanId ?? '';
   for (const ev of events) {
     ctx.args.recorder.event(where, 'task.event', {
-      delivered: true,
+      injected: true,
       event_type: ev.type,
       ...(ev.eventId !== undefined ? { event_id: ev.eventId } : {}),
     });
