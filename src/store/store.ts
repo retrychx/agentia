@@ -116,6 +116,24 @@ export interface TaskStore {
    */
   listDue?(before: number): MaybePromise<TaskRecord[]>;
   clear(): MaybePromise<void>;
+  /**
+   * **可选**：压实底层存储（`FileTaskStore` 的 JSONL 压实：一 task 一行、丢掉历史覆写行）。
+   *
+   * 为什么进接口（2026-09-28 外部深评 S5）：它此前只活在具体类上 —— 而宿主拿到的通常是
+   * **接口类型**（DI 注入、工厂返回、配置驱动地选 store 三种都是这形态），想周期性压实
+   * 只能 `as FileTaskStore` 强转；强转在换 store 时**不会报错**（sqlite 没有 compact），
+   * 要到运行期才炸。放进接口（保持**可选**）之后，调用点写 `store.compact?.()`：
+   * 「可能有、可能没有」在类型上就是显式的，每个实现「有没有」也一目了然。
+   */
+  compact?(): MaybePromise<void>;
+  /**
+   * **可选**：释放底层资源（`SqliteTaskStore` 的 `db.close()`）。
+   *
+   * 同样是为「宿主能多态调用」而进接口（S5），**不是**让框架自动调：
+   * `AsyncRunner.drain()` 刻意**不**关 store —— 同一个 store 可能被调度器 / 另一个宿主
+   * 共用，关掉它是**宿主的生命周期决定**（框架替它关 = 把别人还在用的东西关了）。
+   */
+  close?(): MaybePromise<void>;
 }
 
 export class InMemoryTaskStore implements TaskStore {

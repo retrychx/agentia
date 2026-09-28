@@ -5075,6 +5075,55 @@ P2 账：26 行 = **15 已落地 / 10 未做 / 1 有意为之**。
 正常路径逐字不变（S3 只在合并前两侧**本来就不一致**的两行上给了不同结论；S6 只在上限被越过时生效）。
 P2 账：26 行 = **19 已落地 / 6 未做 / 1 有意为之**。
 
+### 2026-09-28 ㉓：**store 可选能力进接口 / 嵌套黑板「不隔离」写明 / T6 定案**（外部深评 S5 / K1 / T6）
+
+**S5 · `compact()` / `close()` 进 `TaskStore` 接口（可选）**
+
+`FileTaskStore.compact()`（压实 JSONL：一 task 一行、丢历史覆写行）与 `SqliteTaskStore.close()`
+（释放 db）此前只活在**具体类**上。宿主拿到的通常是**接口类型**（DI 注入 / 工厂返回 /
+配置驱动选 store 三种都是这形态），想周期性压实只能 `as FileTaskStore` 强转 ——
+而强转在换 store 时**不会报错**（sqlite 没有 `compact`），要到运行期才炸。
+现在两个方法进 `TaskStore` 且保持**可选**：调用点写 `store.compact?.()`，
+「可能有、可能没有」在类型上是显式的；只实现基本面的测试桩照常满足接口。
+类型级守卫是 `tests/types/store-surface.types.ts`（含一条 `@ts-expect-error` 正控：
+谁把它们改成必填，那条指令变成未使用 ⇒ `TS2578` ⇒ `typecheck:types` 红）。
+
+**框架刻意不替你调**：`AsyncRunner.drain()` **不**关 store —— 同一个 store 可能被调度器或
+另一个宿主共用，关掉它是**宿主的**生命周期决定（框架替它关 = 把别人还在用的东西关了）。
+压实频率同理归宿主（建议低频，如 cron 每小时一次）。
+
+**K1 · 嵌套能力共用一块黑板 ⇒ 写明「不隔离」（纯文档，零代码）**
+
+`withRunContext` 全仓只有 `run.ts:214` 一个调用点 ⇒ `@SubAgent` / `@Skill` 的执行体跑在**同一个**
+`RunContext` 上：子 agent 读写的就是父 run 的那块黑板（同一份 `Map`），子 agent 写的键父 run 也看得见。
+这是**有意**的（「把你的发现留在黑板」正是子 agent 的用法，也是 `@Skill` 第二参能拿到 ctx 的原因），
+但使用者此前只能从源码推出来。现在写进 `usage-guide` §5.1 三个部分：**有意之处** +
+**代价**（并发子 agent 写同一键是 last-wins，与 `flushMemory` 同款取舍）+ **怎么办**
+（自己命名空间，框架不拆键、也不深拷贝）。「要不要按子树隔离」保留为 `spec.md` §11 开放项 ——
+这轮不装作已解答。
+
+**T6 · 初始 `save` 不 await：**定案「不改」，理由与守卫一并写明**
+
+报告自报「`async.ts:596` 仍 `const saved = this.store.save(rec)`（不 await）」，并已自行降级为 P3。
+本轮定为 **有意为之**，理由是可查的：
+
+- `submit` 是**同步门面**（它自己的注释写着「异步 store 下 save 在后台完成、去重推迟到执行前」，
+  返回值是**提交时刻的快照**）。`await` 会把它变成 async ⇒ **破坏性 API 变更**，
+  而买到的只是「调用方多等一个网络往返」—— 对一条 P3 不划算。
+- 「不 await 就会静默吞错」这个担心**已有处置也有用例**：`isThenable` 分支把迟到的 reject
+  转成「任务标记 failed 重存」，且**只在任务尚未被推进时**改判 —— 否则会把已成功的 run 覆写成 failed。
+  用例在 `tests/transport/async.test.ts`（「初始 save 迟到 reject：不得把已成功的 run 覆写成 failed」）。
+
+⇒ 结论是「**已知边界 + 已有守卫 + 承重理由**」，不是漏项。
+
+**验证**
+
+- S5：`tests/types/store-surface.types.ts`（`typecheck:types` 校验）。⚠️ 文件名不是 `*.test.ts`，
+  `node:test` 不收它 —— 跑错命令（`typecheck:tests` 那边 `exclude` 了 `tests/types`）一个字都不会被检查。
+- K1 / T6：纯文档 + 定案（零代码改动），验证 = 三套件 + 文档门禁全绿。
+- 全链：`build` / `biome ci . --error-on-warnings` / 三个 typecheck / `npm test` 三套件全绿。
+- P2 账：26 行 = **21 已落地 / 3 未做 / 2 有意为之**。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
