@@ -180,6 +180,39 @@ describe('AsyncRunner 时间挂起（durable timer）', () => {
     );
   });
 
+  it('`poll()`（`GET /tasks/:id` 的读路径）自己会叫醒到点的任务 —— 惰性闸，**不经过** resumePending', async () => {
+    // 为什么单独一条：到期判定有**两个**调用点 —— 全表扫描（`resumePending`）与读路径
+    // （`poll` → `#lazyGates`，与审批超时那条并列）。上一条只钉了扫描那个调用点，
+    // 于是「读路径也判一次」这件事在本用例之前**没有任何用例碰到**（摘掉那半行全绿）。
+    // 语义上它不能省：宿主可能几小时才扫一次全表，而 `GET /tasks/:id` 是秒级的 ——
+    // 到点的 run 该在**被读到时**就醒，不该等到下一次扫描。
+    const spy = { calls: 0 };
+    const gate: Gate = { at: Date.now() + 3_600_000 };
+    const { app } = timerApp(
+      [toolUseMsg('wait_for_batch', {}, 'tu1'), endTurnMsg('到位了')],
+      spy,
+      gate,
+    );
+    const runner = new AsyncRunner(app);
+    const t = runner.submit('睡到明天');
+    await waitStatus(runner, t.taskId, 'suspended');
+
+    await backdate(runner, t.taskId); // 时间到了
+    gate.at = null;
+
+    // ⚠️ 本用例**一次都不调** `resumePending()`：醒来的唯一通路必须是读路径。
+    // 没有它，下面这句会走满 5s 超时抛错（红），而不是断言失败。
+    const done = await runner.awaitTask(t.taskId, { timeoutMs: 5_000 });
+    assert.equal(done.status, 'succeeded', '读路径把到点的挂起唤醒并续跑');
+    assert.equal(spy.calls, 2, '醒来重跑那一批（与扫描那条同形）');
+    assert.equal(done.wakeAt, undefined, '醒来后目标时刻清掉');
+    assert.deepEqual(
+      runner.suspendedSummary,
+      { approval: 0, timer: 0, nextWakeAt: null },
+      '读数一并除名',
+    );
+  });
+
   it('drain 之后不唤醒（配套 5）；换一个进程/新 runner 扫同一份 store 则**必须**唤醒', async () => {
     const spy = { calls: 0 };
     const gate: Gate = { at: Date.now() + 3_600_000 };
