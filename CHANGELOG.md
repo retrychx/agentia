@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+### 重构 · 四类能力的装配差异收进一张注册表（外部深评 K2）（2026-09-29 ③）
+
+来源：`DEEP-AUDIT-VERIFIED-2026-09-28.md` 的 P2 表 `K2`。性质不是「代码不好看」：加第五类能力
+此前要在 `toolkit/module.ts` 改**五处按类分支**（收集 / 可用名单 / `buildSlice` 展开 /
+`@Prompt` 版本表 / 孤儿能力计数），漏一处只表现为「那类能力静默不进菜单 / 不进版本表 /
+不计入孤儿告警」—— 构建与全部用例照样全绿。
+
+- **新增 `src/toolkit/capability-slice.ts`**：`CapabilityPayloads` 定义「一类能力」是什么，
+  `KIND_SPEC` 的类型是映射类型 `{[K in CapabilityKind]: CapabilityKindSpec<K>}` ⇒
+  **加了 payload 成员却不给表项，`tsc` 报 `TS2741`**（与 `SUCCESS_STOP_REASON` /
+  `TERMINAL_STATUS` 同款护栏）；`CAPABILITY_KINDS` **从表的键派生** ⇒ 五处遍历自动覆盖。
+- **`module.ts` 的五处按类分支换成对表的遍历**（`collectCapabilities` / `capabilityToolNames` /
+  `buildCapabilitySlice` / `capabilityCount` / `capabilityVersions`）—— 行为零变更
+  （既有 136 条 toolkit 用例 + 全套件全绿即证据）。
+- **两处刻意留在表外并写明理由**：菜单重名校验（跑在合并后的工具列表上，与类别无关）、
+  能力引用图（只有 `@SubAgent` / `@Skill` 有 `tools` 引用 —— 语义不对称，不是漏项）。
+- 唯一的类型擦除集中在 `specOf()`（相关联合，TS#30581 的已知限制），安全性由「每行在定义处
+  逐个收窄 + 键集从表派生 + 逐类驱动用例」共同兜住 —— 不是靠这一句断言。
+
 ### 修复 · 非终态流的缓冲配额（外部深评 T4）（2026-09-29 ②）
 
 来源：`DEEP-AUDIT-VERIFIED-2026-09-28.md` 的 P2 表 `T4`。报告当日判据不完整（单流**条数**上限
