@@ -15,7 +15,14 @@
 //   ① 失败与注入**逐笔对账**：每个不可重试故障（400/流内错误）恰好杀死一个 run ⇒
 //     failed ≥ 注入数（少了 = 故障被静默吞），且超出部分 ≤ 请求的 0.1%
 //     （多了 = 可重试故障没被重试吸收）；
-//   ② 每个失败 run 的错误分类 ∈ {api, server, rate_limit}，**绝不允许 unknown**；
+//   ② 每个失败 run 的错误分类都要在**处置表**里表过态（`scripts/soak-error-posture.ts` 的
+//      `SOAK_ERROR_POSTURE`，穷尽表：加一类不表态 ⇒ `typecheck` 红）：`unknown` / `aborted` /
+//      `timeout` 属 hard-red（出现即红 —— `unknown` 是「分类器失手」，后两类在这套跑法里不该发生），
+//      其余**允许但分类计数并打印**。⚠️ 这里原先是一份手写的三名字白名单（`api` / `server` /
+//      `rate_limit`），漏了框架自己的 `connection` ⇒ 2026-09-29 那轮 2 小时（719 万 run）撞到
+//      **1 次**就报红，**红的是判据、不是被测的代码**（spec §10 2026-09-29 ⑤）；
+//      ⚠️ 守那张表的是 `npm run typecheck:tests`（不是 `typecheck` —— `scripts/` 不在根
+//      tsconfig 的 include 里，写错命令＝没有护栏，见 soak-error-posture.ts 头注）；
 //   ③ metricsSink 的 snapshot 与实测计数逐一对得上，render() 恒定发三个 dropped_keys 样本；
 //   ④ 内存有界：热身后 heapUsed 末段均值相对前段均值的增长 < 48MB（采样间隔随时长
 //     缩放，样本不足硬失败 —— 不「跳过」）；
@@ -27,6 +34,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { createOpenAIClient, metricsSink, runAgent } from '../src/index.js';
 import type { AgentTool } from '../src/index.js';
+import { POSTURE_TYPES, soakErrorVerdict, tallyByType } from './soak-error-posture.js';
 
 const DURATION_MS = Number(process.env.SOAK_DURATION_MS ?? 60_000);
 const CONCURRENCY = Number(process.env.SOAK_CONCURRENCY ?? 16);
@@ -243,7 +251,12 @@ async function main(): Promise<void> {
   let total = 0;
   let failed = 0;
   let thrown = 0; // runAgent 正常失败是 result.error 在场，throw 出来 = 契约破了
-  const badErrorTypes: string[] = [];
+  // 判据的两半（原先糊在一行 `['api','server','rate_limit'].includes(type)` 里，
+  // 见 scripts/soak-error-posture.ts 的头注）：
+  //   · failedTypes —— 每个失败 run 的类别，用来**分类计数并打印**（允许 ≠ 不看）；
+  //   · hardRedTypes —— 处置表判 hard-red 的那些（含 THROWN:），非空即红。
+  const failedTypes: string[] = [];
+  const hardRedTypes: string[] = [];
   const endAt = Date.now() + DURATION_MS;
 
   const worker = async (id: number): Promise<void> => {
@@ -262,14 +275,15 @@ async function main(): Promise<void> {
         sink.export(result.trace);
         if (result.error) {
           failed++;
-          if (!['api', 'server', 'rate_limit'].includes(result.error.type)) {
-            badErrorTypes.push(result.error.type);
+          failedTypes.push(result.error.type);
+          if (soakErrorVerdict(result.error.type) === 'hard-red') {
+            hardRedTypes.push(result.error.type);
           }
         }
       } catch (e) {
         thrown++;
         total++;
-        badErrorTypes.push(`THROWN:${(e as Error).message.slice(0, 80)}`);
+        hardRedTypes.push(`THROWN:${(e as Error).message.slice(0, 80)}`);
       }
     }
   };
@@ -296,6 +310,21 @@ async function main(): Promise<void> {
   );
   console.log(
     `端点：requests=${provider.stats.requests} 429=${provider.stats.f429} 截断=${provider.stats.truncated} 400=${provider.stats.f400} 流内错误=${provider.stats.errorShard} 工具路径=${provider.stats.toolPath} 正常=${provider.stats.plain}`,
+  );
+  // 「允许」的那几类必须**看得见**：分类计数打出来（不是不看）。这一行就是当初缺的东西 ——
+  // 手写白名单把「我没列到」与「分类器失手」混成了一件，于是 719 万 run 里那 1 次
+  // `connection` 只表现为「有个东西不在我的名单里」。
+  console.log(
+    `错误分类：${
+      failedTypes.length === 0
+        ? '（无失败）'
+        : tallyByType(failedTypes)
+            .map(([t, n]) => `${t}=${n}`)
+            .join(' ')
+    }`,
+  );
+  console.log(
+    `判据：scripts/soak-error-posture.ts 的处置表（expected 允许、hard-red 即红）；认得 ${POSTURE_TYPES.join('/')}`,
   );
   if (memSamples.length >= 4) {
     console.log(
@@ -328,16 +357,20 @@ async function main(): Promise<void> {
       '重试没在吸收可重试故障（429/截断），或出现了计划外的失败类别',
   );
 
-  // ② 错误分类：绝不允许 unknown / throw 出契约外
+  // ② 错误分类：**处置表**里判 hard-red 的一个都不许出现（run 以 throw 收尾也走这条）。
+  //    判 hard-red 的是：`unknown`（分类器失手 —— 这条断言原本要抓的东西）、`aborted`
+  //    （这套跑法没人取消）、`timeout`（本地假端点毫秒级应答，不该超时），以及
+  //    **表里没有的类别**（`soakErrorVerdict` 对未登记的一律判红：宁可响，不可静默放过）。
   assert.equal(
     thrown,
     0,
-    `有 ${thrown} 个 run 以 throw 收尾（契约是 result.error 在场）：${badErrorTypes[0] ?? ''}`,
+    `有 ${thrown} 个 run 以 throw 收尾（契约是 result.error 在场）：${hardRedTypes[0] ?? ''}`,
   );
   assert.deepEqual(
-    [...new Set(badErrorTypes)],
+    [...new Set(hardRedTypes)],
     [],
-    `存在未知错误分类：${[...new Set(badErrorTypes)].join(', ')}`,
+    `出现处置表判 hard-red 的错误分类：${[...new Set(hardRedTypes)].join(', ')}` +
+      '（表与理由在 scripts/soak-error-posture.ts；要放行某类，先在那里表态并写清为什么）',
   );
 
   // ③ metricsSink 与实测逐一对账

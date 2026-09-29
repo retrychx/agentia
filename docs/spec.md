@@ -5362,6 +5362,60 @@ P2 账：26 行 = **19 已落地 / 6 未做 / 1 有意为之**。
 - **L1 的推广**：已由抽件红利覆盖（就地倒填见 `resume-policy` / `durable-timer`，配额直构见
   `task-events` / `limits`），不需要新机制。
 
+### 2026-09-29 ⑤：**soak 的错误分类判据改成穷尽表**（`DEEP-AUDIT` §3.2/§3.4 的 L3 第一份真实证据）
+
+**来源与性质**：这是把 2 小时 soak 真跑起来（每周定时任务，见 ④ 的 L3 判定）之后的**第一份
+结果** —— 它**红了**，而红的是**判据**，不是被测的代码：
+
+```
+AssertionError: 存在未知错误分类：connection
+run：total=7189536 failed=325235（4.52%）thrown=0，吞吐 998.5 run/s
+端点：requests=8114503 429=162317 截断=162231 400=244141 流内错误=81093 工具路径=600420 正常=6864301
+内存：heap 61.6MB → 69.6MB，rss 峰值 204.7MB（27 个采样）
+```
+
+**病灶（复核过）**：`e2e-soak.ts` 的断言 ② 里手写着一份三名字白名单 —— `api` / `server` /
+`rate_limit`，漏了框架自己的合法类 `connection`（`engine/errors.ts` 的 `classifyError`，
+判据是 errno 那组码 + 带 `cause` 的 `TypeError`，**可重试**）。而 soak 自己的**截断注入**
+（2%：流写一半掐掉 socket）本来就会产生它。**719 万 run / 811 万请求里只出现 1 次** ——
+默认 60s 的跑法永远撞不到，PR 上的 e2e 更撞不到。
+
+所以这不是「代码坏了」，是**手写清单没跟上类型**：与 `KIND_SPEC` / `SUCCESS_STOP_REASON`
+同一类形状（两处真源、漏一处静默）。外部审计报告 §3.2 那行照抄了这份白名单，同样是错的
+（**报告里的清单也是记数，不是真源**）。
+
+**落地形态（判据单源化 + 「允许」≠「不看」）**：
+
+- `src/engine/errors.ts` 导出 **`ERROR_TYPES`**（`as const`，七类：`aborted` / `rate_limit` /
+  `server` / `api` / `timeout` / `connection` / `unknown`）与 `ErrorType`；`classifyError` 的
+  返回类型收窄成 `ClassifiedError`。⚠️ **只收窄分类器的输出** —— `SpanError.type` 仍是公共
+  类型上的 `string`，收紧它是对使用者的**破坏性变更**，不做。
+- 新增 `scripts/soak-error-posture.ts`：`SOAK_ERROR_POSTURE` 是 `Record<ErrorType, 规则>` 的
+  **穷尽表**（加一类不表态 ⇒ `TS2741`），**每条必须写 `why`**；`soakErrorVerdict` 对**表外
+  一切**判 `hard-red`（宁可响，不可静默放过 —— 包括契约破裂时 push 的 `THROWN:` 前缀）；
+  `tallyByType` 供打印。**为什么单独成件**：判据要能被**答案驱动地**单测，而 soak 本体是
+  顶层 `await main()` 的脚本 —— 测试里 import 它就是真跑一轮（60s 起步、调参后 2 小时）。
+- `e2e-soak.ts` 消费它：`unknown`（分类器失手 —— 这条断言原本要抓的东西）/ `aborted`（这套
+  跑法没人取消）/ `timeout`（本地假端点毫秒级应答、适配器也没有默认请求超时）三档 **hard-red**；
+  注入的四类 expected，数量仍受 ① 那条**逐笔对账的 slack** 约束（不是「不管」）；
+  并把失败的**分类计数打印出来**（`错误分类：api=1068`）—— 那一行正是当初缺的东西。
+
+**验证**（9 条用例 + **6 条变异**逐条亲跑点名，`git checkout --` 还原后 `sha256` 逐字节一致）：
+
+- **编译期两条**：摘掉 `ERROR_TYPES` 的 `connection` ⇒ `typecheck` 报 `TS2322`（处置表里
+  于是多出一个键），**并连带**让测试里那条回归钉报 `TS2339`（`Property 'connection' does not
+  exist on …`）—— 证明回归钉不是摆设；删掉处置表的 `unknown` ⇒ `TS2741: Property 'unknown'
+  is missing…`。
+- **运行期四条**：表外放行 ⇒ 恰 1 条红；`unknown` 降成 `expected` ⇒ 恰 1 条红；soak 退回手写
+  白名单 ⇒ 恰 1 条红（源码级那条）；`tallyByType` 不排序 ⇒ 恰 1 条红。
+- ⚠️ **一条命令教训（第一次跑变异时当场抓到的假绿）**：处置表在 `scripts/`，而**根
+  `tsconfig.json` 的 include 里只有 `src`** —— 拿 `npm run typecheck` 验它**照样绿**，
+  换成 `npm run typecheck:tests` 才报 `TS2741`。已写进两个文件的头注，并补了一条
+  **承重条件用例**（钉住 `tsconfig.tests.json` include `scripts`、根 include 只有 `src`）——
+  否则这条护栏可能在某次 tsconfig 调整后**无声消失**。**写错验证命令 = 没有护栏。**
+- 短档实测：`SOAK_DURATION_MS=20000 SOAK_CONCURRENCY=16` ⇒ 22624 run 全过，新打印的两行在场
+  （分类计数 + 判据清单：`认得 aborted/rate_limit/server/api/timeout/connection/unknown`）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
