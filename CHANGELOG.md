@@ -20,7 +20,7 @@
   `TERMINAL_STATUS` 同款护栏）；`CAPABILITY_KINDS` **从表的键派生** ⇒ 五处遍历自动覆盖。
 - **`module.ts` 的五处按类分支换成对表的遍历**（`collectCapabilities` / `capabilityToolNames` /
   `buildCapabilitySlice` / `capabilityCount` / `capabilityVersions`）—— 行为零变更
-  （既有 136 条 toolkit 用例 + 全套件全绿即证据）。
+  （既有 toolkit 用例 142 条 + 全套件 1597 / 195 / 27 全绿即证据）。
 - **两处刻意留在表外并写明理由**：菜单重名校验（跑在合并后的工具列表上，与类别无关）、
   能力引用图（只有 `@SubAgent` / `@Skill` 有 `tools` 引用 —— 语义不对称，不是漏项）。
 - 唯一的类型擦除集中在 `specOf()`（相关联合，TS#30581 的已知限制），安全性由「每行在定义处
