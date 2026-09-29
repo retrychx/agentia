@@ -3,6 +3,73 @@
 // 页面外壳（head/nav/footer）由 Base 统一提供。
 import Base from '../layouts/Base.astro';
 import content from '../fragments/docs.html?raw';
+// 单源：与 /llms-full.txt、CLI 脚手架生成的 AGENTS.md 同源 —— 站点不出现第二份手写说明（2026-09-29 起）。
+import guide from '../../../../docs/usage-guide.md?raw';
+
+/**
+ * §7「已知边界」表：构建期从单源 usage-guide.md 抠出、渲染成 HTML，注入 docs.html 的
+ * `<!--LIMITS_TABLE-->` 占位符 —— 人类读者面第一次有这张「框架不保证什么」的表，
+ * 且与单源零漂移（2026-09-29 外部复核建议①③）。
+ *
+ * ⚠️ 必须用 `?raw` 构建期注入（与 llms-full.txt.ts 同款）：Astro 把端点打进产物目录后，
+ * `readFileSync(new URL(…, import.meta.url))` 会 ENOENT（见 llms-full.txt.ts 的注释）。
+ */
+function mdInline(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+}
+
+function limitsTableHtml(): string {
+  const lines = guide.split('\n');
+  const start = lines.findIndex((l) => l.startsWith('## 7. 已知边界'));
+  const end = lines.findIndex((l, i) => i > start && l.startsWith('## 8.'));
+  if (start < 0 || end <= start) {
+    throw new Error('docs.astro: 从 docs/usage-guide.md 没抠到 §7「已知边界」（单源格式变了？）');
+  }
+  const rows: string[][] = [];
+  for (let i = start; i < end; i++) {
+    const line = lines[i];
+    if (!line.startsWith('|')) continue;
+    if (/^\|[\s:\-|]+\|$/.test(line.trim())) continue; // 分隔行
+    const cells = line
+      .trim()
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .replace(/\\\|/g, '\u0000') // 保护转义竖线：split 会把它当分隔符，之后再还原
+      .split('|')
+      .map((c) => c.trim().replace(/\u0000/g, '|'));
+    if (cells.length < 2 || cells[0] === '边界') continue; // 表头单独写
+    rows.push(cells);
+  }
+  // 防真空：格式变了会让「表还在、内容空了」这种事静默成功。
+  if (rows.length < 70) {
+    throw new Error(`docs.astro: §7 只解析出 ${rows.length} 行（应 ≥70）—— 单源格式变了？`);
+  }
+  const body = rows
+    .map(([k, v]) => `            <tr><td>${mdInline(k)}</td><td>${mdInline(v)}</td></tr>`)
+    .join('\n');
+  return [
+    '        <div class="table-wrap">',
+    '          <table class="doc-table limits-table">',
+    '            <thead><tr><th>边界</th><th>说明</th></tr></thead>',
+    '            <tbody>',
+    body,
+    '            </tbody>',
+    '          </table>',
+    '        </div>',
+  ].join('\n');
+}
+
+const LIMITS_PLACEHOLDER = '<!--LIMITS_TABLE-->';
+if (!content.includes(LIMITS_PLACEHOLDER)) {
+  throw new Error('docs.astro: docs.html 里找不到 <!--LIMITS_TABLE--> 注入锚点（被删了？）');
+}
+const html = content.replace(LIMITS_PLACEHOLDER, limitsTableHtml());
 
 const footerLinks = [
     { href: '/', label: '首页' },
@@ -12,7 +79,7 @@ const footerLinks = [
 ];
 ---
 <Base title='文档 — Agentia' description='Agentia 文档：快速开始、四类能力、目录约定与装配、能力中间件、触发方式、长上下文策略、结构化结果、可观测（trace 一等公民）、成本硬管控、CLI 命令与环境变量。' page='docs' footerLinks={footerLinks}>
-  <Fragment set:html={content} />
+  <Fragment set:html={html} />
 
   <script>
     import '../scripts/scrollspy.js';

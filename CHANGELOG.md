@@ -54,6 +54,70 @@ run：total=7189536 failed=325235（4.52%）thrown=0，吞吐 998.5 run/s
   `npm run typecheck:tests`。第一次跑变异拿 `typecheck` 验，结果是**假绿** —— 已写进头注并补
   承重条件用例。
 
+### 修复 · 外部深评施工收口（7 条 + 施工中新发现的第 8 条）+ §7 边界表回填 + 官网注入已知边界表（2026-09-29 ⑥）
+
+**来源与性质**：`FIX-READINESS-2026-09-29.md` 给出的施工顺序 1–7（A1 / D1 / B1 / C1 / F1 / F2 / F3
++ 结构建议① + 官网建议①③），外加施工中**实测发现的第 8 条 C5b**。本轮的共同点仍是前几轮那条：
+**把静默换成有声，把判据换成真能咬人的那种**。结构建议②（`async.ts` 抽审批监督簇 + 行数上限闸）
+按该报告 §8「各自独立 PR」另起一轮，**未随本批**。
+
+**使用者可见行为变更（4 处，均为「静默 → 有声」或判据更准）**：
+
+- **构造期拒 `NaN` 上限（施工中新发现，C5b）**：`src/core/limits.ts` 的 `BadValuePolicy` 新增第 5 类
+  `'rejects-nan'`，`BudgetGuardOptions.maxTotalTokens` / `maxCostUsd` 由 `'none'` 改用它；
+  `src/engine/budget.ts` 加 `assertNotNaN`（抛 `RangeError`）。**为什么必须**：闸的判据是 `used > max`，
+  而 `x > NaN` 恒为 `false` ⇒ 传了 `NaN` 的闸**静默失效**，方向与「设了个上限」正好相反。
+  0 / 负数 / `±Infinity` 仍照旧放行（各有语义），**只拒 `NaN`**。
+- **容器注入判据从「有 `then`」改为「`instanceof Promise`」（D1）**：`src/container/container.ts`。
+  原判据会**误伤** knex / mongoose 的 query builder —— 实证两者的 builder **同时**带 `then` 与 `catch`
+  （knex `builder-interface-augmenter.js`；mongoose 官方文档明列 `Query.prototype.catch()`），
+  所以「`then` 且 `catch`」这个加固方向**无效**；而「忘了 `await`」的产物恒为原生 Promise ⇒
+  `instanceof` 精确命中且不误伤。**如实边界**：跨 realm 的 Promise（vm 产物）会漏，已写进注释；
+  逃逸口 `useValue: { promise }` 保留。
+- **`RedisTaskStore.close()`（C1）**：`src/store/redisStore.ts` 的 `RedisLike` 加 `quit?(): Promise<unknown>`，
+  `RedisTaskStore` 新增**幂等** `close()`（无 `quit` 则 no-op；重复关闭 / 已断连时的 reject 都吞掉）。
+  取 `quit` 的理由：它是 ioredis / node-redis **唯一共名**的关闭出口（node-redis v5 起标 deprecated、
+  后继 `close()`，已写进接口注释）。**框架仍不主动替你调**（store 可能共享，drain 不关 store）。
+- **记忆水合失败的两条 warn（A1）**：`src/runtime/run.ts`。① 水合 `load` 抛错不再无声吞
+  （`catch {}` → `console.warn`）；② `flushMemory` 的 CAS 分支开头判 `rev === undefined` ⇒
+  **跳过 CAS 回写**并说真话（「这一次读失败了」≠「并发抢写」）。**为什么**：能走到该分支的 store 必有
+  `loadWithRev`（成对性由 `assertMemoryStoreShape` 入口保证），所以此处 `rev === undefined` ⟺
+  水合失败；旧代码把它夹带到几十行之后的 CAS 回写、归因成并发 —— **查错会一开始就查错方向**。
+
+**测试与文档（使用者可见行为零变更）**：
+
+- **F3**：删 `tests/toolkit/capability-slice.test.ts` 的恒真断言（源码里 `CAPABILITY_KINDS = Object.keys(KIND_SPEC)`，
+  那句是 `x === x`）；保留精确键序断言与 #184 的 `TS2741` 穷尽护栏 —— 删了不降低任何防线强度。
+- **F2**：`AGENTS.md` 的 toolkit 段补 `capability-cycles.ts`（`841f2ac` / #170 引入、地图漏了）；
+  新建 `tests/architecture/toolkit-map.test.ts` —— 判据是**「露名或显式豁免」**（实证「全量穷尽」不可行：
+  `src/toolkit/` 13 个文件里 9 个用**概念词**覆盖而非文件名词，属正常）；两条用例（未登记集合必须为空 +
+  F2 当事人必须被点名），已登记 `docs/guards.md` §1.1。
+- **`AGENTS.md` 结构数字**：`:66` 区域「910 行的类」→ **1554 行**，并注「计划写于 09-20（当时 895 行），
+  后续三步一步没走，类反长 115%」—— 这类**写死的读数会腐烂且无守卫**，改到结构时顺手改真值。
+- **B1**：`src/transport/task-events.ts` 两处注释订正（零行为变化）—— `:204` 那句「**不会**回收刚 push
+  的这条」是**假的**（单热流场景下若真跳过它，候选集恒空 ⇒ 配额完全失效 ⇒ 无界增长，比现状更坏；
+  故取「改注释」而非「改行为」）；`#recycleNonTerminal` 补第 3 条代价（退订不触发回收 ⇒
+  配额真实上界 = `nonTerminalBuffers + 曾有订阅者的流数`）。
+- **F1**：`tests/docs/boundary-table.test.ts` 的 31 条 `gap` 逐条回源核对 ⇒ **7 条回填为 `pin`**、
+  1 条订正理由（读数 **pin 49→56 / gap 31→24**，§7 仍 **90 行**）；三处写死的行数读数一并同步
+  （文件头注 88→90、A4 断言文案 89→90、登记表注释）；`docs/guards.md §2 待守` 登记一行
+  「`gap` 表需随每轮盘点复核」—— `gap` 表一旦写下就再没人复算，09-29 抽样 3 条**3 条全过期**。
+- **官网（建议①③）**：`packages/website/src/pages/docs.astro` 在**构建期**从单源
+  `docs/usage-guide.md?raw` 抠出 §7 表，注入 `docs.html` 新增的 `#limits` 段（占位符找不到 / 行数 < 70
+  都**硬失败**，仿 `llms-full.txt.ts` 的 `?raw` 手法，单源不漂移）；`docs.html` 两处「去看
+  `/llms-full.txt`」的指路改成 `#limits` 锚点。产物实测 **90 行表 + `href="#limits"`×2**。
+
+**验证**：本轮累计 **5 条变异**逐条亲跑点名（F2 守卫改名 ⇒ 两条同时红；C5b `assertNotNaN` 判据失效 ⇒
+恰好那条红；D1 判据退回 `typeof then` ⇒ 恰好新用例红；C1 `quit` 未被调 ⇒ 恰好那条红；A1 跳过分支失效 ⇒
+恰好那条红），`git checkout --` 还原后全绿。门禁三件套全绿（`typecheck` / `typecheck:tests` /
+`lint` 443 文件零告警）；相关套件：runtime 56 · engine 404 · container 11 · store 56 · transport 352 ·
+toolkit 142 · architecture 57 · limits 32 · boundary-table 6 · 各 docs/官网守卫 —— 全绿。
+
+**有意不做（留独立一轮）**：`async.ts` 抽「审批监督」簇 + 行数上限闸。回源实测其真实跨度**大于**报告描述
+（`#suspended` Map 还被恢复簇的 `#resyncSuspended` 重建、6 处 `#unmarkSuspended` 调用点、对外 getter
+`suspendedSummary`、`#dispatch` 是私有方法需回调注入）—— 这是**零行为变化的纯结构重构**，与前面
+「修缺陷」性质不同，报告 §8 自己也标「各自独立 PR」；仓促混进本批会让「零行为变化」难以严格保证。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

@@ -63,8 +63,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
 │   │                        #   slot-pool.ts = 并发槽位原语（纯依赖、带单测）—— AsyncRunner 拆分的第一步：
-│   │                        #   910 行的类里只有这块不碰 store/引擎，先抽它 + 配 FIFO/移交语义的回归用例，
-│   │                        #   后续抽块（审批监督 / 恢复重投 / drain 协调）才有基线
+│   │                        #   类里只有这块不碰 store/引擎，先抽它 + 配 FIFO/移交语义的回归用例，
+│   │                        #   后续抽块（审批监督 / 恢复重投 / drain 协调）才有基线。
+│   │                        #   ⚠️ 2026-09-29 复算：`AsyncRunner` 单类已 **1554 行**（文件 375→1929），
+│   │                        #   计划写于 09-20（当时 895 行）⇒ **后续三步一步没走**，类反长 115%；
+│   │                        #   「910 行的类」是写下时的读数，别再当现状（外部结构体检 §3）
 │   │                        #   approval-policy.ts = 审批的**纯判定**（超时判定 / 超时兜底拒绝 / 决定齐没齐）：
 │   │                        #   编排（在飞闸、重读、先落库再派发）仍留在 AsyncRunner，纪律一字未改
 │   │                        #   drain-gate.ts = 优雅停机的等待闸（停机态标志 / 排空等待 / 超时竞速）；
@@ -114,6 +117,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   module.ts 里不再有按类分支。⚠️ 两处**刻意不在表里**（别为整齐搬进来）：
 │   │                        #   菜单重名校验（跑在合并后的工具列表上，与类别无关）、能力引用图
 │   │                        #   （只有 @SubAgent / @Skill 有 tools 引用 —— 语义不对称，不是漏项）
+│   │                        #   capability-cycles.ts = **能力引用图的成环检测**（装配期纯件，2026-09-28 ⑫）：
+│   │                        #   环只在运行期成立（引用是延迟求值 thunk）、`maxIterations` 限不了深度 ⇒
+│   │                        #   装配期即拒（刻意不走「递归深度上限」那条路，理由见文件头注）
 │   ├── eval/                # evals（D2）：scriptedClient + defineEval + harvest(trace → eval 用例骨架) ——
 │   │                        #   **叶子消费模块**，只依赖公共面、零反向依赖（谁都不 import 它）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）

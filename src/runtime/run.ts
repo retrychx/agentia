@@ -227,8 +227,13 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         // 与下面 flushMemory 对称（那里已有同款防护）。失败即当「无记忆」继续跑。
         try {
           memoryRev = await hydrateMemory(memory, ctx);
-        } catch {
-          /* ignore：辅助动作失败不影响 run */
+        } catch (e) {
+          // 水合失败此前是**完全无声**的：它的后果（CAS 回写被拒）发生在几十行之后、还被归因成
+          // 「并发抢写」（2026-09-29 外部深评 A1）—— 在这里留下**第一因**，别让它隔着整条 run。
+          console.warn(
+            '[agentia] 记忆水合（load）失败，本次 run 当作「无记忆」继续（辅助动作失败不击穿 run）：',
+            e instanceof Error ? e.message : e,
+          );
         }
       }
       const result = await runAgent<S>({
@@ -457,6 +462,18 @@ async function flushMemory(
   }
   const { store } = memory;
   if (typeof store.saveIfRev === 'function') {
+    // rev === undefined ⇒ 水合（load）失败被上面 catch 吞掉（能走到本分支的 store 必有
+    // loadWithRev —— `assertMemoryStoreShape` 在入口保证成对）⇒ 此时做 CAS 没有意义：**读都没
+    // 成功**，谈「读之后有没有人写」是伪命题；而 `saveIfRev(entries, undefined)` 会被 CAS store
+    // 判成冲突 ⇒ 报出「并发抢写」的**假归因**（2026-09-29 外部深评 A1）。跳过 + 说真话。
+    if (rev === undefined) {
+      console.warn(
+        '[agentia] 记忆回写被跳过：水合（load）失败 ⇒ 没有可用的版本号，不做 CAS 回写（写了也只会被拒）。' +
+          `keys=[${memory.keys.join(', ')}] —— 真因是「这一次读失败了」，**不是**并发抢写；` +
+          '要查的是 store 连通性（Redis 挂了 / 网络抖动），不是并发。',
+      );
+      return;
+    }
     const outcome = await store.saveIfRev(entries, rev);
     // 判据是 `!== true`（不是 `=== false`）：`saveIfRev` 忘返回结果（`undefined`）时
     // 按「没提交」处理 —— 宁可多报一次，也不把「不知道写没写」记成写成功。

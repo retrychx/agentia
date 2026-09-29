@@ -105,6 +105,26 @@ describe('Container（显式 DI）', () => {
     assert.throws(() => c.resolve('svc'), /解析出的是 Promise/);
   });
 
+  it('带 `then`（甚至 `then`+`catch`）的**同步**对象照样放行：判据是 Promise 实例，不是 thenable（外部深评 D1）', () => {
+    // knex / mongoose 的 query builder 为了「可被 await」都带 `then`，且两家连 `catch` 都有
+    // （2026-09-29 查源码实证）⇒ 把判据写成「有 then」（或「then + catch」）都会误伤它们。
+    const builder = {
+      // biome-ignore lint/suspicious/noThenProperty: 故意的 —— 模拟 knex / mongoose query builder 的 thenable 形态
+      then: (onFulfilled: (v: unknown) => unknown): Promise<unknown> =>
+        Promise.resolve(onFulfilled),
+      catch: (onRejected: (e: unknown) => unknown): Promise<unknown> => Promise.resolve(onRejected),
+    };
+    // ① 作为 useValue 注入 → 放行
+    const c1 = new Container().register({ provide: 'db', useValue: builder });
+    assert.equal(c1.resolve<typeof builder>('db'), builder, '带 then 的同步值必须放行（不许误伤）');
+    // ② 作为工厂产物 → 放行
+    const c2 = new Container().register({ provide: 'db2', useFactory: () => builder });
+    assert.equal(c2.resolve<typeof builder>('db2'), builder, '工厂返回带 then 的同步值同样放行');
+    // ③ 反向对照：真 Promise 仍必须拒（判据没有退化成「什么都放行」）
+    const c3 = new Container().register({ provide: 'p', useFactory: () => Promise.resolve(1) });
+    assert.throws(() => c3.resolve('p'), /解析出的是 Promise/);
+  });
+
   it('确实要注入 Promise 本体：包一层即可（逃逸口有测试，不是口头承诺）', () => {
     const p = Promise.resolve(1);
     const c = new Container().register({ provide: 'p', useValue: { promise: p } });

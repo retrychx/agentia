@@ -331,6 +331,34 @@ describe('MemoryStore 版本号（CAS）—— 并发丢写不再无声', () => 
     assert.deepEqual(warnings, [], '提交成功是常态，不该出声');
   });
 
+  it('CAS store 水合失败：跳过 CAS 回写（saveIfRev 零调用）+ 归因说「读失败」而非「并发」（外部深评 A1）', async () => {
+    let saveIfRevCalls = 0;
+    let saveCalls = 0;
+    // 有 saveIfRev ⇒ 框架走 CAS 分支（对齐上面「带版本号的 store」那条：不走无版本号的 save）。
+    // load/save 是接口必需成员，此处只作占位 —— 断言它们**不被调用**才是有意义的。
+    const store: MemoryStore = {
+      load: () => ({}),
+      save: () => {
+        saveCalls++;
+      },
+      loadWithRev: () => {
+        throw new Error('redis down'); // 水合失败是辅助动作：不击穿 run
+      },
+      saveIfRev: () => {
+        saveIfRevCalls++;
+        return { committed: true };
+      },
+    };
+    const { warnings, value } = await captureWarn(() => runOnce(store, ['k'], 'k', 'v'));
+    assert.equal(value.run.status, 'succeeded', '水合失败不得打死 run（辅助动作）');
+    assert.equal(saveIfRevCalls, 0, '水合失败 ⇒ 不做 CAS 回写（读都没成功，CAS 没有意义）');
+    assert.equal(saveCalls, 0, '有 saveIfRev 的 store 不许退回无版本号的 save（跳过 ≠ 降级）');
+    const all = warnings.join('\n');
+    assert.match(all, /水合.*失败/, '要留下「水合失败」这个第一因（此前完全无声）');
+    assert.match(all, /不是.*并发/, '归因必须说「读失败」，不许说成「并发抢写」');
+    assert.doesNotMatch(all, /并发的 run 在你读之后写过/, '旧的假归因文案不许再出现');
+  });
+
   it('并发丢写被抓：读之后别人写过同一份 store ⇒ 本次回写被拒、一个字都不写、并出声', async () => {
     const store = new InMemoryMemoryStore();
     store.save({ memo: 'old' }); // 水合读到的版本 = 1

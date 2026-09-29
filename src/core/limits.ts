@@ -61,7 +61,14 @@ export type BadValuePolicy =
   /** 一律视为「不限」（旧行为），不报错 */
   | 'coerced-to-unlimited'
   /** 无校验（该旋钮只做算术，坏值无处可藏） */
-  | 'none';
+  | 'none'
+  /**
+   * 只拒 `NaN`（2026-09-29 盘点 C5b）：`NaN` 是唯一让「实际值 > 上限」恒假、**闸静默失效**的
+   * 坏值（方向与「设了个上限」相反）；`0` / 负数 / `±Infinity` 都还有可辩护的读法（全停 / 不限），
+   * 照旧放行。需要独立一类，是因为现有三类都表达不了它 —— `throws` 会把负数的合法读法一起拒掉，
+   * `coerced-to-unlimited` / `none` 又不会拒 `NaN`。
+   */
+  | 'rejects-nan';
 
 export interface LimitSemantic {
   /** 稳定标识（用例按它建表；改名 = 用例红，故意的） */
@@ -224,8 +231,8 @@ export const LIMIT_SEMANTICS = [
     unit: 'count',
     zero: 'immediate',
     zeroClause: '0 = 第一次记账就超预算（等价于「任何用量都不许」）',
-    badValue: 'none',
-    note: '闸门判据是 `totalTokens > maxTotalTokens`（**严格大于**）：0 时任何非零用量立刻撞线；负数同理（`> -1` 恒真）。这里刻意**不抛错** —— 预算是运行期累计量，配成 0 是「这次 run 一条都别花」的合法意图（与 `maxIterations: 0` 同档），不是坏配置。⚠️ 与 `maxCostUsd` 是两个独立闸，**tokens 先判、撞了就返回**（不再看 cost）。⚠️ 2026-09-28 补登：这两个旋钮自 v0.5.0 起就存在，却一直没进这张表（「改 0 的读法不改表就构建红」这条纪律对它们曾是空的）。',
+    badValue: 'rejects-nan',
+    note: '闸门判据是 `totalTokens > maxTotalTokens`（**严格大于**）：0 时任何非零用量立刻撞线；负数同理（`> -1` 恒真）。对 `0` / 负数**刻意不抛错** —— 预算是运行期累计量，配成 0 是「这次 run 一条都别花」的合法意图（与 `maxIterations: 0` 同档），不是坏配置。⚠️ **但 `NaN` 必须构造期拒**（2026-09-29 盘点 C5b）：`totalTokens > NaN` **恒 false** ⇒ 闸永不触发、**静默失效**，方向与「设了个上限」正好相反；`createBudgetGuard` 对 `NaN` 抛 `RangeError`（`0` / 负数 / `±Infinity` 照旧）。⚠️ 与 `maxCostUsd` 是两个独立闸，**tokens 先判、撞了就返回**（不再看 cost）。⚠️ 2026-09-28 补登：这两个旋钮自 v0.5.0 起就存在，却一直没进这张表（「改 0 的读法不改表就构建红」这条纪律对它们曾是空的）。',
   },
   {
     knob: 'BudgetGuardOptions.maxCostUsd',
@@ -233,8 +240,8 @@ export const LIMIT_SEMANTICS = [
     unit: 'n/a',
     zero: 'immediate',
     zeroClause: '0 = 第一笔成本就超预算（等价于「一分钱都不许花」）',
-    badValue: 'none',
-    note: '判据 `costUsd > maxCostUsd`，而 `costUsd` 取 `usage.costEstimate ?? 0` ⇒ **模型不在价格表内时它恒为 0**，这个闸对未定价模型**永不触发**（静默失效；要无条件兜底请用 `maxTotalTokens`）。这一句在 `BudgetGuardOptions` 的注释里已如实写着，这里登记是为了让「0 的读法」也有单一真源。',
+    badValue: 'rejects-nan',
+    note: '判据 `costUsd > maxCostUsd`，而 `costUsd` 取 `usage.costEstimate ?? 0` ⇒ **模型不在价格表内时它恒为 0**，这个闸对未定价模型**永不触发**（静默失效；要无条件兜底请用 `maxTotalTokens`）。这一句在 `BudgetGuardOptions` 的注释里已如实写着，这里登记是为了让「0 的读法」也有单一真源。⚠️ 同 `maxTotalTokens`：`NaN`（2026-09-29 盘点 C5b）会让 `costUsd > NaN` 恒 false ⇒ 闸静默失效，`createBudgetGuard` 对 `NaN` 构造期抛 `RangeError`。',
   },
   {
     knob: 'metricsSink.maxCapabilities',

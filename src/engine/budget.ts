@@ -59,11 +59,28 @@ export interface BudgetGuard {
 }
 
 /**
+ * 预算旋钮收到 `NaN` ⇒ 构造期响亮失败（对应 `core/limits.ts` 的 `rejects-nan`）。
+ * `undefined` = 不设上限（合法）；只挡 `NaN`（`Number.isNaN`）。
+ */
+function assertNotNaN(value: number | undefined, name: string): void {
+  if (value !== undefined && Number.isNaN(value)) {
+    throw new RangeError(
+      `${name} 收到 NaN —— 闸门判据是「实际值 > 上限」，而 \`x > NaN\` 恒为 false ⇒ 闸永不触发、` +
+        '静默失效（方向与「设了个上限」正好相反）。0 / 负数 / ±Infinity 均可；要「不限」请省略该选项。',
+    );
+  }
+}
+
+/**
  * 建一个预算护栏。`check` 只看 **totalUsage**（已由 recorder 按 llm.turn 求和，
  * 子 agent 的往返也在内 —— 所以这是**整条 run** 的口径，不只是主循环）。
  */
 export function createBudgetGuard(opts: BudgetGuardOptions = {}): BudgetGuard {
   const { maxTotalTokens, maxCostUsd, onExceed } = opts;
+  // NaN 让判据 `x > max` 恒 false ⇒ 闸永不触发、**静默失效**，方向与「设了个上限」相反
+  // （2026-09-29 盘点 C5b）。0 / 负数 / ±Infinity 都还有可辩护的读法（全停 / 不限），照旧放行。
+  assertNotNaN(maxTotalTokens, 'maxTotalTokens');
+  assertNotNaN(maxCostUsd, 'maxCostUsd');
   return {
     check(input: { readonly totalUsage: Usage }): 'tokens' | 'cost' | null {
       const u = input.totalUsage;
