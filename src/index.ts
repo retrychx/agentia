@@ -1,4 +1,4 @@
-export const AGENTIA_VERSION = '0.9.5';
+export const AGENTIA_VERSION = '0.10.0';
 
 // core：数据模型
 export type {

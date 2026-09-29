@@ -5,7 +5,34 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.10.0] - 2026-09-29
+
+> 本版主题（窗口 `0.9.5 → 0.10.0`）：**从「跑得起来」到「敢上线、也找得到」**。
+> 两条主线 —— ① **把对外承诺从「文档上的一句话」改成「断言」**：稳定性策略 / 三个不发布的包 /
+> CI 运行环境全都写代码核实，README 顶部每一个数字由脚本现算，公开 API 边界由 `exports` 字段
+> （而不是一句承诺）封住；② **补两处对外空白**：「从 demo 到生产」的 `docs/deployment.md`、
+> 官网第一次写出「什么场景该选别人」的 `/tradeoffs` 页。
+> ⚠️ **本版有破坏性变更**：`exports` 收窄后深路径导入会被拒 —— 只有 import 过
+> `@migor/agentia/dist/**` 的使用者需要动手，动作写在下面 ⑭ 那条的「**迁移**」小节。
+> 其余 15 条条目**都不改变既有使用者的行为**。
+
+### 工程 · 发版闸门「骨架未填」的判据改成精确锚（2026-09-29 ⑳）
+
+- **是什么**：`scripts/release-surface.mjs` 判断「本版 CHANGELOG 是不是还停在 bump 插的骨架」时，
+  用的是粗判据 `sec.body.includes('TODO')`。**本次发版当场被它拦下 —— 而且是误伤**：本版 ⑫ 那条的
+  正文里合法地写着「发版流程文档里的两个必填 TODO、四步顺序」（它描述的正是 `docs/CONTRIBUTING.md`
+  里那两个必填标记）⇒ 一个**已经写完**的版本节被判成「没写」，`check-release` 直接 `exit 1`。
+- **改法**：锚改成 bump **真正插入的那串**标记（`TODO` 紧跟 `(发版)`）—— 它由 `release.mjs` 的 `INSERT_OPS`
+  集中生成，永远带 `(发版)`。同文件里 `--allow-pending` 的降级判据一并改：否则 bump 后的自检会把
+  「正文里正常提到 TODO」当成 pending 警告。
+- 这是本仓反复出现的那个形态：**守卫测的东西 ≠ 它想测的东西**。粗判据在「正文恰好提到 TODO」时红，
+  而它想拦的只有一种情况 —— bump 插的骨架还没被人填。
+- **反向验证 2 条**：① 往 `[0.10.0]` 一节插回那段骨架标记 ⇒ 严格闸门**恰好点名**这一条（`exit 1`）；
+  ② 同一状态下加 `--allow-pending` ⇒ 降级为 ⚠ 警告（`exit 0`，bump 后的预期行为）。
+  还原后 `sha256` 逐字节一致。
+- 影响面：`scripts/release-surface.mjs`（两处判据 + 为什么不能用裸 `TODO` 的注释）、本节。
+  `tests/scripts/release-scripts.test.ts` **10/10 仍绿** —— 它的两条断言锚的本就是那段骨架标记
+  与「输出含 TODO」，精确化之后照样成立。
 
 ### 文档 · 推广稿重写成「可直接发出去的定稿」（2026-09-29 ⑲）
 
@@ -568,6 +595,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 **顺带**：`guards.md §2` 那条「`async.ts` 没有行数上限闸」**闭环**（划掉、移入 §1.1）；
 `AGENTS.md` 的 `transport/` 段补登记三个监督件，并订正那句已过时的「910 行的类 / 后续抽块三步一步
 没走」（抽块其实已走了三步）。
+
+## [Unreleased]
 
 ## [0.9.5] - 2026-09-29
 
@@ -2704,7 +2733,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/retrychx/agentia/releases/tag/v0.10.0
 [0.9.5]: https://github.com/retrychx/agentia/releases/tag/v0.9.5
 [0.9.4]: https://github.com/retrychx/agentia/releases/tag/v0.9.4
 [0.9.3]: https://github.com/retrychx/agentia/releases/tag/v0.9.3
