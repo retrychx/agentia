@@ -129,3 +129,52 @@ describe('approval-policy —— 审批的纯判定（从 AsyncRunner 抽出）'
     assert.equal(approvalsComplete(rec({})), true, '没有待决项 ⇒ 齐（空集真值）');
   });
 });
+
+/**
+ * **时钟回拨**（NTP 回拨 / 手动校时）—— 2026-09-29。
+ *
+ * 为什么单独成块：全仓对回拨**已有一条成文纪律，但它是局部的** —— 只在「算耗时的暴露面」
+ * 钳到 0（`engine/turn.ts` 的 `waitedMs = Math.max(0, decidedAt - requestedAt)`、
+ * `engine/tool-events.ts` 的 `durationMs` 非负、`core/timeout.ts` 用 `performance.now` 量耗时）。
+ * 而**比时刻**的三个纯判定（`approvalExpired` / `timerDue` / `resumeSkipReason` 的新鲜度）
+ * **不做**单调兜底，也不该在这里做：它们手里只有墙钟，单调兜底要有时钟来源，那是编排层的事
+ * （= 被记为「有意不做」的定时器注入缝，见 `docs/reviews/2026-09-28/README.md` §4 第 2 条）。
+ *
+ * 所以本块钉的是**方向**，不是修法：回拨把已过期的挂起判回「未过期」= **推迟**方向
+ * （与「提前自动拒绝 + 重派」相反），且这个事实**必须留在数据里**。方向被「顺手修」反了、
+ * 或回拨的事实被抹掉，这里就红。
+ */
+describe('approval-policy —— 时钟回拨（NTP 回拨 / 跳变）', () => {
+  it('回拨把**已过期**判回**未过期**：退化方向是「推迟」，不是「提前拒绝」', () => {
+    const r = rec({ suspendedSince: 10 ** 12 });
+    assert.equal(approvalExpired(r, 10 ** 12 + 2_000, 1_000), true, '正常时钟：早已过期');
+    assert.equal(
+      approvalExpired(r, 10 ** 12 - 3_600_000, 1_000),
+      false,
+      '往回跳 1 小时 ⇒ 判回未过期（那条挂起多等一段，而不是被提前自动拒绝 + 重派）',
+    );
+  });
+
+  it('回拨把 now 落到挂起时刻**之前**：差值变负，结论仍然只是「未过期」', () => {
+    assert.equal(approvalExpired(rec({ suspendedSince: 10 ** 12 }), 10 ** 12 - 1, 1_000), false);
+  });
+
+  it('`fillTimeoutDenials` **如实记下**回拨（decidedAt 可以早于 requestedAt）—— 判据层不许钳', () => {
+    // 若在这里「顺手」把 decidedAt 抬到 requestedAt（`Math.max(now, suspendedSince)`），
+    // 回拨这件事就从数据里消失了：trace 上那次审批看着像「瞬间决定」，
+    // 而下游 `waitedMs` 的 `Math.max(0, …)` 本来就兜得住负数 ⇒ 钳在判据层纯属抹掉证据。
+    const rolledBack = 10 ** 12 - 3_600_000;
+    const r = rec({ suspendedSince: 10 ** 12, pendingApprovals: ['a'] });
+    fillTimeoutDenials(r, rolledBack);
+    assert.equal(r.approvals?.a?.decidedAt, rolledBack, '记当时读到的 now（回拨后的值）');
+    assert.equal(
+      r.approvals?.a?.requestedAt,
+      10 ** 12,
+      'requestedAt 是事实（挂起时刻），不许被改小',
+    );
+    assert.ok(
+      (r.approvals?.a?.decidedAt ?? 0) < (r.approvals?.a?.requestedAt ?? 0),
+      '负差值留在数据里：decidedAt < requestedAt（下游钳 0，见 engine/turn.ts 的 approval.decided）',
+    );
+  });
+});

@@ -194,3 +194,54 @@ describe('租约判定：同主机能问到 pid 就不看时间', () => {
     );
   });
 });
+
+/**
+ * **时钟回拨** —— 三条时间判据里**唯一一条回拨会让系统更不安全的方向**（2026-09-29）。
+ *
+ * `approvalExpired` / `timerDue` 回拨后的退化都是「推迟」（等更久 / 睡更久，最坏是**变慢**）。
+ * 这里不同：`now - since < staleAfterMs` 在回拨后**差值变小** ⇒ `too-fresh` **持续更久**
+ * ⇒ 一个**已经崩掉的主人**留下的记录看起来「还新」⇒ **没人认领 ⇒ 孤儿饿死**。
+ * 为什么饿死而不是「晚点捡起来」：`resumePending` 的扫描是**惰性**的（框架不养定时器），
+ * 启动扫一次就再没人扫（这条写在 `resume-policy.ts` 头注里，也是 2026-09-28 T2 那批的靶心）。
+ *
+ * 缺口的精确位置：2026-09-28 加的 `owner-alive`（同主机直接问 pid）能兜住这条，
+ * 但它只在 `alive !== undefined` 时参与 —— **异主机 / 升级前写下的旧格式 ownerId**
+ * 仍然退回新鲜度，那就是回拨**没有兜底**的角落。两档并排钉住。
+ */
+describe('时钟回拨：新鲜度那一档的退化是「孤儿饿死」，不是「变慢」', () => {
+  it('判不了主人（异主机 / 旧格式）+ 回拨 ⇒ 仍然 too-fresh（本该可抢的记录没人捡）', () => {
+    const startedAt = 10 ** 12; // 主人起跑时刻
+    const staleAfterMs = 5_000;
+    const opts = (now: number) => ({
+      ownerId: ME,
+      staleAfterMs,
+      now,
+      ownerAlive: () => undefined, // 异主机 / 旧格式：问不出「主人还活着吗」
+    });
+    // 阳性对照：顺时钟、恰好到期 ⇒ 可抢。没有它，下面那句可能是「恒 too-fresh」蒙对的
+    assert.equal(
+      resumeSkipReason(rec({ ownerId: OTHER, startedAt }), opts(startedAt + staleAfterMs)),
+      undefined,
+      '正常时钟：恰好到期即可抢（边界是严格小于）',
+    );
+    assert.equal(
+      resumeSkipReason(rec({ ownerId: OTHER, startedAt }), opts(startedAt - 3_600_000)),
+      'too-fresh',
+      '往回跳 1 小时 ⇒ 崩溃孤儿被保鲜期继续挡着（饿死窗口 ≈ 回拨幅度）',
+    );
+  });
+
+  it('**同主机**那一档不受回拨影响：问得到 pid 就问 pid（回拨只咬「判不了」的角落）', () => {
+    const startedAt = 10 ** 12;
+    assert.equal(
+      resumeSkipReason(rec({ ownerId: OTHER, startedAt }), {
+        ownerId: ME,
+        staleAfterMs: 5_000,
+        now: startedAt - 3_600_000,
+        ownerAlive: () => false, // 主人已死：**直接证据**，与记录看起来多新无关
+      }),
+      undefined,
+      '主人死了就立刻可抢 —— 这正是「能问到 pid 就别看时间」那条纪律在回拨下的价值',
+    );
+  });
+});

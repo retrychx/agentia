@@ -82,3 +82,27 @@ describe('wake-policy —— 挂起读数（/healthz 的 suspended 段）', () =
     assert.equal(s.nextWakeAt, null);
   });
 });
+
+/**
+ * **时钟回拨**（NTP 回拨 / 手动校时）—— 2026-09-29。与 `approvalExpired` 同类：
+ * 回拨 ⇒ `wakeAt <= now` 更不成立 ⇒ **推迟唤醒**（睡得比预期久）。危险方向是反的
+ * （**提前开跑** = 真实副作用），而那正是上面「缺 `wakeAt` 时不退化到 createdAt」那条
+ * 取舍在防的事。两个方向都钉住，别让「顺手给回拨加个容差」把方向翻过去。
+ *
+ * ⚠️ **诚实标注：本块不构成独立哨兵。** 任何让「回拨 ⇒ 立刻唤醒」的改法（容差 / 取绝对值 /
+ * 加分支持）都会**同时**打红上面那条「还差 1ms：不叫醒」—— 同一条判据的两个距离量，
+ * 拆不开。它的价值是把方向写成可执行的事实，不是多一道防线（同一位置的既有教训见
+ * `docs/guards.md` 里 `metrics.test.ts` 那行的「别把两条当成两个独立哨兵」）。
+ */
+describe('wake-policy —— 时钟回拨', () => {
+  it('回拨 ⇒ 推迟唤醒（**不是**提前开跑）', () => {
+    const r = rec({ wakeAt: 10 ** 12 });
+    assert.equal(timerDue(r, 10 ** 12), true, '恰好到点');
+    assert.equal(
+      timerDue(r, 10 ** 12 - 3_600_000),
+      false,
+      '往回跳 1 小时 ⇒ 那条 run 继续睡（晚醒，不是早醒）',
+    );
+    assert.equal(timerDue(r, 0), false, '回拨到纪元起点也一样：只是「不到点」');
+  });
+});
