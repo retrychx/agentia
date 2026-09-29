@@ -439,3 +439,59 @@ describe('事件缓冲上限（streamBufferEvents 调小）在传输层的两个
     }
   });
 });
+
+/**
+ * `streamNonTerminalBuffers`（2026-09-29，外部深评 T4 的收口）在传输层的形态。
+ *
+ * 要钉的是**降级的样子**：配额把非终态流的回放缓冲回收之后，连上来的客户端必须收到
+ * **一帧 `stream.truncated`**（明示「前面那段没了」）而不是 `stream.unavailable` ——
+ * 后者是「本进程没有这条流」的台词，而这条流明明就在本进程（任务正跑在这里），
+ * 说出去就是**假话**，还会把客户端误导向轮询。
+ */
+describe('非终态流缓冲配额（streamNonTerminalBuffers）的传输层形态：降级要看得见，不能谎报「别的进程」', () => {
+  it('配额 0：连上正在跑的任务 ⇒ 第一帧是 stream.truncated，随后实时事件照推、终态照收口', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    // 配额压到 0：非终态流一律不留回放缓冲（没人读的那批），连上时必然带缺口
+    const { base, server } = await setup(gate, { streamNonTerminalBuffers: 0 });
+    try {
+      const taskId = await submit(base);
+      const s = await openSse(base, `/tasks/${taskId}/stream`);
+      await until(
+        () => s.frames.some((f) => f.event === 'stream.truncated'),
+        3000,
+        'stream.truncated',
+      );
+      const names = s.frames.map((f) => f.event);
+      assert.equal(
+        names.indexOf('stream.truncated'),
+        0,
+        '截断明示必须是**第一帧**：下游要先知道缺了一段，再读后面的数据',
+      );
+      assert.equal(
+        names.includes('stream.unavailable'),
+        false,
+        '任务就在本进程跑着 —— 报 unavailable（「别的进程」）是假话',
+      );
+      assert.equal(
+        typeof (s.frames[0]!.data as { droppedBefore?: unknown }).droppedBefore,
+        'number',
+        'truncated 帧必须带 droppedBefore（否则下游无从判断丢了多少）',
+      );
+
+      release();
+      await until(() => s.frames.some((f) => f.event === 'task.end'), 3000, 'task.end');
+      assert.ok(
+        s.frames.some((f) => f.event === 'trace.event'),
+        '回收的是**回放历史**，实时事件必须照推（0 不是「关掉流」）',
+      );
+      const endNames = s.frames.map((f) => f.event);
+      assert.equal(endNames[endNames.length - 1], 'task.end', '终态帧必须是最后一帧');
+      s.close();
+    } finally {
+      await closeServer(server);
+    }
+  });
+});

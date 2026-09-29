@@ -323,10 +323,25 @@ export interface AsyncRunnerOptions {
    * （既不是「关掉流」也不是「不限」），0 语义归类见 `core/limits.ts`。
    *
    * 内存量级：单条事件正文受 `maxEventChars` 约束（入参/成功出参缺省 2000 字符），
-   * 故 500 条 ≈ 1 MB/任务；终态流的保留条数是代码里的常量（最近 16 条）。
+   * 故 500 条 ≈ 1 MB/任务；终态流的保留条数是代码里的常量（最近 16 条），
+   * **非终态**流的缓冲配额见 `streamNonTerminalBuffers`（缺省 32 条流）。
    * 超出条数上限时丢**最旧**的，并向订阅方发一帧 `stream.truncated`（**不静默**）。
    */
   streamBufferEvents?: number;
+  /**
+   * **非终态**流的**缓冲**配额（条数，不是事件数）：本进程最多为多少条**还没跑完**的流
+   * 保留「可回放的事件缓冲」；缺省 32。超出即从最旧、**无订阅者**的流开始回收缓冲。
+   *
+   * 为什么需要它：`streamBufferEvents` 只钉住**每任务**的量，而「挂着的任务」（等审批 /
+   * 等事件 / 等定时器）永远走不到终态 ⇒ 表项与缓冲只增不减（2026-09-28 外部深评 T4）。
+   * 回收的是**回放历史**，不是流本身：表项与序号都留着，连上来的读者先收到一帧
+   * `stream.truncated`（明示缺口）再转实时推送 —— 所以「回放看不全」是**看得见**的降级。
+   *
+   * `0` = 不为**没人读的**非终态流留回放缓冲（只有实时转发）。必须是非负安全整数，坏值构造期抛 TypeError。
+   * ⚠️ **有订阅者的流不受配额约束**（不抽走正在读的东西）；终态流的**表项**保留数仍是
+   * 内部常量（最近 16 条）—— 它本来就是有界的，没走旋钮。
+   */
+  streamNonTerminalBuffers?: number;
 }
 
 /** resumePending 的启动扫描选项 */
@@ -481,9 +496,12 @@ export class AsyncRunner {
     this.sessionStore = opts.sessionStore;
     this.taskSinks = opts.taskSinks ?? [];
     this.onPersistError = opts.onPersistError;
-    this.#streams = new TaskEventStreams(
-      opts.streamBufferEvents === undefined ? {} : { maxEvents: opts.streamBufferEvents },
-    );
+    this.#streams = new TaskEventStreams({
+      ...(opts.streamBufferEvents === undefined ? {} : { maxEvents: opts.streamBufferEvents }),
+      ...(opts.streamNonTerminalBuffers === undefined
+        ? {}
+        : { nonTerminalBuffers: opts.streamNonTerminalBuffers }),
+    });
     this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY;
     if (!(this.concurrency > 0)) {
       throw new Error(

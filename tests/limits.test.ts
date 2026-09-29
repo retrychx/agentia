@@ -23,7 +23,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { AsyncRunner, createBudgetGuard, executeRun } from '../src/index.js';
-import type { AgentTool, AppCallable, Trace } from '../src/index.js';
+import type { AgentTool, AppCallable, Trace, TraceRecordEvent } from '../src/index.js';
 import { LIMIT_SEMANTICS, type LimitKnob, type ZeroMeaning } from '../src/core/limits.js';
 import { interruptibleSleep, withTimeout, TIMED_OUT } from '../src/core/timeout.js';
 import { mapWithConcurrency } from '../src/engine/concurrency.js';
@@ -535,6 +535,45 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     assert.equal(one.has('t2'), true, '保留条数内的终态流必须还在');
     return 'disabled';
   },
+
+  async 'TaskEventStreams.nonTerminalBuffers'() {
+    // 坏值一律构造期抛 TypeError（走 AsyncRunner 公共旋钮 —— 内部构造 TaskEventStreams，
+    // 这样两处接线一起被驱动；方向与 retainTerminal 相反的那半见下面的 0）。
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => new AsyncRunner(slowApp(1), { streamNonTerminalBuffers: bad }),
+        TypeError,
+        `streamNonTerminalBuffers: ${String(bad)} 必须抛 TypeError`,
+      );
+    }
+    // 0 读作 disabled：**非终态流不留回放缓冲**（只有实时转发）。判据必须是「回放拿不到东西」+
+    // 「表项还在」—— 只断言「构造没抛」对 disabled/unlimited 都成立，那是走过场。
+    // ⚠️ 这一条同时是「回收缓冲 ≠ 删表项」的钉子：连表项一起删的话，has() 会变 false，
+    // 而后果是恢复段重开一条 nextIndex=1 的流（拿 Last-Event-ID 续订的读者从此静默收不到东西）。
+    const evt = (n: number): TraceRecordEvent => ({
+      type: 'span.attribute',
+      seq: n,
+      spanId: 's',
+      key: 'k',
+      value: n,
+    });
+    const zero = new TaskEventStreams({ nonTerminalBuffers: 0 });
+    zero.open('t1');
+    zero.push('t1', evt(1));
+    const replayed = zero.replay('t1');
+    assert.deepEqual(replayed.events, [], 'nonTerminalBuffers: 0 ⇒ 没人读的流不留回放缓冲');
+    assert.equal(replayed.droppedBefore, 2, '缺口必须明示（droppedBefore = 下一条的序号）');
+    assert.equal(zero.has('t1'), true, '0 回收的是缓冲，表项留着（任务确实还在本进程）');
+    // 正整数真的按**条数**生效：配额 1 时第二条流的缓冲把第一条（最旧、无订阅者）挤掉。
+    const one = new TaskEventStreams({ nonTerminalBuffers: 1 });
+    one.open('t1');
+    one.push('t1', evt(1));
+    one.open('t2');
+    one.push('t2', evt(1));
+    assert.deepEqual(one.replay('t1').events, [], '超出配额 ⇒ 最旧的非终态流缓冲被回收');
+    assert.equal(one.replay('t2').events.length, 1, '配额内的流缓冲必须还在');
+    return 'disabled';
+  },
   // ── 0 = 立即触发（第一次记账就撞线）─────────────────────────────────────
   async 'BudgetGuardOptions.maxTotalTokens'() {
     const guard = createBudgetGuard({ maxTotalTokens: 0 });
@@ -686,6 +725,11 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
         'TaskEventStreams.retainTerminal',
         () => new TaskEventStreams({ retainTerminal: -1 }),
         /0 = 不留终态流/,
+      ],
+      [
+        'TaskEventStreams.nonTerminalBuffers',
+        () => new TaskEventStreams({ nonTerminalBuffers: -1 }),
+        /0 = 不为没人读的非终态流保留回放缓冲/,
       ],
       // 这三条是同一天补登进表时**被 A4 逼出来**的（第一次跑就红 —— 正是它该做的事）
       [
