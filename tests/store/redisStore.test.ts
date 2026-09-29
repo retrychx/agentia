@@ -48,6 +48,33 @@ function rec(over: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 describe('RedisTaskStore（InMemoryRedisFake 驱动）', () => {
+  it('close()：调 client.quit 释放连接；无 quit / 重复关闭都不抛（幂等，外部深评 C1）', async () => {
+    // ① 有 quit ⇒ 被调一次（close 的真实出口）
+    let quits = 0;
+    const withQuit = Object.assign(new InMemoryRedisFake(), {
+      quit: async (): Promise<string> => {
+        quits++;
+        return 'OK';
+      },
+    });
+    const s1 = new RedisTaskStore(withQuit);
+    await s1.close();
+    assert.equal(quits, 1, 'close() 应调 client.quit');
+
+    // ② 客户端没有 quit（只读桩 / fake）⇒ 直接返回，不抛（无连接可关）
+    const s2 = new RedisTaskStore(new InMemoryRedisFake());
+    await assert.doesNotReject(() => s2.close());
+
+    // ③ 幂等：quit 抛（模拟 ioredis 连接已断时 quit 会 reject）⇒ close 吞掉、不抛
+    const broken = Object.assign(new InMemoryRedisFake(), {
+      quit: async (): Promise<never> => {
+        throw new Error('Connection is closed.');
+      },
+    });
+    const s3 = new RedisTaskStore(broken);
+    await assert.doesNotReject(() => s3.close());
+  });
+
   it('save/get/byIdempotency/list/clear 全语义（默认走 scanIterator）', async () => {
     const store = new RedisTaskStore(new InMemoryRedisFake());
     assert.equal(await store.get('nope'), undefined);

@@ -5416,6 +5416,54 @@ run：total=7189536 failed=325235（4.52%）thrown=0，吞吐 998.5 run/s
 - 短档实测：`SOAK_DURATION_MS=20000 SOAK_CONCURRENCY=16` ⇒ 22624 run 全过，新打印的两行在场
   （分类计数 + 判据清单：`认得 aborted/rate_limit/server/api/timeout/connection/unknown`）。
 
+### 2026-09-29 ⑥：**外部深评施工收口（7 条 + 施工中新发现的第 8 条）+ §7 边界表回填 + 官网注入已知边界表**
+
+**来源与性质**：`FIX-READINESS-2026-09-29.md` 的施工顺序 1–7。该报告的产出本就是「**建议的修法本身
+是否成立**」的深验（它自己证伪了三条原建议），本轮把它**落地**，并在施工中**实测发现第 8 条 C5b**。
+共同信条延续前几轮：**把静默换成有声；判据要换成真能咬人的那种，而不是看起来更严的那种。**
+结构建议②（`async.ts` 抽审批监督簇 + 行数闸）按报告 §8「各自独立 PR」另起，**不在本条目内**。
+
+**四类「静默失效 / 判据失真」的收口**：
+
+- **C5b（施工中新发现）· `NaN` 预算上限静默失效**。闸判据是 `used > max`，而 `x > NaN` 恒 `false`
+  ⇒ 传 `NaN` 让闸**整体失效**，方向与「设了上限」相反。`core/limits.ts` 的 `BadValuePolicy` 为此新增
+  **第 5 类** `'rejects-nan'`（现有 `throws` / `coerced-to-unlimited` / `none` 表达不了「只拒 `NaN`、
+  放行 `0`/负数/`±Infinity`」），`maxTotalTokens` / `maxCostUsd` 改用它；`engine/budget.ts` 加
+  `assertNotNaN`（构造期 `RangeError`）。**为什么是构造期**：这是**配置错误**，越早越响；
+  运行期才炸等于把「设了个坏上限」拖到第一笔记账。
+- **D1 · 容器注入判据**。原判据「值是对象/函数且有 `then`」**误伤** knex / mongoose 的 query builder。
+  实证（两家官方源码/文档）：knex `builder-interface-augmenter.js` 的
+  `Target.prototype.catch = function(onReject){ return this.then().catch(onReject); }`、mongoose 官方
+  API 文档明列 `Query.prototype.catch()` ⇒ 两者 builder **同时带 `then` 与 `catch`**，所以报告原建议的
+  「`then` 且 `catch`」加固**方向无效**（照做等于误伤照旧）。改用 **`instanceof Promise`**：async 函数
+  语义保证「忘了 `await`」的产物**恒为原生 Promise**，而 thenable builder 不是实例 ⇒ 精确命中、不误伤。
+  **如实边界**：跨 realm 的 Promise（vm 上下文产物）`instanceof` 会漏 —— 装配期几乎不出现，写进注释；
+  逃逸口 `useValue: { promise }` **保留**（`useValue` 注入裸 Promise 同样是「静默给错东西」）。
+- **A1 · 记忆 CAS 的假归因**。水合 `load` 抛错被 `catch {}` 无声吞 ⇒ `memoryRev` 停在 `undefined`，
+  几十行后 `saveIfRev(entries, undefined)` 必被 CAS 拒，warn 却把原因说成「并发 run 抢写」。
+  修法**收窄**（实证：报告的「水合失败就跳过回写」会打破既有用例 `memory.test.ts:242` 的 plain-save 路径）：
+  **只动 CAS 分支** —— `flushMemory` 开头判 `rev === undefined` ⇒ 跳过回写 + 说真话。此处
+  `rev === undefined` ⟺ 水合失败，成对性由 `assertMemoryStoreShape` 入口保证；配套在水合 `catch` 处
+  加自己的 warn，让**第一因**不再无声。
+- **C1 · `RedisLike` 无关闭出口**。`RedisLike` 加 `quit?(): Promise<unknown>`，`RedisTaskStore.close()`
+  **幂等**（无 `quit` 则 no-op；重复关闭 / 已断连时的 reject 都吞）。取 `quit` 的理由：三家唯一共名
+  （ioredis ✓、node-redis v4 ✓、**v5 有但 deprecated** ⇒ 注释写明后继是 `close()`）。框架仍**不主动**替你调。
+
+**测试与文档面（使用者可见行为零变更）**：**F3** 删 `capability-slice.test.ts` 的恒真断言
+（`CAPABILITY_KINDS = Object.keys(KIND_SPEC)` ⇒ 那句是 `x === x`；牙齿是 `:48` 的精确键序 + #184 的 `TS2741`）；
+**F2** `AGENTS.md` 补 `capability-cycles.ts` + 新建 `toolkit-map.test.ts`（判据**「露名或显式豁免」**：
+「全量穷尽」已实证不可行 —— 13 个文件里 9 个用概念词覆盖）；**AGENTS.md:66** 「910 行的类」→ **1554**（真值，
+后续三步未走）；**B1** `task-events.ts` 两处注释订正（`:204` 那句「不会回收刚 push 的这条」是**假的**，
+且「改成跳过它」会在单热流下让配额**完全失效** ⇒ 取改注释而非改行为）；**F1** §7 边界表 31 条 `gap` 逐条
+回源 ⇒ **7 条转 `pin`**（读数 pin 49→56 / gap 31→24，§7 仍 90 行），三处写死读数同步，`guards.md §2`
+登记「`gap` 表需随每轮盘点复核」；**官网** `docs.astro` 构建期从单源 `usage-guide.md?raw` 抠 §7 表注入
+新增的 `#limits` 段（缺占位符 / 行数 < 70 硬失败），两处 `/llms-full.txt` 指路改 `#limits` 锚点。
+
+**验证**：**5 条变异**逐条亲跑点名（F2 改名 / C5b 判据失效 / D1 退回 `typeof then` / C1 `quit` 未被调 /
+A1 跳过分支失效），各**恰好**打红目标用例，`git checkout --` 还原后全绿；门禁三件套全绿
+（`lint` 443 文件零告警）；runtime 56 · engine 404 · container 11 · store 56 · transport 352 · toolkit 142 ·
+architecture 57 · limits 32 · boundary-table 6 · 各 docs/官网守卫 全绿。
+
 ### 2026-09-29 ⑦：**`AsyncRunner` 的审批监督簇抽成独立件**（结构体检建议②；B.3 复核清单逐条过）
 
 **来源与性质**：外部深评的 `STRUCTURE-INVENTORY-2026-09-29.md` 建议②。这是**零行为变化的

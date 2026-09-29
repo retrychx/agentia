@@ -32,6 +32,21 @@ describe('createBudgetGuard（C1）', () => {
     assert.equal(g.check(traceWith({ inputTokens: 1e9, outputTokens: 1e9 })), null);
   });
 
+  it('NaN 上限 → 构造期拒（闸否则会静默失效，C5b）；0 / 负数 / ±Infinity 照旧放行', () => {
+    // NaN 让判据 `x > max` 恒 false ⇒ 闸永不触发，方向与「设了个上限」**正好相反**（静默失效）
+    // ⇒ 必须在构造期响亮失败（对应 core/limits.ts 的 rejects-nan）。
+    assert.throws(
+      () => createBudgetGuard({ maxTotalTokens: Number.NaN }),
+      /maxTotalTokens 收到 NaN/,
+    );
+    assert.throws(() => createBudgetGuard({ maxCostUsd: Number.NaN }), /maxCostUsd 收到 NaN/);
+    // 反向对照（防「顺手把所有坏值一起拒」）：这几个都有可辩护的读法，不许被连带拦掉
+    // —— 0 = 一条都不许花、负号同理、±Infinity = 全停 / 不限。
+    assert.doesNotThrow(() => createBudgetGuard({ maxTotalTokens: 0, maxCostUsd: -1 }));
+    assert.doesNotThrow(() => createBudgetGuard({ maxTotalTokens: Number.POSITIVE_INFINITY }));
+    assert.doesNotThrow(() => createBudgetGuard({ maxCostUsd: Number.NEGATIVE_INFINITY }));
+  });
+
   it('入参只要求 totalUsage（引擎传廉价视图，不必整份 Trace）', () => {
     // 引擎侧走的是 `check({ totalUsage: recorder.usage() })` —— 不拷 spans / attributes /
     // events（本护栏每回合要判两次，走 snapshot() 会白拷全部 span 的 attributes/events）。
