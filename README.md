@@ -443,4 +443,4 @@ npm run e2e          # 端到端：CLI 脚手架 → 装配 mock run；再真跑
 - 上线清单（store 选型 / 鉴权边界 / 优雅停机 / 预算 / 回滚 / 上线自检）：[`docs/deployment.md`](docs/deployment.md)
 - 完整示例（四类能力 + 三种触发 + 全观测栈）：[`examples/complete/`](examples/complete/)
 - 最小部署示例：[`examples/deploy/`](examples/deploy/)
-- 官网：[agentia-web.pages.dev](https://agentia-web.pages.dev)（[在线 Playground](https://agentia-web.pages.dev/playground) · [文档](https://agentia-web.pages.dev/docs)）
+- 官网：[agentia-web.pages.dev](https://agentia-web.pages.dev)（[在线 Playground](https://agentia-web.pages.dev/playground) · [文档](https://agentia-web.pages.dev/docs) · [取舍对照：不做什么 / 什么场景该选别人](https://agentia-web.pages.dev/tradeoffs)）

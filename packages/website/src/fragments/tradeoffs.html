@@ -1,0 +1,137 @@
+<main class="docs-layout">
+    <aside class="docs-nav" id="docs-nav">
+      <p class="dn-title">CONTENTS</p>
+      <a href="#position">定位：它占哪两层</a>
+      <a href="#not-for">不适用场景</a>
+      <a href="#nope">刻意不做的事</a>
+      <a href="#cost">代价清单</a>
+      <a href="#pick-us">什么时候该选它</a>
+      <a href="#verify">怎么自己核实</a>
+    </aside>
+
+    <div class="docs-content">
+      <header class="api-hero">
+        <p class="api-kicker">TRADE-OFFS · @migor/agentia</p>
+        <h1>取舍对照</h1>
+        <p class="api-lede">
+          这一页<strong>不列优势</strong>。它写的是<strong>我们不做什么</strong>、那些「不做」的
+          <strong>代价是什么</strong>、以及<strong>什么场景你该选别人</strong>。
+          选型时真正难判断的从来不是「它有什么」，而是「它的边界在哪、边界外的活谁干」。
+        </p>
+        <div class="api-chips">
+          <span class="api-chip"><b>0</b> 运行时依赖</span>
+          <span class="api-chip"><b>2</b> 层（运行时 + 可观测）</span>
+          <span class="api-chip"><b>0.x</b> minor 可含破坏性变更</span>
+          <span class="api-chip"><b>Node only</b> Deno / Bun / edge 未验证</span>
+        </div>
+      </header>
+
+      <!-- 定位 —— 「只占两层」是本仓自己写下的定位（spec.md「只给缝、不给策略」出现 4 次），
+           不是本页替它总结的。 -->
+      <section id="position">
+        <h2>定位：它占哪两层</h2>
+        <p>
+          本框架<strong>刻意只占两层</strong>：<strong>运行时</strong>（四类能力 + 主 agent 编排 + 宿主导出）
+          与<strong>可观测</strong>（trace / 成本 / 指标是<strong>一等公民</strong>，不是外挂）。
+          这也是「能不能直接上线」这条主张的全部内容。
+        </p>
+        <p>
+          其余层 —— 编排器 UI、评估平台、记忆/向量服务、托管与部署产物 —— 一概<strong>不在射程内</strong>。
+          判断标准写在仓里：<strong>只给缝、不给策略</strong>（<code>docs/spec.md</code> 出现 4 次）。
+          于是「该不该内建」的答案是：<strong>引第三方依赖的，一律不进核心</strong> —— 因为核心的卖点是
+          <strong>零运行时依赖</strong>（<code>tests/architecture/no-runtime-deps.test.ts</code> 守着，不是口头承诺）。
+        </p>
+        <p>
+          ⚠️ 判别规则只有一条，且写在 <code>docs/usage-guide.md</code>：
+          <strong>「引不引第三方依赖」，而不是「用户想不想要」</strong>。
+          所以 MCP stdio 连接器<strong>内置</strong>（只用标准库），而 gRPC 之类的宿主集成只能是
+          <strong>配方 + 示例</strong>（<code>examples/grpc-host/</code> 已证「换宿主 = 缝外组合」）。
+        </p>
+      </section>
+
+      <!-- 不适用场景 —— 评审 P1-1 的验收点就是这一节。 -->
+      <section id="not-for">
+        <h2>不适用场景</h2>
+        <p>下面每一条都是「<strong>这条路走不通，别选它</strong>」，不是「以后会更好」。</p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>如果你的情况是…</th><th>为什么不选它</th><th>那边是谁的主场</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>要<strong>可视化编排 / 低代码</strong>：拖拽式流程图、在线改编排</td><td>本框架是<strong>库</strong>，编排写在代码里（装饰器 + DI）。没有任何可视化编辑器，也没有这个计划</td><td>LangGraph 的图与状态机、Mastra 的工作流与平台界面</td></tr>
+            <tr><td>要<strong>Python</strong></td><td>TypeScript only。Deno / Bun / edge runtime <strong>未验证</strong>（不在 <code>engines</code> 承诺内，也不在 CI 上）</td><td>LangGraph（Python 原生）、各家 Python SDK</td></tr>
+            <tr><td>要<strong>托管平台</strong>（托管运行、托管记忆、托管评估）</td><td>本框架不提供任何服务。它交付的是「<strong>你自己能上线的服务</strong>」，不是替你跑的那个平台</td><td>Mastra 那类「框架 + 平台」一体的产品</td></tr>
+            <tr><td>要<strong>开箱即用的向量检索 / 评估平台</strong></td><td>0 运行时依赖 ⇒ 不装厂商 SDK。<code>src/</code> 里 <code>grep -rniE "embedding|vector|retriev"</code> <strong>0 命中是刻意的</strong></td><td>需要检索服务的一方自行接入（见下节「RAG」）</td></tr>
+            <tr><td>需要<strong>前端流式 UI 绑定</strong>（<code>useChat</code> 那类 React/Vue hook）</td><td>没有客户端 SDK，也没有 React 绑定。服务端是它唯一的形态</td><td>Vercel AI SDK 的 UI 层</td></tr>
+            <tr><td>需要<strong>1.0 级别的稳定性承诺</strong></td><td>当前 <code>0.x</code>：<strong>minor 可以包含破坏性变更</strong>（规矩是「必须留痕」，不是「不会发生」）</td><td>任何已发 1.0 且你愿意接受其体积的方案</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="nope">
+        <h2>刻意不做的事（以及空白由谁填）</h2>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>不做</th><th>理由（仓内真源）</th><th>那块空白怎么补</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>不装厂商 SDK</td><td>零运行时依赖是卖点 ⇒ 适配器只能<strong>手写 + 全局 <code>fetch</code></strong></td><td>换模型端点用 <code>ANTHROPIC_BASE_URL</code> 指向兼容端点</td></tr>
+            <tr><td>不内建<strong>日志层 / 采样 / 脱敏 / 存储 / 部署产物</strong></td><td><code>docs/spec.md</code> §9.3 <strong>已锁定</strong>（别再提「补上」）</td><td><code>docs/observability.md</code> 的四份配方 + <code>examples/observability/</code> + <code>grafana-dashboard.json</code></td></tr>
+            <tr><td>不内建 <strong>RAG</strong></td><td>不是功能缺口：<code>@Prompt</code> 的形状就是「模型可调用、先拉资产再注入」</td><td>把那个 <code>asset()</code> 换成 <code>search(query)</code> —— <code>src/</code> <strong>零改动</strong></td></tr>
+            <tr><td>不内建 <strong>channel / 传输层</strong></td><td>同上：要引第三方客户端的，不进核心</td><td><code>examples/grpc-host/</code> 已证「换宿主 = 缝外组合」，且进 e2e</td></tr>
+            <tr><td>不提供<strong>客户端 SDK / React 绑定</strong></td><td>不在那两层里</td><td>服务端直接返回结构化结果，前端自己消费</td></tr>
+            <tr><td>三个 <code>@migor/*</code> 附属包<strong>不发 npm</strong></td><td>机制而非疏漏：<code>private: true</code> —— 一条例外都没有（<code>tests/docs/stability.test.ts</code> 守着集合）</td><td>拷目录 / <code>file:</code> 引入；<code>npm i @migor/trace-view</code> 会 <strong>404</strong>，这是决定不是 bug</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="cost">
+        <h2>代价清单</h2>
+        <p>选它会付的账，逐条写清（都可自己核实）：</p>
+        <ul>
+          <li><strong>装配与约定要读文档</strong>：装饰器 + DI 是<strong>显式</strong>的 —— 目录约定、provider 注册、
+              <code>loadEnvFile()</code> 放装配模块而非启动入口（放错会让 <code>agentia dev</code> 静默读不到
+              <code>.env</code>）。换来的好处是「没有魔法」，代价是第一步要读。</li>
+          <li><strong>可观测的消费面要自己接</strong>：出口只有一条缝（<code>TraceSink.export(trace)</code>），
+              但<strong>往哪存、怎么检索、要不要采样与脱敏</strong>是你的事（配方在那，不是默认行为）。</li>
+          <li><strong>trace 缺省不记 assistant 文本</strong>：要记得显式开 <code>traceContent:'full'</code>，
+              而那是<strong>按出参字节付费</strong>的（大出参档实测 <strong>13.6×</strong>，小出参档只差 1.0×
+              —— 见 <a href="/docs#perf">性能量级</a>）。</li>
+          <li><strong><code>/healthz</code> 与 <code>/metrics</code> 不鉴权</strong>：生产要由反代限制
+              <code>/metrics</code> 的可达性（指标里有能力名、成本等敏感读数）。完整清单见
+              <code>docs/deployment.md</code>。</li>
+          <li><strong>0.x</strong>：每个 minor 都可能是「这次修的正是某个承诺没兑现的地方」。
+              规矩是<strong>破坏性变更必须留痕</strong>（CHANGELOG 带迁移小节），不是「不会有」。</li>
+          <li><strong>Node only</strong>：唯一碰内置模块的 store 是 <code>SqliteTaskStore</code>
+              （需 Node ≥ 22.5 的 <code>node:sqlite</code>），未提供时<strong>构造期给可读报错</strong>。</li>
+        </ul>
+      </section>
+
+      <section id="pick-us">
+        <h2>什么时候该选它</h2>
+        <p>反过来只有三条，且都可验证：</p>
+        <ol>
+          <li>你用 <strong>TypeScript / Node</strong>，要交付<strong>可直接上线的服务</strong>（不是 demo）。</li>
+          <li>你把 <strong>trace / 成本 / 指标</strong>当一等公民 —— 它决定「敢不敢上线」，不是事后补的日志。</li>
+          <li>你在意<strong>安装面</strong>：<code>npm i @migor/agentia</code> 只放<strong>一个</strong>包、
+              <strong>零</strong>运行时依赖（不装任何厂商 SDK）。</li>
+        </ol>
+      </section>
+
+      <section id="verify">
+        <h2>怎么自己核实</h2>
+        <p>
+          这一页的每一条都指向仓内可核的东西 —— <strong>别信这一页，去跑</strong>：
+        </p>
+        <ul>
+          <li>稳定性承诺与「哪些包不发布」：<a href="/docs#versioning">版本与稳定性承诺</a>；
+              <code>tests/docs/stability.test.ts</code> 守着口径。</li>
+          <li>边界全集（几十条，逐条有守卫）：<code>docs/usage-guide.md</code> §7「已知边界」，
+              官网文档页那张表<strong>构建期从单源生成</strong>，零漂移。</li>
+          <li>性能量级与复跑命令：<a href="/docs#perf">性能量级</a>（⚠️ 毫秒是本机量级，不是 SLA）。</li>
+          <li>上线清单：<code>docs/deployment.md</code>。</li>
+          <li>零依赖这件事本身：<code>tests/architecture/no-runtime-deps.test.ts</code>。</li>
+        </ul>
+      </section>
+    </div>
+  </main>

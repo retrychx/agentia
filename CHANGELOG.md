@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+### 官网 · 加一页「取舍对照」（2026-09-29 ⑱，评审 P1-1）
+
+- **是什么**：新页面 `/tradeoffs`（`packages/website/src/pages/tradeoffs.astro` + 片段
+  `src/fragments/tradeoffs.html`）。评审要的是「**取舍对照**」而不是「**优势对照**」——
+  明写**不做什么**、代价是什么、以及**什么场景该选别人**。
+- 六节：定位（刻意只占「运行时 + 可观测」两层）/ **不适用场景** / 刻意不做的事（空白由谁填）/
+  代价清单 / 什么时候该选它 / 怎么自己核实。
+- **此前对外表达面从来没有「不适用场景」**（实测 `grep -rn "不适用" packages/website/src
+  README.md` ⇒ 0 命中）⇒ 读者只能从「它有什么」反推边界，而**反推出来的边界必然比真实边界宽松**。
+- 页面里每一条「不做」都**指回仓内真源**（`spec.md` §9.3「已锁定」/ `usage-guide.md` 的判据 /
+  `no-runtime-deps.test.ts` / `examples/grpc-host/`），不替框架总结立场 —— 与 `deployment.md`
+  同一条口径：**决定清单 + 指回真源**，每多抄一份正文就多一处会分叉的口径。
+- **守卫** `tests/docs/tradeoffs-page.test.ts`：页面与片段在 / 含「不适用场景」节（评审验收点）/
+  导航 + sitemap + llms.txt **三处都登记**（Nav 要求 ≥2 —— 首页与非首页分支各一个）/
+  正文站内锚点真实存在 + 自证。**反向验证 4 条，各恰好点名**，还原后 `sha256` 逐字节一致。
+- 影响面：新增 2 个页面文件、`Nav.astro`、`sitemap.xml.ts`、`llms.txt.ts`、
+  `tests/docs/tradeoffs-page.test.ts`（新）、`docs/guards.md` §1.4、本节。
+
 ### 文档 · 推广稿的「50+ 条守卫」改成现算值并纳入守卫（2026-09-29 ⑰，评审 P1-2）
 
 - **是什么**：`docs/promotion.md` 三处写着「50+ invariants / 50+ registered invariants /

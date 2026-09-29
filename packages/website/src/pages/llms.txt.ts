@@ -81,6 +81,7 @@ export const GET: APIRoute = ({ site }) => {
 - [官网首页](${abs('/')}): 框架定位与四类能力
 - [文档页](${abs('/docs')}): 指南与代码示例
 - [API 参考](${abs('/api')}): 导出面清单
+- [取舍对照](${abs('/tradeoffs')}): **不做什么**、代价是什么、**什么场景该选别人**（不适用场景）
 - [Playground](${abs('/playground')}): 浏览器内跑一次真实 run（自带 Key，直连 Anthropic / DeepSeek）
 
 ## 安装与脚手架

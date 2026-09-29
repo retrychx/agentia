@@ -5964,6 +5964,34 @@ CLI 摘掉 `./package.json` ⇒ 红 ①③④；`default` 指到别的文件 ⇒
 
 **影响面**：`docs/promotion.md`、`tests/docs/scoreboard.test.ts`、`docs/guards.md` §1.4、本节。
 
+### 2026-09-29 ⑱：**官网「取舍对照」页**（评审 P1-1）—— 「不适用场景」此前一条都没有
+
+**触发**：评审 §5 P1-1 —— 加一页**取舍**对照（**不是优势对照**）：明写相对 Mastra / LangGraph /
+Vercel AI SDK **不做什么**、代价是什么、**什么场景该选别人**。验收两条：页面存在 + 含「不适用场景」。
+
+**为什么这一页值得单独做**：实测 `grep -rn "不适用" packages/website/src README.md` ⇒ **0 命中**。
+对外表达面从来没有说过「什么时候别选我」⇒ 读者只能从「它有什么」**反推**边界，而
+**反推出来的边界必然比真实边界宽松**（读者会假定「没说不支持的都支持」）。这与 §7 已知边界表
+是同一件事的另一面：§7 是**机制级**边界，这一页是**选型级**边界。
+
+**三条落地口径**（沿用 `deployment.md` 那套，因为它们面对的是同一个风险）：
+
+1. **每一条「不做」都指回仓内真源**，本页不替框架总结立场：`spec.md` §9.3（刻意不内建的四类，
+   **已锁定**）、`usage-guide.md` 的判据原文（「引不引第三方依赖，不是用户想不想要」）、
+   `no-runtime-deps.test.ts`、`examples/grpc-host/`、`tests/docs/stability.test.ts`（三个不发布的包）。
+2. **竞品那一列只写「那边是谁的主场」，不写对它们的事实断言** —— 后者会腐烂且无法机器核实；
+   写「要可视化编排 ⇒ 那边是 LangGraph / Mastra 的主场」是可核的（那是它们的定位），
+   写「它们不支持 X」不是。
+3. **完备性上守卫**（`tests/docs/tradeoffs-page.test.ts`，4 条判据 + 4 条变异）：「我们不做 X」
+   这种句子**和别的承诺一样会腐烂** —— 页面在、那一节被精简掉了，零信号。守：页面+片段在 /
+   含「不适用场景」节（评审验收点，也是这一页**唯一必须存在**的节 —— 没有它就退化成广告）/
+   导航 + sitemap + llms.txt **三处都登记**（Nav 要求 ≥2 处：首页与非首页分支各一个，漏一个 ⇒
+   一半页面到不了）/ 正文站内锚点真实存在 + 自证。
+
+**影响面**：`packages/website/src/pages/tradeoffs.astro` + `src/fragments/tradeoffs.html`（新）、
+`Nav.astro`、`sitemap.xml.ts`、`llms.txt.ts`、`tests/docs/tradeoffs-page.test.ts`（新）、
+`docs/guards.md` §1.4、本节。**框架代码零改动。**
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

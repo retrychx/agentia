@@ -1,0 +1,23 @@
+---
+// 「取舍对照」页（2026-09-29 评审 P1-1）：明写**不做什么**、代价是什么、什么场景该选别人。
+// 与 docs.astro 同形态：body 内容抽到 src/fragments/tradeoffs.html，经 ?raw 原样注入，
+// 页面外壳（head/nav/footer）由 Base 统一提供。
+import Base from '../layouts/Base.astro';
+import content from '../fragments/tradeoffs.html?raw';
+
+const footerLinks = [
+  { href: '/', label: '首页' },
+  { href: '/docs', label: '文档' },
+  { href: '/api', label: 'API' },
+  { href: '/playground', label: 'Playground' },
+  { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+  { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+];
+---
+<Base title='取舍对照 — Agentia' description='Agentia 的取舍：不做什么、代价是什么、什么场景该选别人 —— 不适用场景、刻意不做的事（零运行时依赖的代价）、代价清单，以及每一条的仓内核实路径。' page='tradeoffs' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../scripts/scrollspy.js';
+  </script>
+</Base>
