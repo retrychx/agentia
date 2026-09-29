@@ -188,6 +188,16 @@ export const LIMIT_SEMANTICS = [
     note: '判定是 `excess <= 0 提前返回` ⇒ NaN 恒假、**全部**无订阅者的终态流被清空（保留机制静默失效，方向与 maxEvents 的「闸失效」相反、同族）。⚠️ 只跳过「还有订阅者」的终态流 —— 那是还没被读完的流，丢了下游会莫名断在半路。',
   },
 
+  {
+    knob: 'TaskEventStreams.nonTerminalBuffers',
+    where: 'transport/task-events.ts',
+    unit: 'count',
+    zero: 'disabled',
+    zeroClause: '0 = 不为没人读的非终态流保留回放缓冲（有订阅者的照旧留着）',
+    badValue: 'throws',
+    note: '判定是 `buffered <= quota 提前返回` ⇒ NaN 恒假 ⇒ **每条**非终态流的回放缓冲都被立刻回收（回放历史静默全没，与 retainTerminal 那条「保留机制失效」同族、方向相反）。⚠️ 回收的是**缓冲**不是**表项**：`has()` 仍为真、序号接着走，缺口由 `firstAvailable` 明示（读者先收一帧 `stream.truncated`）—— 连表项一起删会让恢复段的序号从 1 重来，拿 `Last-Event-ID` 续订的读者从此静默收不到东西。⚠️ 只跳过「还有订阅者」的流（正在被读的不抽走）⇒ 被实时读的流不受配额约束。',
+  },
+
   // ── 0 = 立即执行（等待预算为 0 ⇒ 这次等待不存在）─────────────────────────
   {
     knob: 'interruptibleSleep.ms',
