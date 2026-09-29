@@ -40,7 +40,8 @@ npm run dev                          # = agentia dev：本地 inspector 面板�
 > `file:../..` 指向本仓库而不是 npm 版本 —— 跑的是**工作区代码**，理由见
 > [`examples/README.md`](examples/README.md) 的「依赖说明」。
 
-> **运行时**：Node ≥ 18（`engines` 唯一要求，CI 在 18/20/22 上守）。按 Node 设计并测试，
+> **运行时**：Node ≥ 18（`engines` 唯一要求）。CI 覆盖 **18 / 20 / 24** —— `import-floor` 矩阵跑
+> `engines` 声明的**下限**，其余 job 跟**当前 LTS** 走。按 Node 设计并测试，
 > **未对 Deno / edge 做验证**。唯一碰内置模块的 store 是 `SqliteTaskStore`（需 Node ≥ 22.5 的
 > `node:sqlite`）—— 未提供时**构造期给可读报错**，不影响包本身被导入。
 

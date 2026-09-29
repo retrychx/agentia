@@ -7,6 +7,34 @@
 
 ## [Unreleased]
 
+### 工程 · CI 的 Node 上沿跟到当前 LTS + 补上发版流程文档（2026-09-29 ⑫）
+
+**使用者可见行为零变更**（CI 配置 + 文档）：框架代码**零改动**。
+
+**起因**：「上生产 × 推广」评审里那条 `A2` —— **CI 的上沿停在 Node 22，而当前 LTS 已经是 24**。
+当时的 README / README.en / CONTRIBUTING / `usage-guide.md` 四处都写着「CI 在 18/20/22 上守」：
+**那句话是真的**，问题是①上沿没跟 LTS 走；②**没有任何东西盯着这四处散文**（矩阵一改就静默腐烂）。
+
+**改动**：`.github/workflows/ci.yml` 里四个主 job（`verify` / `lint` / `e2e-mcp` / `deploy-website`）
+的 `node-version` 由 `'22'` 改成 **`'24'`**，并把**覆盖规则**写进 ci.yml 顶部：
+`import-floor` 的 matrix 只覆盖 `engines` 声明的**下限**，其余 job 跟**当前 LTS** 走
+⇒ 覆盖集合 = **18 / 20 / 24**；四处散文同步改成这句（`docs/usage-guide.md` 的已知边界表也复述了一处）。
+
+> ⚠️ **为什么不顺手把 24 加进 `import-floor` 的 matrix**：**matrix 取值会进必需检查名**
+> （分支保护里现在钉的是「导入下限（Node 18）」与「（Node 20）」）。增删取值 = 改仓库的分支保护配置，
+> 否则新取值那条不是必需检查、旧取值那条永远等不到。所以「跑下限」与「跟上沿」**刻意分成两件事**，
+> 并把这条坑写在 ci.yml 顶部（此前只写在 `AGENTS.md` 的会话记录里）。
+
+另：`publish` 目前仍是**本机手动**两条命令（顺序「发布 → 合并 → 打 tag」，理由见 `release.mjs` 头注）。
+`npm publish --provenance` 只支持在 CI 里生成 ⇒ 本轮**没有动它**，作为独立议题留下（要动就要在
+GitHub Actions 里加发布工作流 + 一个仓库 secret，那是仓库所有者的运维决定）。
+
+**补文档**：`CONTRIBUTING.md` 新增「**发版流程**」一节（`release.mjs bump/tag` 两条命令、
+两个必填 TODO、四步顺序与**为什么不能换**、以及几条纪律）。此前 CONTRIBUTING 里
+`grep -niE "release|发布流程|version"` ⇒ **0 命中** —— 一条对外可见的流程却没在任何面向人的文档里。
+
+**登记**：`docs/spec.md` §10 ⑫。
+
 ### 测试与工具 · 补上「完整装配 × 时间维度」这一格 + examples 清单守卫（2026-09-29 ⑩）
 
 **使用者可见行为零变更**（新增一个手跑脚本 + 一条新守卫 + 一处文档订正）：框架代码**零改动**。
