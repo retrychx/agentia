@@ -19,20 +19,24 @@ import type { TraceRecordEvent } from '../core/trace.js';
 import { SlotPool } from './slot-pool.js';
 import { ApprovalSupervisor } from './approval-supervisor.js';
 import type { ApprovalDecisions } from './approval-supervisor.js';
+import { SignalSupervisor } from './signal-supervisor.js';
+import { ResumeScanner } from './resume-scanner.js';
+import type { ResumePendingOptions } from './resume-scanner.js';
 import { timerDue } from './wake-policy.js';
 import type { SuspendedSummary } from './wake-policy.js';
 import { DrainGate } from './drain-gate.js';
-import { resumeSkipReason } from './resume-policy.js';
 import { formatOwnerId } from './owner-id.js';
-import { ownerAlive } from './owner-liveness.js';
 import { TaskWaiters } from './task-waiters.js';
 import { TaskEventStreams } from './task-events.js';
 import type { TaskStreamEvent } from './task-events.js';
 
-// 审批监督簇（2026-09-29 抽出）的实现与类型现在在 approval-supervisor.ts；`TaskApproveError` /
-// `ApprovalDecisions` 在此 **re-export** ⇒ 一切 `from './async.js'` 的既有 import 路径不变。
+// 三个监督件（2026-09-29 抽出）的实现与类型现在各自在文件里 —— 审批（approval-supervisor.ts）、
+// 事件投递（signal-supervisor.ts）、恢复扫描（resume-scanner.ts）。下面 **re-export** 它们的
+// 对外符号 ⇒ 一切 `from './async.js'` 的既有 import 路径不变。
 export { TaskApproveError } from './approval-supervisor.js';
 export type { ApprovalDecisions } from './approval-supervisor.js';
+export { TaskEventError } from './signal-supervisor.js';
+export type { ResumePendingOptions } from './resume-scanner.js';
 
 /**
  * Agentia —— 异步任务宿主（spec §6.3 异步 / §6.5 确定性 / §6.6 换宿主不换语义）。
@@ -159,20 +163,6 @@ export class TaskCancelError extends Error {
 }
 
 /**
- * `signalTask` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
- * `suspended` 状态 / 同 eventId 已投递）。形状与 `TaskCancelError` 同款
- * （module 级 export，不进公共导出面）。
- */
-export class TaskEventError extends Error {
-  readonly status: 404 | 409;
-  constructor(status: 404 | 409, message: string) {
-    super(message);
-    this.name = 'TaskEventError';
-    this.status = status;
-  }
-}
-
-/**
  * `submit` 在**排队段已满**时的失败（`AsyncRunnerOptions.maxQueued`，2026-09-28 外部深评 T5）。
  *
  * 为什么单独一个类型、而不是复用 `TaskInputError`：两者在 HTTP 上的**含义不同** ——
@@ -193,32 +183,6 @@ export class TaskQueueFullError extends Error {
     this.name = 'TaskQueueFullError';
   }
 }
-
-/**
- * `deliveredEventIds` 簿记的条数上限（FIFO 裁最旧）。它是**去重簿记**不是审计日志：
- * 256 条对「webhook 重试窗口」绰绰有余，而无界增长会让每条 TaskRecord 随事件量膨胀
- * （记录随 trace 一起落库，每次 save 全文重写）。「数量有界」不是用户旋钮，不进
- * `core/limits.ts` 的 0 语义表。
- */
-const MAX_DELIVERED_EVENT_IDS = 256;
-
-/**
- * `pendingEvents`（待注入事件缓冲）的**条数上限**（2026-09-28 复审第三轮，定案 **B**）。
- *
- * 为什么要有：`deliveredEventIds` 那侧是有界的（256），缓冲这侧原先没有 —— 而它不需要攻击者
- * 就能长：投方每次投一条、这条 run 每次都在恢复段**再次挂起**（再挂起出口刻意不注入事件，
- * 见 spec §10 ⑥ 第 4 条）⇒ 每条都留在记录上，而记录随 trace 一起落库、每次 save 全文重写。
- *
- * 为什么是「满了拒绝」而不是「丢最旧」（A 的反面）：缓冲**在下次跑通时就注入并清空**，所以
- * 上限只管「一个挂起窗口里能攒多少」。丢最旧必须**同时**把该 id 从 `deliveredEventIds` 摘掉，
- * 否则发件方重投会拿到「已投递」的 409 而事件其实已经没了 —— 那是最坏的一种谎。宁可不收下
- * 并说出来（调用方拿到 409 就能改主意：先让这条 run 真走起来）。
- *
- * 为什么是 64：一个挂起窗口里等到的输入，量级与 `deliveredEventIds` 的重试窗口（256）同类，
- * 取它的 1/4 —— 容得下真实的 webhook 突发（一次重试窗口里几十条），又不足以把挂起任务当队列灌。
- * **数量有界不是用户旋钮**（与 MAX_DELIVERED_EVENT_IDS 同档），不进 `core/limits.ts` 的 0 语义表。
- */
-const MAX_PENDING_EVENTS = 64;
 
 /**
  * 取消的**宽限**：取消请求发出后，留给那次 run 自己收尾的时间。
@@ -337,25 +301,6 @@ export interface AsyncRunnerOptions {
   streamNonTerminalBuffers?: number;
 }
 
-/** resumePending 的启动扫描选项 */
-export interface ResumePendingOptions {
-  /**
-   * 他进程任务的判定开关；缺省 0 = 不判断，一律重派（重启即续跑，单进程旧语义）。
-   *
-   * `> 0` 时按**两档**判他进程的记录（判据在 `resume-policy.ts`，这里只说取舍）：
-   * ① 记录里的主机名是本机 ⇒ **问 pid 还在不在**（`owner-liveness.ts`）——
-   *    「主人在」的直接证据：**在的绝不抢**（不管它起跑多久），**不在的立刻可抢**
-   *    （不等保鲜期，崩溃孤儿不会饿死）；
-   * ② 判不了（异主机 / 升级前写下的旧格式 ownerId / 自定义串）⇒ 退回本参数名义上的
-   *    那件事：`startedAt`（退化到 `createdAt`）距今不足该值就当他还在跑、先别抢。
-   *
-   * ⚠️ ②只是**启发式**（「记录看起来还新」），不是租约：单进程部署建议 0；多进程共库
-   * 时它只是「问不到 pid」时的兜底，别再指望它单独把「重复执行」挡住。
-   * 阈值取值要大于「一个进程从启动到跑满一条记录」的合理时间，否则长跑会被抢。
-   */
-  staleAfterMs?: number;
-}
-
 /** 应用最小调用面（agent 装配无关，避免 run 层向上依赖 toolkit） */
 export interface AppCallable {
   readonly name: string;
@@ -432,6 +377,16 @@ export class AsyncRunner {
    * 依赖（store / ownerId / approvalTimeoutMs / dispatch 回调）在构造函数末尾注入。
    */
   readonly #approvals: ApprovalSupervisor;
+  /**
+   * 事件投递簇（`signalTask` + 串行闸 + 两个事件容量常量）—— 实现见 signal-supervisor.ts。
+   * 与 `#approvals` 同族（都是「挂起任务的外部唤醒入口」），故紧邻声明。
+   */
+  readonly #signals: SignalSupervisor;
+  /**
+   * 恢复扫描簇（`resumePending` 的四步扫描 + 到期唤醒）—— 实现见 resume-scanner.ts。
+   * 依赖 `#approvals`（读数重建 / 催超时）与 drain 读数（唤醒闸），构造时排在它之后。
+   */
+  readonly #scanner: ResumeScanner;
   /** 并发槽位池（见 slot-pool.ts）：本类不再自管 running/waitQueue */
   readonly #slots: SlotPool;
   /** 已受理但未达终态的任务数（queued + running）—— /healthz 与 drain 共用 */
@@ -548,6 +503,23 @@ export class AsyncRunner {
       ownerId: this.ownerId,
       approvalTimeoutMs: this.approvalTimeoutMs,
       dispatch: (rec) => this.#dispatch(rec),
+    });
+    // 事件投递与恢复扫描同样在 ownerId 就位后构造。两处**回调注入**的理由与 `#approvals` 一致：
+    // `#dispatch`（停机闸 + 唯一派发点 + 一次性告警）与 drain 读数都归本类，两个监督件只**消费**它们
+    // ⇒ 依赖保持单向（监督件 → 派发），也避免三个模块互相 import。
+    this.#signals = new SignalSupervisor({
+      store: this.store,
+      ownerId: this.ownerId,
+      approvals: this.#approvals,
+      dispatch: (rec) => this.#dispatch(rec),
+    });
+    this.#scanner = new ResumeScanner({
+      store: this.store,
+      ownerId: this.ownerId,
+      host: this.#host,
+      approvals: this.#approvals,
+      dispatch: (rec) => this.#dispatch(rec),
+      isDraining: () => this.#drain.isDraining,
     });
   }
 
@@ -874,97 +846,15 @@ export class AsyncRunner {
     return this.#approvals.approve(taskId, decisions, opts);
   }
   /**
-   * 投递一个事件给**挂起**的任务（2026-09-28 ⑥，run 事件投入口；
-   * `POST /tasks/:id/events` 的宿主方法侧，与 approve/cancel 对称）。
+   * 投递一个事件给**挂起**的任务（HITL 与 durable timer 两种挂起都适用）。
    *
-   * 语义（设计稿 §3 逐条的落点）：
-   * - **只对 `suspended` 生效**：不存在 ⇒ 404；其余状态（含已终态）⇒ 409
-   *   （「不唤醒已终态」是这条状态闸的推论，与 approve 同款「状态不对要说出来」）；
-   * - **幂等**：`eventId` 给定时按 `rec.deliveredEventIds` 去重，重复 ⇒ 409
-   *   （簿记随记录落库，重启不丢；有界 FIFO，见 MAX_DELIVERED_EVENT_IDS）。
-   *   不给 `eventId` 就**没有恰好一次**：重复投递 = 重复进历史（如实，不假装）；
-   * - **投完即续跑**（两种挂起原因都算 —— 对 timer 挂起这就是「提前醒」）：
-   *   事件进 `rec.pendingEvents`、状态回 `running`，**先落库再派发**
-   *   （与 approve / #wakeDueInner 同一条纪律：崩在窗口里不能丢事件）。
-   *   事件**不**直接追加进 `rec.spec.messages` —— 续跑判定只认历史末尾一条
-   *   （`tailToolUses`），追加 user 消息会把续跑判成新对话；注入由引擎在
-   *   未决 tool_use 解决之后做（见 engine/loop.ts 的 deliverTaskEvents）；
-   * - **不沿旧 wakeAt**：记录上的旧目标时刻不动（闸都 gate 在 suspended 上，
-   *   状态一翻它就失效）；醒来重跑那一批时工具若再次 `deferUntil`，
-   *   `wakeAt` 由新回合重新落定；
-   * - drain 期间**仍允许**（与 approve 同理由：挂起的任务只有外部输入能推进）。
-   *
-   * 并发闸与 approve **不同款**：approve 共享在飞那次（决定是幂等合并），事件**串行成链**
-   * （两条并发事件是两条不同的输入，共享 = 静默丢一条）。与其它恢复路径
-   * （approve / 到期唤醒，各有自己的闸）的竞速：进闸后重读再判挡住绝大多数；
-   * 剩下的窄窗口与既有「approve × wakeDue 分闸」同类（那两条按挂起原因天然互斥，
-   * 事件两种原因都适用，是这个闸新盖的缝 —— 已记在 spec §10 2026-09-28 ⑥）。
+   * 实现已外移到 `signal-supervisor.ts`（**逐字搬迁**，含完整语义清单与并发闸的理由：
+   * 只对 `suspended` 生效 / 按 `eventId` 幂等 / 缓冲满了拒收并说出来 / 投完即续跑且
+   * **先落库再派发** / 并发时**串行成链**而不是像 approve 那样共享在飞那次）。
+   * 这里只留薄壳 —— `signalTask` 是 `AsyncRunner` 的公开 API，签名与返回类型不变。
    */
   signalTask(taskId: string, event: TaskEvent): Promise<TaskRecord> {
-    // 串行化（**不是** approve 那种「共享在飞那次」）：两个并发事件是**两条不同的输入**，
-    // 共享在飞那次 = 后一条被静默丢掉；各自读-改-写而不互斥 = 双派发（与 resumePending
-    // 的重入闸同一个 bug 类）。排成链：前一次落库完，这一次进闸后重读再判
-    // （那时若已派发则状态是 running ⇒ 409 如实说出来，调用方可重试）。
-    const prev = this.inflightSignals.get(taskId);
-    const run = Promise.resolve(prev)
-      .catch(() => undefined) // 前一次的 reject 已由它自己的调用方接走，这里只排队
-      .then(() => this.#signalInner(taskId, event))
-      .finally(() => {
-        // 只摘自己：链上可能已有更新的节点（无条件 delete 会摘掉别人的）
-        if (this.inflightSignals.get(taskId) === run) this.inflightSignals.delete(taskId);
-      });
-    this.inflightSignals.set(taskId, run);
-    return run;
-  }
-
-  /** 同一任务的在飞事件投递（signalTask 的重入闸，见上） */
-  private readonly inflightSignals = new Map<string, Promise<TaskRecord>>();
-
-  async #signalInner(taskId: string, event: TaskEvent): Promise<TaskRecord> {
-    const rec = await this.store.get(taskId);
-    if (!rec) throw new TaskEventError(404, `task 不存在: ${taskId}`);
-    if (rec.status !== 'suspended') {
-      throw new TaskEventError(
-        409,
-        `task ${taskId} 当前状态为 ${rec.status}，只有挂起的任务能接收事件`,
-      );
-    }
-    // 幂等去重（先判再改）：重复 ⇒ 409，记录一个字节不动（与 cancel 的「已终态」同款）
-    if (event.eventId !== undefined && rec.deliveredEventIds?.includes(event.eventId)) {
-      throw new TaskEventError(409, `事件 ${event.eventId} 已投递给 task ${taskId}（重复投递）`);
-    }
-    // 缓冲上限（2026-09-28 复审第三轮，定案 B：满了**说出来**，不静默丢）。
-    // 判据次序 状态 ⇒ 幂等 ⇒ 容量：重复投递的那条本来就在缓冲里，报「重复投递」比报「满了」有用;
-    // 两种 409 的**区别必须让调用方看得见** —— 重复投递是「已经在里面了」，满了是「没收下」。
-    if ((rec.pendingEvents?.length ?? 0) >= MAX_PENDING_EVENTS) {
-      throw new TaskEventError(
-        409,
-        `task ${taskId} 的待注入事件已达上限（${MAX_PENDING_EVENTS} 条）—— ${
-          rec.suspendedReason === 'approval'
-            ? '这条在等人工审批，而让它跑起来的唯一触发源是 approve（不在投递方手里）⇒ 要么等人批，要么 cancel 后重新提交'
-            : '这条在等定时到点（approve 对它不适用）—— 到点它会自己醒来，缓冲里的事件在醒来那段注入；等不了就 cancel 后重新提交'
-        }；本次事件**没有**被记录。`,
-      );
-    }
-    rec.pendingEvents = [...(rec.pendingEvents ?? []), event];
-    if (event.eventId !== undefined) {
-      const ids = [...(rec.deliveredEventIds ?? []), event.eventId];
-      rec.deliveredEventIds =
-        ids.length > MAX_DELIVERED_EVENT_IDS
-          ? ids.slice(ids.length - MAX_DELIVERED_EVENT_IDS)
-          : ids;
-    }
-    rec.status = 'running'; // 由 #executeInner 接管（acquireSlot → 恢复执行）
-    rec.ownerId = this.ownerId;
-    // 先落库再派发 —— 与 #approveInner 同一条真纪律：save 失败就绝不恢复执行
-    // （落不了库的事件不算投递：崩在窗口里会丢事件）。调用方拿到 reject，重试即可。
-    await this.store.save(rec);
-    // 离开挂起态（读数纪律②）：事件到了这就是「醒来」那一刻 —— 与 approve 的决定齐了同形
-    this.#approvals.unmarkSuspended(taskId);
-    // 派发走唯一入口（闸在 #dispatch 里）：停机窗口里不派发，事件留在 pendingEvents 上，
-    // 下次启动的 resumePending 认领时注入。
-    this.#dispatch(rec);
-    return { ...rec };
+    return this.#signals.signalTask(taskId, event);
   }
 
   /** 已受理但未达终态的任务数（queued + running）—— 健康检查与 drain 共用同一口径 */
@@ -1025,12 +915,9 @@ export class AsyncRunner {
     if (!rec) return rec;
     const now = Date.now();
     if (this.#approvals.expireIfExpired(rec, now)) return rec;
-    if (timerDue(rec, now)) this.#wakeDue(rec, now);
+    if (timerDue(rec, now)) this.#scanner.wakeDue(rec, now);
     return rec;
   }
-
-  /** 在飞的到期唤醒（同一任务的重入闸，理由与审批那条同款 —— 见 approval-supervisor.ts 的 `#inflight`：两条路径都「落库 + 派发」）。 */
-  private readonly inflightWakes = new Map<string, Promise<TaskRecord>>();
 
   /**
    * 取消的**意图**（2026-09-28 ④）。落库状态按意图判、不从 signal 反推 ——
@@ -1048,62 +935,6 @@ export class AsyncRunner {
    * finally 就只做它自己那份（在飞递减、通知等待者、排空通知）。
    */
   readonly #cancelSettled = new Set<string>();
-
-  /**
-   * 到期唤醒（durable timer）：读到一条**在睡且到点**的挂起 ⇒ 认领 + 重派，醒来后重跑那一批。
-   *
-   * 与 `approval-supervisor.ts` 的 `#expireAndResume` 逐条同形（进在飞闸、重读一遍、先落库再派发），理由一字不差；
-   * 三处不同，都写在下面：drain 之后不唤（配套 5）、不填任何决定（时间挂起没有待决项）、
-   * 以及**返回值**（见下）。
-   *
-   * @returns 是否真的接管了这次唤醒 —— decline 时 `false`。`resumePending` 的返回值是
-   * 「我推进了几条」，把没推进的算进去就是谎报（drain 之后每次扫描都报「唤醒了 N 条」，
-   * 而它们一条都没动）。⚠️ 审批那条（`approval-supervisor.ts` 的 `#expireAndResume`）计数口径略宽（在飞也计入），
-   * 那是既有行为、本批不动它。
-   */
-  #wakeDue(rec: TaskRecord, now: number): boolean {
-    // 配套 5（drain 后不唤醒）：停机是「不再往前推」，与 submit 在 drain 后回 503 同一条纪律。
-    // 不设这道闸，一条天级的 sleeping run 会在停机窗口里被叫起来接着跑 —— 部署卡在它身上。
-    // （重启后由新进程的首次 resumePending 唤醒：那时停机窗口早过去了。）
-    if (this.#drain.isDraining) return false;
-    if (this.inflightWakes.has(rec.taskId)) return false;
-    const run = this.#wakeDueInner(rec, now).finally(() => {
-      this.inflightWakes.delete(rec.taskId);
-    });
-    this.inflightWakes.set(rec.taskId, run);
-    // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
-    run.catch(() => undefined);
-    return true;
-  }
-
-  async #wakeDueInner(rec: TaskRecord, now: number): Promise<TaskRecord> {
-    // 进闸后**重读一遍**再判（与 approval-supervisor.ts 的 #expireAndResumeInner 同因）：闸只互斥「进入」，
-    // 挡不住「进闸前已取到的旧副本」——异步 store 的 get 有往返，凭陈旧快照放行会重复派发。
-    const fresh = await this.store.get(rec.taskId);
-    const target = fresh ?? rec;
-    if (!timerDue(target, now)) return target;
-    target.status = 'running';
-    target.ownerId = this.ownerId;
-    let saved: MaybePromise<void>;
-    try {
-      saved = this.store.save(target);
-    } catch {
-      return target; // 同步落库失败则不派发（先落库再派发，见 approval-supervisor.ts 的 #expireAndResumeInner）
-    }
-    if (isThenable(saved)) {
-      try {
-        await saved;
-      } catch {
-        return target;
-      }
-    }
-    // 离开挂起态（读数纪律②）—— 落库成功之后才算醒来
-    this.#approvals.unmarkSuspended(target.taskId);
-    // 派发走唯一入口（闸在 #dispatch 里判一次 —— 它同时盖住「进入时」与「窗口里刚进入停机」
-    // 两个时点，这里不必再判一遍）。
-    this.#dispatch(target);
-    return target;
-  }
 
   /**
    * **唯一的派发口**（2026-09-28 外部深评 P1-1 / P2-1 的结构性修法）。
@@ -1196,143 +1027,16 @@ export class AsyncRunner {
    * （running 视为进程中断）。返回重派数量（异步 store 下返回 Promise<number>）。
    * 幂等键去重照常生效。
    *
-   * `suspended`（HITL）**不捡**：它在等人、不是孤儿（进程没死也可能挂着）。
-   * 但读到它会做**惰性判定**，两条闸各管各的原因：
-   * - `approval`：配了 `approvalTimeoutMs` 且已超时的挂起任务自动全拒
-   *   （`denied, reason: '审批超时'`）并重派；
-   * - `timer`：`wakeAt` 已到的睡着的任务**唤醒并重派**（醒来重跑那一批）。
-   *   ⚠️ `drain()` 之后不唤醒（配套 5）：停机窗口里天级的 run 被叫起来接着跑 = 部署卡死。
+   * 实现在 `resume-scanner.ts`（**逐字搬迁**，含那四步扫描的**顺序**与各自理由、重入闸、
+   * 到期索引接线、多进程 `ownerId` 的判定分级）。这里只留薄壳 —— `resumePending` 是
+   * `AsyncRunner` 的公开 API，签名与返回类型不变。
    *
-   * **认领先落库、再派发**（见 `#redispatch`）；异步 store 的认领落库失败会让本方法
-   * reject —— 宁可让调用方看见「续跑没做」，也不要静默放出一批会被重复执行的任务。
-   *
-   * 多进程共用一个 store 时靠 `ownerId` 区分他我：
-   * - 本进程的记录一律跳过（它还在本进程内存里跑，重派 = 跑两遍）；
-   * - `staleAfterMs > 0` 时启动他进程判定：**同主机就问 pid 还在不在**（在的不抢、
-   *   不在的立刻抢），问不到（异主机 / 旧格式 ownerId）才退回保鲜期启发式。
-   *   缺省 0 = 不判断、一律重派（单进程旧语义）。判定分级与边界见 `resume-policy.ts`。
+   * 一句话提要（细节见实现）：`suspended` **不捡**（它在等人、不是孤儿），但读到它会做
+   * 惰性判定 —— 审批超时自动全拒并重派、`wakeAt` 已到的唤醒并重派（`drain()` 之后不唤，
+   * 配套 5）；认领**先落库再派发**；多进程靠 `ownerId` 区分他我（`staleAfterMs > 0` 时问 pid）。
    */
   resumePending(opts: ResumePendingOptions = {}): number | Promise<number> {
-    // 重入闸：**并发**调用共享同一次扫描的结果，而不是各自再扫一遍。
-    //
-    // 为什么必须（2026-09-18 补）：「先落库再派发」只堵住了**串行**重扫 —— 认领是异步的
-    // （异步 store 的 `list()` 返回反序列化的**新对象**），两个并发调用都在任一 `save`
-    // 落地前 `list()` 到旧快照，`ownerId === this.ownerId` 的过滤对两份旧快照**双双失效**
-    // ⇒ 同一个任务被派发两次（`app.run` 重复执行，副作用与花费翻倍）。
-    //
-    // 语义：闸门期间返回**在飞那次的 Promise**（同一个数），而不是 0 —— 0 会谎称
-    // 「没派发任何东西」，而实际上派发了。调用方拿到的始终是本次扫描的真实结果。
-    if (this.inflightResume) return this.inflightResume;
-    const listed = this.store.list();
-    const staleAfterMs = opts.staleAfterMs ?? 0;
-    // 到期索引（2026-09-28 ⑤ 落地）：store 实现了 `listDue` 时，「到期唤醒」那一半的
-    // 输入走索引（只回到期的记录），否则回退全表过滤 —— 语义不变，只是扫描规模不同。
-    // ⚠️ 它**只**替代那一半的输入：挂起读数重建 / 审批超时 / 孤儿认领的职责
-    // 仍是全表 `list()`（它们要的不只是「到期的」），别把整个扫描的输入源换掉。
-    const dueListed = this.store.listDue === undefined ? undefined : this.store.listDue(Date.now());
-    if (isThenable(listed) || (dueListed !== undefined && isThenable(dueListed))) {
-      const run = Promise.all([listed, dueListed])
-        .then(([recs, due]) => this.#redispatch(recs, staleAfterMs, due))
-        .finally(() => {
-          this.inflightResume = null;
-        });
-      this.inflightResume = run;
-      return run;
-    }
-    const dispatched = this.#redispatch(listed, staleAfterMs, dueListed);
-    if (isThenable(dispatched)) {
-      const run = Promise.resolve(dispatched).finally(() => {
-        this.inflightResume = null;
-      });
-      this.inflightResume = run;
-      return run;
-    }
-    return dispatched;
-  }
-
-  /**
-   * 在飞的 `resumePending`（重入闸，见上）。不用 boolean 而用 Promise：
-   * 重入方要拿到**同一次扫描**的结果，而不是一个「你等着」的空数。
-   */
-  private inflightResume: Promise<number> | null = null;
-
-  /**
-   * 重新派发前**必须**先把 `ownerId` 认领落库 —— 否则「认领」只是内存里的一个记号。
-   *
-   * 病灶：此前这里只改内存里的 `status`/`ownerId` 就 `void #execute(rec)`，真正的 save
-   * 要等到 `#executeInner`（还在 `#acquireSlot` 之后）。对 sqlite/redis 这类 `list()`
-   * 返回**反序列化新对象**的 store，这段窗口里再调一次 `resumePending()` 读到的仍是旧
-   * ownerId，`:305` 的过滤失效 → 同一个任务被再派发一次 → `app.run` 重复执行，副作用
-   * 与花费翻倍。`InMemoryTaskStore` 存的是对象引用，恰好掩盖了这个问题。
-   *
-   * 返回类型刻意保持 `number | Promise<number>`：同步 store 的 save 是同步的，认领当场
-   * 落地，返回数字（`submit`/`list` 那套「同步 store 保持同步门面」的约定不变）；只有
-   * 真出现 thenable 才升级成 Promise，等所有认领落库后再统一派发。
-   */
-  #redispatch(
-    recs: TaskRecord[],
-    staleAfterMs: number,
-    due?: TaskRecord[] | undefined,
-  ): number | Promise<number> {
-    const now = Date.now();
-    // 挂起读数的对齐（读数纪律③）：扫描本来就拿到了全表，顺手把 `/healthz` 的读数
-    // 按 store 重建一遍 —— 于是「漏了某个除名出口」只是下一次扫描前的偏差，不会永久漂移。
-    // 顺带把**他进程**（或本进程上一世）留下的挂起也算进本进程可见的那些（口径见
-    // suspendedSummary 的注释：本进程看得见的记录，不假装是全局面）。
-    this.#approvals.rebuild(recs);
-    // 惰性审批超时扫描（HITL）：suspended **不捡走续跑**（它在等人，不是
-    // 孤儿 —— 崩溃续跑语义不适用于「等审批」），但读到它时顺手判超时：
-    // 到点自动全拒并重派（框架补的 deny 决定先进 store，再进引擎）。
-    let expired = 0;
-    for (const rec of recs) {
-      if (this.#approvals.expireIfExpired(rec, now)) expired++;
-    }
-    // 到期唤醒（durable timer）：在睡且到点的 timer 挂起 ⇒ 认领 + 重派（醒来重跑那一批）。
-    // 与上面那条循环并列而不是合并：两条闸的**原因判据互斥**，各读各的一眼可见；
-    // 合并成一个循环会让「谁的责任」藏进条件里。drain 之后不唤（#wakeDue 里那道闸）。
-    // 输入（2026-09-28 ⑤）：store 提供到期索引时 `due` 是「只回到期的」那一半 ——
-    // 仍过 `timerDue` 复核（索引口径是 status+wakeAt，原因那一半由这里兜，且
-    // #wakeDueInner 进闸后还会重读再判一次）。
-    let woken = 0;
-    for (const rec of due ?? recs) {
-      if (!timerDue(rec, now)) continue;
-      // 只算**真接管**的那些（drain / 已在飞 ⇒ 不算）—— 返回值是「推进了几条」的承诺
-      if (this.#wakeDue(rec, now)) woken++;
-    }
-    // 认领判定外移到 resume-policy.ts：跳过原因具名化（terminal / suspended / own-process /
-    // owner-alive / too-fresh），每条规则与边界都由那份纯函数的单测钉住
-    const alive = (id: string): boolean | undefined => this.#ownerLiveness(id);
-    const pending = recs.filter(
-      (r) =>
-        resumeSkipReason(r, { ownerId: this.ownerId, staleAfterMs, now, ownerAlive: alive }) ===
-        undefined,
-    );
-
-    const claims: Promise<void>[] = [];
-    for (const rec of pending) {
-      rec.status = 'queued'; // 重新入队，由 #execute 统一推进
-      rec.ownerId = this.ownerId; // 认领：此后本进程的记录不再被（自己）重派
-      const saved = this.store.save(rec);
-      if (isThenable(saved)) {
-        // 落库失败则**不派发**：认领没落地，派发等于把上面那个重复执行的窗口重新打开
-        claims.push(Promise.resolve(saved).then(() => this.#dispatch(rec)));
-      } else {
-        // 派发走唯一入口（闸在 #dispatch 里）—— 外部深评 P2-1：认领循环以前绕过了那道闸。
-        this.#dispatch(rec);
-      }
-    }
-    if (claims.length === 0) return pending.length + expired + woken;
-    return Promise.all(claims).then(() => pending.length + expired + woken);
-  }
-
-  /**
-   * 「这条记录的主人还活着吗」—— 绑上本机主机名后的 pid 存活判定（见 `owner-liveness.ts`）。
-   *
-   * 只被 `#redispatch` 用，且只在 `staleAfterMs > 0` 时真正被问到（那道闸在 resume-policy
-   * 里，单源；缺省 0 = 不看他进程，与升级前逐字一致）。判定不写库、不改状态 —— 纯读数。
-   */
-  #ownerLiveness(ownerId: string): boolean | undefined {
-    return ownerAlive(ownerId, this.#host);
+    return this.#scanner.resumePending(opts);
   }
 
   /**

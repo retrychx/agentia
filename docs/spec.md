@@ -5512,6 +5512,69 @@ architecture 57 / toolkit 142 / runtime 56 / engine 404 / container 11 / store 5
 纪律是「宁可窄，不要误报」。⇒ 先把形状登记进 §2，并给出与行数解耦的替代判据（钉「职责数」，
 或沿用 `dispatch-guard` 的调用点计数形状）。
 
+
+### 2026-09-29 ⑧：**`AsyncRunner` 再抽两簇**（信号投递 / 恢复扫描）+ **源码体量闸**（结构体检建议③ / ④）
+
+**来源与性质**：外部深评的 `STRUCTURE-INVENTORY-2026-09-29.md` 建议③（行数闸）+ §6（剩余两簇）。
+与 ⑦ 同性质：**零行为变化的纯结构重构**，判据是**忠实**而非行为。
+
+**抽了两簇**（⑦ 抽走审批簇后 `async.ts` 仍有 1756 行，这两簇是报告 §6 点名的「抽掉后方向最正交」
+的剩余两块）：
+
+- `src/transport/signal-supervisor.ts`（`SignalSupervisor`，182 行 / 74 含代码行）—— `signalTask` /
+  `#signalInner` / 在飞信号闸 + `TaskEventError` + 两个上限常量。**为什么它和 `approve` 同族**：都是
+  「挂起任务的外部唤醒入口」，形状逐条对应（读记录 → 校验挂起 → 改状态 → 先落库再派发 →
+  `unmarkSuspended` → `dispatch`）；**两处真实差异**：① 并发闸不同款（`approve` 共享在飞那次；事件
+  **串行成链** —— 后一条链到前一条尾巴上）；② 多一道容量闸（`MAX_PENDING_EVENTS` 64，到上限 409，
+  不静默丢）。
+- `src/transport/resume-scanner.ts`（`ResumeScanner`，261 行 / 126 含代码行）—— `resumePending` /
+  `#redispatch` / `#ownerLiveness` / `wakeDue` / `#wakeDueInner` + 两把在飞闸。**一次扫描按序干四件
+  事**（顺序有语义）：① `approvals.rebuild` ② `approvals.expireIfExpired` ③ `wakeDue`
+  ④ `#redispatch` 认领重投。`wakeDue` 从私有改**公开**（两个调用点：`#redispatch` 与
+  `async.ts.#lazyGates`）。
+
+**依赖怎么解**：两个监督件都只**消费** `AsyncRunner.#dispatch`（停机闸 + 唯一派发口 + 一次性告警）
+⇒ 构造注入回调，保持依赖单向（监督件 → 派发），无模块环。`TaskEventError` / `ResumePendingOptions`
+随簇迁走 + `async.ts` 顶部 re-export ⇒ 导出面与既有 import 路径全不变。
+**`async.ts` 1756 → 1460 行 / 664 含代码行**。
+
+**新增守卫（建议③）**：`tests/architecture/source-size.test.ts` —— `src/**` 单文件**含代码行** ≤ 750。
+
+**口径分歧是有意的，写在测试头注里**：报告写「`async.ts ≤ 1600` **行**」。本仓注释占 29~55%
+（`async.ts` 55%）、注释是证据载体 ⇒ 按**行数**设闸的第一个作用是**逼人删注释**（静默、删的是最贵
+资产），且按行数 `1460 < 1600` 当下**根本不触发**（事后不疼）。⇒ 与注释解耦 = 只计「含代码行」
+（整行注释与空行不计入）。**上限由来**：`async.ts` 664 与第二名 `turn.ts` 521 之间隔着 143 行 ⇒
+750 落在这段空档，留约 13% 余量、远离合法长文件那一档（报告 §2 那批「不该拆」的最长 260 行代码）。
+**刻意不用「剥注释再数非空行」**：本仓多处 URL 字面量（`'https://…'`）与含 `//` 的字符串会被朴素
+剥离**吃掉真实代码行** ⇒ 读数偏低 ⇒ 闸静默失效。⇒ 这正是 ⑦「有意不做」那条的正解：**不是调阈值、
+而是换口径**。
+
+**忠实性证据（`guards.md` B.3 的六条逐条过）**：
+
+1. **被搬走的状态没有别的读者** —— grep 确认信号闸 / 扫描在飞闸的全部读写点随簇迁走。
+2. **字符串字面量机械对拍**（可复跑探针 `.workbuddy/probes/literal-multiset-diff.mjs`；⚠️ 必须用
+   **逐字符状态机**剥注释 —— 裸正则会抓走注释里成对的 markdown 反引号，第一版据此把读数虚高到
+   316 种）：旧（base 的 `async.ts` + `approval-supervisor.ts`）**81 种 / 142 个** vs 新（四文件）
+   **83 种 / 154 个** —— **丢失 0 项**，新增 6 项**全是 import 路径**（`'../core/run.js'` /
+   `'../store/store.js'` / `'./approval-supervisor.js'` / `'./signal-supervisor.js'` /
+   `'./resume-scanner.js'` / `'./wake-policy.js'`）。
+3. **没有模块级可变状态被复制成两份**。
+4. **循环 import 的 TDZ 风险** —— 新件不 `import async.ts`（单向依赖），`file-cycles.test.ts` 绿。
+5. **注入的值各调用点没传错** —— 构造处逐个对上，`typecheck` 绿。
+6. **旧侧取真实父提交** —— 对拍用 `git show 0578769:src/transport/async.ts`（= ⑦ 的提交，本轮 base）。
+
+**验证**：5 条变异逐条亲跑（① `wakeDue` 的 drain 闸失效 ⇒ 恰 2 条红；② 认领后异步派发摘掉 ⇒
+恰 3 条红；③ 串行闸摘掉 ⇒ **全绿 = 既存覆盖缺口**，已补 `task-events-input.test.ts` 一条并发串行
+用例；④ 容量闸失效 ⇒ 恰 3 条红；⑤ 补用例后重跑 ③ ⇒ **恰好那条新用例红**），全部 `cp` 还原后
+`sha256` 逐字节一致。门禁三件套 + 套件：transport 353 / architecture 57 / toolkit 142 / runtime 55 /
+engine 403 / container 10 / store 55 —— 全绿。
+
+**随之而变的守卫**：`tests/transport/dispatch-guard.test.ts` 的 `#dispatch(` 调用点射程**扩到四个
+文件**，并钉每个监督件的**精确数**（approval 2 / signal 1 / scanner 3）。⚠️ 与 ⑦ 同款：搬件会让它
+先掉一格判红 —— 修法是**扩射程**、不是放宽下限（「路径总数」这一事实没变）。
+
+**闭环**：`guards.md §2` 那条「`async.ts` 没有行数上限闸」划掉、移入 §1.1（建议③闭环）。
+`AGENTS.md` 的 `transport/` 段补登记三个监督件 + 订正那句过时的「910 行的类 / 后续抽块三步一步没走」。
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
