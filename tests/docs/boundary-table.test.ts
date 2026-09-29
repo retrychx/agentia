@@ -3,7 +3,7 @@
  *
  * ## 为什么需要它
  *
- * §7 是一张 **88 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
+ * §7 是一张 **90 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
  * 的唯一依据 —— 也是仓库里**最厚的一张对外承诺表**。
  *
  * 而它此前**零守卫**，且是被解析器**结构性**排除的：`usage-guide.test.ts` 的 `parseTables`
@@ -127,7 +127,7 @@ type Entry =
   | { key: string; gap: string; candidate: string };
 
 /**
- * 登记表（90 条，与 §7 的行一一对应）。
+ * 登记表（90 条，与 §7 的行一一对应；2026-09-29 复核：7 条 gap 已回填为 pin）。
  *
  * `pin` 的 `marker` 是目标用例 `it(...)` 标题里的**一段原文**（或脚本里的原文），
  * A3 会逐条断言它在场 —— 引用一条其实不相关的用例会当场红。
@@ -212,14 +212,19 @@ const REGISTRY: ReadonlyArray<Entry> = [
       '有意为之的取舍：单次 approve 能写的键被钉在当前 pendingApprovals 里（单次输入无法放大体积；跨轮累计历次待决的并集，增长只随真实运行）⇒ 天然有界（**不加**常量上限 —— 那会是永远触发不到的死代码）；终态也不清 —— 审批记录是审计的一部分',
   },
   {
+    // 2026-09-29 复核：原先登记为 gap，实为**写下时就错** —— 「缺省不限（旧行为）：不淘汰」
+    // 用例在登记日之前 16 天就已存在（working memory 记的抽样证据）。回填为 pin。
     key: '缺省内存 store 不淘汰',
-    gap: '「不淘汰」与 maxRecords 的对照没有用例钉住',
-    candidate: 'tests/store/memoryStore.test.ts',
+    pin: { file: 'tests/store/memoryStore.test.ts', marker: '缺省不限（旧行为）：不淘汰' },
   },
   {
+    // 2026-09-29 复核：同「缺省内存 store 不淘汰」—— 用例早于登记 11 天，回填为 pin。
+    // 该用例钉住 §7 括号里的「装配期校验，名字不存在即抛错」。
     key: '能力引用两种粒度',
-    gap: 'provider token 与 <token>/<能力名> 两种粒度的差别没有用例钉住',
-    candidate: 'tests/toolkit/module.test.ts',
+    pin: {
+      file: 'tests/toolkit/module.test.ts',
+      marker: '@SubAgent tools 引用未注册 provider → 装配期抛错（不延迟到运行时）',
+    },
   },
   {
     key: '能力名有格式校验',
@@ -306,8 +311,12 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'tests/transport/httpApproval.test.ts',
   },
   {
+    // 2026-09-29 复核：**只覆盖了半句**。前半句「一回合记账完才判」已由 budget.test.ts
+    // 那条「工具执行期间…回合入口再判拦住」用例钉住（超支发生在工具执行期间 ⇒ 下一回合入口拦）；
+    // 仍 gap 的是后半句：并行子循环（一回合多个子 agent）各自过闸、超支上限是「每个在飞分支
+    // 各一个回合」而非「总共一个回合」—— budget.test.ts 里没有并行分支用例。
     key: '预算护栏不是硬实时',
-    gap: '「一回合记账完才判」「每个在飞分支各一个回合」的粒度没有用例钉住',
+    gap: '「并行子循环（一回合多个子 agent）各过各的闸、超支上限是『每个在飞分支各一个回合』」这半句没有用例钉住（前半句「一回合记账完才判」已由 budget.test.ts 覆盖）',
     candidate: 'tests/engine/budget.test.ts',
   },
   {
@@ -358,9 +367,12 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'tests/runtime/session.test.ts',
   },
   {
+    // 2026-09-29 复核：用例已在场（此前登记为 gap）⇒ 回填为 pin。
     key: 'OpenAI 适配器听端点的话',
-    gap: '「端点回 JSON 就退回一次性」没有用例钉住（流式那半有）',
-    candidate: 'tests/integrations/openaiStream.test.ts',
+    pin: {
+      file: 'tests/integrations/openaiStream.test.ts',
+      marker: '端点忽略 stream:true 直接回 JSON → 自动退回 JSON 路径（不炸）',
+    },
   },
   {
     key: 'OpenAI 流式的上游故障按失败处理',
@@ -407,9 +419,12 @@ const REGISTRY: ReadonlyArray<Entry> = [
     },
   },
   {
+    // 2026-09-29 复核：用例已在场（此前登记为 gap）⇒ 回填为 pin。
     key: 'MCP 连接器的超时只管装配期',
-    gap: '连接器自带 timeoutMs 只作用于握手 + tools/list 这半句没有用例钉住',
-    candidate: 'tests/integrations/mcpConnector.test.ts',
+    pin: {
+      file: 'tests/integrations/mcpConnector.test.ts',
+      marker: 'tools/call 不起第二个计时器：超过连接器 timeoutMs 的调用照常等完（裁判是引擎）',
+    },
   },
   {
     key: 'MCP 连接的 close() 保证子进程已终止',
@@ -450,9 +465,14 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'src/integrations/metrics-state.ts',
   },
   {
+    // 2026-09-29 复核：candidate 原指向 src 源码（等于自认没有用例），实为**写下时就错** ——
+    // metrics.test.ts「reset 之后导出…窗口起点严格前移（CUMULATIVE 不得倒退）」用例体注释
+    // 明确测的就是 OTLP CUMULATIVE 在同一 startTime 下 counter 不得倒退。回填为 pin。
     key: 'OTLP metrics 只推当前累计',
-    gap: 'CUMULATIVE 与 startTime 前移的语义没有用例钉住（reset() 有）',
-    candidate: 'src/integrations/metrics-otlp.ts',
+    pin: {
+      file: 'tests/integrations/metrics.test.ts',
+      marker: 'reset 之后导出：值回到 1，且窗口起点严格前移（CUMULATIVE 不得倒退）',
+    },
   },
   {
     key: 'GET /metrics 不鉴权',
@@ -462,9 +482,14 @@ const REGISTRY: ReadonlyArray<Entry> = [
     },
   },
   {
+    // 2026-09-29 复核：candidate 原指向 report.test.ts，但真正逐字钉住「工具没有 token/成本」
+    // 的是 metrics.test.ts 那条（用例体含 `// 工具没有 token 语义 → 不产出 token/cost 行`
+    // 与显式正则负断言）。回填为 pin。
     key: '工具没有 token/成本指标',
-    gap: '「工具只产出调用数/失败数/耗时」没有用例钉住',
-    candidate: 'tests/integrations/report.test.ts',
+    pin: {
+      file: 'tests/integrations/metrics.test.ts',
+      marker: 'snapshot().capabilities 给排序无关的键值视图；工具 tokens/costUsd 为 null',
+    },
   },
   {
     key: '@Prompt 没有能力指标',
@@ -562,9 +587,13 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'tests/transport/httpApproval.test.ts',
   },
   {
+    // 2026-09-29 复核：用例已在场（此前登记为 gap）⇒ 回填为 pin。http-shapes 用
+    // `Object.keys(body).sort()` 断言**恰好这 7 个键** ⇒ 等价于「响应体不含 suspendedMessages」。
     key: '同步 /run 撞上审批没人可批',
-    gap: '「响应体不含 suspendedMessages」没有用例钉住',
-    candidate: 'tests/transport/http-shapes.test.ts',
+    pin: {
+      file: 'tests/transport/http-shapes.test.ts',
+      marker: '7 个字段全在场（typed / error 为 undefined 也在场）',
+    },
   },
   {
     key: 'Scheduler 调度表不落库',
@@ -671,7 +700,7 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
   it('解析器没退化：§7 至少有 70 行（解析崩了会红，而不是空转绿）', () => {
     assert.ok(
       rows.length >= 70,
-      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 89 行）`,
+      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 90 行）`,
     );
   });
 
@@ -752,9 +781,12 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
     for (const e of REGISTRY) {
       if ('choice' in e) assert.ok(e.choice.length >= 8, `「${e.key}」的 choice 理由太短`);
     }
-    // 当前读数（2026-09-28 ⑫ 更新）：pin 47 / choice 10 / gap 31 = 88 行。
-    // 首版（2026-09-26）是 38 / 9 / 30 = 77 —— 上面 §7 里那几个「88 行」的数字与这段都要
-    // 一起改：它们是**读数**，写死在注释里就是为了让「表长大了而没人发现」在 review 时可见。
+    // 当前读数（2026-09-29 复核更新）：pin 56 / choice 10 / gap 24 = 90 行。
+    // 本轮复核把 7 条 gap 回填为 pin（缺省内存 store 不淘汰 / 能力引用两种粒度 / OpenAI 适配器
+    // 听端点的话 / MCP 连接器的超时只管装配期 / OTLP metrics 只推当前累计 / 工具没有 token
+    // 成本指标 / 同步 /run 撞上审批没人可批），另订正 1 条 gap 的理由（预算护栏不是硬实时）。
+    // 首版（2026-09-26）是 38 / 9 / 30 = 77 —— 上面 §7 里那几个行数数字与这段都要一起改：
+    // 它们是**读数**，写死在注释里就是为了让「表长大了而没人发现」在 review 时可见。
   });
 
   // ---------- A1：标识符不悬空 ----------
