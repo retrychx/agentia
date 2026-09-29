@@ -5416,6 +5416,54 @@ run：total=7189536 failed=325235（4.52%）thrown=0，吞吐 998.5 run/s
 - 短档实测：`SOAK_DURATION_MS=20000 SOAK_CONCURRENCY=16` ⇒ 22624 run 全过，新打印的两行在场
   （分类计数 + 判据清单：`认得 aborted/rate_limit/server/api/timeout/connection/unknown`）。
 
+### 2026-09-29 ⑦：**`AsyncRunner` 的审批监督簇抽成独立件**（结构体检建议②；B.3 复核清单逐条过）
+
+**来源与性质**：外部深评的 `STRUCTURE-INVENTORY-2026-09-29.md` 建议②。这是**零行为变化的
+纯结构重构** —— 与它前后的「修缺陷」性质不同，因此判据也不同：验的不是行为，而是**忠实**。
+
+**抽的是什么**：`AsyncRunner` 的审批监督簇 —— 挂起登记簿（`#suspended`，即 `/healthz` 的
+`suspended` 读数）+ 在飞审批闸（`#inflightApprovals`）+ `approve` / `#approveInner` + 审批超时
+恢复（`#expireAndResume` / `#expireAndResumeInner`）⇒ 新件 `src/transport/approval-supervisor.ts`。
+`async.ts` **1929 → 1756 行**（`AsyncRunner` 单类曾 1554 行）。
+
+**为什么能这样切**：逐行核对确认了这簇的**真实跨度** —— 横跨 5 处外部调用点（`cancel` /
+`signalTask` / 到期唤醒 / `resumePending` 扫描 / `#executeInner` 的挂起与终态出口）+ 对外 getter，
+且派发要经 `#dispatch`（私有方法：停机闸 + 唯一派发口 + 一次性告警）。据此选**注入**而非
+`import`：审批簇只**消费** `dispatch` 回调 ⇒ 依赖单向、无模块环。`TaskApproveError` /
+`ApprovalDecisions` 随簇迁走，`async.ts` 顶部 re-export ⇒ 导出面与既有 import 路径全不变。
+
+**一处有意的等价简化**：`#redispatch` 的超时扫描原写作 `rec.status !== 'suspended' ||
+!approvalExpired(...)`；而 `approvalExpired` 内部已判 `status === 'suspended'` 与
+`reason === 'approval'`（见 approval-policy.ts）⇒ 那句短路**冗余**，并入 `expireIfExpired`
+不改变任何可观测行为。
+
+**忠实性证据（`guards.md` B.3 的六条逐条过）**：
+
+1. **被搬走的状态没有别的读者** —— grep 确认 `#suspended` / `#inflight` 的**全部**读写点随簇
+   迁走；`async.ts` 侧只剩 getter 转调与 4 处调用点。
+2. **字符串字面量机械对拍**（多重集，脚本，不靠人眼）：旧 `async.ts` 80 种 / 135 个 vs 新
+   （`async.ts` + `approval-supervisor.ts`）81 种 / 142 个 —— **唯一「丢失」的就是上面那处
+   有意删除的 `'suspended'` 冗余短路**，其余差异全是两文件各自的 `import` / `re-export` 路径。
+3. **没有模块级可变状态被复制成两份** —— 两个 `Map` 各只有一份，都在新件里。
+4. **循环 import 的 TDZ 风险** —— 新件不 `import async.ts`（单向依赖），`file-cycles.test.ts` 绿。
+5. **注入的值各调用点没传错** —— 构造处 4 个依赖逐一对上（`store` / `ownerId` /
+   `approvalTimeoutMs` / `dispatch`），`typecheck` 绿。
+6. **旧侧取真实父提交** —— 对拍用 `git show HEAD:src/transport/async.ts`，不是固定基线。
+
+**验证**：3 条变异逐条亲跑（① `expireIfExpired` 恒不触发 ⇒ 恰好 3 条红；② `approve` 的 409 判据
+退回只看 `status` ⇒ 恰好 1 条红；③ `rebuild` 的 reason 判据摘掉 ⇒ **全绿 = 既存覆盖缺口**，
+已登记 `guards.md §2`），三条 `cp` 还原后 `sha256` 逐字节一致。门禁三件套 + transport 352 /
+architecture 57 / toolkit 142 / runtime 56 / engine 404 / container 11 / store 56 —— 全绿。
+
+**随之而变的守卫**：`tests/transport/dispatch-guard.test.ts` 的 `#dispatch(` 调用点下限**射程扩到
+两个文件**（两条恢复路径的派发点形如 `this.#deps.dispatch(`）。⚠️ 该守卫在本次改动中**先红了**
+（这是它的职责）—— 修法是**扩射程**而不是放宽下限，因为「路径总数」这一事实没变。
+
+**有意不做**：`async.ts` 的**行数上限闸**（结构体检建议③）。「超多少行算超」是**口径**问题：
+定低了会误伤本仓大量合法的长穷尽表 / 表格文件，定高了等于没定 —— 而 `guards.md §3` 第 1 条
+纪律是「宁可窄，不要误报」。⇒ 先把形状登记进 §2，并给出与行数解耦的替代判据（钉「职责数」，
+或沿用 `dispatch-guard` 的调用点计数形状）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
