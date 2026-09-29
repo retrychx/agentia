@@ -27,6 +27,33 @@ L3 是「运维化」而不是「门禁化」。
   ② 整链可注入是一次跨编排层的时钟抽象（全仓 `Date.now()` 39 处），不是加个可选参数；
   ③ 判据是「先有病例，再有设备」。
 
+### 测试与工具 · soak 的错误分类判据改成穷尽表（2026-09-29 ⑤）
+
+**使用者可见行为零变更**（判据 + 新导出常量）：`src/engine/errors.ts` 新增
+`ERROR_TYPES` / `ErrorType`（`classifyError` 的返回类型收窄成 `ClassifiedError`，**不改运行期
+行为**；`SpanError.type` 仍是公共类型上的 `string` —— 收紧它才是破坏性变更，没做）。
+
+**这一条是「把 2 小时 soak 真跑起来」拿到的第一份结果，而且那轮是红的** —— 红的是**判据**：
+
+```
+AssertionError: 存在未知错误分类：connection
+run：total=7189536 failed=325235（4.52%）thrown=0，吞吐 998.5 run/s
+端点：requests=8114503 …  内存：heap 61.6MB → 69.6MB，rss 峰值 204.7MB（27 个采样）
+```
+
+`e2e-soak.ts` 的断言里手写着一份三名字白名单（`api` / `server` / `rate_limit`），漏了框架
+自己的合法类 `connection` —— 719 万 run 里它出现 **1 次**，默认 60 秒的跑法永远撞不到。
+现在判据单源化：`scripts/soak-error-posture.ts` 的 `SOAK_ERROR_POSTURE` 是
+`Record<ErrorType, 规则>` 穷尽表（加一类不表态 ⇒ `TS2741`，每条必须写 `why`），
+`soakErrorVerdict` 对**表外一切**判 `hard-red`；`unknown` / `aborted` / `timeout` 判红，
+注入的四类允许但**分类计数打印出来**（允许 ≠ 不看）。
+
+- **验证**：9 条用例（`tests/scripts/soak-error-posture.test.ts`，**不跑 soak 本体**）+ **6 条
+  变异**逐条亲跑点名，还原后 `sha256` 逐字节一致；短档 20s 实测全过且新打印行在场。
+- ⚠️ **一条命令教训**：处置表在 `scripts/`，而根 `tsconfig.json` 只 include `src` ⇒ 守它的是
+  `npm run typecheck:tests`。第一次跑变异拿 `typecheck` 验，结果是**假绿** —— 已写进头注并补
+  承重条件用例。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
