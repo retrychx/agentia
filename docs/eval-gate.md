@@ -9,6 +9,11 @@
 > ⚠️ **它不是 roadmap 上已声明的候选**：`docs/roadmap.md` 的 R7 剩余候选是「中间件二次评估」
 > 与「Workers 代理版 playground」。这一条是审阅定位时读出来的缺口 —— 属于**建议**，不是仓库欠账。
 
+> ⚠️ **怎么拿到它**：`examples/eval-gate/` 是一个**不发布**的本地小包 ——
+> `npm i @migor/agentia-eval-gate` 会 **404**（`"private": true`）。把那个目录拷进你的工程、以
+> `"file:./eval-gate"` 引入即可；也可直接照 `src/gate.ts`（单文件）把判据抄走。
+> 与 `packages/trace-view`、`examples/observability` 同一套办法（三者都不发 registry）。
+
 ## 0. 框架给什么 / 不给什么
 
 | 框架给 | 框架不给（这份配方补） |

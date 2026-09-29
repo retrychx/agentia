@@ -3,7 +3,7 @@
 // 为什么需要：本包的 store 层用了 node:sqlite（Node ≥22.5 才提供的内置模块）。
 // 早先是对它**顶层静态 import**，而 `src/index.ts` 又 eager 再导出 SqliteTaskStore，
 // 于是**整个包**在 Node 18/20 上「加载即崩」（ERR_UNKNOWN_BUILTIN_MODULE）——
-// 可 engines 里写着 >=18。声明与实现不一致，而且无人守（CI 只跑 Node 22）。
+// 可 engines 里写着 >=18。声明与实现不一致，而且无人守（主 job 只跑**一个** Node 版本）。
 //
 // 本脚本在**最低支持版本**上真跑一遍：包可导入 + 关键导出在 + SqliteTaskStore
 // 要么可用、要么给出可读报错（而不是崩溃）。任何一步退化，CI 立刻红。

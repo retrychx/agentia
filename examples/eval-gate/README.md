@@ -4,6 +4,19 @@
 
 配套文档：[`docs/eval-gate.md`](../../docs/eval-gate.md)（判据规则 / CI 接线 / 边界）。
 
+## ⚠️ 先看这条：怎么拿到它
+
+这个包**没有发布到 registry** —— `npm i @migor/agentia-eval-gate` 会 **404**
+（`package.json` 里 `"private": true`，与 `packages/trace-view`、
+`examples/observability` 是同一套办法）。它是**本地小包**：把 `examples/eval-gate/` 这个目录
+拷进你的工程，并在 `package.json` 里声明 `"@migor/agentia-eval-gate": "file:./eval-gate"`
+（本仓库 `examples/` 下各包之间就是这么接的，可以直接照抄）；不想引这个包名，也可以照
+`src/gate.ts`（单文件）把判据抄进自己的文件。
+
+**这不是待补的缺口，是决策**：框架的职责到「产出结论」为止，「这一版能不能发」是**宿主的发布流程**
+（见下节）—— 所以它是**可拷走的实现**，不是框架要长期维护的发布面。三个不发布的包合起来只有
+一条规则：**`private: true` ⇒ 拷目录用，别 `npm i`**。
+
 ## 为什么独立成示例
 
 框架的职责到「产出结论」为止：`defineEval` 给 `EvalReport`，`agentia harvest` 给用例骨架，
