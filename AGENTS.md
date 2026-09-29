@@ -107,6 +107,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥
+│   │                        #   capability-slice.ts = **四类能力在装配期的全部差异只在这张表里**（§10 2026-09-29 ③）：
+│   │                        #   CapabilityPayloads 就是「一类能力」的定义，KIND_SPEC 是映射类型
+│   │                        #   （加一类能力不给表项 ⇒ `tsc` 报 TS2741），CAPABILITY_KINDS 从表的键派生
+│   │                        #   ⇒ 收集 / 可用名单 / 切片 / 版本表 / 孤儿计数五处**遍历**它，
+│   │                        #   module.ts 里不再有按类分支。⚠️ 两处**刻意不在表里**（别为整齐搬进来）：
+│   │                        #   菜单重名校验（跑在合并后的工具列表上，与类别无关）、能力引用图
+│   │                        #   （只有 @SubAgent / @Skill 有 tools 引用 —— 语义不对称，不是漏项）
 │   ├── eval/                # evals（D2）：scriptedClient + defineEval + harvest(trace → eval 用例骨架) ——
 │   │                        #   **叶子消费模块**，只依赖公共面、零反向依赖（谁都不 import 它）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）
