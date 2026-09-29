@@ -8,6 +8,11 @@
 with decorators + DI and a main agent orchestrates them; every run yields structured output and an
 observable call tree (trace, cost, metrics).
 
+**1 package · ≈2 MB · 0 runtime dependencies · 90+ guards** — the answer to the first question when
+choosing a library (how big is the install?): `npm i @migor/agentia` puts exactly **one** package into
+`node_modules` and pulls in no vendor SDK. These numbers are recomputed by
+`tests/docs/scoreboard.test.ts` on every run; hand-written figures rot.
+
 > This is a **summary**. The authoritative and always-current documentation is Chinese:
 > [`docs/usage-guide.md`](./docs/usage-guide.md) (API reference, type wiring, known limits) and the
 > [website](https://agentia-web.pages.dev). We keep this file short on purpose — a hand-maintained
