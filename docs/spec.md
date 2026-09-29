@@ -5911,6 +5911,37 @@ CLI 摘掉 `./package.json` ⇒ 红 ①③④；`default` 指到别的文件 ⇒
 **影响面**：`docs/deployment.md`（新）、`tests/docs/deployment.test.ts`（新）、`README.md`
 （延伸阅读加一行）、`docs/guards.md` §1.4（登记）、本节。**框架代码零改动。**
 
+### 2026-09-29 ⑯：**五个 bench 的数字对外**（评审 P2-1）—— 以及「这一次的腐烂不能用现算治」
+
+**触发**：评审 §5 P2-1：仓里有五个基准（`scripts/bench-*.ts`），每个都能给出「换实现能省掉什么」
+的**形状**结论，而对外文档面（README / README.en / 官网 docs 页）**一个性能数字都没有**
+（`grep -nE "bench|ms" README.md` ⇒ 0 命中）。「零依赖」这类形容词不参与比较，**数字才参与**。
+
+**而这一条与 P0-2（记分牌）的处境相反，值得单独记一笔**：记分牌那四个数能被现场复算
+（`npm pack` / 数表行 / 读 `dependencies`）⇒ 用「现算 + 断言」治腐烂。bench 不行 ——
+
+- 五个基准是**计时类**的，而本仓早就定了处置（`docs/plans/2026-09-22-dev-debug-loop.md`：
+  「与 `bench:trace` 同档，不进 verify-all / CI，要看时跑」）。**跑进守卫 = 违反既定决策**，
+  且计时基准在 CI 机器上只会制造抖动 ⇒ 那条路一开始就关着。
+- ⇒ 于是这里有一处**必须如实承认的射程**：**毫秒数守不住**。写进 README 的那一刻起它就是
+  「本机量级」，机器一换就变，且没有任何信号。
+
+**因此这一节的落地口径是「守可复算性，不守读数」**（`tests/docs/bench-numbers.test.ts`）：
+① 五个基准**每个都给复跑命令**且指向的脚本真实存在（`npm run bench:X` 要走 `package.json`
+解一层 —— 只有 3 个基准注册了 script，另两个是 `npx tsx scripts/…ts`），加**自证**（解析出的
+命令数 ≥ 5，否则解析器退化成 0 命中会静默全绿）；② 三面都写「**毫秒不是承诺**」（防本机量级
+被抄进营销文案当 SLA）；③ 三面都写「基准**刻意不进 CI**」（防有人塞进 CI 而文档还写着
+「刻意不进」，也防反过来）；④ `BENCH_SCRIPTS` 与 `scripts/bench-*.ts` **双向相等**（新增基准
+⇒ 必须同步进三面）。**反向验证过 5 条，各恰好点名**，还原后 `sha256` 逐字节一致。
+
+**顺带记一条工具性教训**：变异脚本里 `not ok` 前面有**缩进**，用 `startswith('not ok')` 过滤会
+**漏掉所有子测试**、只剩外层 suite 一行 —— 输出看着「红了」，实际**没点名**，会把「没咬住」
+读成「咬住了」。⇒ 一律 `line.strip()` 后再匹配。
+
+**影响面**：`README.md`、`README.en.md`、`packages/website/src/fragments/docs.html`（各一节 +
+侧栏锚点）、`tests/docs/bench-numbers.test.ts`（新）、`docs/guards.md` §1.4（登记）、本节。
+**框架代码零改动。**
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
