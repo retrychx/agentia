@@ -63,14 +63,23 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   SystemPrompt、跨 run 记忆(MemoryStore 水合/回写)
 │   ├── transport/           # 触发宿主：HTTP handler、异步任务(AsyncRunner)、定时(Scheduler)、同步 RPC
 │   │                        #   slot-pool.ts = 并发槽位原语（纯依赖、带单测）—— AsyncRunner 拆分的第一步：
-│   │                        #   910 行的类里只有这块不碰 store/引擎，先抽它 + 配 FIFO/移交语义的回归用例，
-│   │                        #   后续抽块（审批监督 / 恢复重投 / drain 协调）才有基线
+│   │                        #   先抽它（唯一不碰 store/引擎的一块）+ 配 FIFO/移交语义的回归用例，
+│   │                        #   后续抽块（审批监督 / 信号投递 / 恢复扫描 / drain 协调）才有基线
 │   │                        #   approval-policy.ts = 审批的**纯判定**（超时判定 / 超时兜底拒绝 / 决定齐没齐）：
 │   │                        #   编排（在飞闸、重读、先落库再派发）仍留在 AsyncRunner，纪律一字未改
 │   │                        #   drain-gate.ts = 优雅停机的等待闸（停机态标志 / 排空等待 / 超时竞速）；
 │   │                        #   在飞计数不搬（它同时是 /healthz 的 inFlight 口径），以谓词传入
 │   │                        #   resume-policy.ts = 崩溃恢复的**认领判定**（跳过原因具名化：terminal /
 │   │                        #   own-process / too-fresh）—— 「同一任务重复执行」那个 bug 就出在这几条规则上
+│   │                        #   approval-supervisor.ts = 审批监督簇（2026-09-29 抽）：挂起登记簿
+│   │                        #   （/healthz 的 suspended 读数）+ 在飞审批闸 + approve + 审批超时恢复；
+│   │                        #   只**消费** AsyncRunner 注入的 dispatch 回调 ⇒ 依赖单向（不是 import）
+│   │                        #   signal-supervisor.ts = 信号投递簇（同日抽）：挂起任务的外部唤醒入口，
+│   │                        #   与 approve 同族（读记录 → 校验挂起 → 改状态 → 先落库再派发）；并发闸不同款 ——
+│   │                        #   事件**串行成链**（不共享在飞那次），且多一道容量闸（上限 64）
+│   │                        #   resume-scanner.ts = 恢复扫描与接管（同日抽）：resumePending 一次扫描
+│   │                        #   按序干四件事（顺序有语义）—— rebuild → expireIfExpired → wakeDue → 认领重投；
+│   │                        #   #dispatch 仍归 AsyncRunner，以回调注入（依赖单向）
 │   │                        #   task-waiters.ts = 任务终态等待表（事件唤醒 + 兜底定时器）；**只覆盖本进程写终态**，
 │   │                        #   他进程写终态唤不醒 —— 那是 awaitTask 里 intervalMs 兜底轮询存在的原因（不是缺陷）
 │   │                        #   task-events.ts = 每任务的**记账事件缓冲 + 订阅表**（GET /tasks/:id/stream 的底座：

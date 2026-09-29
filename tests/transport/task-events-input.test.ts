@@ -255,6 +255,66 @@ describe('signalTask —— 先落库再派发', () => {
   });
 });
 
+describe('signalTask —— 并发串行（重入闸）', () => {
+  it('两条并发事件串行成链 ⇒ 只唤醒一次（不各读各写双派发，也不静默丢一票）', async () => {
+    // 为什么要单独一条（2026-09-29 抽 signal-supervisor 时变异实测发现）：这条闸
+    // （`#inflight` 链）**此前没有任何用例钉住** —— 把它摘掉（`const prev = this.#inflight.get(...)`
+    // 改成 `undefined`）跑全套，一条都不红。而它挡的是真实的双派发。
+    const spy = { calls: 0 };
+    const gate: Gate = { at: Date.now() + 3_600_000 };
+    const { app: engine } = timerApp(
+      [toolUseMsg('wait_for_batch', {}, 'tu1'), endTurnMsg('到位了')],
+      spy,
+      gate,
+    );
+    // 数「`app.run` 被派发了几次」—— 双派发是可观测的：同一个任务跑两遍。
+    const runs = { n: 0 };
+    const app: AppCallable = {
+      name: 'timer',
+      run: (messages, opts) => {
+        runs.n++;
+        return engine.run(messages, opts);
+      },
+    };
+    // ⚠️ 必须用**有往返**的异步 store：`get` 返回**副本**且不立刻兑现 —— 同步 store 下
+    // 两条 `signalTask` 之间没有 `await` 窗口，各自「读-改-写」天然串行，闸失效也看不出来。
+    // （这正是 `#signalInner` 注释里说的「与 resumePending 的重入闸同一个 bug 类」。）
+    const backing = new InMemoryTaskStore();
+    const store: TaskStore = {
+      save: (rec) => backing.save(rec),
+      get: async (id) => {
+        await new Promise((r) => setTimeout(r, 20));
+        const r = backing.get(id);
+        return r === undefined ? undefined : { ...r };
+      },
+      list: () => backing.list(),
+      byIdempotency: (k) => backing.byIdempotency(k),
+      clear: () => backing.clear(),
+    };
+    const runner = new AsyncRunner(app, { store });
+    const t = runner.submit('睡到明天');
+    await waitStatus(runner, t.taskId, 'suspended');
+    assert.equal(runs.n, 1, '首次执行跑了一轮（工具 defer ⇒ 挂起）');
+
+    gate.at = null; // 下次工具调用不再延后 ⇒ 唤醒那趟能跑完
+    // 两条事件**同时**投出。没有重入闸的话：两次 `#signalInner` 各自 `get` 到同一份
+    // suspended 快照 ⇒ 各自把状态翻成 running 并派发 ⇒ 同一任务跑两遍。
+    const settled = await Promise.allSettled([
+      runner.signalTask(t.taskId, { eventId: 'e1', type: 'batch.done', payload: 'A' }),
+      runner.signalTask(t.taskId, { eventId: 'e2', type: 'batch.done', payload: 'B' }),
+    ]);
+    assert.equal(
+      settled.filter((s) => s.status === 'fulfilled').length,
+      1,
+      '只有一条真投递 —— 另一条排在链上，等前一次落库后进闸重读（那时已 running / 已终态）⇒ 409 如实说出来',
+    );
+    assert.equal(runs.n, 2, '`app.run` 只被派发两次（首次 + 唤醒那一次）—— 并发双派发被闸挡住了');
+
+    const done = await waitStatus(runner, t.taskId, 'succeeded');
+    assert.equal(done.status, 'succeeded', '唤醒那趟真跑完了（阳性对照：闸没有把这一条也挡掉）');
+  });
+});
+
 describe('signalTask —— 事件进历史与幂等', () => {
   it('timer 挂起收到事件 ⇒ 提前醒（不等 wakeAt）；再请求延后 ⇒ wakeAt 重新落定（不沿旧的）', async () => {
     const spy = { calls: 0 };

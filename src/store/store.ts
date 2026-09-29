@@ -89,7 +89,7 @@ export interface TaskRecord {
   pendingEvents?: TaskEvent[] | undefined;
   /**
    * 已投递事件的 eventId 簿记（幂等去重依据；**随记录落库** ⇒ 跨进程/重启不丢）。
-   * 有界：最多保留 `MAX_DELIVERED_EVENT_IDS`（`transport/async.ts`）条，超出 FIFO 裁
+   * 有界：最多保留 `MAX_DELIVERED_EVENT_IDS`（`transport/signal-supervisor.ts`）条，超出 FIFO 裁
    * 最旧 —— 它是去重簿记，不是审计日志；超出上限后同 id 重投会再进一次历史（如实：
    * 簿记有界，恰好一次的承诺也就有界）。
    */
