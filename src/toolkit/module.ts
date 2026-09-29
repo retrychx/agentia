@@ -15,13 +15,14 @@ import type { Provider, Token } from '../container/container.js';
 import type { BlackboardKey } from '../core/blackboard.js';
 import { omitUndefined } from '../core/object.js';
 import { discoverProviders } from './discover.js';
-import { collectTools } from './tool.js';
-import { collectSubAgents, subagentToTool } from './subagent.js';
-import type { SubAgentCapability } from './subagent.js';
-import { collectSkills, skillToTool } from './skill.js';
-import type { SkillCapability } from './skill.js';
-import { collectPromptEntries } from './prompt.js';
-import type { CollectedPrompts } from './prompt.js';
+import {
+  buildCapabilitySlice,
+  capabilityCount,
+  capabilityToolNames,
+  capabilityVersions,
+  collectCapabilities,
+} from './capability-slice.js';
+import type { CollectedByKind } from './capability-slice.js';
 import { applyMiddleware } from './middleware.js';
 import type { CapabilityMiddleware } from './middleware.js';
 import { buildCapabilityGraph, findCapabilityCycle } from './capability-cycles.js';
@@ -283,18 +284,14 @@ export class AgentApp {
       traceLimits: opts.traceLimits,
     };
 
-    // 先为每个 provider 解析实例并预收集它的 @Tool / @SubAgent / @Skill / @Prompt；
+    // 先为每个 provider 解析实例并预收集它的四类能力（@Tool / @SubAgent / @Skill / @Prompt）。
+    // 「四类」这件事只活在 `capability-slice.ts` 的注册表里 —— 本文件按类**遍历**，不按类分支，
+    // 所以新增第五类能力不会在这里留下一处「忘了改」的静默点（外部深评 K2）。
     // 子 agent / skill 的 tools token 在装配期即解析到该 provider 的 @Tool 菜单（静态校验）。
-    const plainByToken = new Map<Token, AgentTool[]>();
-    const capabilitiesByToken = new Map<Token, SubAgentCapability[]>();
-    const skillsByToken = new Map<Token, SkillCapability[]>();
-    const promptsByToken = new Map<Token, CollectedPrompts>();
+    const collectedByToken = new Map<Token, CollectedByKind>();
     for (const p of providerList) {
       const inst = this.di.resolve<object>(p.provide);
-      plainByToken.set(p.provide, collectTools(inst));
-      capabilitiesByToken.set(p.provide, collectSubAgents(inst));
-      skillsByToken.set(p.provide, collectSkills(inst));
-      promptsByToken.set(p.provide, collectPromptEntries(inst));
+      collectedByToken.set(p.provide, collectCapabilities(inst));
     }
 
     // 能力调用中间件：装配期包裹整个菜单（洋葱模型，对 engine 零侵入）；
@@ -331,20 +328,14 @@ export class AgentApp {
           : { token: ref.slice(0, slash), name: ref.slice(slash + 1) };
       });
       for (const { token, name } of parsed) {
-        if (!plainByToken.has(token)) {
+        if (!collectedByToken.has(token)) {
           throw new Error(`${owner} tools 引用未注册 provider: "${token}"`);
         }
         if (name !== undefined) {
           // 可用名单 = 该 provider 收集菜单全量（@Tool 与它的 subagent/skill/prompt
           // 工具名），按名排序给出，方便作者对照改正。
-          const available = [
-            ...(plainByToken.get(token) ?? []),
-            ...(capabilitiesByToken.get(token) ?? []),
-            ...(skillsByToken.get(token) ?? []),
-            ...(promptsByToken.get(token)?.tools ?? []),
-          ]
-            .map((t) => t.name)
-            .sort();
+          const collected = collectedByToken.get(token);
+          const available = (collected === undefined ? [] : capabilityToolNames(collected)).sort();
           if (!available.includes(name)) {
             throw new Error(
               `${owner} tools 引用 "${token}" 中不存在的能力: "${name}"（可用: ${available.join(', ')}）`,
@@ -361,22 +352,11 @@ export class AgentApp {
         });
     };
 
+    // 一路「按类展开」：每类怎么变成工具由 `capability-slice.ts` 的注册表决定（含它的
+    // 引用提示词 `@SubAgent "x"` / `@Skill "x"`），本文件不再有四路展开。
     const buildSlice = (token: Token): AgentTool[] => {
-      const plain = plainByToken.get(token) ?? [];
-      const subTools = (capabilitiesByToken.get(token) ?? []).map((capability) =>
-        subagentToTool(
-          capability,
-          resolveRefTools(`@SubAgent "${capability.name}"`, capability.spec.tools),
-        ),
-      );
-      const skillTools = (skillsByToken.get(token) ?? []).map((capability) =>
-        skillToTool(
-          capability,
-          resolveRefTools(`@Skill "${capability.name}"`, capability.spec.tools),
-        ),
-      );
-      const promptTools = promptsByToken.get(token)?.tools ?? [];
-      return [...plain, ...subTools, ...skillTools, ...promptTools];
+      const collected = collectedByToken.get(token);
+      return collected === undefined ? [] : buildCapabilitySlice(collected, resolveRefTools);
     };
 
     // 全部 provider 都切片并包装：主菜单只取 sources，但被 toolSources 排除的
@@ -395,20 +375,27 @@ export class AgentApp {
     // 只限每层的**宽度**、深度没有任何闸 ⇒ 树按 宽度^深度 炸开（token 与内存双爆），
     // 且要到运行期才显形。DI 容器有环检测（`container.ts`），能力图此前没有。
     // 实现在 `capability-cycles.ts`（纯件：不碰 DI、可单独单测）。
-    const graphInputs: CapabilityRefInput[] = providerList.flatMap((p) => [
-      ...(capabilitiesByToken.get(p.provide) ?? []).map((c) => ({
-        token: p.provide,
-        kind: 'subagent' as const,
-        name: c.name,
-        refs: c.spec.tools ?? [],
-      })),
-      ...(skillsByToken.get(p.provide) ?? []).map((c) => ({
-        token: p.provide,
-        kind: 'skill' as const,
-        name: c.name,
-        refs: c.spec.tools ?? [],
-      })),
-    ]);
+    // ⚠️ 这里**刻意只取两类**（不遍历 CAPABILITY_KINDS）：只有 @SubAgent / @Skill 有
+    // `tools` 引用，@Tool 与 @Prompt 没有「能力引用」这回事 —— 那是语义上的不对称，不是漏项
+    //（同一条说明也在 capability-slice.ts 的文件头，别为了「看起来整齐」改成遍历）。
+    const graphInputs: CapabilityRefInput[] = providerList.flatMap((p) => {
+      const collected = collectedByToken.get(p.provide);
+      if (collected === undefined) return [];
+      return [
+        ...collected.subagent.map((c) => ({
+          token: p.provide,
+          kind: 'subagent' as const,
+          name: c.name,
+          refs: c.spec.tools ?? [],
+        })),
+        ...collected.skill.map((c) => ({
+          token: p.provide,
+          kind: 'skill' as const,
+          name: c.name,
+          refs: c.spec.tools ?? [],
+        })),
+      ];
+    });
     const cycle = findCapabilityCycle(buildCapabilityGraph(graphInputs));
     if (cycle !== undefined) {
       throw new Error(
@@ -428,7 +415,8 @@ export class AgentApp {
     // 收窄同样生效）汇总各 @Prompt 的 最终菜单名→version；run() 固定传给 engine。
     const promptVersions: Record<string, string> = {};
     for (const token of sources) {
-      Object.assign(promptVersions, promptsByToken.get(token)?.versions);
+      const collected = collectedByToken.get(token);
+      if (collected !== undefined) Object.assign(promptVersions, capabilityVersions(collected));
     }
     this.promptVersions = Object.keys(promptVersions).length > 0 ? promptVersions : undefined;
     this._tools = [
@@ -460,11 +448,8 @@ export class AgentApp {
       const included = new Set(opts.toolSources);
       for (const p of providerList) {
         if (included.has(p.provide)) continue;
-        const orphanCount =
-          (plainByToken.get(p.provide)?.length ?? 0) +
-          (capabilitiesByToken.get(p.provide)?.length ?? 0) +
-          (skillsByToken.get(p.provide)?.length ?? 0) +
-          (promptsByToken.get(p.provide)?.tools.length ?? 0);
+        const collected = collectedByToken.get(p.provide);
+        const orphanCount = collected === undefined ? 0 : capabilityCount(collected);
         if (orphanCount > 0) {
           console.warn(
             `[agentia] 孤儿能力告警：provider "${p.provide}" 上的 ${orphanCount} 个能力不在 toolSources 内，` +

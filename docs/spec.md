@@ -5245,6 +5245,57 @@ P2 账：26 行 = **19 已落地 / 6 未做 / 1 有意为之**。
 
 **P2 账**：`T4` 从未做 → **已落地**（26 行 = **23 已落地 / 1 未做 / 2 有意为之**）。
 
+### 2026-09-29 ③：**四类能力的装配差异收进一张注册表**（外部深评 K2）
+
+**病灶（复核过，但报告的「7 处」是概数、要订正）**：加第五类能力此前要在 `toolkit/module.ts`
+改**五处按类分支**：收集（四个 `Map` + 四次 `collectX`）、可用名单（四路拼接）、
+`buildSlice`（四路展开）、`@Prompt` 版本表、孤儿能力计数（四路求和）。
+性质不是「代码不好看」，而是**新增第五类时没有任何东西会报错**：漏改某一处只表现为
+「那类能力静默不进菜单 / 不进版本表 / 不计入孤儿告警」，构建与全部用例照样全绿。
+
+**订正报告的两个计数细节**（同 §2 的「计数会过期，清单不会」）：
+
+- 报告列的**菜单重名校验**不用按类 —— 它跑在**合并后的工具列表**上（`this._tools`），
+  与类别无关；按类拆开反而要重新拼回去；
+- **能力引用图**（`capability-cycles`）只有 `@SubAgent` / `@Skill` 参与（另外两类没有
+  「`tools` 引用」这回事）—— 那是**语义上的不对称**，不是漏项。本条目把这两处**显式写在
+  代码注释与表头**，防止后来者「为整齐」把它们塞进遍历。
+
+**落地形态**（新增 `src/toolkit/capability-slice.ts` + `module.ts` 消费）：
+
+- `CapabilityPayloads`（四类的收集产物）就是**「一类能力」的定义**；
+  `KIND_SPEC` 的类型是**映射类型** `{[K in CapabilityKind]: CapabilityKindSpec<K>}` ⇒
+  加了 payload 成员却不给表项 ⇒ **`TS2741`（缺属性）**，与 `SUCCESS_STOP_REASON` /
+  `TERMINAL_STATUS` 同款护栏（加成员不表态就构建红，而不是「下次谁发现」）。
+- `CAPABILITY_KINDS` **从表的键派生**（不另写一份清单）⇒ 五处遍历自动覆盖：
+  `collectCapabilities` / `capabilityToolNames` / `buildCapabilitySlice` / `capabilityCount` /
+  `capabilityVersions`。`module.ts` 里不再有一行按类分支。
+- **每类的差异只写在它那一行**：`toTools`（`@SubAgent` / `@Skill` 各自拼 `@SubAgent "x"` /
+  `@Skill "x"` 引用提示词）、`toolNames`、`count`、以及**只有 `@Prompt` 有**的 `versions`
+  （缺省 = 本类不参与版本表 —— 用可选成员表达，而不是让别的类返回空表）。
+- **唯一的类型擦除集中在 `specOf()`**：TS 无法把循环变量 `kind` 与它对应的载荷类型关联
+  （相关联合，TS#30581）。擦除的安全性由三件事共同兜住 —— ① 每一行在**定义处**逐个收窄
+  （不是靠这句断言）；② 键集从表派生 ⇒ 擦除的覆盖面 = 表的覆盖面；③ 逐类驱动用例。
+  **行为零变更**：`module.ts` 的装配顺序、解析时机、错误文案（含 `@SubAgent "x"` 提示词）
+  一字未改。
+
+**验证**（`tests/toolkit/capability-slice.test.ts` 6 条 + 编译期 + 3 条变异）
+
+- 用**真装饰器**逐类驱动（不是手搭假载荷）：四类都在场（键集 == 表的键集）、四类都编译成
+  工具（四个菜单名）、引用提示词只由那两行给出（`owners` 恰好是
+  `@Skill "procedure"` / `@SubAgent "helper"`）、版本表只有 `@Prompt`（另三类的 `versions`
+  **是 `undefined`**）、空 provider 四类皆空但遍历不踩 `undefined`。
+- **变异（3 条，逐条亲跑点名）**：① 从 `KIND_SPEC` 摘掉 `prompt` 一整行 ⇒
+  `npm run typecheck` 报 **`TS2741: Property 'prompt' is missing…`**（编译期护栏是**真的**，
+  不是「应该有」）；② 某类 `toTools` 返回空（`@Prompt` 不进切片）⇒ **1 条**红；
+  ③ `CAPABILITY_KINDS` 改成手写少一类 ⇒ **4 条**红（收集 / 计数 / 切片 / 版本表全塌）。
+  还原后 `sha256` 逐字节一致。
+- 既有 136 条 toolkit 用例 + 全套件（1591 / 195 / 27）全绿 ⇒ **零行为变更**这条是实测的。
+
+**P2 账**：`K2` 从未做 → **已落地**（26 行 = **24 已落地 / 0 未做 / 2 有意为之**）。
+⇒ **外部深评 P2 表的 26 行至此全部收口**（P1 表只剩 `C1-附` 那条低危澄清项，
+判据与报告一致：`awaitTask({ intervalMs })` 被 `Math.min` 夹到 ≤250ms，溢出不了）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
