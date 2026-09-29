@@ -44,7 +44,10 @@ class Kitchen {
 
 describe('能力的按类遍历（capability-slice 注册表）', () => {
   it('CAPABILITY_KINDS 从表的键派生：四类齐全、顺序即遍历顺序', () => {
-    assert.deepEqual([...CAPABILITY_KINDS].sort(), Object.keys(KIND_SPEC).sort());
+    // ⚠️ 刻意**不**断言「`CAPABILITY_KINDS` 的键集 == `Object.keys(KIND_SPEC)`」：源码里
+    // `CAPABILITY_KINDS = Object.keys(KIND_SPEC)` 就是这个赋值本身（`capability-slice.ts`）⇒
+    // 那样的断言恒真（`x === x`），是把一道防线画在纸上（2026-09-29 元评估 F3）。真正的牙齿
+    // 是下一行的**键序**断言：加第五类能力则此处红，逼人表态（连同 #184 的 `TS2741` 编译期护栏）。
     assert.deepEqual([...CAPABILITY_KINDS], ['tool', 'subagent', 'skill', 'prompt']);
   });
 

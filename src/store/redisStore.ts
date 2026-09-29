@@ -65,6 +65,16 @@ export interface RedisLike {
    * 提供时优先于 keys 使用。
    */
   scanIterator?(opts?: { MATCH?: string; COUNT?: number }): AsyncIterable<string | string[]>;
+  /**
+   * 关闭连接（可选）—— `RedisTaskStore.close()` 用它。对应 ioredis / node-redis 的 `quit()`。
+   *
+   * ⚠️ 取 `quit` 而不是 `close` / `destroy`：它是**三家共名**的成员（ioredis ✓、node-redis v4 ✓、
+   * v5 有但已 `@deprecated`）—— 与既有的 `expire` 同档判据（取公共面，不追任何一家的新写法）。
+   * 2026-09-29 查 node-redis master 源码：`quit()` 已标 `@deprecated`（后继 `close()`），但
+   * 本仓要同时兼容 ioredis，故暂留 `quit`；将来只支持 node-redis v5+ 时再换 `close`。
+   * 返回类型放宽为 `Promise<unknown>`：ioredis 返 `'OK'`、node-redis 返 `void` / 字符串。
+   */
+  quit?(): Promise<unknown>;
 }
 
 export interface RedisTaskStoreOptions {
@@ -196,6 +206,26 @@ export class RedisTaskStore implements TaskStore {
   async clear(): Promise<void> {
     const keys = await this.enumerate(`${escapeGlob(this.prefix)}*`);
     for (const k of keys) await this.client.del(k);
+  }
+
+  /**
+   * 关闭底层连接（`TaskStore.close?()` 的实现 —— 外部深评 C1：唯一真正握着外部连接的 store 此前
+   * 没有关闭出口，因为 `RedisLike` 上没有 `quit`）。
+   *
+   * ⚠️ 框架**不主动调**它：`drain` 不关 store（store 可能在多条 run / 宿主之间共享，见 `store.ts`
+   * 对 `close?()` 的说明）。这是给宿主在「确认不再用这个 store」时的手动出口。
+   *
+   * **幂等**：客户端没有 `quit`（只读桩 / fake）⇒ 直接返回；已关过 / 连接已断时 ioredis 的
+   * `quit` 会 reject ⇒ 吞掉 —— 关闭是尽力而为，重复关闭不该打断宿主的 shutdown 路径。
+   */
+  async close(): Promise<void> {
+    const quit = this.client.quit;
+    if (typeof quit !== 'function') return;
+    try {
+      await quit.call(this.client);
+    } catch {
+      /* 幂等：已关闭 / 连接已断 —— 关闭语义是「尽力而为」，不抛 */
+    }
   }
 
   /** `${prefix}task:*` —— prefix 里的 glob 元字符必须转义，否则会被当模式解释 */

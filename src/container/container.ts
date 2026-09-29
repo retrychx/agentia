@@ -127,22 +127,28 @@ export class Container {
       this.resolving.pop();
     }
 
-    // thenable 检测（外部深评 K4）：容器是**同步**解析的 —— `async` 工厂返回的 Promise
-    // 会原样被当成「值」缓存，下游注入到的是 Promise 本身：首次属性访问全 `undefined`、
-    // 零报错、`tsc` 也看不出来（类型断言成 T 了）。这类「静默给错东西」必须在构造/解析期响亮失败。
+    // Promise 检测（外部深评 K4；判据 2026-09-29 收紧 —— 外部深评 D1）：容器是**同步**解析的 ——
+    // `async` 工厂返回的 Promise 会原样被当成「值」缓存，下游注入到的是 Promise 本身：
+    // 首次属性访问全 `undefined`、零报错、`tsc` 也看不出来（类型断言成 T 了）。这类
+    // 「静默给错东西」必须在解析期响亮失败。
+    //
+    // ⚠️ 判据是 `instanceof Promise`，**不是**「有 `then`」（或「有 `then` + `catch`」）：后者会
+    // 误伤一大类**同步**对象 —— knex / mongoose 的 query builder、各类 chainable 为实现
+    // 「可被 await」都带 `then`，而 knex / mongoose 连 `catch` 都有（2026-09-29 查两家源码实证），
+    // 它们是完全合法的注入值。「忘了 await」的产物**恒为原生 Promise**（async 函数语义），
+    // 故 `instanceof` 精确命中本意、不误伤 builder。
+    // 如实边界：**跨 realm** 的 Promise（`vm` / 其他上下文产物）`instanceof` 会漏 —— 装配期
+    // 几乎不出现，真要注入本体请走下面的逃逸口。
     //
     // ⚠️ 检测器**就地写**、不从别处 import：`container` 是纯叶子（`layering.test.ts` 里
-    // `container: []`，不许引内部任何模块），为两行逻辑破叶子边界不值得。
+    // `container: []`，不许引内部任何模块），为几行逻辑破叶子边界不值得。
     // 逃逸口：确实要注入 Promise **本体**，包一层即可（`useValue: { promise }`）。
-    if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
-      const then = (value as { then?: unknown }).then;
-      if (typeof then === 'function') {
-        throw new TypeError(
-          `provider "${token}" 解析出的是 Promise：容器同步解析，它会被原样缓存成「值」，` +
-            '下游拿到 Promise 而非 await 过的结果（首次属性访问全 undefined、且零报错）。' +
-            '异步初始化请在装配前 await 好再用 useValue 注入；确实要注入 Promise 本体，包一层：useValue: { promise }',
-        );
-      }
+    if (value instanceof Promise) {
+      throw new TypeError(
+        `provider "${token}" 解析出的是 Promise：容器同步解析，它会被原样缓存成「值」，` +
+          '下游拿到 Promise 而非 await 过的结果（首次属性访问全 undefined、且零报错）。' +
+          '异步初始化请在装配前 await 好再用 useValue 注入；确实要注入 Promise 本体，包一层：useValue: { promise }',
+      );
     }
 
     this.cache.set(token, value);
