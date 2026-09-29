@@ -14,9 +14,12 @@
  * ② **稳定性承诺在三个面上各写一份**（仓库 `README.md`、`README.en.md`、官网 docs 页）——
  *    为什么不用单源注入：README 是 npm 页的第一阅读面、站点读者也不该跳去 GitHub，
  *    所以「两处都写」是刻意的。**代价是可能各说各话，所以必须由守卫兜底。**
- * ③ **CI 的 Node 矩阵写在四个地方**（`ci.yml` 的 matrix + 三个 job 的 `node-version`，
- *    以及 README / README.en / CONTRIBUTING 的散文）。上一轮评审实测到：那句话**是真的**，
- *    但**没有任何东西盯着它** —— 矩阵一改，三处散文立刻变成假话（且没有任何信号）。
+ * ③ **CI 的 Node 覆盖范围散在 `ci.yml` 的多处**（matrix 的 `node: [...]` + 各 job 自己的
+ *    `node-version:`），又被**四份文档**的散文复述（README / README.en / CONTRIBUTING /
+ *    `docs/usage-guide.md`）。上一轮评审实测到：那句话**是真的**，但**没有任何东西盯着它**
+ *    —— 矩阵一改，那四处复述立刻变成假话（且没有任何信号）。
+ *    ⚠️ `usage-guide.md` 是后来扩进来的：它是**权威文档**，§7 已知边界表里复述了同一句话。
+ *    射程扩到这里是**扩展**不是收紧（原本只查三处「面向 npm 读者」的面）。
  *
  * ## 反向验证（2026-09-29，逐条摘掉，各恰好点名那条）
  *
@@ -26,9 +29,11 @@
  *   ③ 官网把 `<section id="versioning">` 改名 ⇒ 「三处都有这一节」+「承诺锚点」+「1.0 门槛」三条红；
  *   ④ `examples/eval-gate/README.md` **整段**摘掉「先看这条」⇒ 「入口文档说了不发 npm」那条红。
  *   ⑤ 把文档里那条「数一数」命令改成零命中的模式 ⇒ 只红「命令必须真跑得出结果」那条。
+ *   ⑥ `docs/usage-guide.md` 的**复述处**改成 `18/20/21` ⇒ 红「四份文档 == ci.yml」那条
+ *      （把射程从三处扩到四处时补做的 —— 扩射程必须配一次变异，否则新加的那一格是**没证据**的）。
  *   ⚠️ ④ 是**先做错了一次才做对**的：第一版只删掉其中「会 404」一句，结果**全绿** —— 因为同一件事
  *   在那一节里出现了不止一次（「不发布的包」「别 `npm i`」）。**变异要摘干净**，否则测的是
- *   「这个词还在不在」，不是「这件事还说没说」。五条还原后 `git diff` 与哈希逐字节一致。
+ *   「这个词还在不在」，不是「这件事还说没说」。六条还原后 `git diff` 与哈希逐字节一致。
  *
  * ## 一条被守卫逼出来的真发现（写在这里，因为它是「为什么要有 ⑤」的由来）
  *
@@ -298,14 +303,30 @@ describe('稳定性承诺在 README / README.en / 官网三处互为镜像', () 
 
 /** 从散文里抠出 `CI 在 18/20/22 上守` / `CI runs 18 / 20 / 22` 那串版本号 */
 function docNodeVersions(where: string): string[] {
-  const text = read(where);
-  const m = /CI[^\n]{0,24}?(\d+(?:\s*\/\s*\d+)+)/.exec(text);
+  // ⚠️ 逐行扫、**收集全部命中并要求它们一致**：这几处都是长文档，同一件事会在多处被复述
+  // （`usage-guide.md` 的已知边界表就复述了一次），只取「第一个匹配」会在复述处先说漏嘴时静默放行。
+  const found = new Set<string>();
+  for (const line of read(where).split('\n')) {
+    const m = /CI[^\n]{0,24}?(\d+(?:\s*\/\s*\d+)+)/.exec(line);
+    if (m)
+      found.add(
+        m[1]
+          .split('/')
+          .map((s) => s.trim())
+          .join('/'),
+      );
+  }
   assert.ok(
-    m,
+    found.size >= 1,
     `${where} 里找不到「CI 在 18/20/22 上守」这类句子 —— ` +
       '这句话是给使用者的运行环境承诺，别把它删了；要改写就同步改本守卫的解析锚点',
   );
-  return m[1].split('/').map((s) => s.trim());
+  assert.equal(
+    found.size,
+    1,
+    `${where} 里有 ${found.size} 处**互相矛盾**的 CI 版本号：${[...found].join(' | ')} —— 复述之处必须一起改`,
+  );
+  return [...found][0].split('/');
 }
 
 /** 从 ci.yml 抠出实际会被 CI 跑到的所有 Node 版本（matrix + 各 job 的 node-version） */
@@ -322,7 +343,7 @@ function ciNodeVersions(): string[] {
   return [...out].sort();
 }
 
-describe('运行环境承诺：README / README.en / CONTRIBUTING 与 ci.yml 一致', () => {
+describe('运行环境承诺：四份文档与 ci.yml 一致', () => {
   it('ci.yml 里读得到版本集合（防「抽词器退化」的假绿）', () => {
     const versions = ciNodeVersions();
     assert.ok(
@@ -331,9 +352,11 @@ describe('运行环境承诺：README / README.en / CONTRIBUTING 与 ci.yml 一�
     );
   });
 
-  it('三处散文写的 CI 版本集合 == ci.yml 实际跑的集合', () => {
+  it('四份文档写的 CI 版本集合 == ci.yml 实际跑的集合', () => {
     const actual = ciNodeVersions();
-    for (const where of ['README.md', 'README.en.md', 'CONTRIBUTING.md']) {
+    // ⚠️ `docs/usage-guide.md` 也在射程内：它是**权威文档**，§7 已知边界表里复述了同一句话。
+    //    把它纳进来是**扩展**射程、不是收紧（名单与理由见文件头注 ③）。
+    for (const where of ['README.md', 'README.en.md', 'CONTRIBUTING.md', 'docs/usage-guide.md']) {
       const claimed = docNodeVersions(where);
       assert.deepEqual(
         claimed.slice().sort(),
