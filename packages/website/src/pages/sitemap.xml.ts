@@ -21,6 +21,7 @@ const PAGES = [
   { path: '/docs', priority: '0.9' },
   { path: '/api', priority: '0.8' },
   { path: '/playground', priority: '0.7' },
+  { path: '/tradeoffs', priority: '0.7' },
 ] as const;
 
 const FALLBACK_SITE = 'https://agentia-web.pages.dev';
