@@ -24,6 +24,7 @@
       <a href="#cli">CLI 命令参考</a>
       <a href="#env">环境变量</a>
       <a href="#versioning">版本与稳定性承诺</a>
+      <a href="#perf">性能量级</a>
     </aside>
 
     <div class="docs-content">
@@ -664,6 +665,36 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
           <li><code>docs/guards.md</code> §2「待守」为空 —— 已声明的边界都由机器守着，而不是靠人记得；</li>
           <li>公共导出面<strong>连续 3 个 minor 无破坏性变更</strong>。</li>
         </ul>
+      </section>
+
+      <!-- 性能量级 —— 与 README 的「性能量级」节互为镜像（同一组基准 + 同一组复跑命令，防漂移交给
+           tests/docs/bench-numbers.test.ts）。注意：这里刻意**不**把毫秒写成承诺（本机量级），
+           也刻意**不**把基准跑进 CI（计时类基准在 CI 上只会制造抖动）。 -->
+      <section id="perf">
+        <h2>性能量级</h2>
+        <p>
+          框架自带五个基准（<code>scripts/bench-*.ts</code>）。它们回答的是<strong>形状</strong>问题 ——
+          哪笔钱在什么条件下付、换实现能省掉的是什么 —— 而不是一个 SLA。
+        </p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>你想问的</th><th>本机读数（<strong>量级</strong>）</th><th>形状结论（不随机器变）</th><th>复跑</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>装配一次 app 多贵</td><td>纯装配 <code>0.4 ms</code>；发现+装配 <code>8.1 ms</code>；整进程启动+装配 <code>4040 ms</code>（其中冷装配 ≈2963 ms，整进程启动本身就 1077 ms）</td><td>常驻 runner 里换能力选择只付 <code>S2</code>（≈8 ms），<strong>不</strong>付 <code>S6b</code>（≈4 s）⇒ 差 <strong>~500×</strong>；那 4 s 里 ~1.1 s 是 <code>tsx</code> 启动，与框架无关</td><td><code>npm run bench:assembly</code></td></tr>
+            <tr><td>MCP 连接器什么时候付钱</td><td>冷 <code>279.5 ms</code>；热（复用连接器）<code>0.3 ms</code></td><td>只有<strong>重建连接器</strong>才付冷的那一笔 ⇒ 差 <strong>~900×</strong></td><td><code>npm run bench:assembly</code></td></tr>
+            <tr><td>trace 记不记内容，差多少</td><td>大出参（≈37 KB/次）5 次调用：缺省 <code>17.2 KB</code> / 不截断 <code>233.9 KB</code>（<strong>13.6×</strong>）/ 截断 200 <code>6.2 KB</code></td><td>缺省<strong>已经截断</strong>；<code>traceContent:'full'</code> 是<strong>按出参字节付费</strong>的开关（小出参档实测只差 1.0×）</td><td><code>PAYLOAD_ROWS=1000 CALLS='[5,20]' npm run bench:trace</code></td></tr>
+            <tr><td>指标快照 / OTLP flush 的成本</td><td><code>snapshot()</code> <code>6.56 ms</code>；<code>buildOtlpPayload()</code> <code>0.073 ms</code></td><td>flush 的成本<strong>几乎全在 <code>snapshot()</code></strong> ⇒ 省掉它 ≈ 6.5 ms/次，<strong>与 flush 频率成正比</strong></td><td><code>npm run bench:otlp</code></td></tr>
+            <tr><td>挂起任务的到期扫描</td><td>sqlite N=10000：全表 <code>list()</code> <code>61.9 ms</code> / 到期索引 <code>listDue</code> <code>0.1 ms</code></td><td><strong>有没有索引</strong>是结构性的 ⇒ 差 <strong>~600×</strong>，不是调优问题</td><td><code>npx tsx scripts/bench-resume-scan.ts 10000</code></td></tr>
+            <tr><td>redis store 的 <code>list()</code> 形状</td><td>N=10000：往返 <strong>10001</strong> 次、解析 <strong>42.1 MB</strong>、纯 CPU <code>104.1 ms</code>；有辅助 ZSET ⇒ 往返 <strong>1001</strong></td><td>往返次数是<strong>结构量</strong>（换实现能省掉的就是它）；延迟只做外推（本机无 redis 实例）</td><td><code>npx tsx scripts/bench-redis-due.ts 10000</code></td></tr>
+          </tbody>
+        </table></div>
+        <p>
+          ⚠️ <strong>毫秒不是承诺</strong>：它们随机器 / Node 版本 / 负载而变，抄走当 SLA 会错。
+          真正恒定的是<strong>形状</strong>（差多少倍、往返几次、哪一笔跟什么成正比）。
+          五个基准<strong>刻意不进 CI</strong>（计时类基准在 CI 机器上只会制造抖动）
+          ⇒ 这些数没有守卫盯着，要看就按「复跑」那一列自己跑一遍。
+        </p>
       </section>
     </div>
   </main>

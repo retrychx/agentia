@@ -179,6 +179,28 @@ and anything a release does not spell out in its migration note. Runtime third-p
 shipped or explicitly struck out; `docs/guards.md` §2 ("awaiting a guard") is empty; and the public
 export surface has gone **three consecutive minors with no breaking change**.
 
+## Performance order of magnitude
+
+Five benchmarks ship with the repo (`scripts/bench-*.ts`). They answer **shape** questions — which
+cost you pay under which condition, and what a different implementation could remove — not an SLA:
+
+| Question | Local reading (macOS / Node 24 — **order of magnitude**) | Shape (the part that **does not** move with the machine) | Re-run |
+| --- | --- | --- | --- |
+| Cost of assembling an app | pure assembly `0.4 ms`; discover + assemble `8.1 ms`; whole-process boot + assemble `4040 ms` (of which cold assembly ≈2963 ms; the bare process boot alone is 1077 ms) | Swapping capability selection in a **resident runner** pays only `S2` (≈8 ms), not `S6b` (≈4 s) ⇒ **~500×**. ~1.1 s of that 4 s is the `tsx` interpreter booting — nothing to do with the framework | `npm run bench:assembly` |
+| When an MCP connector costs you | cold (spawn + initialize + list) `279.5 ms`; warm (reused connector, one `tools/list` round trip) `0.3 ms` | Only **rebuilding** the connector pays the cold one ⇒ **~900×**. So whether "rebuilding the app includes an MCP handshake" is true **depends on what the connector's lifetime is** | `npm run bench:assembly` |
+| What recording trace content costs | large tool output (≈37 KB/call), 5 calls: default `17.2 KB` / untruncated `233.9 KB` (**13.6×**) / truncate-200 `6.2 KB`; 20 calls: `65 KB → 932 KB` (14.3×) | The default **already truncates** (the ≈14× gap comes from turning truncation off). `traceContent:'full'` is priced **per output byte** — at small output size the measured gap is 1.0× | `PAYLOAD_ROWS=1000 CALLS='[5,20]' npm run bench:trace` |
+| Cost of a metrics snapshot / OTLP flush | `snapshot()` `6.56 ms` (30 series × 2 percentiles); `buildOtlpPayload()` `0.073 ms` | Flush cost is **almost entirely `snapshot()`** ⇒ skipping it saves ≈6.5 ms per flush, **proportional to flush frequency**, unrelated to whether OTLP is consumed | `npm run bench:otlp` |
+| Scanning suspended tasks for due time | sqlite N=10000: full `list()` `61.9 ms` / due index `listDue` `0.1 ms`; file store N=10000: `load` `69.5 ms`, `list` `0.0 ms` | **Having an index** is structural (**~600×**), not a tuning knob. The file store keeps records in memory ⇒ its expensive pass is the **full `load` at construction** | `npx tsx scripts/bench-resume-scan.ts 10000` |
+| Shape of the redis store's `list()` | N=10000: **10001** round trips, **42.1 MB** parsed, `104.1 ms` pure CPU; with a helper ZSET (`score = wakeAt`) ⇒ **1001** round trips | Round-trip count is **structural** (that is what another implementation can remove); no local redis here, so latency is extrapolated only (RTT 0.2 ms ⇒ 2 s) | `npx tsx scripts/bench-redis-due.ts 10000` |
+
+> ⚠️ **The milliseconds are not a promise** — they move with the machine, the Node version and the
+> load; copying them as an SLA will be wrong. What is actually constant is the **shape** (how many
+> times larger, how many round trips, what scales with what).
+>
+> The five benchmarks are **deliberately not in CI** (timing benchmarks only add noise on CI machines;
+> `docs/plans/2026-09-22-dev-debug-loop.md` settled on "run them when you want to look") ⇒ nothing
+> guards the numbers below — re-run the command in the last column.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) — and note that [`AGENTS.md`](./AGENTS.md) is the single
