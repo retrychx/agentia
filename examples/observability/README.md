@@ -5,6 +5,13 @@ Agentia 生产可观测栈的**现成 sink** —— 落库检索 / 日志关联 
 
 讲解与用法见 [`docs/observability.md`](../../docs/observability.md)。
 
+## ⚠️ 先看这条：怎么拿到它
+
+**没有发布到 registry** —— `npm i @migor/agentia-observability` 会 **404**（`"private": true`）。
+把这个目录拷进你的工程，以 `"@migor/agentia-observability": "file:./observability"` 引入
+（`examples/complete/package.json` 就是这么接的）。接线与理由见
+[`docs/observability.md`](../../docs/observability.md) §2 开头那段。
+
 ## 为什么独立成包
 
 示例 [`../complete/`](../complete/) 要用这些 sink，而 `tsc` 的 `rootDir` 不允许跨目录引源码
