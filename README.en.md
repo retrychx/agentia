@@ -15,9 +15,11 @@ observable call tree (trace, cost, metrics).
 
 ## Requirements
 
-Node.js **≥ 18** (the only `engines` requirement; CI runs 18 / 20 / 22). Deno and edge runtimes are
-**not** validated. The only store touching a Node builtin is `SqliteTaskStore` (needs Node ≥ 22.5 for
-`node:sqlite`) — it fails with a readable error at construction time, and never breaks importing the package.
+Node.js **≥ 18** (the only `engines` requirement). CI covers **18 / 20 / 24** — the `import-floor`
+matrix pins the floor declared in `engines`, every other job follows the current LTS. Deno and edge
+runtimes are **not** validated. The only store touching a Node builtin is `SqliteTaskStore` (needs
+Node ≥ 22.5 for `node:sqlite`) — it fails with a readable error at construction time, and never breaks
+importing the package.
 
 ## Install
 
