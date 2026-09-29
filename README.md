@@ -419,6 +419,7 @@ npm run e2e          # 端到端：CLI 脚手架 → 装配 mock run；再真跑
 - 完整导出清单：[`src/index.ts`](src/index.ts)
 - 设计规格：[`docs/spec.md`](docs/spec.md)
 - 生产可观测配方（落库检索 / 日志关联 / 采样 / 脱敏）：[`docs/observability.md`](docs/observability.md)
+- 上线清单（store 选型 / 鉴权边界 / 优雅停机 / 预算 / 回滚 / 上线自检）：[`docs/deployment.md`](docs/deployment.md)
 - 完整示例（四类能力 + 三种触发 + 全观测栈）：[`examples/complete/`](examples/complete/)
 - 最小部署示例：[`examples/deploy/`](examples/deploy/)
 - 官网：[agentia-web.pages.dev](https://agentia-web.pages.dev)（[在线 Playground](https://agentia-web.pages.dev/playground) · [文档](https://agentia-web.pages.dev/docs)）

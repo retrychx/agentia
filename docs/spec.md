@@ -5886,6 +5886,31 @@ CLI 摘掉 `./package.json` ⇒ 红 ①③④；`default` 指到别的文件 ⇒
 `README.md`、`README.en.md`、`packages/website/src/fragments/docs.html`、`CHANGELOG.md` ⑭、
 `docs/guards.md` §1.4。**框架源码零改动**；导出面（81 个具名导出）零变化。
 
+### 2026-09-29 ⑮：**`docs/deployment.md` 上线清单**（评审 P1-3）—— 「从 demo 到生产」之间的那篇文档
+
+**触发**：「上生产」评审 §3.6 `A6`：`docs/*.md` 里没有 `deployment.md` —— `examples/deploy` 有了
+（且被 e2e 真跑守着），但没有一篇**框架级**的「上线清单」（环境变量 / store 选择 / 健康检查 /
+优雅停机 / 回滚）。挡的是「从跑通 demo 到推上生产之间那段路」的人。
+
+**三条落地口径**（都为了不造第二个会腐烂的副本）：
+
+1. **决定清单，不是教程副本**：每节回答「要过哪个决定 + 判据是什么 + 真源在哪」，**刻意不重复**
+   usage-guide §7 的边界表（`boundary-table.test.ts` 守着）与 `examples/deploy/README.md` 的接线
+   （`e2e-deploy` 真跑守着）—— 每多抄一份正文就多一处会分叉的口径。
+2. **每条都来自已核实的仓内事实**，不是通用 checklist 模板：store 的「单宿主写者」前提取自
+   `src/store/redisStore.ts` 头注（save 是两次 SET、未走 MULTI，跨进程协调属部署层职责）；
+   「旧代码读新数据不保证」取自 `src/store/record.ts`（读时归一是**逐案维护**的垫片清单，
+   不是通用兼容承诺）；「drain 不关 store」「框架不订阅信号」取自 usage-guide §6.2。
+3. **完备性本身上守卫**（`tests/docs/deployment.test.ts`，五条判据 + 5 条变异）：清单的价值
+   完全依赖完备性 —— 漏一格，漏的那格就是使用者的生产事故；而文档没有编译期保护。守：
+   ① 十一个节标题骨架；② 反引号路径必须真实；③ 五个「漏了会出事故」级的机制词
+   （`resumePending` / `drain` / `authenticate` / `budget_exceeded` / `单宿主写者`）；
+   ④ 如实锚（`/healthz` 与 `/metrics` 的「不鉴权」必须说出来）；⑤ §10 复选框 ≥8 条
+   （防清单退化成散文）。
+
+**影响面**：`docs/deployment.md`（新）、`tests/docs/deployment.test.ts`（新）、`README.md`
+（延伸阅读加一行）、`docs/guards.md` §1.4（登记）、本节。**框架代码零改动。**
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
