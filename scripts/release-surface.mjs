@@ -184,8 +184,12 @@ export const STRUCTURAL = [
     test(text, v) {
       const sec = changelogSection(text, v);
       if (!sec) return `找不到 \`## [${v}] - YYYY-MM-DD\` 这一节`;
-      if (sec.body.includes('TODO')) {
-        return `\`[${v}]\` 一节还是 bump 时插的骨架（含 TODO）—— 把本版变更与迁移口径写进去`;
+      // ⚠️ 锚必须是 bump 插的**那串**骨架标记（`TODO(发版)：写本版变更…`），不能是裸 `TODO`：
+      // v0.10.0 那一节正文里合法地写着「十二、发版流程文档里的两个必填 TODO、四步顺序」——
+      // 裸 `TODO` 判据会把它判成「骨架没填」，把已经写完的版本节当场拦下来（真实发生过）。
+      // bump 的骨架集中生成于 release.mjs 的 INSERT_OPS，标记永远带 `(发版)`。
+      if (sec.body.includes('TODO(发版)')) {
+        return `\`[${v}]\` 一节还是 bump 时插的骨架（含 TODO(发版)）—— 把本版变更与迁移口径写进去`;
       }
       // 去掉标题行与空行之后，正文不该是空的（防「有节无内容」）
       const prose = sec.body
@@ -254,7 +258,9 @@ export function checkSurfaces(root, version, { allowPending = false } = {}) {
     const msg = c.test(text(c.file), version);
     if (!msg) continue;
     const line = `${c.file}：${c.why} —— ${msg}`;
-    if (allowPending && c.file === 'CHANGELOG.md' && msg.includes('TODO')) warnings.push(line);
+    // 同上：`--allow-pending` 只放「骨架未填」这种情况，普通提到 TODO 的正文不算 pending
+    if (allowPending && c.file === 'CHANGELOG.md' && msg.includes('TODO(发版)'))
+      warnings.push(line);
     else problems.push(line);
   }
 
