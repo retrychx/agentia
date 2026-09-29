@@ -143,6 +143,33 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 | Design spec & roadmap | [`docs/spec.md`](./docs/spec.md) · [`docs/roadmap.md`](./docs/roadmap.md) |
 | Website · Playground | [agentia-web.pages.dev](https://agentia-web.pages.dev) · [playground](https://agentia-web.pages.dev/playground) |
 
+## Stability & versioning
+
+**What `0.x` means here:** versions follow SemVer, but during `0.x` a **minor release may contain a
+breaking change**. There is exactly one rule — **a breaking change must leave a trace**: that version's
+`CHANGELOG.md` entry carries a dedicated section (its heading contains 「迁移」 or 「破坏性变更」)
+stating what **you** have to change.
+
+```bash
+grep -nE '^#{3,4} .*(迁移|破坏性)' CHANGELOG.md    # every "you must act" section
+```
+
+> Honest caveat: this discipline was **tightened over time** — early versions (`0.7.1`, a type-level
+> change) put the action in the entry's leading blockquote instead of its own section. The command
+> above is a **lower bound**, not the whole set. And this README deliberately prints **no**
+> "N releases / M migrations" count: hand-written counts rot, so we ship the command instead.
+
+**What is covered by the compatibility promise:** the **named exports** of `@migor/agentia`
+(`src/index.ts` is the source of truth) and the `@migor/cli` command surface, plus the Node range in
+`engines.node` — CI runs the full chain on every version in that range. **Not covered:** deep imports
+(`dist/**`), internal module paths, `packages/*`, `examples/*`, Deno / Bun / edge runtimes (unvalidated),
+and anything a release does not spell out in its migration note. Runtime third-party dependencies are
+**zero** — enforced by `tests/architecture/no-runtime-deps.test.ts`, not by promise.
+
+**What 1.0 waits for** (all three are checkable): every open item in `docs/spec.md` §11 is either
+shipped or explicitly struck out; `docs/guards.md` §2 ("awaiting a guard") is empty; and the public
+export surface has gone **three consecutive minors with no breaking change**.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) — and note that [`AGENTS.md`](./AGENTS.md) is the single

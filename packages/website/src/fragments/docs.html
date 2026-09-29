@@ -23,6 +23,7 @@
       <a href="#crosscut">审批、护栏与隔离</a>
       <a href="#cli">CLI 命令参考</a>
       <a href="#env">环境变量</a>
+      <a href="#versioning">版本与稳定性承诺</a>
     </aside>
 
     <div class="docs-content">
@@ -623,6 +624,46 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><td>OPENAI_API_KEY</td><td>可选。OpenAI 兼容 provider 的密钥，多 provider 场景使用。</td></tr>
           </tbody>
         </table></div>
+      </section>
+
+      <!-- 版本与稳定性承诺 —— 与仓库根 README.md 的「稳定性与版本策略」节互为镜像。
+           为什么不从单源注入：README 是 npm 页上的第一阅读面（读者不该为看这条承诺而点进来），
+           而站点读者也不该为看它而跳去 GitHub ⇒ 两处都写。**防漂移交给守卫**：
+           tests/docs/stability.test.ts 要求这里与 README 出现同一组承诺锚点，缺一个就红。 -->
+      <section id="versioning">
+        <h2>版本与稳定性承诺</h2>
+        <p>
+          <strong><code>0.x</code> 的含义</strong>：版本号按 SemVer，但 <code>0.x</code> 期间
+          <strong>minor 版本可以包含破坏性变更</strong>。规矩只有一条 —— <strong>破坏性变更必须留痕</strong>：
+          <code>CHANGELOG.md</code> 对应的那个版本里要有一段专门写它（小节标题含「迁移」或「破坏性变更」），
+          写清「<strong>你要改什么</strong>」。
+        </p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>数一数</em></div>
+        <pre><code><span class="cm"># 列出所有「要你做动作」的小节（本页刻意不写死这个数字 —— 写死的读数会腐烂）</span>
+<span class="cmd">grep</span> -nE <span class="str">'^#{3,4} .*(迁移|破坏性)'</span> CHANGELOG.md</code></pre></div>
+        <p>
+          ⚠️ <strong>如实标注</strong>：这条纪律是<strong>逐步收紧</strong>的 —— 早期的 <code>0.7.1</code>
+          （类型面变更）把动作写在版本条目开头的引用块里、没有独立小节。⇒ 那条命令是<strong>下限</strong>而非全集，
+          要读全就通读该版本的条目。
+        </p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>面</th><th>承诺</th><th><strong>不</strong>承诺</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>公共 API</td><td><code>@migor/agentia</code> 的<strong>具名导出</strong>（真源 <code>src/index.ts</code>，官网 API 页有反向全覆盖守卫）+ <code>@migor/cli</code> 的命令行面</td><td>深路径导入（<code>dist/**</code>）、内部模块路径、<code>packages/*</code>、<code>examples/*</code></td></tr>
+            <tr><td>行为</td><td>该版本条目里写明的<strong>迁移动作</strong></td><td>没写进迁移说明的任何行为变化</td></tr>
+            <tr><td>运行环境</td><td><code>engines.node</code> 声明的区间；CI 在该区间内<strong>每个版本</strong>上跑完整条链</td><td>Deno / Bun / edge runtime（<strong>未验证</strong>）；已 EOL 的 Node（会随 minor 去掉）</td></tr>
+            <tr><td>依赖</td><td><strong>运行时零第三方依赖</strong>（<code>tests/architecture/no-runtime-deps.test.ts</code> 守着，非口头承诺）</td><td><code>devDependencies</code> 与 <code>examples/*</code> 的依赖面</td></tr>
+          </tbody>
+        </table></div>
+        <h3>1.0 的门槛</h3>
+        <p>三条都是可核验的，不是口号：</p>
+        <ul>
+          <li><code>docs/spec.md</code> §11「开放项」里每一条要么落地、要么被<strong>明确划掉</strong>（写清为什么不阻塞）；</li>
+          <li><code>docs/guards.md</code> §2「待守」为空 —— 已声明的边界都由机器守着，而不是靠人记得；</li>
+          <li>公共导出面<strong>连续 3 个 minor 无破坏性变更</strong>。</li>
+        </ul>
       </section>
     </div>
   </main>
