@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-09-29
+
+> 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
+> 三块的共同点都是**把静默换成有声**：① 记忆回写从此**能发现**并发丢写（可选 CAS：冲突时**不写 + 出声**，
+> 不替你合并）；② 挂着的任务不再各占一份 ≈1 MB 的事件缓冲（新旋钮按**条数**配额，回收的是**缓冲**、
+> 留表项与序号 ⇒ 读者先收一帧 `stream.truncated` 再转实时，而不是被谎报成「别的进程」）；
+> ③ 加第五类能力从「改五处按类分支、漏一处不报错」变成「给注册表加一行，不表态就 `tsc` 报 `TS2741`」。
+> **无破坏性变更**：新加的两个能力都是**可选**的（不实现 ⇒ 行为与 0.9.4 逐字相同），
+> `AsyncRunner.streamNonTerminalBuffers` 的缺省值只影响「回放看不全」那一档（且看得见）。
+> 既有使用者**不需要任何动作**。
+
 ### 重构 · 四类能力的装配差异收进一张注册表（外部深评 K2）（2026-09-29 ③）
 
 来源：`DEEP-AUDIT-VERIFIED-2026-09-28.md` 的 P2 表 `K2`。性质不是「代码不好看」：加第五类能力
@@ -2131,7 +2142,8 @@
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/retrychx/agentia/releases/tag/v0.9.5
 [0.9.4]: https://github.com/retrychx/agentia/releases/tag/v0.9.4
 [0.9.3]: https://github.com/retrychx/agentia/releases/tag/v0.9.3
 [0.9.2]: https://github.com/retrychx/agentia/releases/tag/v0.9.2
