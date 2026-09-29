@@ -5406,7 +5406,9 @@ P2 账：26 行 = **19 已落地 / 6 未做 / 1 有意为之**。
   `examples/eval-gate/`）+ 官网 agent 可读面（每页 `.md` 变体 + `Accept: text/markdown` 内容协商）
   + `§7 已知边界` 立守卫与 `killPlanFor` 可测化；**无破坏性变更**，框架公共 API 与脚手架模板
   形态逐字未变（三个旋钮的 `0` 原本就静默失效，改成启动期报错 —— 没有任何本来能工作的配置会因此变坏））；
-  `AGENTIA_VERSION = '0.9.4'`。决策均见 §10。
+  → v0.9.5（**外部深评 P2 表最后三条收口**（K5 记忆回写可选 CAS / T4 非终态流缓冲配额 /
+    K2 四类能力注册表）+ 两处判据订正；**无破坏性变更**）；
+  `AGENTIA_VERSION = '0.9.5'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
