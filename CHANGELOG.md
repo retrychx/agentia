@@ -7,6 +7,45 @@
 
 ## [Unreleased]
 
+### 测试与文档 · 文档围栏代码块真编译（竞评收官：换尺子）+ 三处「照抄会坏」的片段修正（2026-09-29 ⑨）
+
+**使用者可见行为零变更**（纯文档 + 一条新守卫）：框架代码**零改动**。
+
+**发现方式**：产品竞争力评审走到「说不出还有什么缺口」时换的尺子 —— 不再问「缺什么」，
+改问「**已经写下来的东西是不是真的**」，取样对象取**代码围栏块**（读者会逐字照抄），
+因为它**恰好不在既有守卫面上**（`usage-guide.test.ts` 只收表格行、`run-output-shape.test.ts`
+只钉 `.finalText` 一种形状）。实测：88 个围栏块 / 22 个含具名导入的 ts 块 ⇒ **3 个照抄坏掉**，
+且**没有任何一条是新引入的 —— 是从未被检查过**：
+
+1. `README.md` 的 `scheduler.every(60_000, '巡检一次', { idempotencyKey: 'patrol' })` ——
+   `ScheduleEveryOptions` 里没这个键，真名是 **`idempotencyPrefix`**。TS 报 `TS2353`；
+   **JS 用户静默无幂等**，而示例上方那句注释正写着「幂等键去重」。⚠️ 同一块上一行的
+   `runner.submit(…, { idempotencyKey })` 是**对的** —— 两个同名旋钮，一个在一个不在。
+2. `docs/usage-guide.md` 的 `ctx!.deferUntil(due)` —— `ToolRunContext.deferUntil` 是**可选成员**，
+   `!` 只消掉了 `ctx` 的 null ⇒ `TS2722`；改为 `ctx?.deferUntil?.(due)`。
+3. `docs/usage-guide.md` 的出站传播片段是**裸方法**（`@Tool` 挂在函数声明上 + 漏必填 `schema`）
+   ⇒ **不是合法 TS、无法被任何编译器检查**；补成完整的 `class OrderTools { … }`。
+
+**新增守卫** `tests/docs/code-fences.test.ts`：把「含 `@migor/agentia` 具名导入」的 ts 块落成文件、
+**一次性交给 `tsc`**（`paths` 指向 `src/`，不依赖先 build，约 0.3s）。三条反假阳性机制缺一不可 ——
+① **语法错会连坐**：实测 `tsc 7`（tsgo）只要程序里存在语法错误就**整体跳过语义阶段**（22 个块只报
+3 条语法错、其余全被吞 ⇒ 守卫会变成静默全绿），故迭代摘出语法错的块并**断言摘掉数为 0**；
+② **省略垫片**（吃掉「名字不存在」、吃不掉「类型形状不对」）；③ **省略记号归一成展开 any**
+而不是空容器（后者会造出守卫自己的假阳性）。另有**金丝雀**（故意写错的块必须被报出来）与
+**取样下限 20** 两条自证。
+
+**验证**：4 条变异各恰好点名那条（两条真错各 1 条 + 裸方法 1 条 + 金丝雀自证 1 条），
+还原后 `sha256` 逐字节一致。`docs/guards.md` §1.4 登记一行、`docs/spec.md` §10 ⑨ 记决策。
+
+**顺带订正一处腐烂读数**：`docs/observability.md` 的日志层那格原写「2026-09-15 实测 9 处
+`console.error/warn`」，现测 **22 处（散在 12 个文件）** ⇒ 不再写死数字，改为给现数命令
+`grep -rn "console\." src/`。
+
+**如实记**：`usage-guide.md` 里 `from '@migor/agentia-observability'` 的块首次对拍曾报 `TS2307`，
+但它是**按设计的配方**（`docs/observability.md` 已明写「`npm i` 会 404，这是本地小包」，
+`examples/observability` 真有那些导出）⇒ **不计为缺口**，守卫按 `tsconfig.tests.json` 的
+`paths` 映射过去，不再误报。
+
 ### 测试与文档 · 时钟回拨下三条时间判据的退化方向（`DEEP-AUDIT` §3.4 的 L0 补栏）（2026-09-29 ④）
 
 **使用者可见行为零变更**（纯测试 + 文档）：`tests/transport/{approval-policy,wake-policy,resume-policy}.test.ts`

@@ -868,17 +868,22 @@ runner.submit(msg.value, {
 **具体 span**（回合 / 能力调用）的 link，而不是只到 run 粒度：
 
 ```ts
-import { currentTraceparent } from '@migor/agentia';
+import { Tool, currentTraceparent } from '@migor/agentia';
 
-@Tool({ description: '把工单交给订单服务' })
-async placeOrder(input: { sku: string }) {
-  const tp = currentTraceparent();          // 不在 run 内 → undefined（那时不该编一个）
-  const res = await fetch(orderSvc, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...(tp ? { traceparent: tp } : {}) },
-    body: JSON.stringify(input),
-  });
-  return res.json();
+class OrderTools {
+  @Tool({
+    description: '把工单交给订单服务',
+    schema: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'], additionalProperties: false },
+  })
+  async placeOrder(input: { sku: string }) {
+    const tp = currentTraceparent();          // 不在 run 内 → undefined（那时不该编一个）
+    const res = await fetch(orderSvc, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(tp ? { traceparent: tp } : {}) },
+      body: JSON.stringify(input),
+    });
+    return res.json();
+  }
 }
 ```
 
@@ -1548,7 +1553,7 @@ const waitForBatch: AgentTool = {
   async run(_input, ctx) {
     const due = await nextBatchWindow();          // 你自己的判据（外部系统回填 / 限流窗口 / 收盘）
     if (due.getTime() > Date.now()) {
-      ctx!.deferUntil(due);                       // 「现在还不是时候，T 之后再问我」
+      ctx?.deferUntil?.(due);                     // 「现在还不是时候，T 之后再问我」
       return 'deferred';                          // 返回值会被丢弃（见整批语义）
     }
     return await fetchReport();
