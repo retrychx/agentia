@@ -1,6 +1,6 @@
 # 示例
 
-四个示例，各管一件事。都只 import 框架的**公共面**（`@migor/agentia`），不碰内部路径。
+每个示例只管一件事。都只 import 框架的**公共面**（`@migor/agentia`），不碰内部路径。
 
 | 目录 | 是什么 | 什么时候看 |
 |---|---|---|
@@ -8,6 +8,7 @@
 | [`deploy/`](./deploy/) | **最小**可交付服务：HTTP 宿主 + `SqliteTaskStore` + `/healthz` + 优雅停机 + Docker | 想知道「怎么把它跑上线」时 |
 | [`complete/`](./complete/) | **完整**示例：四类能力 + 三种触发 + 鉴权 + 全观测栈（上面四个 sink 接成一条链）+ Docker | 想知道「一个真实服务长什么样」时 |
 | [`code-review/`](./code-review/) | **产品验证**示例：代码评审 agent 服务 —— 四类能力编排 + 结构化报告 + trace/成本数字，离线确定性 demo 与真模型两种跑法 | 想看「拿它做一个真业务长什么样、跑一轮花多少钱」时 |
+| [`eval-gate/`](./eval-gate/) | **评测即发布闸门**：把 `defineEval` 的结论对上一版基线收成「这一版能不能发」的判据（补 `EvalReport.ok` 答不了的两件事：比上一版好还是坏 / 「删掉失败用例」这种过闸门方式） | 想把评测接进发布流程时 |
 | [`grpc-host/`](./grpc-host/) | **第 4 个宿主**：gRPC 服务定义 → `RunInput` → `app.run` / `runner.submit`（一元 / 服务端流 / 异步投递 / 查任务；deadline→signal、metadata traceparent→link） | 想给已有服务加一个 gRPC 入口、又不想把语义写歪时 |
 
 配套阅读：[`docs/observability.md`](../docs/observability.md)（配方讲解）、
@@ -15,7 +16,7 @@
 
 ## 依赖说明（重要）
 
-三个应用示例的依赖都写成 `"@migor/agentia": "file:../.."`（指向本仓库）—— 这是**刻意的**：
+各示例的依赖都写成 `"@migor/agentia": "file:../.."`（指向本仓库）—— 这是**刻意的**：
 示例要跑的是**工作区里刚构建的那份框架**，而不是 npm 上的发布版。仓库的端到端门禁
 （`scripts/e2e-examples.ts`）也靠这一点：换掉依赖，示例就不再验证本仓库的构建产物。
 

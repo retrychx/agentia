@@ -190,6 +190,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   （429/截断/400/流内错误）+ N 并发长跑 ⇒ 断言失败率≈注入率、
 │                            #   错误分类无 unknown、metrics 与实测对账、内存有界、干净退出。
 │                            #   零网络零 token；SOAK_DURATION_MS / SOAK_CONCURRENCY / SOAK_SEED 可调）
+├── scripts/e2e-soak-app.ts  # 「完整装配 × 时间维度」（npm run e2e:soak:app：**黑盒**起 examples/complete
+│                            #   的 dist + 假端点故障注入，中途用闸门把任务精确停在 running 再 SIGKILL ⇒
+│                            #   断言不丢 / 不重（幂等簿记）/ 猝死续跑真把活干完 / 注入按比例落地 /
+│                            #   定时触发真在派 / 干净退出 / DB 每任务字节数有界。
+│                            #   零网络零 token；SOAK_APP_DURATION_MS / SOAK_APP_CONCURRENCY 可调）
 ├── scripts/bench-trace-cost.ts  # trace 记录成本基准（npm run bench:trace：量「一条 run 的 trace 多大」——
 │                            #   缺省 / 不截断 / 截断 200 三种口径 × 工具调用数；实测大出参下「不截断」是
 │                            #   缺省的 13.7× ⇒ spec §9.4「全量记录成本 vs 采样阈值」的答案来源。
@@ -363,6 +368,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     **不并入**上面 8 步（它是「跑多久」而不是「对不对」的验证）。默认 60s×16 并发；
     排「内存/句柄随时间泄漏」或「高并发下重试与背压行为」这类**时间维度**的疑点时跑它
     （`SOAK_DURATION_MS=7200000` 即真两小时）。
+  - 另有 `npm run e2e:soak:app`（**完整装配 × 时间维度**：`e2e:soak` 压的是**无状态单点**
+    （import 面只有 `runAgent` 那几个），跑完整装配的 `e2e:examples` 又是**只跑一轮**的线性脚本 ⇒
+    这一格原本空着）。**不并入**上面 8 步，理由同 `e2e:soak`：默认 30s×6 并发，是「跑久了对不对」。
+    改了 `transport/` 的异步任务面（store 认领 / resumePending / scheduler）值得跑它。
   - **CI**：`.github/workflows/ci.yml` —— 六个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
     不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
     守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，
