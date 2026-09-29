@@ -118,6 +118,39 @@ toolkit 142 · architecture 57 · limits 32 · boundary-table 6 · 各 docs/官�
 `suspendedSummary`、`#dispatch` 是私有方法需回调注入）—— 这是**零行为变化的纯结构重构**，与前面
 「修缺陷」性质不同，报告 §8 自己也标「各自独立 PR」；仓促混进本批会让「零行为变化」难以严格保证。
 
+### 重构 · `AsyncRunner` 的审批监督簇抽成独立件（结构体检建议②）（2026-09-29 ⑦）
+
+**使用者可见行为零变更**（纯结构重构：逐字搬迁 + 依赖改构造注入）。
+
+`src/transport/async.ts` 里 `AsyncRunner` 的**审批监督簇** —— 挂起登记簿（`#suspended`，即
+`/healthz` 的 `suspended` 读数）+ 在飞审批闸（`#inflightApprovals`）+ `approve` / `#approveInner`
++ 审批超时恢复（`#expireAndResume` / `#expireAndResumeInner`）—— 抽到新件
+`src/transport/approval-supervisor.ts`（`ApprovalSupervisor`）。`async.ts` **1929 → 1756 行**。
+
+- **为什么是这一簇**：结构体检（`STRUCTURE-INVENTORY-2026-09-29.md` 建议②）指出它的方向与
+  「认领 / 槽位 / 派发」**正交** —— 它管的是「谁挂着、谁在等审批、超时了没」。抽之前它被私字段
+  与私有方法缝在主类里，横跨 **5 处外部调用点**（`cancel` / `signalTask` / 到期唤醒 /
+  `resumePending` 扫描 / `#executeInner` 的挂起与终态出口）+ 对外 getter。
+- **依赖怎么解**：构造注入 `store` / `ownerId` / `approvalTimeoutMs` / **`dispatch` 回调**。
+  `#dispatch` 仍归 `AsyncRunner`（停机闸 + 唯一派发口 + 一次性告警），审批簇只**消费**它 ⇒
+  依赖单向，也不会出现两模块互相 `import`。`TaskApproveError` / `ApprovalDecisions` 随簇迁走，
+  `async.ts` 顶部 **re-export** ⇒ 一切 `from './async.js'` 的既有 import 路径不变。
+- **一处有意的等价简化**：`#redispatch` 的超时扫描原写作
+  `rec.status !== 'suspended' || !approvalExpired(...)`，而 `approvalExpired` 内部**已经**判
+  `status === 'suspended'` 与 `reason === 'approval'`（见 `approval-policy.ts`）⇒ 那句短路是
+  **冗余的**，合并进 `expireIfExpired` 不改变任何可观测行为（字面量多重集对拍已证：唯一
+  「消失」的字面量就是它）。
+- **一处随之而变的守卫**：`tests/transport/dispatch-guard.test.ts` 的「`#dispatch(` 调用点下限」
+  射程**扩到两个文件**（两条恢复路径的派发点形如 `this.#deps.dispatch(`）—— 否则这次搬迁会把
+  计数从 7 掉到 6 而无谓判红。⚠️ **该守卫在改动中真的先红了**（先见红、再改守卫，不是反过来）。
+- **验证**：3 条变异逐条亲跑 —— ① `expireIfExpired` 恒不触发 ⇒ 恰好 3 条红；② `approve` 的 409
+  判据退回只看 `status` ⇒ 恰好 1 条红；③ `rebuild` 的 reason 判据摘掉 ⇒ **全绿**（如实记为
+  **既存**覆盖缺口，已登记 `guards.md §2`）。三条还原后 `sha256` 逐字节一致。另跑 B.3「纯结构
+  拆分复核清单」第 2 条要求的**字符串字面量多重集对拍**（无丢失）。门禁三件套 + transport 352 /
+  architecture 57 / toolkit 142 / runtime 56 / engine 404 / container 11 / store 56 —— 全绿。
+- **顺带登记**（`guards.md §2`）：上面那条覆盖缺口，以及**行数上限闸为何暂不做**（口径未定、
+  易误报，与 §3「宁可窄，不要误报」有张力；替代形状见那一行）。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

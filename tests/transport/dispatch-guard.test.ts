@@ -16,10 +16,18 @@ import { fileURLToPath } from 'node:url';
  * 唯一派发口 `#dispatch` 里（与 `store/*.ts` 禁裸 `JSON.parse` 那道源码守卫同款）。
  * ⇒ 第五次新增恢复路径而忘了走 `#dispatch` 时，**构建红**，不靠记性。
  *
+ * ⚠️ **射程跨两个文件**（2026-09-29 抽审批监督簇）：`approve` 与审批超时兜底两条路径搬到了
+ * `approval-supervisor.ts`，它们经**注入的** `dispatch` 回调落到同一个 `#dispatch`（停机闸仍在
+ * 那里），所以「路径数」要两边一起数 —— 否则这次搬迁会把计数从 7 掉到 6 而无谓地判红。
+ *
  * 自带**真空护栏**：先断言解析出来的规模合理 —— 否则正则一旦失效，这个用例会永远绿
  * （那种守卫比没有更糟）。
  */
 const SRC = fileURLToPath(new URL('../../src/transport/async.ts', import.meta.url));
+/** 审批监督簇（`approve` / 审批超时兜底的编排）—— 它的派发点形如 `this.#deps.dispatch(`。 */
+const SUPERVISOR = fileURLToPath(
+  new URL('../../src/transport/approval-supervisor.ts', import.meta.url),
+);
 
 /** 去掉注释后的源码（注释里提到 `this.#execute(` 不算调用点） */
 function codeOf(file: string): string {
@@ -52,11 +60,18 @@ describe('派发口守卫（源码级）：`this.#execute(` 只许出现在 #dis
   });
 
   it('各恢复路径都走唯一入口（次数下限，防有人把某一支改回裸派发）', () => {
-    const calls = code.match(/this\.#dispatch\(/g) ?? [];
+    // 两边一起数（见文件头注的射程说明）：approve / 审批超时兜底搬到审批监督簇后，
+    // 它们的派发点变成 `this.#deps.dispatch(`。
+    const here = (code.match(/this\.#dispatch\(/g) ?? []).length;
+    const there = (codeOf(SUPERVISOR).match(/this\.#deps\.dispatch\(/g) ?? []).length;
     assert.ok(
-      calls.length >= 7,
-      `this.#dispatch( 只出现 ${calls.length} 次 —— submit + 六条恢复路径都该走它`,
+      here + there >= 7,
+      `派发调用点共 ${here + there} 处（async.ts ${here} + approval-supervisor.ts ${there}）` +
+        ' —— submit + 六条恢复路径都该走唯一入口',
     );
+    // 审批监督簇里恰好 2 处（决定齐了 / 超时恢复）；少一处 = 有路径不再派发，
+    // 多一处 = 新恢复路径，该把它一并登记进本守卫的射程
+    assert.equal(there, 2, `审批监督簇里的派发点应为 2 处，实为 ${there}`);
   });
 
   it('旁路守卫：`this.#executeInner(` 也只许出现在 `#execute` 里', () => {
