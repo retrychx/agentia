@@ -2,6 +2,11 @@
 
 > 2026-09-26 生成，配合 30 秒产品演示视频使用
 
+> ⚠️ **文案里的「守卫条数」别手改**（下面共 3 处）：它与 README 顶部记分牌同源，由
+> `tests/docs/scoreboard.test.ts` **每次测试现场复算**（实际条数只会涨）。写旧了 `npm test` 会红 ——
+> 本仓的老病就是手写读数会腐烂。**发之前跑一遍 `npm test` 比核对文案更快。**
+> （本注释**刻意不写那个数**：多写一处就多一处要同步，而它恰恰是会被守卫点名的字面量。）
+
 ---
 
 ## 一、Product Hunt 发布文案
@@ -79,7 +84,7 @@ No boilerplate. No vendor lock-in.
 All in the browser. No external dashboard needed.
 
 **Tweet 4 (the guard story):**
-We maintain a registry of 50+ invariants in `docs/guards.md`.
+We maintain a registry of 90+ invariants in `docs/guards.md`.
 
 Every guard must be mutation-batteried: we deliberately break the code and confirm the test turns red. If it stays green, it's a "fake guard" — and we treat it as a bug.
 
@@ -134,7 +139,7 @@ A zero-runtime-dependency declarative agent framework in TypeScript. Build agent
 - **Zero runtime dependencies** — core ships with no npm dependencies, not even `zod` or `reflect-metadata`
 - **Built-in dev panel** — `agentia dev` launches a local inspector with real-time traces, capability narrowing, and run abort
 - **Observable by design** — OpenTelemetry-compatible traces, metrics, and structured events
-- **Guard-driven development** — 50+ registered invariants, each validated with mutation batteries; "tests that always pass" are treated as bugs
+- **Guard-driven development** — 90+ registered invariants, each validated with mutation batteries; "tests that always pass" are treated as bugs
 
 ### Links
 - [GitHub](https://github.com/retrychx/agentia)
@@ -150,7 +155,7 @@ A zero-runtime-dependency declarative agent framework in TypeScript. Build agent
 1. 《我们给每个不变量建了一份「守卫注册表」，然后发现了 3 个永远绿的测试》
 2. 《零运行时依赖的 Agent 框架：为什么我连 zod 和 reflect-metadata 都不要》
 3. 《TypeScript 装饰器 + 依赖注入 = Agent 框架？我们的回答》
-4. 《「测试永远绿」也是一种 bug：我们的 50+ 条守卫和 3 个假守卫的故事》
+4. 《「测试永远绿」也是一种 bug：我们的 90+ 条守卫和 3 个假守卫的故事》
 
 ---
 
