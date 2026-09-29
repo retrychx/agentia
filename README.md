@@ -385,7 +385,7 @@ grep -nE '^#{3,4} .*(迁移|破坏性)' CHANGELOG.md    # 列出所有「要你�
 
 | 面 | 承诺 | **不**承诺 |
 |---|---|---|
-| 公共 API | `@migor/agentia` 的**具名导出**（真源 `src/index.ts`；官网 API 页有反向全覆盖守卫）+ `@migor/cli` 的命令行面 | 深路径导入（`dist/**`）、`src/**` 内部模块路径、`packages/*`、`examples/*` |
+| 公共 API | `@migor/agentia` 的**具名导出**（真源 `src/index.ts`；官网 API 页有反向全覆盖守卫）+ `@migor/cli` 的命令行面 | 深路径导入（`dist/**`）、`src/**` 内部模块路径、`packages/*`、`examples/*` —— 这条边界**由 `package.json` 的 `exports` 字段封着**（`tests/architecture/package-exports.test.ts` 守；加 `exports` 之前 `dist/**` 真的导得进来） |
 | 行为 | 该版本条目里写明的**迁移动作** | 没写进迁移说明的任何行为变化 |
 | 运行环境 | `engines.node` 声明的区间；CI 在**该区间内每个版本**上跑完整条链 | Deno / Bun / edge runtime（**未验证**）；已 EOL 的 Node（会随 minor 去掉） |
 | 依赖 | **运行时零第三方依赖**（`tests/architecture/no-runtime-deps.test.ts` 守着，非口头承诺） | `devDependencies` 与 `examples/*` 的依赖面 |

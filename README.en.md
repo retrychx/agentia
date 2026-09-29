@@ -169,7 +169,9 @@ grep -nE '^#{3,4} .*(迁移|破坏性)' CHANGELOG.md    # every "you must act" s
 **What is covered by the compatibility promise:** the **named exports** of `@migor/agentia`
 (`src/index.ts` is the source of truth) and the `@migor/cli` command surface, plus the Node range in
 `engines.node` — CI runs the full chain on every version in that range. **Not covered:** deep imports
-(`dist/**`), internal module paths, `packages/*`, `examples/*`, Deno / Bun / edge runtimes (unvalidated),
+(`dist/**`) — **sealed by the `exports` field** in `package.json` (guarded by
+`tests/architecture/package-exports.test.ts`; before `exports` existed they really did resolve) —
+internal module paths, `packages/*`, `examples/*`, Deno / Bun / edge runtimes (unvalidated),
 and anything a release does not spell out in its migration note. Runtime third-party dependencies are
 **zero** — enforced by `tests/architecture/no-runtime-deps.test.ts`, not by promise.
 

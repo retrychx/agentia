@@ -6,6 +6,9 @@
   "bin": {
     "agentia": "./dist/cli.js"
   },
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "CHANGELOG.md"

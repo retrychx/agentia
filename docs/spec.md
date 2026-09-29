@@ -5838,6 +5838,54 @@ GitHub；**代价（可能各说各话）由守卫兜底**，断言三面出现�
 `examples/{eval-gate,observability}/README.md`、`docs/eval-gate.md`、`tests/docs/stability.test.ts`（新）、
 `docs/guards.md` §1.4（登记）。**框架代码零改动、使用者可见行为零变更。**
 
+### 2026-09-29 ⑭：**给两个已发布的包加 `exports`** —— 把「不承诺深路径导入」从文档承诺变成机制
+
+**触发**：「上生产 × 推广」评审的 `P2-2`（报告原文判据：`npm pkg get exports` 非空且含 `types`）。
+
+**问题不是「用不了」，是「承诺与机制不一致」**：2026-09-29 实测
+`import('@migor/agentia/dist/index.js')` **真的能进**、`require('@migor/agentia')` 拿到 **81 个导出**
+—— 而 ⑪ 那轮刚把「**不**承诺深路径导入（`dist/**`）」写进 README / README.en / 官网三面的
+承诺范围表。⇒ 一句**没有门禁的对外承诺**：任何人都可以把内部模块路径当 API，一次重构把他打碎，
+**零信号**。这是本仓反复记的同一形态（`guards.md` 头注）。
+
+**为什么这不是「加个字段」那么简单**（三处判断，都写进了守卫头注）：
+
+1. **`@migor/agentia` 用 `default` 而不是 `import`/`require` 两条**：本包**只有 ESM 一种产物**，
+   写两条等于宣称有 CJS 构建。`default` 同时接住两者（`require` 靠 Node 的 `require(esm)`）⇒
+   **行为与改动前逐字一致**（Node 18 上照样 `ERR_REQUIRE_ESM`）——「加边界」不该顺手改运行时语义。
+2. **`@migor/cli` 只放开 `"./package.json"`**：它的公共面是**可执行文件**，入口
+   `packages/cli/src/cli.ts` 末尾是 `process.exitCode = main(process.argv.slice(2))` ——
+   **顶层副作用、没有 main 守卫** ⇒ 给它 `"."` 等于承诺「import 这个包会直接跑 CLI」。
+   宁可封得比「有人可能想用」更紧：**公共面是 bin 就说 bin**。
+3. **`"./package.json"` 必须留**：封深路径最常见的误伤是让工具（打包器 / 类型解析器 / 脚本）
+   连清单都读不到 ⇒ 那句「封住了」会变成「整包不可读」。留 manifest 是**刻意的例外**。
+
+**落地**：两个 `package.json` + 新增 `tests/architecture/package-exports.test.ts`（四类判据，
+登记 `docs/guards.md` §1.4）+ README / README.en / 官网三面的承诺表补一句「这条边界由 `exports`
+封着」。**破坏性变更按本仓纪律走了「迁移」小节**（见 CHANGELOG ⑭）—— 这算是那条稳定性纪律上线后
+**第一次真被自己的改动用到**。
+
+**守卫的两层：文本 + 行为**。①②③ 是文本判据（声明在不在、`types` 排没排第一、子路径集合），
+④ 是**真解析**：自建临时夹具（真 manifest 的逐字拷贝 + 占位文件）用 `require.resolve` 跑一遍
+Node 的解析算法 —— 根入口/manifest 进得去、深路径必须报 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
+**为什么必须有 ④**：`exports` 的错法有一半是**形态对、指向错**（条件顺序、少 `./`、键名拼错），
+文本断言全看不见，而它们只在真解析时现形 —— 与 `scripts/e2e-cli.ts` 第 9 步那条「真 pack →
+真装 → 真跑」是同一条教训。⚠️ 夹具**刻意不用符号链接指向仓库**：那会让用例依赖 `dist/` 已构建
+（没 build 的机器上会红成「守卫坏了」），且批量删会被环境的安全删除垫片按文件数拦下（本仓踩过）。
+
+**反向验证 5 条（各恰好点名，还原后哈希逐字节一致）**：摘掉根包 `exports` ⇒ 四条全红；
+`types` 挪到 `default` 之后 ⇒ 只红「types 排第一」；加一条 `"./dist/*"` ⇒ 红「不开放子路径」+「真解析」；
+CLI 摘掉 `./package.json` ⇒ 红 ①③④；`default` 指到别的文件 ⇒ 红 ②④。
+
+**实测（真发布形态）**：真 pack 两包 → `--offline` 装进空项目 → 真跑 ⇒ `import`/`require` 根入口
+各 **81 个导出**（与改动前**同数**，导出面零变化）；`require.resolve` 根入口 → `dist/index.js`；
+两份 manifest 可解析；四条深路径/CLI 根入口**全被拒**；装出来的 `cli.js --version` 与 PATH 上的
+`agentia --version` 都是 `0.9.5`（bin 解析不经过 `exports`）。
+
+**影响面**：`package.json`、`packages/cli/package.json`、`tests/architecture/package-exports.test.ts`（新）、
+`README.md`、`README.en.md`、`packages/website/src/fragments/docs.html`、`CHANGELOG.md` ⑭、
+`docs/guards.md` §1.4。**框架源码零改动**；导出面（81 个具名导出）零变化。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
