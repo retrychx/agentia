@@ -7,6 +7,70 @@
 
 ## [Unreleased]
 
+### 变更 · 加 `exports` 字段：公开 API 边界从「文档承诺」变成「机制」（2026-09-29 ⑭）
+
+**可观测面变更**（`0.x` 期间 minor 可含破坏性变更 —— 你要做的动作写在下面「迁移」一节）。
+
+**起因**：「上生产 × 推广」评审的 `P2-2`。`README.md` / 官网的「稳定性与版本策略」节早就写明
+「**不**承诺深路径导入（`dist/**`）」—— 但两个**已发布**包的 `package.json` 里**没有 `exports`
+字段**，于是那句话是一句**没有机制的话**：2026-09-29 实测 `import('@migor/agentia/dist/index.js')`
+**真的能进**（`require('@migor/agentia')` 也照常拿到 81 个导出）。任何一个这么写的使用者都会把
+内部模块路径当成 API —— 一次重构就把他打碎，而且**没有任何信号**。这正是本仓反复记的那个形态：
+**承诺写在文档里、没有门禁**（`docs/guards.md` 头注）。
+
+**改动**：
+
+- `@migor/agentia` 新增 `exports`：根入口 `{"types" → ./dist/index.d.ts, "default" → ./dist/index.js}`
+  （`types` **排第一** —— TS 按书写顺序匹配条件）+ `"./package.json"`；
+- `@migor/cli` 新增 `exports`，**只放开 `"./package.json"`**。
+
+**为什么用 `default` 而不是 `import` / `require` 两条**：本包**只有 ESM 一种产物** —— 写两条会暗示
+存在 CJS 构建。`default` 同时接住 `import` 与 `require`（后者靠 Node 的 `require(esm)`），
+**行为与改动前逐字一致**（Node 18 上照样是 `ERR_REQUIRE_ESM`）。
+
+**为什么 `@migor/cli` 的 `exports` 只留 manifest**：它的公共面是**可执行文件**（`bin.agentia`），
+不是模块 —— 入口 `packages/cli/src/cli.ts` 末尾是 `process.exitCode = main(process.argv.slice(2))`
+（**顶层副作用，没有 main 守卫**）⇒ 给 `"."` 等于承诺「import 这个包会直接跑 CLI」。只留 manifest
+（工具读清单的常规请求），其余封死。
+
+**守卫** `tests/architecture/package-exports.test.ts`（登记 `docs/guards.md` §1.4）：四类判据 ——
+① 两个已发布包都声明 `exports` 且放开 `./package.json`；② 根入口 `types` 排第一、目标与顶层
+`main`/`types` 指向同一文件（`./` 前缀归一后比较 —— 两侧写法天然不同）；③ 除根入口与 manifest 外
+**不开放任何子路径**，且目标都在 `./dist/**`（源码不进 tarball）+ `files` 含 `dist` 的自证；
+④ **真解析**：自建临时夹具（真 manifest 的逐字拷贝 + 占位文件）用 `require.resolve` 跑一遍 Node
+的解析算法 —— 根入口/manifest 必须解析成功、深路径必须报 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
+⚠️ 刻意**不用符号链接指向仓库**（那会让夹具依赖 `dist/` 已构建，且批量删会被环境的安全删除垫片拦下）。
+
+**反向验证 5 条（各恰好点名，还原后 `sha256` 逐字节一致）**：摘掉根包 `exports` ⇒ 四条全红；
+`types` 挪到 `default` 之后 ⇒ 只红「types 排第一」那条；加一条 `"./dist/*"` ⇒ 红「不开放子路径」+
+「真解析」；CLI 摘掉 `./package.json` ⇒ 红 ①③④；把 `default` 指到别的文件 ⇒ 红 ②④。
+（①②③ 是**文本**判据、④ 是**行为**判据 —— 后者是前者的兜底：`exports` 的错法有一半是形态对、
+指向错。）
+
+**实测（真发布形态：真 pack → 真装进空项目 → 真跑）**：`import`/`require` 根入口各 **81 个导出**
+（与改动前**同数** ⇒ 导出面零变化）；`require.resolve('@migor/agentia')` → `dist/index.js`；
+`@migor/agentia/package.json` 与 `@migor/cli/package.json` 可解析；`@migor/agentia/dist/index.js`、
+`@migor/agentia/dist/engine/loop.js`、`@migor/cli`、`@migor/cli/dist/cli.js` **四条全被拒**
+（`ERR_PACKAGE_PATH_NOT_EXPORTED`）；装出来的 CLI `cli.js --version` 与 PATH 上的 `agentia --version`
+都是 `0.9.5`（bin 解析不经过 `exports`）。CI 的 `scripts/e2e-cli.ts` 第 9 步本来就在跑这条链。
+
+**迁移**
+
+只有一种情况需要你动手：**你 import 过 `@migor/agentia` 的深路径**（例如
+`import … from '@migor/agentia/dist/engine/loop.js'`）。改成从根入口导入 ——
+公开面一直是 `src/index.ts` 的具名导出，深路径**从来不在承诺范围内**，只是此前没被封。
+
+```ts
+// 改前（现在会抛 ERR_PACKAGE_PATH_NOT_EXPORTED）
+import { runAgent } from '@migor/agentia/dist/engine/loop.js';
+// 改后
+import { runAgent } from '@migor/agentia';
+```
+
+`@migor/cli` 是**命令行工具**，不受影响。读清单的 `…/@migor/*/package.json` 也照旧可用。
+
+**登记**：`docs/guards.md` §1.4、`docs/spec.md` §10 ⑭。
+
 ### 文档 · README 顶部加「实测记分牌」——数字一律脚本现算（2026-09-29 ⑬）
 
 **使用者可见行为零变更**（README 顶部一行 + 一条新守卫）：框架代码**零改动**。
