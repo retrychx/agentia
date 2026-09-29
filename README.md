@@ -200,7 +200,7 @@ await runner.awaitTask(task.taskId);
 
 // 定时
 const scheduler = new Scheduler(runner);
-scheduler.every(60_000, '巡检一次', { idempotencyKey: 'patrol' });
+scheduler.every(60_000, '巡检一次', { idempotencyPrefix: 'patrol' });
 ```
 
 ### 长上下文预算

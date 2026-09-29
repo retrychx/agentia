@@ -5575,6 +5575,78 @@ engine 403 / container 10 / store 55 —— 全绿。
 
 **闭环**：`guards.md §2` 那条「`async.ts` 没有行数上限闸」划掉、移入 §1.1（建议③闭环）。
 `AGENTS.md` 的 `transport/` 段补登记三个监督件 + 订正那句过时的「910 行的类 / 后续抽块三步一步没走」。
+### 2026-09-29 ⑨：**文档围栏代码块真编译**（竞评收官：换尺子 —— 从「缺什么」改成「哪些承诺是假的」）
+
+**来源与性质**：产品竞争力评审走到「**说不出还有什么缺口**」时换的尺子。前几轮一直在用
+「通用 agent 框架坐标系」找缺口，而本仓在 `docs/spec.md`（4 处「只给缝、不给策略」）、
+`docs/roadmap.md:281`（「不是待修项」）、`docs/usage-guide.md:540`（唯一判别规则）里**主动划走**了
+通用坐标系里的高分项 ⇒ 继续挖只会把它们自己选的 trade-off 报成缺陷（已连犯三次并撤回）。
+
+⇒ 改问一个**能被机械复算**的问题：**已经写下来的东西，是不是真的**。取样对象取「对外承诺面里
+最硬的一层」——**代码围栏块**（形容词 < 表格 < 代码块：读者会**逐字照抄**），理由是它**恰好不在
+既有守卫面上**：`usage-guide.test.ts` 只收「首列恰好是一个反引号标识符」的**表格行**，
+`run-output-shape.test.ts` 只钉 `.finalText` **一种形状**。
+
+**读数**（取样面 = `README*` / `usage-guide` / `observability` / `eval-gate` / `roadmap` /
+`examples/*/README`；**排除** `docs/plans|reviews|articles`，那些是当日快照）：
+
+| 量 | 值 |
+|---|---|
+| 围栏块总数 / ts 块 | 88 / 49 |
+| **含 `@migor/agentia` 具名导入**（=「照抄可跑」候选） | **22** |
+| 文档 import 的名字 vs `src/index.ts` 导出 | **0 条不符**（48 个名字全命中，API 面是干净的） |
+| 真编译 | **18 通过 / 3 不过** |
+
+**修掉的三条**（都不是新引入的 —— 是**从未被检查过**）：
+
+1. `README.md` 的 `scheduler.every(60_000, '巡检一次', { idempotencyKey: 'patrol' })` ——
+   `ScheduleEveryOptions` 里**没有**这个键（真名 `idempotencyPrefix`，`src/transport/scheduler.ts`）。
+   TS 报 `TS2353`；**JS 用户静默无幂等**（`every()` 读的是 `opts.idempotencyPrefix` ⇒ `undefined`），
+   而示例上方那句注释正写着「幂等键去重」。⚠️ **同一块上一行**的
+   `runner.submit(…, { idempotencyKey })` 是**对的** —— 两个同名旋钮，一个在一个不在。
+   为什么从没被发现：`ScheduleEveryOptions` 在 `usage-guide.md` 里 **0 命中** ⇒ 表格守卫与
+   **反向穷尽**守卫都够不到它。
+2. `docs/usage-guide.md` 的 `ctx!.deferUntil(due)` —— `ToolRunContext.deferUntil` 是**可选成员**，
+   `!` 只消掉了 `ctx` 的 null ⇒ `TS2722`。改成 `ctx?.deferUntil?.(due)`。
+3. `docs/usage-guide.md` 的**出站传播片段**是**裸方法**（`@Tool` 挂在函数声明上、且漏了必填的
+   `schema`）—— 根本不是合法 TS。补成完整的 `class OrderTools { … }`。这条不是「编译报错」，
+   而是**语法不自洽 ⇒ 无法被任何编译器检查**（见下）。
+
+**新增守卫**：`tests/docs/code-fences.test.ts` —— 把 22 个块落成文件、**一次性交给 `tsc`**
+（`paths` 指向 `src/`，**不依赖先 build**；单跑约 0.3s）。三条反假阳性机制**缺一不可**：
+
+- **语法错会连坐**：实测 `tsc 7`（tsgo）**只要程序里存在语法错误就整体跳过语义阶段** ——
+  不处理时 22 个块**只报 3 条语法错**、`TS2353` / `TS2722` 一条都不报 ⇒ 守卫会变成**静默全绿**
+  （第一版探针就是这么被骗的）。⇒ 迭代把语法错的文件摘出 `files`，并**断言摘掉的块数为 0**。
+- **省略垫片**：把「名字不存在」类（TS2304 / 2552 / 2584 / 2591 / TS18004 简写属性）收成
+  `declare const X: any` 再跑 —— 垫片吃得掉「名字不存在」、**吃不掉「类型形状不对」**。
+- **省略记号归一**：三种省略写法（花括号 / 方括号 / 块注释形态）归一成**展开 any** 而**不是**
+  空容器 —— 后者会因缺必填项造出**守卫自己的假阳性**（`createApp({ ... })` ⇒ 归一成 `{}` 会报缺 `system`）。
+- 另两条**自证**（防「守卫悄悄什么都没检查」）：**金丝雀**（程序里固定塞一个故意写错的块，
+  断言 `TS2353` **必须**被报出来）+ **取样下限 20**。
+
+**验证（4 条变异，各恰好点名那条；还原后 `sha256` 逐字节一致）**：① `README` 键名改回
+`idempotencyKey` ⇒ 报 `README.md:191（块内第 13 行） TS2353`；② `ctx!.deferUntil(due)` 改回 ⇒
+报 `usage-guide.md:1547（块内第 10 行） TS2722`；③ 出站片段改回裸方法 ⇒ 报 `usage-guide.md:871`
+（语法不自洽）；④ 金丝雀改成对的（模拟编译链静默退化）⇒ 金丝雀那条断言红（`实际诊断：[]`）。
+
+**如实记两处边界**：① 取样面**只到「含具名导入」的块**（无导入的片段不可判定，不硬判）；
+② 垫片的存在意味着**引用了被省略名字的表达式不在射程**（如 `app.run(messages)` 的签名不会被查）。
+
+**明确不算缺口的一条（留痕）**：`usage-guide.md` 里 `from '@migor/agentia-observability'` 的那两块
+首次对拍报 `TS2307`，但它**是按设计的配方** —— `docs/observability.md` 已明写「`npm i` 会 404，
+这是本地小包（`file:` 引入）」，且 `examples/observability/src/index.ts` 真有那些导出
+（守卫也照 `tsconfig.tests.json` 的 `paths` 映射过去，不再误报）。评审里另有两条同款被撤回，
+一并记在报告里。
+
+**影响面**：`README.md`（1 行）、`docs/usage-guide.md`（2 处：1 行断言 + 1 个片段补全）、
+`docs/observability.md`（1 行腐烂读数订正，见下）、`tests/docs/code-fences.test.ts`（新）、
+`docs/guards.md` §1.4（登记 + 反向验证）。**框架代码零改动**。
+
+**顺带订正的腐烂读数**：`docs/observability.md` 的日志层那格原写「2026-09-15 实测 9 处
+`console.error/warn`」，2026-09-29 实测 **22 处（散在 12 个文件）** ⇒ 不再写死数字，改为
+**给现数命令** `grep -rn "console\." src/`（与本仓其它「易腐数字给命令」的口径一致）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
