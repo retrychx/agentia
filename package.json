@@ -63,6 +63,7 @@
     "e2e:mcp:server": "tsx scripts/e2e-mcp-server.ts",
     "e2e:soak": "tsx scripts/e2e-soak.ts",
     "e2e:soak:app": "npm run build && tsx scripts/e2e-soak-app.ts",
+    "e2e:soak:suspend": "tsx scripts/e2e-soak-suspend.ts",
     "bench:trace": "tsx scripts/bench-trace-cost.ts",
     "bench:assembly": "tsx scripts/bench-app-assembly.ts",
     "bench:otlp": "tsx scripts/bench-otlp-snapshot.ts"
