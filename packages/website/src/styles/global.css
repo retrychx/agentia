@@ -2076,7 +2076,12 @@ pre code {
     font-size: 15px;
     border-bottom: 1px solid var(--border);
   }
-  .nav-links a:last-child {
+  /* 原写的是 `a:last-child`，而 CTA 恒为最后一项 ⇒ 那条规则从来没作用在普通链接上，
+     只**每次都把 CTA 按钮的下边框抹掉**（`a:last-child` 0,2,1 压过下面 `.nav-links
+     .nav-cta` 的 0,2,0），手机版菜单里 GitHub 按钮只剩左/上/右三条边（2026-09-30 实报）。
+     改成只对「普通链接」生效：当前 CTA 在时本规则不命中（无副作用），将来若 CTA 被移除，
+     最后一条普通链接才需要去线，否则会与菜单容器的 border-bottom 挨成双线。 */
+  .nav-links a:not(.nav-cta):last-child {
     border-bottom: none;
   }
   .nav-links .nav-cta {
