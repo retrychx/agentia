@@ -12,6 +12,9 @@ coverage/
 # CLI 包的 CHANGELOG.md 是构建产物（copy-assets 从仓库根拷贝，随包发布）
 packages/cli/CHANGELOG.md
 
+# terminal-bench 示例：`npm run selftest` 现跑现得的样本轨迹，不入库
+examples/terminal-bench/out/
+
 # 本地 AI 助手的工作目录（项目级 memory / skill，属个人环境产物，不入库）
 # ⚠️ 两个名字都要写：`.workbuddy-ai/` 是旧名，实际落盘用的是 `.workbuddy/` ——
 # 少了后者，`git add -A` 会把个人环境产物扫进提交（2026-09-28 ⑨ 顺手补）

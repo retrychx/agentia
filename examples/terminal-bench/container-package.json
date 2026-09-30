@@ -1,0 +1,9 @@
+{
+  "name": "agentia-terminal-bench",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@migor/agentia": "0.10.0"
+  }
+}
