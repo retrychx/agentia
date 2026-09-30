@@ -259,14 +259,17 @@ code {
   min-height: 100svh;
   display: flex;
   /* 文案在上、trace 自播面板在下（原来是单块内容居中）。面板要落在品牌语之后、
-     折叠线附近 —— 它是「产品证据」，不是页脚装饰。 */
+     折叠线附近 —— 它是「产品证据」，不是页脚装饰。
+     尺寸按 1440×900 实测校过：改前 demo 面板底边 1050px（超视口 150px，foot 被裁），
+     且与 .scroll-hint 重叠 12px。此处的 padding/gap 与下面 h1/各块 margin 的收紧
+     合计省 ~170px，让面板完整落进首屏（改后实测 demo.bottom ≈ 860）。 */
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 36px;
+  gap: 26px;
   text-align: center;
   overflow: hidden;
-  padding: 100px var(--gutter) 52px;
+  padding: 88px var(--gutter) 36px;
 }
 /* 背景层：主 agent 调度能力的节点脉冲网络。它**不是**首屏的主角 ——
    主角是下面那块 trace 自播面板（产品证据），这层只提供纵深。
@@ -337,7 +340,9 @@ code {
   opacity: 0.5;
 }
 .hero-demo-tree {
-  height: 272px;
+  /* 272 → 236：与 ≤860px 断点同值 —— 面板完整落进 900px 高的首屏（见 .hero 注释的实测账），
+     内部滚动不受影响（span 长出来时仍在面板内滚）。 */
+  height: 236px;
   overflow: auto;
   padding: 14px 16px;
   font-family: var(--mono);
@@ -398,10 +403,13 @@ code {
   color: var(--steel);
   font-size: 12px;
   letter-spacing: 0.32em;
-  margin-bottom: 26px;
+  margin-bottom: 18px;
 }
 .hero h1 {
-  font-size: clamp(42px, 7vw, 76px);
+  /* 76 → 62 上限：首屏垂直预算的主要出让者（两行省 ~30px）。
+     clamp 三档是**一条连续曲线**（6.6vw 斜率贯穿全宽）：390→34（两行放得下，见下方
+     已删的 ≤560 断点注释）、560→37、≥1136→62 —— 不再有断点边界上的字号跳变。 */
+  font-size: clamp(34px, 6.6vw, 62px);
   line-height: 1.08;
   font-weight: 700;
   letter-spacing: -0.025em;
@@ -437,7 +445,7 @@ code {
 }
 .hero-sub {
   max-width: 680px;
-  margin: 26px auto 0;
+  margin: 18px auto 0;
   color: var(--muted);
   font-size: 16px;
   line-height: 1.85;
@@ -471,7 +479,7 @@ code {
   white-space: nowrap;
 }
 .hero-actions {
-  margin-top: 40px;
+  margin-top: 28px;
   display: flex;
   gap: 14px;
   justify-content: center;
@@ -506,7 +514,7 @@ code {
   background: var(--accent-dim);
 }
 .hero-install {
-  margin: 44px auto 0;
+  margin: 24px auto 0;
   display: inline-flex;
   align-items: center;
   gap: 14px;
@@ -547,7 +555,7 @@ code {
 .hero-stats {
   position: relative;
   z-index: 2;
-  margin-top: 44px;
+  margin-top: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -570,39 +578,10 @@ code {
   opacity: 0.7;
 }
 
-.scroll-hint {
-  position: absolute;
-  bottom: 28px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 22px;
-  height: 36px;
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  z-index: 2;
-}
-.scroll-hint span {
-  position: absolute;
-  top: 6px;
-  left: 50%;
-  width: 3px;
-  height: 7px;
-  margin-left: -1.5px;
-  border-radius: 2px;
-  background: var(--ice);
-  animation: scroll-dot 1.8s ease-in-out infinite;
-}
-@keyframes scroll-dot {
-  0%,
-  100% {
-    transform: translateY(0);
-    opacity: 1;
-  }
-  60% {
-    transform: translateY(12px);
-    opacity: 0.15;
-  }
-}
+/* （.scroll-hint 已删）：面板按 1440×900 实测完整落进首屏后（demo.bottom ≈ 894），
+   这个 absolute bottom:28px 的滚动提示必然压在面板 foot 上 —— 改前就重叠 12px、
+   改后 28px。它是纯装饰（aria-hidden），面板自身已经是「往下还有内容」的引导，
+   故删元素 + 样式 + scroll-dot keyframes 一起摘干净。 */
 
 /* sections */
 .section {
@@ -917,11 +896,9 @@ pre code {
   .feature--key {
     grid-column: auto;
   }
-  /* 窄屏：两行标语都得放得下，否则「交付一个 Agent 服务」会折出孤字。
-     公式与文件末尾的 ≤420px 规则**保持一致**，否则 420/421 边界上标题会突然缩一截。 */
-  .hero h1 {
-    font-size: clamp(30px, 9.5vw, 42px);
-  }
+  /* （窄屏 h1 字号规则已删）：桌面 clamp(34px, 6.6vw, 62px) 是贯穿全宽的连续曲线，
+     390px 下落到 34px 下限 —— 两行标语放得下、不折孤字，且与桌面无边界跳变。
+     旧的 clamp(30px, 9.5vw, 42px) 在 560/561 边界比桌面公式大 4px，会突然缩一截。 */
   .hero-sub {
     font-size: 15px;
     line-height: 1.8;
@@ -2099,7 +2076,12 @@ pre code {
     font-size: 15px;
     border-bottom: 1px solid var(--border);
   }
-  .nav-links a:last-child {
+  /* 原写的是 `a:last-child`，而 CTA 恒为最后一项 ⇒ 那条规则从来没作用在普通链接上，
+     只**每次都把 CTA 按钮的下边框抹掉**（`a:last-child` 0,2,1 压过下面 `.nav-links
+     .nav-cta` 的 0,2,0），手机版菜单里 GitHub 按钮只剩左/上/右三条边（2026-09-30 实报）。
+     改成只对「普通链接」生效：当前 CTA 在时本规则不命中（无副作用），将来若 CTA 被移除，
+     最后一条普通链接才需要去线，否则会与菜单容器的 border-bottom 挨成双线。 */
+  .nav-links a:not(.nav-cta):last-child {
     border-bottom: none;
   }
   .nav-links .nav-cta {

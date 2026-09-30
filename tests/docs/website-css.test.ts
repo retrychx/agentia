@@ -115,3 +115,46 @@ describe('官网 API 页表格版式不变量', () => {
     );
   });
 });
+
+describe('官网手机版折叠菜单：CTA 按钮的边框完整性', () => {
+  /**
+   * 病例（2026-09-30 用户实报，390px 展开菜单后 GitHub 按钮只有左/上/右三条边）：
+   *
+   * `.nav-links a:last-child { border-bottom: none }` 的本意是「最后一条普通链接不必再画
+   * 分隔线（菜单容器自带 border-bottom）」，但 **CTA 恒为最后一项** ⇒ 这条规则从来没作用在
+   * 普通链接上，只每次都把 CTA 的**按钮下边框**抹掉 —— `.nav-links a:last-child` (0,2,1)
+   * 压过 `.nav-links .nav-cta` 的 (0,2,0)。纯 CSS 的特异性压制肉眼看不出来（框少一条边
+   * 在暗色下很容易当成设计），所以在这里钉两条：
+   *  ① `border-bottom: none` 的选择器若用 `:last-child`，必须显式排除 `.nav-cta`；
+   *  ② 折叠菜单块里 CTA 必须有四边完整的边框声明。
+   */
+  const nav = (() => {
+    const blocks = mediaBlocks(raw).filter((b) => /\.nav-links \.nav-cta/.test(b.body));
+    return blocks[blocks.length - 1]?.body ?? '';
+  })();
+
+  it('抹除 border-bottom 的 last-child 规则必须排除 .nav-cta', () => {
+    const bare = /\.nav-links a:last-child\s*\{[^}]*border-bottom:\s*none/.exec(raw);
+    assert.equal(
+      bare,
+      null,
+      '出现裸 `a:last-child { border-bottom: none }` —— CTA 恒为最后一项，这条规则只会把' +
+        '按钮的下边框抹掉（特异性压过 .nav-links .nav-cta）。要表达「最后一条普通链接不画线」，' +
+        '请写成 `.nav-links a:not(.nav-cta):last-child`。',
+    );
+    assert.match(
+      raw,
+      /\.nav-links a:not\(\.nav-cta\):last-child\s*\{[^}]*border-bottom:\s*none/,
+      '缺少「最后一条普通链接不画线」的规则（须以 :not(.nav-cta) 排除 CTA）',
+    );
+  });
+
+  it('折叠菜单块里 CTA 有四边完整的边框', () => {
+    assert.notEqual(nav, '', '找不到含 `.nav-links .nav-cta` 的折叠菜单断点');
+    assert.match(
+      nav,
+      /\.nav-links \.nav-cta\s*\{[^}]*border:\s*1px solid var\(--border-strong\)/,
+      'CTA 缺四边 border 声明（`border:` 简写才保证四边一致）',
+    );
+  });
+});
