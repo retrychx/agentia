@@ -25,8 +25,10 @@
 //   ① 不丢不卡：每条任务都在**它自己那一批**里被验过终态（逐批对账数 = 提交数），
 //      收尾 `inFlight` = 0 且挂起登记簿除名（空队列给 null）——
 //      长跑里挂起链路最典型的病不是崩，是「永远挂着不动」：它没有任何错误码，只有不收敛
-//   ② 逐笔对账（每个注入恰好落地一次）：`danger` 执行次数 = approve 臂 + signal 臂数
+//   ② 逐笔对账（**按落地的决定**，不是按臂的标签）：`danger` 执行次数 = 人工批过的决定数
 //      （timeout 臂**必须 0 次** —— 全拒了就不该有副作用）；`sleep` 执行次数 = timer 臂数
+//      ⚠️ 臂是「我打算怎么推」，决定是「实际发生了什么」—— 两者会分叉（审批窗口是**惰性**判定：
+//      我还没批，它已经被兜底判掉了）。分叉必须**数出来**，不能按臂的标签糊过去。
 //   ③ 四条臂各自落地 ≥1（防「某条臂静默空转」把 ② 变成恒真 —— 空转的臂是这条链上最容易漏的）
 //   ④ 事件恰好一次：重复 eventId ⇒ **恰好一次 409**（注意：要在任务「又挂起」之后重投 ——
 //      投递会把状态翻成 running，在 running 上重投撞的是状态闸，走不到幂等闸，见 signal 臂的注释）；
@@ -37,6 +39,13 @@
 //   ⑥ heapUsed 有界（热身后 tail3 − head3 < 48MB；采样不足是**硬失败**，不静默跳过）
 //   ⑦ 恢复段 trace 经 `link` 挂到挂起段（挂起/恢复不许把 trace 记账绕过去）
 //   ⑧ 干净退出（看门狗：断言完还有句柄吊着 ⇒ 打出来 + exit 1）
+//   ⑨ **节奏自检**：状态竞态（读到挂起之后又被惰性判定推走）占比 > 20% ⇒ 大量臂没落地，
+//      读数不可信 —— 红在「节奏」上并给出处置，而不是红在「danger 该跑 N 次却跑了 0 次」。
+//
+// ⚠️ 驱动侧**不许假设「我读到的挂起」还在**（这是本档第一版在 2026-09-30 崩掉的原因：
+//   45 分钟档跑到第 4 分钟，一次 `signalTask` 撞上已被兜底判掉并重派的任务 ⇒
+//   TaskEventError 409 直接冒到顶层把整轮打死。契约是对的，是驱动的假设太强）。
+//   所有会对挂起记录动手的调用（signalTask / approve）都接住 409 并按**记录状态**分类。
 //
 // ⚠️ 记录存 **SQLite**（`SqliteTaskStore`，同 `e2e-soak-app`），不是内存 Map：这一档要跑
 //   几十分钟、几万条记录 —— 放内存里会「合法地」把 heap 撑到几百 MB，⑥ 就变成在测我自己的
@@ -52,7 +61,7 @@ import { createServer, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AsyncRunner, SqliteTaskStore, createOpenAIClient, executeRun } from '../src/index.js';
-import type { AgentTool, AppCallable, TaskRecord } from '../src/index.js';
+import type { AgentTool, AppCallable, TaskEvent, TaskRecord } from '../src/index.js';
 
 const DURATION_MS = Number(process.env.SOAK_SUSPEND_DURATION_MS ?? 60_000);
 const CONCURRENCY = Number(process.env.SOAK_SUSPEND_CONCURRENCY ?? 16);
@@ -330,6 +339,38 @@ async function waitAll(
   }
 }
 
+/** 投递一条事件，并按**记录状态**把结果分成三类 —— `status` 409 有两种，语义完全不同：
+ *   · `delivered` —— 事件真的投进去了；
+ *   · `state-race` —— 记录此刻**不是**挂起（被惰性审批超时 / 到期唤醒推走了）⇒ **状态闸**的 409。
+ *     契约（「只有挂起的任务能接收事件」）是**对的**，是驱动这一侧假设太强：审批窗口是
+ *     **惰性**判定，我读到「挂起」之后它随时可能被兜底判掉并重派。**这一条必须接住** ——
+ *     否则整个 soak 会因为一次竞态崩掉（2026-09-30 实测：45 分钟档跑到第 4 分钟就崩）。
+ *   · `duplicate` —— 记录仍在挂起、且这个 eventId 已在 `deliveredEventIds` 里 ⇒ **幂等闸**的 409。
+ *     这才是「恰好一次」要测的那条路。
+ *   非 409 一律照抛（那是真错，不该被分类掩掉）。
+ */
+async function trySignal(
+  runner: AsyncRunner,
+  taskId: string,
+  event: TaskEvent,
+): Promise<'delivered' | 'state-race' | 'duplicate'> {
+  try {
+    await runner.signalTask(taskId, event);
+    return 'delivered';
+  } catch (e) {
+    if ((e as { status?: number }).status !== 409) throw e;
+    const still = await runner.poll(taskId);
+    if (
+      still?.status === 'suspended' &&
+      event.eventId !== undefined &&
+      (still.deliveredEventIds ?? []).includes(event.eventId)
+    ) {
+      return 'duplicate';
+    }
+    return 'state-race';
+  }
+}
+
 async function main(): Promise<void> {
   const rng = mulberry32(SEED);
   const runs: Runs = { danger: [], sleepRuns: 0, sleptTaken: 0 };
@@ -384,14 +425,27 @@ async function main(): Promise<void> {
   const byArm: Record<Arm, number> = { approve: 0, timeout: 0, signal: 0, timer: 0 };
   let submittedCount = 0;
   let reconciled = 0;
-  let timeoutDenied = 0;
-  let approvedByHuman = 0;
   let multiSegment = 0;
   let linked = 0;
   let signalsSent = 0;
+  let signalOk = 0;
+  /** 状态竞态（契约正确、驱动假设太强）—— 单列出来，**既不静默吞掉也不判红**，见 trySignal 头注 */
+  let signalStateRace = 0;
+  let approveStateRace = 0;
+  /** 还没轮到我就已经被推走的臂（approve/signal）—— 静默 continue 的反面，见驱动循环里的注释 */
+  let armSkippedNotSuspended = 0;
+  /** 幂等闸的测试：试图重复投递的次数 / 被幂等拒的次数 / 本该测却因「不在挂起」没测成的次数 */
+  let dupAttempted = 0;
   let dupCaught = 0;
   let dupMissed = 0;
+  let dupStateRace = 0;
+  let dupSkippedNotSuspended = 0;
+  /** 「第一次投递就被幂等拒」—— 不该发生（每个任务的 eventId 唯一）⇒ 计数并断言为 0 */
+  let firstDupUnexpected = 0;
   let approvalsSent = 0;
+  /** 逐条对账出来的**实际落地的决定**（人工批 / 兜底判拒），不再是「臂的标签」 */
+  let humanApproved = 0;
+  let autoDenied = 0;
   let resumedTasks = 0;
   let rounds = 0;
   const endAt = Date.now() + DURATION_MS;
@@ -439,20 +493,43 @@ async function main(): Promise<void> {
     tasksAtDbSample.push(submittedCount);
 
     // 3) 驱动各臂：approve / signal 当场推，timeout / timer 交给下面的宿主 tick
+    //
+    // ⚠️ 这一段的每一处「读到的状态」都可能**在下一步之前失效**：审批窗口与到期唤醒都是
+    //    **惰性**判定，我这次 poll 读到 suspended，下一次 poll / tick 就可能把它判掉并重派
+    //    （status → running）。所以驱动侧**不许假设状态还在**：
+    //      · 投递走 `trySignal`（把 409 按记录状态分成「状态竞态」与「幂等拒」两类）；
+    //      · `approve` 同样接住 409（它按契约只在「等审批」时可用）。
+    //    2026-09-30 实测：不接住它的后果是整个 soak 崩在第 4 分钟（TaskEventError 409
+    //    「当前状态为 running」直接冒到顶层）。**契约是对的，是驱动的假设太强。**
     for (const b of batch) {
       const rec = await runner.poll(b.taskId);
-      if (rec?.status !== 'suspended') continue;
+      if (rec?.status !== 'suspended') {
+        // 我自己还没动手，它就已经被惰性判定推走了（窗口太短 / 驱动太慢）——
+        // **数出来**，别静默 continue：这是本档最容易骗自己的地方（臂一次都没落地，
+        // 却因为「臂的计数」还在而看着有覆盖）。2026-09-30 的 100ms 放大档就是这个形状。
+        if (b.arm === 'approve' || b.arm === 'signal') armSkippedNotSuspended++;
+        continue;
+      }
       if (b.arm === 'approve') {
         approvalsSent++;
-        await runner.approve(
-          b.taskId,
-          { [APPROVAL_ID]: { approved: true, reason: 'soak 批了' } },
-          { decidedBy: APPROVER },
-        );
+        try {
+          await runner.approve(
+            b.taskId,
+            { [APPROVAL_ID]: { approved: true, reason: 'soak 批了' } },
+            { decidedBy: APPROVER },
+          );
+        } catch (e) {
+          if ((e as { status?: number }).status === 409) approveStateRace++;
+          else throw e;
+        }
       } else if (b.arm === 'signal') {
-        const event = { eventId: `ev-${b.taskId}-1`, type: EVENT_TYPE, payload: 'ping' };
+        const event: TaskEvent = { eventId: `ev-${b.taskId}-1`, type: EVENT_TYPE, payload: 'ping' };
         signalsSent++;
-        await runner.signalTask(b.taskId, event);
+        const first = await trySignal(runner, b.taskId, event);
+        if (first === 'delivered') signalOk++;
+        else if (first === 'state-race') signalStateRace++;
+        // 第一次投递就被幂等拒 = 这个 eventId 早就投过了（不该发生：每个任务 id 唯一）⇒ 计数
+        else firstDupUnexpected++;
         // 事件让它续跑；审批还没下来 ⇒ 它会再挂一次（覆盖「事件先到、决定后到」的次序）
         await waitAll(
           runner,
@@ -466,12 +543,16 @@ async function main(): Promise<void> {
         //    2026-09-30 反向验证抓到的：把幂等闸关掉，原来那句「重复投递被拒」照样绿，
         //    因为拒它的是状态。**守卫测的东西 ≠ 它想测的东西**，这一档自己先犯了一次。
         //    幂等闸的真身是「重试一条已经投过的事件」（真实场景：客户端重试 / 双写）。
-        try {
-          await runner.signalTask(b.taskId, event);
-          dupMissed++;
-        } catch (e) {
-          if ((e as { status?: number }).status === 409) dupCaught++;
-          else throw e;
+        const beforeDup = await runner.poll(b.taskId);
+        if (beforeDup?.status === 'suspended') {
+          dupAttempted++;
+          const again = await trySignal(runner, b.taskId, event);
+          if (again === 'duplicate') dupCaught++;
+          else if (again === 'delivered') dupMissed++;
+          else dupStateRace++;
+        } else {
+          // 没挂起就没法测幂等闸（不算失败，但要**看得见**：④ 要求测成的次数够多）
+          dupSkippedNotSuspended++;
         }
         // 万一被收下（幂等闸坏了），它会再醒一次 ⇒ 还要再等回挂起，才能批
         await waitAll(
@@ -484,11 +565,16 @@ async function main(): Promise<void> {
         const after = await runner.poll(b.taskId);
         if (after?.status === 'suspended') {
           approvalsSent++;
-          await runner.approve(
-            b.taskId,
-            { [APPROVAL_ID]: { approved: true, reason: 'soak 批了（信号臂）' } },
-            { decidedBy: APPROVER },
-          );
+          try {
+            await runner.approve(
+              b.taskId,
+              { [APPROVAL_ID]: { approved: true, reason: 'soak 批了（信号臂）' } },
+              { decidedBy: APPROVER },
+            );
+          } catch (e) {
+            if ((e as { status?: number }).status === 409) approveStateRace++;
+            else throw e;
+          }
         }
       }
     }
@@ -514,12 +600,27 @@ async function main(): Promise<void> {
       assert.ok(rec, `任务 ${b.taskId}（${b.arm} 臂）提交后再也查不到`);
       assert.ok(isTerminal(rec.status), `任务 ${b.taskId}（${b.arm} 臂）没到终态：${rec.status}`);
       reconciled++;
-      // 臂别对账：timeout 臂的决定必须来自**兜底**（system +「审批超时」），其余是人工
+      // 逐条对账**按落地的决定**，不按臂的标签：臂是「我打算怎么推」，决定是「实际发生了什么」。
+      // 两者会分叉（审批窗口是惰性判定：我还没批，它已经被兜底判掉了）—— 分叉必须**数出来**，
+      // 不能被臂的标签糊过去。2026-09-30 实测：窗口压到 100ms 时 507 个需要审批的任务里
+      // 人工批落地 **0** 次；而旧版按臂对账，把它报成「danger 该跑 507 次却跑了 0 次」——
+      // 看着像框架坏了，其实是我的驱动节奏没跟上窗口。
       const decision = rec.approvals?.[APPROVAL_ID];
-      if (b.arm === 'timeout') {
-        if (decision?.approved === false && decision.reason === '审批超时') timeoutDenied++;
-      } else if (decision?.decidedBy === APPROVER) {
-        approvedByHuman++;
+      if (decision === undefined) {
+        // timer 臂不做审批；其余三条臂都以「需审批的工具」起步 ⇒ 必须留下一条决定
+        assert.equal(
+          b.arm,
+          'timer',
+          `任务 ${b.taskId}（${b.arm} 臂）到终态了却没有审批决定 —— 决定丢了`,
+        );
+      } else if (decision.decidedBy === APPROVER && decision.approved === true) {
+        humanApproved++;
+      } else if (decision.approved === false && decision.reason === '审批超时') {
+        autoDenied++;
+      } else {
+        assert.fail(
+          `任务 ${b.taskId} 的决定既不是人工批、也不是兜底判拒：${JSON.stringify(decision)}`,
+        );
       }
       // trace 是交付物：run 根 span 必须在；跨段就必须 link 到上一段
       const root = rec.result?.trace.spans.find((sp) => sp.kind === 'run');
@@ -543,10 +644,14 @@ async function main(): Promise<void> {
     `轮次：${rounds} 轮 × ${PER_ROUND} 提交 = ${submittedCount} 任务（${CONCURRENCY} 并发，种子 ${SEED}）`,
   );
   console.log(
-    `臂：${ARMS.map((a) => `${a}=${byArm[a]}`).join(' ')}；approve 发出 ${approvalsSent}，事件投递 ${signalsSent}（重复投递被拒 ${dupCaught}，漏拒 ${dupMissed}），resumePending 重派 ${resumedTasks}`,
+    `臂：${ARMS.map((a) => `${a}=${byArm[a]}`).join(' ')}；approve 发出 ${approvalsSent}（落地：人工 ${humanApproved} / 兜底 ${autoDenied}），` +
+      `事件投递 ${signalsSent}（投进 ${signalOk}）、幂等闸测到 ${dupAttempted} 次（被拒 ${dupCaught} / 漏拒 ${dupMissed}），resumePending 重派 ${resumedTasks}`,
   );
   console.log(
-    `工具执行：danger=${runs.danger.length}（应为 approve+signal=${byArm.approve + byArm.signal}），` +
+    `节奏：状态竞态 approve=${approveStateRace} signal=${signalStateRace} 重投=${dupStateRace}；没赶上重投 ${dupSkippedNotSuspended}；还没轮到我就被推走 ${armSkippedNotSuspended}`,
+  );
+  console.log(
+    `工具执行：danger=${runs.danger.length}（应为人工批过的决定=${humanApproved}），` +
       `sleep 执行=${runs.sleepRuns} / 真睡下=${runs.sleptTaken}（应为 timer×2 / timer=${byArm.timer * 2} / ${byArm.timer}）`,
   );
   console.log(
@@ -578,12 +683,31 @@ async function main(): Promise<void> {
     '收尾时挂起登记簿没除名（空队列给 null 不给 0）—— 读数泄漏在长跑里会越攒越多',
   );
 
-  // ② 逐笔对账：每个注入**恰好落地一次**（多一次 = 重复执行，少一次 = 被静默吞掉）
+  // ⑨ **节奏自检**：状态竞态（读到挂起之后又被惰性判定推走）占比过高 ⇒ 大量臂没落地，
+  //    读数不可信。这条**放在最前面**（紧跟 ①）是有意的：它判的是「这轮实验成不成立」，
+  //    而不是「框架对不对」—— 不成立时应该给出可执行的处置，而不是让后面那些断言
+  //    红成「danger 该跑 N 次却跑了 0 次」这种看不懂的形状（2026-09-30 实测：审批窗口
+  //    压到 100ms 就长这样，507 个需要审批的任务里人工批落地 0 次）。
+  const needApproval = byArm.approve + byArm.timeout + byArm.signal;
+  const racy =
+    approveStateRace +
+    signalStateRace +
+    dupStateRace +
+    dupSkippedNotSuspended +
+    armSkippedNotSuspended;
+  assert.ok(
+    racy <= Math.max(10, needApproval * 0.2),
+    `状态竞态 ${racy} 次（含「还没轮到我」就 ${armSkippedNotSuspended} 次）/ 需要审批的任务 ${needApproval}` +
+      ' 超过 20% —— 驱动节奏与审批窗口不匹配 ⇒ 臂大量没落地，这轮的覆盖不可信。' +
+      '处置：把 SOAK_SUSPEND_APPROVAL_TIMEOUT_MS 调大，或把 SOAK_SUSPEND_CONCURRENCY / 每轮提交量调小',
+  );
+
+  // ② 逐笔对账：**按落地的决定**（不是按臂的标签）—— 每个注入恰好落地一次
   assert.equal(
     runs.danger.length,
-    byArm.approve + byArm.signal,
-    `danger 执行 ${runs.danger.length} ≠ approve+signal 臂数 ${byArm.approve + byArm.signal}` +
-      '（多 ⇒ 重复执行；少 ⇒ 审批过了却没跑或被静默吞）',
+    humanApproved,
+    `danger 执行 ${runs.danger.length} ≠ 人工批过的决定 ${humanApproved}` +
+      '（多 ⇒ 重复执行；少 ⇒ 批了却没跑或被静默吞）',
   );
   assert.equal(
     runs.sleptTaken,
@@ -596,33 +720,59 @@ async function main(): Promise<void> {
     `sleep 执行 ${runs.sleepRuns} ≠ timer 臂 × 2（${byArm.timer * 2}）—— 到期唤醒要求**重跑**那条 tool_use：` +
       '少一次 = 醒来没重跑（那批活被丢了），多一次 = 重复执行',
   );
-
-  // timeout 臂的决定必须来自**兜底**而不是人工：system + 理由「审批超时」
-  // （timeoutDenied / approvedByHuman 是循环里**逐条**数出来的，不是收尾再扫一遍表）
+  // 每条需要审批的任务都必须留下决定：人工批 + 兜底判拒 = 三条臂之和（决定不许丢）
   assert.equal(
-    timeoutDenied,
-    byArm.timeout,
-    `timeout 臂里只有 ${timeoutDenied}/${byArm.timeout} 的任务留下了「审批超时」的全拒记录 —— 惰性超时没落地`,
+    humanApproved + autoDenied,
+    byArm.approve + byArm.timeout + byArm.signal,
+    `落地的决定 ${humanApproved} 人工 + ${autoDenied} 兜底 = ${humanApproved + autoDenied}` +
+      ` ≠ 需要审批的臂数之和 ${byArm.approve + byArm.timeout + byArm.signal}` +
+      '（有任务到终态却没留下决定 —— 决定丢了）',
   );
-  assert.equal(
-    approvedByHuman,
-    approvalsSent,
-    `人工批的决定只有 ${approvedByHuman} 条留痕，实际发出 ${approvalsSent} 次（决定丢了）`,
+  // timeout 臂**只能**是兜底判拒（没人批它）
+  assert.ok(
+    autoDenied >= byArm.timeout,
+    `兜底判拒 ${autoDenied} < timeout 臂数 ${byArm.timeout} —— 有「不批不管」的任务没被兜底判掉`,
   );
 
   // ③ 四条臂各自落地 ≥1（空转的臂会让 ② 变成恒真）
   for (const a of ARMS) {
     assert.ok(byArm[a] > 0, `${a} 臂一次都没落地（注入机制空转，② 那条断言在空转）`);
   }
+  assert.ok(
+    signalOk > 0,
+    `信号臂一次都没**投进去**（投递 ${signalsSent} 次全是状态竞态）—— ③ 的 signal 侧在空转`,
+  );
   assert.equal(
     provider.stats.noArm,
     0,
     `有 ${provider.stats.noArm} 个请求没带臂标记 —— 假端点只能瞎猜，② 的对账失效`,
   );
 
-  // ④ 事件恰好一次（不重）：重复投递每次都被拒；且事件真的走到模型
+  // ④ 事件恰好一次（不重）：重复投递每次都被**幂等闸**拒；且事件真的走到模型
+  //    注意「测到几次」和「投递几次」是两件事：如果某条信号臂在「又挂起」之前就跑完了，
+  //    那次重投根本没发生（不算失败，但也**不算测过**）—— 所以要分开数、并给下限。
+  assert.equal(
+    dupAttempted + dupSkippedNotSuspended,
+    signalsSent,
+    `信号臂的账不平：${dupAttempted} 次测了幂等闸 + ${dupSkippedNotSuspended} 次没测成 ≠ 投递 ${signalsSent}`,
+  );
+  assert.ok(
+    dupAttempted >= Math.ceil(signalsSent / 2),
+    `幂等闸只测到 ${dupAttempted}/${signalsSent} 次（不到一半）—— 驱动节奏跟不上审批窗口，` +
+      '④ 的可信度不够：把 SOAK_SUSPEND_APPROVAL_TIMEOUT_MS 调大，或把并发/每轮提交量调小',
+  );
   assert.equal(dupMissed, 0, `有 ${dupMissed} 次重复投递没被 409 拒掉 —— 「恰好一次」破了`);
-  assert.equal(dupCaught, signalsSent, `被拒的重复投递 ${dupCaught} ≠ 投递数 ${signalsSent}`);
+  assert.equal(dupCaught, dupAttempted, `被幂等拒 ${dupCaught} ≠ 重投次数 ${dupAttempted}`);
+  assert.equal(
+    dupStateRace,
+    0,
+    `有 ${dupStateRace} 次重投撞在非挂起状态 —— 那几次等于没测到幂等闸（幂等闸只在挂起态生效）`,
+  );
+  assert.equal(
+    firstDupUnexpected,
+    0,
+    `有 ${firstDupUnexpected} 次「第一次投递」就被判成重复 —— 每个任务的 eventId 唯一，这是 id 撞了`,
+  );
   assert.ok(
     provider.stats.eventRendered >= signalsSent,
     `模型侧只看到 ${provider.stats.eventRendered} 次事件渲染 < 投递 ${signalsSent} 次 —— 有事件只落在库里没进模型`,
