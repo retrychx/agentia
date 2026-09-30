@@ -155,7 +155,12 @@ export class ShellTools {
   #session: ShellSession;
 
   constructor(cwd?: string, timeoutMs?: number) {
-    this.#session = new ShellSession({ cwd: cwd ?? defaultCwd(), timeoutMs });
+    // `exactOptionalPropertyTypes` 下不能把 `timeoutMs: undefined` 塞进可选属性，
+    // 只能整个键不出现 —— 缺省值由 ShellSession 自己兜底。
+    this.#session = new ShellSession({
+      cwd: cwd ?? defaultCwd(),
+      ...(timeoutMs != null ? { timeoutMs } : {}),
+    });
     LIVE_SESSIONS.push(this.#session);
   }
 

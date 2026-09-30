@@ -13,6 +13,7 @@
  *   AGENTIA_ATIF_OUT        ATIF 落盘路径（缺省 /logs/agent/trajectory.json，Harbor 会收）
  *   AGENTIA_MODEL           模型名（不给走框架默认）
  *   AGENTIA_TB_CWD          会话初始工作目录（缺省 /app）
+ *   AGENTIA_MAX_ITERATIONS  循环上限（缺省 200，见下方 MAX_ITERATIONS 注释）
  *   AGENTIA_PRICE_IN/OUT    覆盖单价（$/1M tokens），成对给才生效
  *   ANTHROPIC_API_KEY       由 `harbor run --ae` 注入（默认端点）
  *   DEEPSEEK_API_KEY        设了就走 DeepSeek（框架自带 OpenAI 兼容适配器，换 baseURL）
@@ -29,6 +30,14 @@ const INSTRUCTION_PATH = process.env.AGENTIA_TB_INSTRUCTION ?? '/installed-agent
 const ATIF_OUT = process.env.AGENTIA_ATIF_OUT ?? '/logs/agent/trajectory.json';
 const binding = resolveModel();
 
+/** 循环上限缺省。⚠️ 不能吃框架缺省（40）：Terminal-Bench 的任务是**长程**的。 */
+const DEFAULT_MAX_ITERATIONS = 200;
+const envMaxIterations = Number.parseInt(process.env.AGENTIA_MAX_ITERATIONS ?? '', 10);
+const MAX_ITERATIONS =
+  Number.isInteger(envMaxIterations) && envMaxIterations > 0
+    ? envMaxIterations
+    : DEFAULT_MAX_ITERATIONS;
+
 /** 主 agent 的角色设定：只说「怎么做」，不重复任务内容（指令在 user 消息里） */
 const ROLE =
   '你是一个在 Linux 终端里完成任务的 agent。\n' +
@@ -44,6 +53,14 @@ const app = await createApp({
   system: new SystemPrompt().add('role', ROLE, true),
   ...(binding.model ? { model: binding.model } : {}),
   ...(binding.priceOverrides ? { priceOverrides: binding.priceOverrides } : {}),
+  /**
+   * ⚠️ 必须显式抬高，别吃框架缺省的 40 —— 实测（官方 `terminal-bench-sample`，两轮 `-k 1`）：
+   * 凡步数**恰好到 41** 的轨迹，末步**都还带着 `tool_calls`**（干活干到一半被掐），
+   * 而**所有做对的都在 40 步以内**。撞上限时框架会如实置 `stopReason='max_iterations'`
+   * 并带结构化 error，但 **Terminal-Bench 只读 reward.txt ⇒ 记成 0**，
+   * 与「模型答错」在榜上**无从区分**。缺省 40 会让长程任务的分数被系统性压低。
+   */
+  maxIterations: MAX_ITERATIONS,
   // ⚠️ 必须开：ATIF 的 step.message 来自 trace 的 assistant 正文，
   // 缺省不记正文（docs/usage-guide.md §7）⇒ 不开的话轨迹里每步都是空串，
   // 看着像「转换丢了数据」，其实是从源头就没记。
