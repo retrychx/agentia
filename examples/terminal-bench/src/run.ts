@@ -86,10 +86,29 @@ await writeFile(ATIF_OUT, `${JSON.stringify(atif, null, 2)}\n`);
 // 必须收尾：长驻 bash 会让 node 的事件循环不空 ⇒ 进程不退出 ⇒ trial 挂到超时。
 await closeShellSessions();
 
-// 人可读的一行结论：Harbor 的 job 日志里能直接看到，不用去翻 JSON
-process.stdout.write(
-  `[agentia] stop=${result.stopReason}${result.error ? ` error=${result.error.type}` : ''} ` +
-    `steps=${atif.steps.length} ` +
-    `tokens=${atif.final_metrics?.total_prompt_tokens ?? 0}/${atif.final_metrics?.total_completion_tokens ?? 0} ` +
-    `cost_usd=${atif.final_metrics?.total_cost_usd ?? 0} atif=${ATIF_OUT}\n`,
-);
+// 人可读的一行结论：Harbor 的 job 日志里能直接看到，不用去翻 JSON。
+// 等它真的刷出去再退 —— stdout 是管道，`write` 之后立刻 `exit` 会把这一行截掉。
+await new Promise<void>((resolve) => {
+  process.stdout.write(
+    `[agentia] stop=${result.stopReason}${result.error ? ` error=${result.error.type}` : ''} ` +
+      `steps=${atif.steps.length} ` +
+      `tokens=${atif.final_metrics?.total_prompt_tokens ?? 0}/${atif.final_metrics?.total_completion_tokens ?? 0} ` +
+      `cost_usd=${atif.final_metrics?.total_cost_usd ?? 0} atif=${ATIF_OUT}\n`,
+    () => resolve(),
+  );
+});
+
+/**
+ * ⚠️ 收尾之后仍**硬退**，这不是保险，是实测缺口。
+ *
+ * `closeShellSessions()` 只收我们自己开的那些会话；容器里还可能留着**别的**句柄
+ * （agent 用 `&` 起的后台进程及其子孙），任何一个都会让事件循环不空。
+ * 实测（官方 `terminal-bench-sample` 的 `qemu-startup`）：agent 第 35 步就交了收尾总结、
+ * ATIF 也已落盘，进程却**空转 47 分钟**才被 Harbor 的超时杀掉 ⇒
+ * 记成 `AgentTimeoutError` —— **一次做成的任务被记成「超时」**，
+ * 而且把 `--timeout-multiplier` 调大只会让空转更久。
+ *
+ * 入口的契约是「写完产物就走」：产物此刻已经落盘，再等下去不会多出任何东西，
+ * 只会把成功读成失败。退出码给 0 —— 判分是验证器的事，不在这里。
+ */
+process.exit(0);
