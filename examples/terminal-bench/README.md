@@ -60,12 +60,21 @@ PYTHONPATH="$PWD" harbor run \
   -a harbor_agent:Agentia \
   -m anthropic/claude-opus-4-1 \
   -n 4 -k 5 \
+  --timeout-multiplier 4 \
   --ae ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 ```
 
 `-k 5` 是 Terminal-Bench 的规矩（同任务跑 5 次取平均，分数带 ±），别只跑 1 次。
 **先拿单个任务验证链路**再上全套（`-t <task>`，或 `-p <本地任务目录>`）——
 一次真容器 trial 是 **5–12 分钟**量级，失败模式下这个成本要乘以次数。
+
+⚠️ **`--timeout-multiplier` 是必需品，不是调优项 —— 而且只设 setup / build 那两项是漏的。**
+每个任务自带 `[agent] timeout_sec`（官方 sample 全是 **900s**），而容器里要现装 node、
+出网时快时慢，900s 常常不够。实测踩过：命令里写了
+`--agent-setup-timeout-multiplier 4 --environment-build-timeout-multiplier 4`，
+**就没写 agent 执行那项** ⇒ qemu 两题的 agent 照旧撞 **900s 硬墙**（`AgentTimeoutError`），
+看着像「agent 太慢」，其实是这一项压根没乘。⇒ **直接给基数 `--timeout-multiplier 4`**
+（它同时乘 agent / verifier / setup / build 四路）；只有要单独调某一项时才用单项 flag。
 
 ---
 
@@ -286,16 +295,31 @@ E: Failed to fetch …/curl_7.74.0-1.3+deb11u16_amd64.deb        404  Not Found
 框架的缺省循环上限是 **40**（`src/engine/run-config.ts` 的 `DEFAULT_MAX_ITERATIONS`），
 **这对典型用途没问题，对 Terminal-Bench 太紧** —— TB 的任务是长程的。
 
-实测证据（官方 `terminal-bench-sample`，两轮 `-k 1`，看**每条轨迹的步数与末步形态**）：
+实测证据（官方 `terminal-bench-sample`，`-k 1`，看**每条轨迹的步数与末步形态**）：
 
 | 步数 | 末步 | 任务 | reward |
 |---|---|---|---|
-| **41**（两轮共 4 条） | **还带 `tool_calls`**（答到一半） | build-cython-ext ×2、qemu-alpine-ssh ×2、qemu-startup | 0 |
+| **41** | **还带 `tool_calls`**（答到一半） | build-cython-ext、qemu-alpine-ssh、qemu-startup | 0 |
 | 6 / 13 / 20 / 25 | 干净收尾 | log-summary-date-ranges、regex-log、fix-code-vulnerability、sqlite-with-gcov | **1** |
-| 17 / 18 / 21 / 35 | 干净收尾 | polyglot-c-py、configure-git-webserver、chess-best-move | 0（**真答错**） |
+| 17 / 18 / 21 / 35 | 干净收尾 | polyglot-c-py、configure-git-webserver、chess-best-move | 0 |
 
-**所有步数恰好到 41 的轨迹，末步都还没收尾；所有做对的都在 40 步以内。** 没有一条超过 41 ——
-这是天花板，不是巧合。⇒ `qemu-startup` 的 900s 超时其实**不是主因**：它 701s 就撞了迭代上限。
+**步数恰好到 41 的轨迹，末步都还没收尾；所有做对的都在 40 步以内。** 没有一条超过 41 ——
+这是天花板，不是巧合。
+
+⚠️ **但当时那张表把「干净收尾」读成了「真答错」—— 这一条被复跑直接证伪。**
+把上限抬到 200 后重跑同一批题（其余开关逐字不变）：
+
+| 任务 | 旧（上限 40） | 新（上限 200） | 差在哪 |
+|---|---|---|---|
+| `build-cython-ext` | 41 步、**被掐**、末步带 `tool_calls` | **66 步干净收尾**，验证器 10 过 / 1 败 | 上限确实是主因 |
+| `chess-best-move` | 35 步干净收尾、0 | **79 步**干净收尾、**1** | 胜出那条路要 79 步（>40 必被掐）；但旧的 35 步是**另一条走歪的路** |
+| `configure-git-webserver` | 21 步干净收尾、0 | 23 步干净收尾、**1** | 只差 2 步 ⇒ **这条只是 `-k 1` 的重采样噪声**，与上限无关 |
+| `polyglot-c-py` | 18 步、0 | 17 步、0 | 稳定的真答错（两轮都错、步数几乎一样） |
+
+⇒ 三条教训：① 上限抬高确实**能**解锁 —— `build-cython-ext` 从「掐死在 41 步」变成「答完、验证器只剩 1 条不过」，
+`chess-best-move` 那条 79 步的路在旧预算下**必然**被掐；
+② 但**单轮 `-k 1` 的 0 不足以判「真答错」**，得靠**多轮**才分得开（`configure-git-webserver` 就是反例）；
+③ 所以 `-k 1` 的读数写榜时一律标「**未解出**」，别标「不会做」。
 
 危险点：撞上限时框架**做的是对的** —— 如实置 `stopReason='max_iterations'` 并带结构化
 `error`（`src/engine/loop.ts`），但 **Terminal-Bench 只读 `reward.txt` ⇒ 记成 0**，
@@ -305,10 +329,43 @@ E: Failed to fetch …/curl_7.74.0-1.3+deb11u16_amd64.deb        404  Not Found
 **这是配置问题不是框架缺陷**：框架的语义是「到点就停并如实报告」，缺省 40 对典型 agent 够用；
 是**适配器**该按目标任务的时长来定这个值。
 
-⚠️ 判据（与坑 5 并列）：**0 分先分三类** ——
+⚠️ 判据（与坑 5 并列）：**读数先分桶，再分列**。
+先看 `result.json` 的 `exception_info`：非空 ⇒ 它**压根不该进能力分母**（这轮 10 条里有 3 条，
+见坑 7）。`reward` 有值再分三类 ——
 ① `verifier/test-stdout.txt` 里是断言失败 ⇒ 真答错；
 ② 那里只有 `command not found` / apt 报错 ⇒ 验证器假红；
 ③ 轨迹**末步还带 `tool_calls`** 且步数顶格 ⇒ **被上限掐断**（既不是答错，也不是环境）。
+
+**7. ⚠️ 第四种：还没到 agent 就挂了（install 阶段）。**
+坑 4 讲的是「装完 node 连不上模型」，坑 5 讲的是「验证器没跑起来」。这一条是
+**中间那段**——运行时装不上、自检自己出错。它们的共同外观：
+
+`result.json` 里 `exception_info.exception_type = NonZeroAgentExitCodeError`，
+而 message 那句命令一眼能认出是 install：
+
+```
+cd /installed-agent/agentia-tb && sh .install-runtime.sh && … node .loadcheck.mjs
+```
+
+**判据：message 是这句 ⇒ 与 agent 能力无关，整条剔出分母**（别去读轨迹，那里面什么都没有）。
+同一轮实测撞到两种：
+
+| 形态 | 日志里长什么样 | 根因 |
+|---|---|---|
+| apt 装 nodejs 撞 404 | `E: Failed to fetch …/libnghttp2-14…deb 404`，回退静态包后 `attempt 1/2/3 failed: … handshake timed out` | 与坑 5 **同一处** bullseye-security 404，只是这次打在了 agent 侧（容器里连 node 都还没有） |
+| TLS 自检探错端点 | `[runtime] TLS self-check: https://api.anthropic.com/v1/models` → `FAILED after 3 tries: ECONNRESET` | 适配器自己的 bug，见下 |
+
+第二条**是适配器的 bug，已修**。自检的本意是「打本次真正要用的那个端点」，可它读的是
+**宿主进程**的 `os.environ`；而 README 推荐的跑法用 `--ae DEEPSEEK_API_KEY=…`，
+这个 key 只落在 **agent 的 `extra_env`** 上 ⇒ 宿主读不到 ⇒ **静默**回落到 Anthropic 的端点。
+代价实测：一轮 10 条里 2 条被记成异常，其中一条是本该算数的已解出任务；
+而且它长得像「机器抽风」，不翻 install 日志根本看不出来。
+
+修法就是按 Harbor 自己的优先级取（`extra_env` 覆盖 `os.environ`，与 `BaseAgent._env_sources()` 一致）。
+
+⇒ **通用教训：凡是「按环境变量决定行为」的代码，先问一句「这个变量在这一层看得见吗」。**
+`--ae` 注入的 key 在 agent 层，不在宿主层；读错层**不报错**，只会静默走错分支 ——
+这类 bug 的代价不是崩溃，是**悄悄换掉被测对象**。
 
 ---
 
