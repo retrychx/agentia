@@ -10,6 +10,7 @@
 | [`code-review/`](./code-review/) | **产品验证**示例：代码评审 agent 服务 —— 四类能力编排 + 结构化报告 + trace/成本数字，离线确定性 demo 与真模型两种跑法 | 想看「拿它做一个真业务长什么样、跑一轮花多少钱」时 |
 | [`eval-gate/`](./eval-gate/) | **评测即发布闸门**：把 `defineEval` 的结论对上一版基线收成「这一版能不能发」的判据（补 `EvalReport.ok` 答不了的两件事：比上一版好还是坏 / 「删掉失败用例」这种过闸门方式） | 想把评测接进发布流程时 |
 | [`grpc-host/`](./grpc-host/) | **第 4 个宿主**：gRPC 服务定义 → `RunInput` → `app.run` / `runner.submit`（一元 / 服务端流 / 异步投递 / 查任务；deadline→signal、metadata traceparent→link） | 想给已有服务加一个 gRPC 入口、又不想把语义写歪时 |
+| [`terminal-bench/`](./terminal-bench/) | **跑分接入**：把 agent 接进 Terminal-Bench（Harbor）任务容器，并把 trace **原生直译成 ATIF** 轨迹 —— 评测不只看 reward 0/1，还能回看「它是真做对了还是瞎猫碰上死耗子」 | 想拿它去跑公开基准、或想知道「过程证据怎么留」时 |
 
 配套阅读：[`docs/observability.md`](../docs/observability.md)（配方讲解）、
 [`docs/usage-guide.md`](../docs/usage-guide.md)（API 速查）、[`docs/spec.md`](../docs/spec.md)（设计规格）。

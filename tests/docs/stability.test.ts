@@ -1,5 +1,5 @@
 /*
- * 对外承诺面的守卫 —— 「版本稳定性策略」「运行环境声明」「三个不发布的包」。
+ * 对外承诺面的守卫 —— 「版本稳定性策略」「运行环境声明」「不发布的包」。
  *
  * ## 为什么需要它
  *
@@ -11,6 +11,10 @@
  *    `private: true`（有意），但**口径不齐** —— 只有 observability 那一支把「`npm i` 会 404、
  *    怎么拿到」写进了文档，另外两支要么散落在 `roadmap.md` 一句里、要么压根没写。
  *    ⇒ 下一个人照旧会去 npm 搜、拿到 E404、再报一次「缺口」。
+ *    ⚠️ **登记表不止那三个**：扫描面是「盘上**所有** `private: true` 的 `@migor/*` 包」——
+ *    本仓的示例包也带 `@migor/` 作用域（同样会 404）⇒ 加包就得加行。
+ *    （2026-09-30 补的是 `examples/terminal-bench/`：同一类漏登记**第二次**发生，
+ *    与 `examples-table` 那条守卫记的 `eval-gate` 事故同根。）
  * ② **稳定性承诺在三个面上各写一份**（仓库 `README.md`、`README.en.md`、官网 docs 页）——
  *    为什么不用单源注入：README 是 npm 页的第一阅读面、站点读者也不该跳去 GitHub，
  *    所以「两处都写」是刻意的。**代价是可能各说各话，所以必须由守卫兜底。**
@@ -73,7 +77,7 @@ function section(md: string, headingPrefix: string): string {
   return next < 0 ? rest : rest.slice(0, next);
 }
 
-// ───────────────────────── ① 三个不发布的包 ─────────────────────────
+// ───────── ① 不发布的包（框架附属三包 + 带 @migor/ 作用域的示例包） ─────────
 
 /**
  * `@migor/*` 里 `private: true` 的包 —— 机制上是「**看起来像可分发的库、实际不发**」。
@@ -100,6 +104,14 @@ const UNPUBLISHED: Array<{ name: string; pkg: string; entry: string; howTo: stri
     pkg: 'examples/eval-gate/package.json',
     entry: 'examples/eval-gate/README.md',
     howTo: ['docs/eval-gate.md'],
+  },
+  {
+    name: '@migor/agentia-terminal-bench',
+    pkg: 'examples/terminal-bench/package.json',
+    entry: 'examples/terminal-bench/README.md',
+    // 「怎么拿到它」= 拷走整个示例目录；那条约定的家是 examples/README.md 的依赖一节
+    // （示例一律 `file:../..` 指向本仓，刻意跑工作区里刚构建的那份）。
+    howTo: ['examples/README.md'],
   },
 ];
 

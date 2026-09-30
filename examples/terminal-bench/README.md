@@ -1,0 +1,393 @@
+# agentia × Terminal-Bench（Harbor）
+
+把 agentia 接到 **Terminal-Bench** 上跑，并**原生输出 ATIF 轨迹**。
+
+目录里两半，各管一件事：
+
+| 文件 | 语言 | 职责 |
+|---|---|---|
+| `harbor_agent.py` | Python | Harbor 适配层：在任务容器里装好、跑起 agent（**没有一行 agent 逻辑**） |
+| `src/run.ts` | TS | 真正的 agent：读指令 → 跑主 agent → 把 trace 直译成 ATIF 落盘 |
+| `src/bash.ts` | TS | 执行面：一个**有状态**的 bash 会话（`cd` / `export` 跨调用保留） |
+| `src/atif.ts` | TS | trace → ATIF v1.8 转换器（本例的核心） |
+| `src/model.ts` | TS | 模型侧装配：端点 / 模型名 / 单价收在一处 |
+| `src/selftest.ts` | TS | 离线自检：**不需要 Docker、不需要 API key** |
+| `src/live-probe.ts` | TS | 真模型试跑（迷你 trial）：**不需要 Docker**，要 key |
+| `scripts/verify_atif_schema.py` | Python | 用 Harbor 自己那份 `Trajectory` 模型校验产物 |
+| `scripts/tb_task_to_harbor.py` | Python | Terminal-Bench 原生任务 → Harbor 任务（数据集后端不可达时的替代路，见第八节） |
+| `scripts/container-install-runtime.sh` | sh | 容器内备好运行时：node（apt → 静态包兜底）+ `ca-certificates` + TLS 自检 |
+
+⚠️ **这个包没有发布到 registry** —— `npm i @migor/agentia-terminal-bench` 会 **404**
+（`"private": true`）。它是**示例**，不是框架的发布面；拿到它的方式是**把
+`examples/terminal-bench/` 整个目录拷走**（`package.json` 里 `@migor/agentia` 写的是
+`file:../..` —— 本仓示例的统一约定，见 [`examples/README.md`](../README.md) 的「依赖」一节）。
+
+---
+
+## 一、前置：它现在能不能跑
+
+**能跑，而且已经真跑过**（真容器 trial 跑过多次，坑与读数见下文「跑出来的坑」）。
+之前这里写着「跑不了」，因为当时找不到 Docker —— 后来发现是 **OrbStack** 在提供
+docker CLI，只是不在默认 PATH 上：
+
+```bash
+export PATH="$HOME/.orbstack/bin:$PATH"     # ← 关键：不加这句 Harbor 会报「没有容器后端」
+docker version --format '{{.Server.Version}}'   # 实测 29.4.0
+```
+
+⚠️ Harbor 的 `-e apple-container` 这条备选**在这台机器上不通**：它的 `preflight()`
+要求 `platform.machine() == "arm64"`，本机是 **Intel x86_64**（`Core i7-1068NG7`），
+会直接 `SystemExit`。用 docker（OrbStack）这条路。
+
+还需要两样：
+
+1. **模型 API key**。DeepSeek 就够（见第三节，端点已实测可达）；`DEEPSEEK_API_KEY`
+   用 `--ae` 透传进容器。Harbor 不会替你出这份钱。
+2. **两份构建都要做**。① 容器里 vendor 的是**工作区里构建好的框架**（见第六节第 1 条）
+   ⇒ 先在仓库根 `npm run build`，否则 install 阶段会直接报错；② Harbor **上传**的是**这个示例自己的**
+   `examples/terminal-bench/dist/` ⇒ 在示例目录里再 `npm run build`。
+   **改了示例源码就必须重建第二份** —— 漏了不报错，只会静默跑旧代码（第六节第 1 条有实测）。
+
+跑一次是这一条（`-a` 给的是 `模块路径:类名`，模块要能被 Harbor 进程 import）：
+
+```bash
+cd examples/terminal-bench
+npm install && npm run build
+
+export PATH="$HOME/.orbstack/bin:$PATH"
+PYTHONPATH="$PWD" harbor run \
+  -d terminal-bench@2.0 \
+  -a harbor_agent:Agentia \
+  -m anthropic/claude-opus-4-1 \
+  -n 4 -k 5 \
+  --ae ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+```
+
+`-k 5` 是 Terminal-Bench 的规矩（同任务跑 5 次取平均，分数带 ±），别只跑 1 次。
+**先拿单个任务验证链路**再上全套（`-t <task>`，或 `-p <本地任务目录>`）——
+一次真容器 trial 是 **5–12 分钟**量级，失败模式下这个成本要乘以次数。
+
+---
+
+## 二、为什么是「原生出 ATIF」，这有什么不一样
+
+ATIF（Agent Trajectory Interchange Format，RFC-0001，本仓对齐 **v1.8**）是 Harbor 的
+统一轨迹格式。它的意义：**不管你跑的是 Claude Code、Codex CLI 还是自己手搓的 scaffold，
+Harbor 都把轨迹收成同一个 JSON**，于是「换框架」第一次变得可比对。
+
+多数适配器是**反推**的：跑完之后拿 stdout / `.jsonl` 去猜哪一步调了什么工具。
+agentia 不一样 —— trace 本来就是一等公民（spec §9），工具入参 / 出参 / token / 成本
+在**跑的时候**就已经按 span 记账好了，所以 `src/atif.ts` 是**无损直译**，不是重建。
+同一份 trace 走 `createOtlpExporter()` 就是 OTel。
+
+这对本项目特别划算：Terminal-Bench 只判「测试过没过」（reward 0/1），
+而 ATIF 是**过程证据** —— 能回答「它真做对了，还是瞎猫碰上死耗子」。
+
+---
+
+## 三、用 DeepSeek —— 不需要新代码
+
+agentia 自带的 `createOpenAIClient` 就是 **OpenAI 兼容端点**适配器
+（`docs/usage-guide.md` §6.5 明写「DeepSeek 等」），所以接 DeepSeek 只换 `baseURL`，
+**不新增依赖、不改 `src/`**：
+
+```ts
+createOpenAIClient({ apiKey, baseURL: 'https://api.deepseek.com' })
+```
+
+本例走 env（`src/model.ts`）：
+
+| env | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` | 设了就走 DeepSeek；不设则走框架默认（Anthropic） |
+| `DEEPSEEK_BASE_URL` | 覆盖端点，缺省 `https://api.deepseek.com` |
+| `AGENTIA_MODEL` | 模型名，缺省 `deepseek-chat` |
+| `AGENTIA_PRICE_IN` / `_OUT` | 覆盖单价（$/1M tokens），**成对给**才生效 |
+| `AGENTIA_MAX_ITERATIONS` | 循环上限，缺省 **200**（**别退回框架缺省的 40**，见 §六 坑 6） |
+
+⚠️ **单价这一步不能省。** 框架内置价格表只有 `claude-*`
+（`src/engine/usage.ts` 的 `DEFAULT_PRICING`），所以不给 `priceOverrides` 的话
+DeepSeek 的成本**恒为 0** —— ATIF 的 `final_metrics.total_cost_usd` 会变 0，
+「每任务花多少钱」这一维直接废掉，而且**没有任何报错**（框架只在 llm.turn 上记
+`usage.unpriced` 事件，是给你查的，不拦你）。缺省值取自框架文档里的 DeepSeek 示例
+（`{ in: 0.27, out: 1.10 }`），**不是权威报价**，发榜前请以官方定价为准或用 env 覆盖。
+
+端点可达性已实测：`curl https://api.deepseek.com/models` 返回
+`Authentication Fails`（= 到了，只是没 key）。**key 不落进仓库** ——
+env / 钥匙串里都没有 `DEEPSEEK_API_KEY`，试跑时用
+`--ae DEEPSEEK_API_KEY=...` **逐次从命令行传入**（见 §五），不进任何文件。
+
+---
+
+## 四、真模型试跑：不需要 Docker 的迷你 trial（`npm run live`）
+
+官方 Terminal-Bench 要容器，但「把整条链路真跑一遍」**不需要容器**。
+`src/live-probe.ts` 把 Terminal-Bench 的形状缩到最小：
+
+1. 在 `/tmp/agentia-live-<时间戳>/` 预置 `data.txt`（乱序整数：7 10 3 1 42 9）；
+2. 让 agent 用 shell **按数值**排序写进 `sorted.txt`（只按字典序排会把 10 排到 9 前 —— 故意设的陷阱）；
+3. **读终态文件逐行比对** ⇒ reward 只有 0/1，与 Terminal-Bench 同口径
+   （不读模型自称的「已完成」）；
+4. 照常产 ATIF，可用 Harbor 的模型校验。
+
+```bash
+DEEPSEEK_API_KEY=sk-… npm run build && npm run live
+```
+
+输出 `reward=1` 才算「链路 + 任务」都成立；判 0 时脚本**退出码非 0**
+（否则「跑完」会被误读成「做对」）。工作目录默认**保留**以便复查
+（`AGENTIA_LIVE_CLEANUP=1` 才删）。
+
+⚠️ **这不是沙箱**：真模型 + 本机真 shell，工作目录虽锁在临时目录，
+但会话是长驻的，模型技术上可以 `cd` 出去。要真隔离请用容器。
+
+---
+
+## 五、离线自检（现在就能跑）
+
+```bash
+npm run build && npm run selftest     # 产 out/atif-sample.json
+npm run verify:atif                   # 用 Harbor 的模型校验
+```
+
+第二步需要用**装了 harbor 的那个解释器**（harbor 的 venv 是 Python 3.12，和系统 3.13
+的二进制扩展对不上，用 `python3` 会 `ModuleNotFoundError: pydantic_core._pydantic_core`）：
+
+```bash
+~/.local/share/uv/tools/harbor/bin/python scripts/verify_atif_schema.py
+```
+
+自检用框架的 `scriptedClient` 喂写死的模型响应，agent 会**真的**起一个 bash、
+真的执行一条命令。它证明了三件事：
+
+- `trace → ATIF` 的直译是对的（入参、出参、正文都在）；
+- 产物过得了 Harbor **自己那份** `Trajectory` 模型（不是我们自己抄的 Schema）；
+- 校验器不是摆设 —— 做过变异反向验证：step_id 跳号、悬空 `source_call_id`、
+  多余根字段，三个变异各被精确判定非法，原文件通过。
+
+**它不证明「agent 能完成任务」**。后者要真模型 + 真容器。别拿自检通过当跑分。
+
+---
+
+## 六、几个容易踩的坑（都是跑出来的，不是读出来的）
+
+**1. 为什么有两份 package.json，以及为什么容器里不 `npm install`。**
+`package.json` 的 `@migor/agentia` 是 `file:../..`（本仓示例的统一约定：跑工作区代码），
+但**容器里没有工作区**，这个依赖装不上 ⇒ 多一份 `container-package.json` 充当容器侧的清单
+（只要 `type: module`，让 `dist/run.js` 被当 ESM 解析）。
+
+那容器侧怎么拿到框架？**不是联网装，是搬进去。** 这一点是踩了两次才定的形：
+一开始 `container-package.json` 写 `"@migor/agentia": "0.10.0"`，让容器 `npm install` ——
+连续两次栽在同一处：任务镜像没 node ⇒ `npm install` exit 127；补上 node 之后，
+`npm install` 去 registry 拉包又 `ERR_SOCKET_TIMEOUT`（容器出网时快时慢）。
+而 Harbor 把这两种都报成同一个 `NonZeroAgentExitCodeError` ——
+**看着像 agent 崩了，其实还没走到 agent**。
+
+但框架是**零运行时依赖**（根 `package.json` 没有 `dependencies`）：
+`npm install --omit=dev` 唯一要拉的，就是框架本体。既然如此就没有「装」这回事 ——
+`harbor_agent.py` 把工作区里**构建好的** `dist/` + `package.json` 按发布态布局
+直接铺进 `/installed-agent/agentia-tb/node_modules/@migor/agentia/`，**全程离线**，
+`npm` 这个依赖整个去掉。装完还会跑一句**装载自证**（`import('@migor/agentia')`），
+让「包搬坏了」当场在 install 阶段报出来，而不是十分钟后再伪装成 agent 失败。
+
+⚠️ 代价：vendor 的是**当前工作区**的构建产物，不是 registry 上那份 tarball。
+所以前缀是「先在仓库根 `npm run build`」（或用 `AGENTIA_PKG_ROOT` 指过去）。
+要复现某个**已发布版本**的分数，先 `npm pack @migor/agentia@<版本>` 解开、
+`AGENTIA_PKG_ROOT` 指过去，别拿工作区当基线。
+
+⚠️⚠️ **是两份构建产物，别只构建一份 —— 而且改完源码必须重建示例那份。**
+
+| 构建 | 命令 | 产出 | 谁用它 |
+|---|---|---|---|
+| 框架 | 仓库根 `npm run build` | 根 `dist/` | `harbor_agent.py` **vendor 进容器**（`AGENTIA_PKG_ROOT` 指这里） |
+| **适配器** | `examples/terminal-bench` 的 `npm run build` | `examples/terminal-bench/dist/` | `harbor_agent.py` **上传的入口**（`PROJECT_DIR/dist` ⇒ 容器里跑的就是它） |
+
+**第二份最容易被漏，而且漏了不报错。** 实测踩过：改了 `src/run.ts` 的循环上限，
+`dist/run.js` 却停在 3 小时前 —— 直接重跑 Harbor，容器里执行的**还是旧代码**，
+一轮评测白跑，且**没有任何报错**（Harbor 只看到「跑完了、reward=0」）。
+
+而 `dist/` 在 `.gitignore` 里（第 2 行 `dist/`），所以**「提交完就完事」也不成立** ——
+构建产物从不入库。**判据：每次评测前先 `npm run build`，并确认
+`grep -c maxIterations dist/run.js` 不为 0 这类「改没进去」的探针通过。**
+
+**2. 长驻 bash 会让 node 不退出。**
+会话是长驻的 `bash` 子进程 ⇒ node 事件循环永不空 ⇒ 命令早跑完了进程也不退出，
+Terminal-Bench 侧的表现是「agent 一直挂着直到超时」。
+所以入口写完 ATIF 后必须调 `closeShellSessions()`（第一次跑自检时就被这个坑卡住过）。
+
+**3. `node --input-type=module -e` 不按 cwd 解析裸名。**
+想验证「包装没装上」，直觉是敲一句 `node --input-type=module -e "import('@migor/agentia')…"`。
+**不行**：这么写报 `Cannot find package '@migor/agentia' imported from /…/[eval1]`，
+看着像「没装上」，其实只是 `-e` 的 ESM 解析不吃 cwd。**写成文件**（且文件要落在
+有 `node_modules` 的那个目录里）才解析得到。自证那句因此是 `printf … > .loadcheck.mjs`。
+
+**4. ⚠️ 装了 node ≠ 能 HTTPS：镜像可能没装 `ca-certificates`（最阴的一个坑）。**
+Ubuntu/Debian 的 nodejs 走**系统根证书库**，而任务镜像可能**压根没装 `ca-certificates`**
+⇒ 一个可信根都没有 ⇒ **任何 TLS 都报 `SELF_SIGNED_CERT_IN_CHAIN`**。
+
+实测对照（同一台机器、同一个 key、同一批任务）：
+
+| 镜像（官方 `terminal-bench-sample@2.0`） | `ca-certificates` | fetch DeepSeek | 结果 |
+|---|---|---|---|
+| `regex-log`（ubuntu:24.04） | **没装**（0 个 PEM、无 openssl） | 0/5 全败 | agent `stop=error error=connection`，**0 token**，reward=0 |
+| `polyglot-c-py` | 没装 | 0/5 全败 | 同上 |
+| `log-summary-date-ranges`（debian:12） | `20230311+deb12u1`（142 个 PEM） | 5/5 通 | 任务**做对**，reward=1 |
+| `chess-best-move` | 有 | 5/5 通 | reward=1 |
+
+**因果是分步实测出来的**：只装 nodejs 时 → `SELF_SIGNED_CERT_IN_CHAIN`，且
+`/etc/ssl/certs/ca-certificates.crt` **不存在**；补装 `ca-certificates` 后同一句变成
+`HTTP 401`（TLS 通了，401 只是没给 key）。
+
+**危害不在于失败，在于它长得像「agent 不行」**：0 token 的 trial 会被算进平均分。
+⇒ `scripts/container-install-runtime.sh` 做两件事：① 缺 `ca-certificates` 就补装；
+② 末尾对**模型真正要用的端点**做 TLS 自检，**不过就非零退出** —— 让 Harbor 记成
+基础设施异常（exception 桶），而不是伪装成 agent 的 0 分。
+
+⚠️ **由此得出的一条通用判据**：任何「装完不算完」的步骤，都要在末尾加一句
+**用真实用途去探**的自证（这里是「能不能按裸名 import」+「能不能 TLS 握手」）。
+自证不许写「我认为它能行」。
+
+**5. ⚠️ 「0 分」还有第二种来源：验证器自己没跑起来（官方任务上实测，比坑 4 更隐蔽）。**
+上面那条讲的是 **agent 侧**——连不上模型，0 token。**验证器侧**另有一类，翻车在两轮官方
+`terminal-bench-sample` 的 qemu 两题上（镜像都是 Debian bullseye）：
+
+官方任务自己的 `tests/test.sh` 开头就是 `apt-get update && apt-get install -y curl expect`，
+再用 `curl -LsSf https://astral.sh/uv/… | sh` 装 uv，最后 `uv run pytest`。**今天 Debian
+bullseye-security 的池子 404** ——
+
+```
+E: Failed to fetch …/libnghttp2-14_1.43.0-1+deb11u3_amd64.deb  404  Not Found
+E: Failed to fetch …/libcurl4_7.74.0-1.3+deb11u16_amd64.deb    404  Not Found
+E: Failed to fetch …/curl_7.74.0-1.3+deb11u16_amd64.deb        404  Not Found
+```
+
+⇒ curl 装不上 ⇒ 紧接着 `uv: command not found` ⇒ **pytest 从头到尾没被执行**，
+`test.sh` 末尾照样写 `reward.txt = 0`。
+
+**它跟「agent 答错」在结果文件上长得一模一样**（都是 `reward=0`、都烧了 token），
+**只有翻开 `verifier/test-stdout.txt` 才分得开**：里面是 `command not found` / apt 报错，
+而不是断言失败。
+
+⇒ **通用判据：任何一个 0 分，先看 `verifier/test-stdout.txt` 末尾。**
+
+| 末尾长什么样 | 含义 | 能不能计入能力 |
+|---|---|---|
+| `FAILED ../tests/…` + 具体 `AssertionError` | 断言真跑了、真没过 | ✅ 真答错 |
+| `curl: command not found` / `uv: command not found` / apt 报错 | 验证器没跑起来 | ❌ 假红，不可计入 |
+
+两轮实测（`-k 1`）：`qemu-startup` / `qemu-alpine-ssh` **两轮都是第二类**，同一处 404。
+⇒ 10 题里 2 题不可用；诚实的分母是 **可用 8 题**（4 解 / 4 未解 ⇒ 0.500），
+而不是面值 10 题的 0.400。这类失败**换台机器、换一天就可能变**（是镜像源状态，不是被测对象），
+写榜必须标注。
+
+⚠️ 但这 4 条「未解」还要再分 —— 其中有的是被**循环上限掐断的**（不是答错），见下一条。
+
+**6. ⚠️ 第三种「看着像 agent 不行」的来源：循环上限把长程任务掐死在半路。**
+框架的缺省循环上限是 **40**（`src/engine/run-config.ts` 的 `DEFAULT_MAX_ITERATIONS`），
+**这对典型用途没问题，对 Terminal-Bench 太紧** —— TB 的任务是长程的。
+
+实测证据（官方 `terminal-bench-sample`，两轮 `-k 1`，看**每条轨迹的步数与末步形态**）：
+
+| 步数 | 末步 | 任务 | reward |
+|---|---|---|---|
+| **41**（两轮共 4 条） | **还带 `tool_calls`**（答到一半） | build-cython-ext ×2、qemu-alpine-ssh ×2、qemu-startup | 0 |
+| 6 / 13 / 20 / 25 | 干净收尾 | log-summary-date-ranges、regex-log、fix-code-vulnerability、sqlite-with-gcov | **1** |
+| 17 / 18 / 21 / 35 | 干净收尾 | polyglot-c-py、configure-git-webserver、chess-best-move | 0（**真答错**） |
+
+**所有步数恰好到 41 的轨迹，末步都还没收尾；所有做对的都在 40 步以内。** 没有一条超过 41 ——
+这是天花板，不是巧合。⇒ `qemu-startup` 的 900s 超时其实**不是主因**：它 701s 就撞了迭代上限。
+
+危险点：撞上限时框架**做的是对的** —— 如实置 `stopReason='max_iterations'` 并带结构化
+`error`（`src/engine/loop.ts`），但 **Terminal-Bench 只读 `reward.txt` ⇒ 记成 0**，
+在榜上与「模型答错」**无从区分**。
+
+⇒ `src/run.ts` 因此**显式**抬高到 **200**（`AGENTIA_MAX_ITERATIONS` 可覆盖），并在代码里写明缘由。
+**这是配置问题不是框架缺陷**：框架的语义是「到点就停并如实报告」，缺省 40 对典型 agent 够用；
+是**适配器**该按目标任务的时长来定这个值。
+
+⚠️ 判据（与坑 5 并列）：**0 分先分三类** ——
+① `verifier/test-stdout.txt` 里是断言失败 ⇒ 真答错；
+② 那里只有 `command not found` / apt 报错 ⇒ 验证器假红；
+③ 轨迹**末步还带 `tool_calls`** 且步数顶格 ⇒ **被上限掐断**（既不是答错，也不是环境）。
+
+---
+
+## 七、已知边界
+
+- **交互式命令会挂**（`vim` / `less` / 等 stdin）：靠超时兜底，超时后 SIGKILL 并**重建会话**
+  ⇒ 工作目录会丢，这一步如实回给模型让它重新 `cd`。
+- **工具 I/O 不截断**（`maxEventChars: false`）：轨迹要全文，`cat` 大文件会让 trace 到几 MB。
+- `src/atif.ts` 里的 `tool.input` / `tool.output` **只能写字面量**：这两个是跨层契约常量，
+  v0.10.0 收窄 exports 后不在公共出口上。上游一旦改名，这里会**静默归零**
+  （过滤器匹配不上 = 「没有工具调用」）。要改先回源核 `src/core/trace.ts`。
+- ATIF 的 `message` 只在 `traceContent: 'full'` 时有真值（框架缺省不记正文）。
+
+---
+
+## 八、拿数据集：`-d` 走不通时怎么办（本机实测）
+
+`harbor run -d terminal-bench@2.0` 默认走 **Harbor Hub**（Supabase 后端，`registry/client/harbor/harbor.py`）。
+本机这条链路**通不了**：
+
+```
+Dry run failed: Error getting dataset terminal-bench@2.0
+```
+
+排查结论（别急着当「网络抖动」重试，实测重试 5 次全败）：
+
+- 端点 `https://hlqxxzsirfrgeqasvaps.supabase.co`（Cloudflare）在**宿主机与容器里都**握手失败：
+  `[SSL: UNEXPECTED_EOF_WHILE_READING]`，裸 TCP 连得上、TLS 被 reset。
+- 宿主机的 Bash 环境**强制走本地代理**（`HTTP(S)_PROXY=127.0.0.1:xxxxx`），代理对 github/raw 也是坏的；
+  `git` 走 HTTPS 却**正常** —— 所以「curl 通不通」不能代表「git 通不通」。
+
+⇒ 绕开它的路是 **`--registry-path`**（`RegistryClientFactory` 见 `registry_path` 就换本地 JSON 客户端，
+不走 Supabase）。官方 registry 就是仓里那个文件：
+
+```bash
+git clone --depth 1 --filter=blob:none --no-checkout https://github.com/laude-institute/harbor.git /tmp/harbor-repo
+cd /tmp/harbor-repo && git sparse-checkout set --no-cone registry.json && git checkout HEAD -- registry.json
+
+harbor download terminal-bench@2.0 --registry-path /tmp/harbor-repo/registry.json --export -o /tmp/tb-official
+harbor run -p /tmp/tb-official/terminal-bench -a harbor_agent:Agentia -m deepseek-chat \
+  --registry-path /tmp/harbor-repo/registry.json -d terminal-bench@2.0
+```
+
+实测（2026-09-30）：registry.json 有 **80 个数据集**；`terminal-bench@2.0` = **89 个任务**
+（`laude-institute/terminal-bench-2`，pin 在 commit `69671fbaac6d`）；
+`terminal-bench-sample@2.0` = **10 个**（`terminal-bench-2-0-sample` @ `7e917f35c281`）。
+`harbor download` 10 个任务 16 秒、89 个 1 分 41 秒，**全程不用 docker**。
+
+### 三条路，优先级从高到低
+
+1. **`--registry-path`（首选）**：官方任务、官方镜像、官方 `test.sh`，分数可比。
+2. **`scripts/tb_task_to_harbor.py`（替代路）**：`-d` 与官方 registry 都拿不到时，
+   把 TB 原生任务（`task.yaml` + `Dockerfile` + `tests/`）转成 Harbor 任务。
+   ⚠️ 转换会**改掉验证口径**，分数**不能**与官方榜并列（见脚本 docstring 与下方注意事项）。
+3. `-d` 直连 Harbor Hub：本机不可用。
+
+### 转换脚本的注意事项（都实测过，别照抄当等价）
+
+- **构建上下文 = TB 任务根整份**，不是只有 Dockerfile：扫 236 个 Dockerfile 里有
+  32 个 `COPY task-deps/`、18 个 `COPY tests/`，还有 `etc/ src/ resources/ data/`…
+  TB 的 compose 没写 `context:` ⇒ 默认就是任务根。只搬 Dockerfile 会直接 build 失败。
+- **WORKDIR 只在 Dockerfile 完全没写时才补 `/app`**：TB 基础镜像**自带** `WORKDIR=/app`
+  （实测 python-3-13 与 ubuntu-24-04 都是），152/236 自带、84 个靠镜像默认。
+  无条件追加会把任务自己的 WORKDIR（实测有 `/workspace`、`/home/alice`）顶掉。
+- **verifier 不 `cd`**：TB 的 `run-tests.sh` 也不 cd，测试里的相对路径依赖容器 WORKDIR。
+  官方任务的 `test.sh` 同样不 cd（读 `terminal-bench-sample` 确认）。
+- **pytest 装进任务镜像**，不在 verifier 里现装：官方 `test.sh` 是
+  `curl astral.sh/uv | sh` + `uv add pytest==8.4.1`（**要出网 + 要 curl**，两个基础镜像都没 curl）；
+  转换版改在构建期分层兜底装（有 pip 走 pip 装 `pytest==8.4.1`，否则 apt 装 `python3-pytest`）。
+  差半个 pytest 版本对断言无影响，但口径要写出来，别假装等价。
+- **缺 pytest 时故意不写 reward**：让 Harbor 报 `RewardFileNotFoundError`（基础设施问题），
+  而不是 `reward=0`（看着像 agent 做错了）。
+
+---
+
+## 九、下一步
+
+1. 定 `-m`（同一模型才谈得上和其它 harness 比），先 `-t` 单任务、再 `-k 5` 取均值
+   （TB 的规矩：同任务跑 5 次，分数带 ±）；
+2. 全量：`terminal-bench@2.0` 89 个任务；`-n` 控制并发（本机 OrbStack 实测 `-n 3` 稳）；
+3. 结果上传 / 提交 leaderboard 走 Harbor Hub（`harbor upload jobs/<name>`）——
+   ⚠️ 上传走的是同一个 Hub，本机这条链路待验。
