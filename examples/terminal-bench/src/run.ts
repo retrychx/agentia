@@ -11,19 +11,23 @@
  * 环境变量：
  *   AGENTIA_TB_INSTRUCTION  指令文件路径（Harbor 侧写好再传进来）
  *   AGENTIA_ATIF_OUT        ATIF 落盘路径（缺省 /logs/agent/trajectory.json，Harbor 会收）
- *   AGENTIA_MODEL           覆盖模型；不给走框架默认
+ *   AGENTIA_MODEL           模型名（不给走框架默认）
  *   AGENTIA_TB_CWD          会话初始工作目录（缺省 /app）
- *   ANTHROPIC_API_KEY / OPENAI_API_KEY  由 `harbor run --ae` 注入
+ *   AGENTIA_PRICE_IN/OUT    覆盖单价（$/1M tokens），成对给才生效
+ *   ANTHROPIC_API_KEY       由 `harbor run --ae` 注入（默认端点）
+ *   DEEPSEEK_API_KEY        设了就走 DeepSeek（框架自带 OpenAI 兼容适配器，换 baseURL）
+ *   DEEPSEEK_BASE_URL       覆盖 DeepSeek 端点（缺省 https://api.deepseek.com）
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { AGENTIA_VERSION, SystemPrompt, createApp } from '@migor/agentia';
 import { traceToAtif } from './atif.js';
 import { ShellTools, closeShellSessions } from './bash.js';
+import { resolveModel } from './model.js';
 
 const INSTRUCTION_PATH = process.env.AGENTIA_TB_INSTRUCTION ?? '/installed-agent/instruction.txt';
 const ATIF_OUT = process.env.AGENTIA_ATIF_OUT ?? '/logs/agent/trajectory.json';
-const MODEL = process.env.AGENTIA_MODEL;
+const binding = resolveModel();
 
 /** 主 agent 的角色设定：只说「怎么做」，不重复任务内容（指令在 user 消息里） */
 const ROLE =
@@ -38,7 +42,8 @@ const app = await createApp({
   // 形状与 `agentia g` 维护的 registry.ts 一致：{ provide, useClass }
   providers: [{ provide: 'shell', useClass: ShellTools }],
   system: new SystemPrompt().add('role', ROLE, true),
-  ...(MODEL ? { model: MODEL } : {}),
+  ...(binding.model ? { model: binding.model } : {}),
+  ...(binding.priceOverrides ? { priceOverrides: binding.priceOverrides } : {}),
   // ⚠️ 必须开：ATIF 的 step.message 来自 trace 的 assistant 正文，
   // 缺省不记正文（docs/usage-guide.md §7）⇒ 不开的话轨迹里每步都是空串，
   // 看着像「转换丢了数据」，其实是从源头就没记。
@@ -50,11 +55,13 @@ const app = await createApp({
 });
 
 const instruction = await readFile(INSTRUCTION_PATH, 'utf8');
-const { result } = await app.run([{ role: 'user', content: instruction }]);
+const { result } = await app.run([{ role: 'user', content: instruction }], {
+  ...(binding.client ? { client: binding.client } : {}),
+});
 const atif = traceToAtif(result.trace, {
   instruction,
   agentVersion: AGENTIA_VERSION,
-  ...(MODEL ? { modelName: MODEL } : {}),
+  ...(binding.model ? { modelName: binding.model } : {}),
 });
 
 await mkdir(dirname(ATIF_OUT), { recursive: true });

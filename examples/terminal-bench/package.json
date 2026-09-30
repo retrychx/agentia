@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "selftest": "node dist/selftest.js",
+    "live": "node dist/live-probe.js",
     "verify:atif": "python3 scripts/verify_atif_schema.py"
   },
   "dependencies": {

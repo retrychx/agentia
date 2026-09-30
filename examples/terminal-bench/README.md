@@ -10,7 +10,9 @@
 | `src/run.ts` | TS | 真正的 agent：读指令 → 跑主 agent → 把 trace 直译成 ATIF 落盘 |
 | `src/bash.ts` | TS | 执行面：一个**有状态**的 bash 会话（`cd` / `export` 跨调用保留） |
 | `src/atif.ts` | TS | trace → ATIF v1.8 转换器（本例的核心） |
+| `src/model.ts` | TS | 模型侧装配：端点 / 模型名 / 单价收在一处 |
 | `src/selftest.ts` | TS | 离线自检：**不需要 Docker、不需要 API key** |
+| `src/live-probe.ts` | TS | 真模型试跑（迷你 trial）：**不需要 Docker**，要 key |
 | `scripts/verify_atif_schema.py` | Python | 用 Harbor 自己那份 `Trajectory` 模型校验产物 |
 
 ---
@@ -22,9 +24,13 @@
 1. **容器**：Harbor 默认 `-e docker`，本机**没装 Docker**。
    备选 `apple-container` 也不通 —— 它的 `preflight()` 要求 `platform.machine() == "arm64"`，
    本机是 **Intel x86_64**（`Core i7-1068NG7`），会直接 `SystemExit`。
-   ⇒ 要么装 Docker Desktop，要么用云沙箱（`-e daytona` / `e2b` / `modal`，各需一个 API key）。
-2. **模型 API key**：环境里 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` **都没设**。
-   Harbor 不会替你出这份钱。
+   ⇒ 四条路：装 Docker Desktop；装 **podman**（Harbor 有 `-e podman`，与 docker 同一套编排、
+   换 CLI，但要 podman machine 起虚拟机，Intel Mac 上更绕）；云沙箱
+   （`-e daytona` / `e2b` / `modal`，各需一个 API key）；或者**先不跑容器** ——
+   用第四节的 `npm run live` 把链路真跑一遍。
+2. **模型 API key**：环境里 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`
+   **都没设**（钥匙串里也没有）。Harbor 不会替你出这份钱。
+   DeepSeek 端点本身是通的（见第三节）。
 
 装好之后，跑一次是这一条（`-a` 给的是 `模块路径:类名`，模块要能被 Harbor 进程 import）：
 
@@ -60,7 +66,63 @@ agentia 不一样 —— trace 本来就是一等公民（spec §9），工具�
 
 ---
 
-## 三、离线自检（现在就能跑）
+## 三、用 DeepSeek —— 不需要新代码
+
+agentia 自带的 `createOpenAIClient` 就是 **OpenAI 兼容端点**适配器
+（`docs/usage-guide.md` §6.5 明写「DeepSeek 等」），所以接 DeepSeek 只换 `baseURL`，
+**不新增依赖、不改 `src/`**：
+
+```ts
+createOpenAIClient({ apiKey, baseURL: 'https://api.deepseek.com' })
+```
+
+本例走 env（`src/model.ts`）：
+
+| env | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` | 设了就走 DeepSeek；不设则走框架默认（Anthropic） |
+| `DEEPSEEK_BASE_URL` | 覆盖端点，缺省 `https://api.deepseek.com` |
+| `AGENTIA_MODEL` | 模型名，缺省 `deepseek-chat` |
+| `AGENTIA_PRICE_IN` / `_OUT` | 覆盖单价（$/1M tokens），**成对给**才生效 |
+
+⚠️ **单价这一步不能省。** 框架内置价格表只有 `claude-*`
+（`src/engine/usage.ts` 的 `DEFAULT_PRICING`），所以不给 `priceOverrides` 的话
+DeepSeek 的成本**恒为 0** —— ATIF 的 `final_metrics.total_cost_usd` 会变 0，
+「每任务花多少钱」这一维直接废掉，而且**没有任何报错**（框架只在 llm.turn 上记
+`usage.unpriced` 事件，是给你查的，不拦你）。缺省值取自框架文档里的 DeepSeek 示例
+（`{ in: 0.27, out: 1.10 }`），**不是权威报价**，发榜前请以官方定价为准或用 env 覆盖。
+
+端点可达性已实测：`curl https://api.deepseek.com/models` 返回
+`Authentication Fails`（= 到了，只是没 key）。**key 本身本机没有**：
+env 与钥匙串里都查过，没有 `DEEPSEEK_API_KEY`。
+
+---
+
+## 四、真模型试跑：不需要 Docker 的迷你 trial（`npm run live`）
+
+官方 Terminal-Bench 要容器，但「把整条链路真跑一遍」**不需要容器**。
+`src/live-probe.ts` 把 Terminal-Bench 的形状缩到最小：
+
+1. 在 `/tmp/agentia-live-<时间戳>/` 预置 `data.txt`（乱序整数：7 10 3 1 42 9）；
+2. 让 agent 用 shell **按数值**排序写进 `sorted.txt`（只按字典序排会把 10 排到 9 前 —— 故意设的陷阱）；
+3. **读终态文件逐行比对** ⇒ reward 只有 0/1，与 Terminal-Bench 同口径
+   （不读模型自称的「已完成」）；
+4. 照常产 ATIF，可用 Harbor 的模型校验。
+
+```bash
+DEEPSEEK_API_KEY=sk-… npm run build && npm run live
+```
+
+输出 `reward=1` 才算「链路 + 任务」都成立；判 0 时脚本**退出码非 0**
+（否则「跑完」会被误读成「做对」）。工作目录默认**保留**以便复查
+（`AGENTIA_LIVE_CLEANUP=1` 才删）。
+
+⚠️ **这不是沙箱**：真模型 + 本机真 shell，工作目录虽锁在临时目录，
+但会话是长驻的，模型技术上可以 `cd` 出去。要真隔离请用容器。
+
+---
+
+## 五、离线自检（现在就能跑）
 
 ```bash
 npm run build && npm run selftest     # 产 out/atif-sample.json
@@ -86,7 +148,7 @@ npm run verify:atif                   # 用 Harbor 的模型校验
 
 ---
 
-## 四、两个容易踩的坑（都是跑出来的，不是读出来的）
+## 六、两个容易踩的坑（都是跑出来的，不是读出来的）
 
 **1. 为什么有两份 package.json。**
 `package.json` 的 `@migor/agentia` 是 `file:../..`（本仓示例的统一约定：跑工作区代码），
@@ -100,7 +162,7 @@ Terminal-Bench 侧的表现是「agent 一直挂着直到超时」。
 
 ---
 
-## 五、已知边界
+## 七、已知边界
 
 - **交互式命令会挂**（`vim` / `less` / 等 stdin）：靠超时兜底，超时后 SIGKILL 并**重建会话**
   ⇒ 工作目录会丢，这一步如实回给模型让它重新 `cd`。
@@ -112,7 +174,7 @@ Terminal-Bench 侧的表现是「agent 一直挂着直到超时」。
 
 ---
 
-## 六、下一步（要跑分还得做的事）
+## 八、下一步（要跑分还得做的事）
 
 1. 装 Docker，或选一个云沙箱并给 key；
 2. 给模型 key，定 `-m`（同一模型才谈得上和其它 harness 比）；
