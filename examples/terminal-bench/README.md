@@ -367,7 +367,7 @@ E: Failed to fetch …/curl_7.74.0-1.3+deb11u16_amd64.deb        404  Not Found
 
 1. **`result.json` 的 `exception_info` 非空 ⇒ 不进能力分母。** 这一桶里再分：
    `NonZeroAgentExitCodeError` 且 message 是 install 那句命令 ⇒ **还没到 agent**（坑 7）；
-   `AgentSetupTimeoutError` / `NetworkConnectionError` ⇒ 装自己那步的网络问题（坑 7）;
+   `AgentSetupTimeoutError` / `NetworkConnectionError` ⇒ 装自己那步的网络问题（坑 7）；
    `AgentTimeoutError` ⇒ 先看轨迹**末步是不是收尾总结**（坑 2 —— 是，那就是做完不退）。
 2. **否则看 `verifier/test-stdout.txt` 里有没有 pytest 形态的断言证据**
    （`N passed` / `N failed` / `PASSED` / `FAILED`）：
