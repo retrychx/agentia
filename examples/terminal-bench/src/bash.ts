@@ -46,6 +46,10 @@ export interface ShellResult {
  * ⇒ 任务跑完了进程也不退出，Terminal-Bench 侧的表现是「agent 一直挂着直到超时」，
  * 而命令其实早已执行完。这是长驻会话这种形态自带的坑，不是框架的毛病 ——
  * 但必须显式收尾，所以入口（run.ts / selftest.ts）在写完 ATIF 后调 `closeShellSessions()`。
+ *
+ * ⚠️ **但「收了会话」还不等于「进程会退」**：agent 用 `&` 起的后台进程是 bash 的
+ * **孙进程**，inherits 同一组管道 ⇒ `SIGKILL` 掉 bash 之后我们这端依旧读不到 EOF。
+ * `close()` 里已经连管道一起收；入口那两个还必须各自**硬退**，理由见 `run.ts` 末尾。
  */
 const LIVE_SESSIONS: ShellSession[] = [];
 
@@ -140,8 +144,26 @@ export class ShellSession {
   }
 
   async close(): Promise<void> {
-    this.#proc?.kill('SIGKILL');
+    const proc = this.#proc;
     this.#proc = null;
+    if (!proc) return;
+    proc.kill('SIGKILL');
+    /**
+     * ⚠️ `SIGKILL` 掉 bash **不等于**管道会关。
+     *
+     * agent 在任务里用 `&` 起的后台进程（实测是 `qemu-system`）是 bash 的**孙进程**，
+     * 同样继承着这组管道 ⇒ 我们这端的 `stdout` 永远读不到 EOF ⇒ `ChildProcess` 句柄
+     * 一直「活着」⇒ 事件循环不空 ⇒ node 不退出。
+     * 实测代价：`qemu-startup` 那轮 agent 第 35 步就交了收尾总结、ATIF 也写完了，
+     * 进程却空了 47 分钟，最后被 Harbor 判成 `AgentTimeoutError` ——
+     * **一次做成的任务被记成超时**。
+     *
+     * 只 kill 不收管道是这个坑的另一半，这里补上：收掉我们这端 + `unref`。
+     */
+    proc.stdin.destroy();
+    proc.stdout.destroy();
+    proc.stderr.destroy();
+    proc.unref();
   }
 }
 

@@ -112,17 +112,26 @@ class Agentia(BaseInstalledAgent):
             env={"AGENTIA_TLS_CHECK_URL": self._tls_check_url()},
         )
 
-    @staticmethod
-    def _tls_check_url() -> str:
+    def _tls_check_url(self) -> str:
         """推导模型端点的「能证明 TLS 通」的 URL（4xx 也算通，只看握手）。
 
-        依据的是 `src/model.ts` 的那套 env 约定；不在这里复制一份「用哪家模型」的判据，
-        只把它的端点翻译成一个可探的 URL。
+        依据的是 `src/model.ts` 的那套 env 约定（`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`）；
+        不在这里复制一份「用哪家模型」的判据，只把它的端点翻译成一个可探的 URL。
+
+        ⚠️ **端点必须取自「要注入 agent 的那份 env」，不是宿主进程的 `os.environ`。**
+        README 推荐的跑法是 `--ae DEEPSEEK_API_KEY=…`，这个值只落在 agent 的
+        `extra_env` 上 ⇒ 只看 `os.environ` 会读不到 key，**静默**回落到 Anthropic 的端点
+        ⇒ 探了一个跟本次跑无关的第三方端点。实测代价：同一轮 10 条里有 2 条因此被
+        记成 `NonZeroAgentExitCodeError`（自检 `ECONNRESET`），其中一条是本该算数的
+        已解出任务 —— 而且它长得像「环境问题」，不去翻 install 日志就只会以为机器抽风。
+
+        取值顺序与 Harbor 自己的 `BaseAgent._env_sources()` 一致：agent env 覆盖宿主 env。
         """
-        base = os.environ.get("DEEPSEEK_BASE_URL")
+        env = {**os.environ, **self.extra_env}
+        base = env.get("DEEPSEEK_BASE_URL")
         if base:
             return f"{base.rstrip('/')}/models"
-        if os.environ.get("DEEPSEEK_API_KEY"):
+        if env.get("DEEPSEEK_API_KEY"):
             return "https://api.deepseek.com/models"
         # 不给 key 时走框架默认（Anthropic）；端点只是用来验 TLS，401 无妨。
         return "https://api.anthropic.com/v1/models"
