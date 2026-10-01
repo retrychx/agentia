@@ -129,4 +129,29 @@ await new Promise<void>((resolve) => {
  * 入口的契约是「写完产物就走」：产物此刻已经落盘，再等下去不会多出任何东西，
  * 只会把成功读成失败。退出码给 0 —— 判分是验证器的事，不在这里。
  */
+
+/**
+ * ⚠️ 唯一的例外：**零 token = 这次 trial 根本没开始，不能算成 agent 的 0 分**。
+ *
+ * 实测（4.0 的 `intrastat-meldung`，2026-10-02）：轨迹里只有 3 条空的 assistant 步、
+ * 间隔恰好 ~15 分钟（模型请求超时的节奏），`total_prompt_tokens = 0` ——
+ * 也就是说**一次成功的模型调用都没有**。Harbor 照常跑了验证器并记 `reward=0`，
+ * 于是它在 `result.json` 里落进「完成」桶，和「模型答错」在榜上无从区分。
+ *
+ * 非零退出 ⇒ Harbor 记成 `NonZeroAgentExitCodeError`（基础设施异常）。
+ * 这与装载阶段那条 TLS 自检是同一条原则：**让失败发生在正确的地方**。
+ * 判据只认「零」这个字面值 —— 只要有过一次成功的调用就放行，不替「跑得不好」背锅。
+ */
+const promptTokens = atif.final_metrics?.total_prompt_tokens ?? 0;
+if (promptTokens === 0) {
+  await new Promise<void>((resolve) => {
+    process.stderr.write(
+      `[agentia] 零 token：整个 run 没有一次成功的模型调用` +
+        `（stop=${result.stopReason}${result.error ? ` error=${result.error.type}` : ''}）。` +
+        '这属于基础设施异常，不是 agent 的 0 分 ⇒ 主动非零退出，让 Harbor 记成 exception。\n',
+      () => resolve(),
+    );
+  });
+  process.exit(2);
+}
 process.exit(0);

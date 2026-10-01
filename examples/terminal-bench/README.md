@@ -242,11 +242,25 @@ Terminal-Bench 侧的表现是「agent 一直挂着直到超时」。
 **判据**：看到 `AgentTimeoutError` 先别归因「agent 太慢」——去看轨迹**末步是不是收尾总结**；
 是，就是进程不退，不是慢。
 
-**3. `node --input-type=module -e` 不按 cwd 解析裸名。**
-想验证「包装没装上」，直觉是敲一句 `node --input-type=module -e "import('@migor/agentia')…"`。
-**不行**：这么写报 `Cannot find package '@migor/agentia' imported from /…/[eval1]`，
-看着像「没装上」，其实只是 `-e` 的 ESM 解析不吃 cwd。**写成文件**（且文件要落在
-有 `node_modules` 的那个目录里）才解析得到。自证那句因此是 `printf … > .loadcheck.mjs`。
+**3. ⚠️ `node -e` 的裸名**是**按 cwd 解析**的 —— 这条原本写反了，已用实测改正。**
+
+这里原先写着「`node --input-type=module -e "import('@migor/agentia')"` 报 `Cannot find package`，
+说明 `-e` 不吃 cwd，必须落成文件」。**2026-10-02 用三个运行时实测，这个结论是错的**：
+
+| 运行时 | `--input-type=module -e` | stdin | 文件 |
+|---|---|---|---|
+| 本机 node v22.22.2 | ✅ | ✅ | ✅ |
+| `node:22-bookworm-slim` v22.23.3 | ✅ | ✅ | ✅ |
+| `ubuntu:24.04` 的 apt nodejs **v18.19.1** | ✅ | ✅ | ✅ |
+
+裸名的解析基就是 cwd（`file://<cwd>/[eval]`）。当初那条结论**多半漏了 `cd` 那一步**
+（或者从别的目录敲的），把「我站错地方」读成了「机制不支持」。
+
+⇒ 这个更正的直接价值是**去掉了一个非 root 下必然失败的写文件依赖**：
+自证改成 `cd "$SCRIPT_DIR" && "$NODE_BIN" -e '…'`，一个字节都不用往远端目录写（坑 12）。
+
+⇒ 通用教训（和坑 8 是同一条）：**「我试过一次，不行」和「它不行」之间差着一个实验设计**。
+写进注释之前，先把变量控住再复现一次。
 
 **4. ⚠️ 装了 node ≠ 能 HTTPS：镜像可能没装 `ca-certificates`（最阴的一个坑）。**
 Ubuntu/Debian 的 nodejs 走**系统根证书库**，而任务镜像可能**压根没装 `ca-certificates`**
@@ -446,6 +460,157 @@ cd /installed-agent/agentia-tb && sh .install-runtime.sh && … node .loadcheck.
 ⚠️ 这张表的价值建立在**同一个网络窗口**上 —— 那些网络型假红**同等**作用于两个 harness，
 「可计面」这一列才可比。**换个窗口重跑面值会变，但这两列的结论不该变。**
 
+**9. ⚠️ 第六种：镜像里的 `node` 其实是 bun（4.0 上实测，最新一条）。**
+
+`terminal-bench@4.0` 的 `bun-sourcemap-leak` 用 `oven/bun:1.2.15-debian`。
+那里 `node` 是 **bun 的兼容壳**：`/usr/local/bun-node-fallback-bin/node` 是 symlink →
+`/usr/local/bin/bun`。本机起同一个容器逐条实测：
+
+| 探针 | 实测结果 |
+|---|---|
+| `node --version` | **rc=1**，stderr 打 `Missing script to execute. Bun's provided 'node' cli wrapper does not support a repl.` |
+| `$(node --version)` 的值 | **空串** —— 所以那行日志长成 `node already present: ` |
+| `node -e 'console.log(process.versions.node)'` | `22.6.0`，rc=0 |
+| `node -e 'if(process.versions.bun)console.log(process.versions.bun)'` | `1.2.15` ← **可靠判据** |
+| `node x.mjs` | rc=0（能跑） |
+
+两层危害：① 探测拿到**空**版本，还把一句 bun 的红字混进 install 日志 —— 它长得像
+「agent 崩了」，实际是探测自己踩了坑；② 更要紧的是 `node dist/run.js` 会拿
+**bun 去跑一个 Node 框架**（不受支持的组合）。
+
+⚠️ **装上真 node 也不能靠 PATH。** bun 的壳排在 `/usr/bin` 与 `/usr/local/bin`
+**前面** —— 实测把真 node 装到这两处之后，`command -v node` 照样命中壳。
+⇒ 修法：解析出**绝对路径**，由 `harbor_agent.py` 在下一步直接用它。
+交接方式见坑 12（**不落文件**，走 stdout 上的一行标记）。
+**刻意不删** bun 那个壳 —— 它是任务镜像自带的东西，删了就是动评测基准。
+
+✅ **2026-10-02 复验**：在 `oven/bun:1.2.15-debian` 里跑修好的脚本，日志是
+`PATH 上的 node 不可用：/usr/local/bun-node-fallback-bin/node → /usr/local/bin/bun` →
+`发行版包可用：/usr/bin/node (18.20.4)` → `AGENTIA_NODE_BIN=/usr/bin/node`，
+装载自证与 TLS 自检都过。
+
+⇒ **通用判据：探测 node 别用 `node --version`**，用
+`"$bin" -e 'process.exit(process.versions.bun ? 1 : 0)'` 这类**行为探针** ——
+版本串是可以被 shim 伪造的，行为不容易。
+
+**10. ⚠️ 4.0 的环境是「现场构建」，第一次跑容易撞 build 超时。**
+
+2.0 的任务用预构建的 ghcr 镜像，环境启动是秒级；4.0 每题自带 Dockerfile，
+`apt-get install` / `uv pip install rdkit` / `npm ci` 全走**容器出网**。
+`[environment] build_timeout_sec` **逐题不同**（实测 600 / 900），真正生效的是
+它 × `--environment-build-timeout-multiplier`：
+
+| 题 | 自带 build 超时 | 本轮乘数 | 结果 |
+|---|---|---|---|
+| `nextjs-performance` | 900s | ×3 = 2700s | `EnvironmentStartTimeoutError` |
+| `roy-polymorph-cn` | 600s | ×3 = 1800s | 同上，**未进入 agent** |
+
+⚠️ 异常名写的是 `EnvironmentStart…`，但它拦的是 **build 那一段** —— 别照字面去查容器启动。
+
+⇒ 两条对策：① **先预热**（用 `docker build` 把 buildkit 缓存填上，见 §九）——
+缓存跨 harbor 轮次复用，同一份 Dockerfile 第二遍是整片 `CACHED`，第一遍却撞满 2700s；
+② multiplier 给足（本仓跑 4.0 用 **6**）。
+
+⚠️ 预热只在「这个构建**本身能成**」时才管用。第二轮里 `nextjs-performance`
+换了张脸：不再超时，而是在 `npm ci` 那步 72 秒后**报错退出**（`RuntimeError`）——
+根因是坑 11，不是超时。**判据：看异常类型**，`EnvironmentStartTimeoutError` 才是超时。
+
+**11. ⚠️ 第七种：`nodejs.org` / `registry.npmjs.org` 被 TLS 中间人（策略性拦断，不是抖动）。**
+
+实测（`python:3.11-slim`，同一个容器、同一秒）：
+
+| 目标 | 结果 |
+|---|---|
+| `https://nodejs.org/dist/index.json` | ❌ `CERTIFICATE_VERIFY_FAILED: self-signed certificate` |
+| `https://registry.npmjs.org/` | ❌ 同上 |
+| `https://github.com` | ✅ 200 |
+| `https://api.deepseek.com/models` | ✅ 到达（401，TLS 通） |
+| `https://mirrors.tuna.tsinghua.edu.cn` / `npmmirror.com` / `mirrors.aliyun.com` | ✅ 200 |
+
+镜像里 `/etc/ssl/certs/ca-certificates.crt` **在**（225KB）、openssl 工具链齐全 ⇒
+**不是缺根证书，是这条链路上有人换了证书**。⇒ 这一类**重试永远不通**，必须换源。
+
+两处受它影响，都已处理：
+- **装 node 的静态包**：`container-install-runtime.sh` 改成**多源**——
+  官方在前（能直连的环境行为不变），然后清华 / npmmirror，逐个试。
+  ✅ 复验：`ubuntu:22.04` 上官方源 `curl: (60) self-signed` → 清华源 50.6M 秒下、装成。
+- **任务自带的 `npm ci`**：⚠️ **这一处我们修不了** —— 它写在任务的 Dockerfile 里，
+  `docker compose build` 的构建上下文没有我们插脚的缝。⇒ 本网络窗口下
+  `nextjs-performance` **拿不到可用读数**，别把它算进能力分母（它属于「环境拦断」，
+  和 §六坑 5 的验证器 apt 404 是同一类）。
+
+⇒ **通用判据：任何「下载/安装」失败，先分清「源不通」和「网络抖」。**
+`self-signed certificate` / `SELF_SIGNED_CERT_IN_CHAIN` 出现在**权威域名**上 ⇒
+大概率是中间人，换源；`ETIMEDOUT` / `ECONNRESET` ⇒ 才值得重试。
+
+**12. ⚠️ 发行版的 node 可能老到跑不了框架 —— 而它先把**自检脚本**弄崩了（自伤一次，已修）。**
+
+`ubuntu:22.04` 的 `apt-get install nodejs` 给 **12.22.9**，而框架 `engines` 是 `node >= 18`。
+危害不在「跑不起来」，在**它会先把自检脚本自己弄崩**：TLS 自检那句我写成了
+
+```js
+last = e.cause?.code ?? e.name;   // ES2020
+```
+
+在 node 12 上是 **SyntaxError** ⇒ 自检脚本**一行都没执行**，却被后面的判据读成
+「容器到模型端点的 HTTPS 不通」——**一个版本问题被报成网络问题**。代价实测：
+`roy-polymorph-cn` 与 `gsea-proteomics` 两道题直接被推进 exception 桶（`NonZeroAgentExitCodeError`），
+日志里只有一句 `SyntaxError: Unexpected token '.'` 加一句误导的 CA 提示。
+
+⇒ 两道防线（都已落进 `container-install-runtime.sh`）：
+1. **版本门**：`is_usable_node()` 同时卡「真 node（非 bun 壳）」与
+   `major >= 18`，不够就落到静态包；顺带把静态包解出来的那份也验一遍。
+2. **自检脚本刻意只用 ES5**（不用 `?.` / `??` / 箭头函数 / 模板串）——
+   它可能是全脚本里**唯一在版本未知的 node 上执行**的代码，而它的职责恰恰是把
+   「版本不对」说清楚；并且**把 node 自己的 stderr 原样打出来**，别替读日志的人下结论。
+
+⇒ **通用教训：写在「错误路径」上的代码，用最保守的语法。** 它跑得越晚、环境越差，
+越要保证它自己不会先崩。**同一件事的第二面是：别让一句自检的失败信息替你做因果判断** ——
+`exit 1` 只说明「没过」，说明不了「为什么不过」。
+
+**13. ⚠️ 第八种：任务容器可能不是 root（4.0 的 66 题里有 3 题）。**
+
+`risk-scorer-replay` 是 `USER nobody`、`rs-archive-clone` / `fp8-rmsnorm-gemm` 是 `USER agent`。
+原脚本默认了 root，在那里同一条命令有三处会挂：
+
+```
+E: List directory /var/lib/apt/lists/partial is missing. - Acquire (13: Permission denied)
+E: Could not open lock file /var/lib/dpkg/lock-frontend - open (13: Permission denied)
+mkdir: cannot create directory '/opt/agentia-node': Permission denied      ← 兜底也倒在最后一步
+```
+
+本机起 `docker run -u nobody python:3.11-slim` 逐条探，**哪个前缀能写**是这样：
+
+| 位置 | `USER nobody` 下 |
+|---|---|
+| `/opt`、`/usr/local`、`/usr/local/bin` | **DENIED** |
+| `$HOME` | **DENIED**（是 `/nonexistent`，得镜像自己 `useradd --create-home`） |
+| `/tmp` | ✅ WRITABLE |
+
+⚠️ **更硬的约束在第二层**：`/installed-agent/agentia-tb` 这棵目录**是 root 拥有的** ——
+Harbor 的上传走 `docker compose exec -T -u root … tar -xf`。
+⇒ 原先「把 node 路径写进远端目录的 `.node-bin`、下一步再 `cat`」这条路在非 root 下**必挂**，
+跟 node 装在哪毫无关系。凡是要往远端目录写的动作都得挪走。
+
+⇒ 三条修法（都已实测）：
+1. **安装前缀按可写性挑**：`/opt/agentia-node` → `$HOME/.agentia-node` → `/tmp/agentia-node`，
+   第一个写得进去的就是它；**刻意不试 `/usr/local`**（抢不过 bun 的壳，坑 9）。
+2. **一个字节都不往远端目录写**：交接改走 stdout 的 `AGENTIA_NODE_BIN=<绝对路径>`
+   （`harbor_agent.py` 解析 `ExecResult.stdout`），装载自证改走 `node -e`（坑 3 的更正在这里兑现）。
+3. **ATIF 的落盘目录**：`/logs/agent` 在非 root 镜像里也可能不存在、建不了。
+   `harbor_agent.py` 先以 agent 身份试建，不成就**以 root 建好再放宽权限** ——
+   `/logs/agent` 是 **Harbor 的 agent 日志契约目录**，不是任务的评分区
+   （官方适配器也自己 `mkdir -p`，见 harbor 的 `gemini_cli.py`）。
+   ⚠️ 三题里 `fp8-rmsnorm-gemm` 自己 `chown -R agent:agent /logs` 了，另两题没有。
+
+✅ **复验**（`python:3.11-slim` + `-u 65534`，远端目录 root 拥有）：
+`跳过发行版包管理` → 清华源下载 → 装到 **`/tmp/agentia-node`** →
+`AGENTIA_NODE_BIN=/tmp/agentia-node/bin/node` → 装载自证 / TLS 自检全过 →
+**`ls -a` 远端目录：没有多出任何文件**。
+
+⇒ **通用判据：agent 侧的所有「装/写」都要先问一句「我是谁」。**
+`id -u` 不是 0 时，apt 与 `/opt` 会同时失效，而失效的方式**看起来像网络问题或磁盘问题**。
+
 ---
 
 ## 七、已知边界
@@ -520,10 +685,192 @@ harbor run -p /tmp/tb-official/terminal-bench -a harbor_agent:Agentia -m deepsee
 
 ---
 
-## 九、下一步
+## 九、Terminal-Bench 4.0：怎么拿、怎么跑、跑出来什么
+
+### 9.1 与 2.0 的三处结构差别
+
+| | `terminal-bench@2.0` | `terminal-bench@4.0` |
+|---|---|---|
+| 题数 | 89（sample 子集 10） | **66** |
+| 环境 | 预构建 ghcr 镜像，秒级 | **每题 Dockerfile 现场构建**（坑 10） |
+| 拿法 | `-d` + `--registry-path`（§八） | **绕开 `harbor download`，直接克隆官方仓** |
+
+⚠️ **4.0 不要走 `harbor download`**：那条路打到 Harbor Hub（Supabase），和 §八 是同一个
+被墙的端点。改走官方仓库的 tag：
+
+```bash
+git clone --depth 1 --branch v4.0.0 https://github.com/harbor-framework/terminal-bench /tmp/tb-4.0/repo
+PYTHONPATH="$PWD" harbor run -p /tmp/tb-4.0/repo/tasks -i <task> -a harbor_agent:Agentia -m deepseek-chat
+```
+
+两个**只会静默出错**的参数细节（实测）：
+- **`-p` 不能给两次**；指到 `tasks/` 目录时它被读成 **dataset**（JSON 键是 `datasets` 不是 `tasks`）。
+- **选子集用 `-i`**（可重复），短名与全名都收。
+
+### 9.2 本机可跑池：66 → 42
+
+判据 = `gpus=0` ∧ `cpus<=4` ∧ `mem<=8192` ∧ 基础镜像非重镜像 ∧ **非 digest 钉死**，
+逐题读 `task.toml` + `environment/Dockerfile` 得出。剔除的 24 题各有硬理由：
+
+| 剔除理由 | 题数 | 为什么 |
+|---|---|---|
+| `gpus > 0` | 3 | 本机没有 GPU |
+| `cpus > 4` 或 `mem > 8192` | 8 | 本机物理不够 |
+| 重镜像（vllm / pytorch-cuda / playwright / micromamba / coq） | 6 | 拉不动或太慢 |
+| **`FROM image@sha256:…`** | 6 | ⚠️ 见下，这条最不直觉 |
+| **`allow_internet = false`** | **1** | ⚠️ 见下，这条最像「跑得动」 |
+
+⚠️ **digest 钉死的题走不了镜像站**：`docker.1ms.run` 这类加速站只代理 **tag**，
+`FROM python:3.11-slim@sha256:9a7765b3…` 这种**按 digest 拉**的写法它给不了，
+而 `FROM` 也没法用 `--build-arg` 改写 ⇒ 这 6 题在本机直接放弃，别在上面耗时间。
+
+⚠️ **`allow_internet = false` 的题会被 Harbor 硬拒**（实测 `batched-eval-parity`、
+`lake-temp-glm`）：
+
+```
+ValueError: network_mode='no-network' is not supported by EnvironmentType.DOCKER
+            environment. Environment providers must enforce the requested network
+            policy or reject the task.
+```
+
+也就是 Harbor 0.23.0 的 Docker 后端**实现不了**这个网络策略，于是它选择「拒绝执行」
+—— 这是它诚实的地方，但结果是这两题在本机拿不到任何读数。⚠️ 而且它**不进
+`exception_info` 的两个常规位置**，得翻 `trial.log` 才看得到。
+
+⚠️ **筛选题集要用按节解析的脚本**：`task.toml` 是**分节**的，同名键在不同节语义不同。
+手搓正则取 `cpus` 的**第一次**出现会读到 `[verifier.environment] cpus`，
+把 `[environment] cpus = 8` 的题放进来（`lake-temp-glm` 就这么漏过网）。
+用 `.workbuddy/probes/tb40-runnable-pool.py`（按节解析 + 输出硬排除与软标记）。
+
+### 9.3 首轮读数：8 题（⚠️ capped 口径）
+
+**口径先写清楚**：这一轮 agent 超时被压到 **2h**（官方 `[agent] timeout_sec = 28800` × 0.25），
+**不是官方 8h 口径**，不能当成绩写榜。
+
+| 题 | agent 时长 | 步数 | 花销 | 结果 |
+|---|---|---|---|---|
+| `foodstuff-beta-activity` | **1.0 分钟** | 17 | $0.035 | 0（6/13 子测试败） |
+| `cargo-flight-dispatch` | **2.3 分钟** | 28 | $0.29 | 0（8/27 败） |
+| `heat-pump-warranty` | 13.1 分钟 | 94 | $3.46 | 0（验证器内部 0.65 ＝ 13/20） |
+| `music-harmony` | 14.3 分钟 | 111 | $4.89 | 0（9 处 violations） |
+| `photonic-waveguide-routing` | 116.6 分钟 | 103 | $5.94 | 0（net 间距违规） |
+| `roy-polymorph-cn` | — | — | — | 环境 build 超时，**未进入 agent**（坑 10） |
+| `nextjs-performance` | — | — | — | 同上 |
+| `bun-sourcemap-leak` | — | — | — | 安装自检失败（坑 9） |
+
+**`mean = 0.0`**（五道真跑的题合计约 $14.6）。
+
+⚠️ 这张表里那三条「—」（环境超时 / 安装自检失败）在第二轮里各有了下文：
+`bun-sourcemap-leak` 修好并真跑起来了，`roy-polymorph-cn` 暴露了坑 12，
+`nextjs-performance` 换成了坑 11 的形状。见 9.4。
+
+🔴 **这五条 0 分的形状不是「时间不够」，是「早停 + 零自检」。** 证据是它们**自己的收尾陈述**：
+
+| 题 | 收尾原话 | 用了多久 |
+|---|---|---|
+| `foodstuff-beta-activity` | "The task is complete." | 1.0 分钟 |
+| `cargo-flight-dispatch` | "The plan is complete and correct." | 2.3 分钟 |
+| `music-harmony` | "The deliverable is complete and valid." | 14.3 分钟 |
+| `heat-pump-warranty` | "All confirmed. My earlier derivations hold." | 13.1 分钟 |
+| `photonic-waveguide-routing` | "Final state confirmed … **7/9 nets passing**" | 116.6 分钟 |
+
+验证器全给 0。`photonic` 最露骨：**它自己算出 2/9 个 net 不达标，然后交卷了**。
+
+⇒ 由此得到一条**对 capped 口径的关键论证**：2h 上限**只可能影响 `photonic` 一道**
+（116.6 / 120 分钟），另外四道 1～14 分钟就自称完工 —— **给满 8h 结论也不会变**。
+「分低是因为被截断」这个解释，在这批数据上不成立。
+
+⇒ 与坑 6 的关系：那条「收尾前清理自己造的东西」的纪律**这次生效了**
+（`foodstuff` 收尾主动交代 "I removed the temporary `calc.py` scratch script"）。
+真缺口在**上游** —— **交付前根本没跑自检**：写完就交，不拿验证器那套判据过一遍。
+
+⚠️ 附带一条与成本有关的观察（不是本轮的判据，但值得单独查）：五道题的
+`final_metrics.total_cached_tokens` **全部为 0** —— 最长的一道累计 20.4M prompt tokens、
+零缓存命中。
+
+### 9.4 第二轮：24 题（含三处 harness 修复的验证）
+
+口径与 9.3 相同（`deepseek-chat`、`-n 2`、agent 超时 ×0.25 = **2h capped**），
+2026-10-01 21:02 起跑 → 10-02 05:38 收，**总耗时 8h36m**。
+
+**先看记账，别直接读面值** —— 这一轮最容易被读错的就在这里：
+
+| 桶 | 题数 | 说明 |
+|---|---|---|
+| 只有 `reward` 记录 | 13 | 走完 agent → 验证器 |
+| **`reward` 与 `exception` 并存** | **2** | ⚠️ 见下 |
+| 只有 `exception` | 7 | 没走完 agent 阶段（或验证器环境起不来） |
+| 两个都没有 | 0 | — |
+
+⚠️ **`reward_stats` 和 `exception_stats` 会重叠**：`ctr-optimization` 与
+`sound-change-cascade` 撞了 2h 上限被记成 `AgentTimeoutError`，Harbor **之后仍然跑了验证器
+并写了 `reward.txt = 0`** ⇒ 它们同时出现在两个表里。
+**⇒ 不能拿「有 `reward.txt`」当可计面的分母**，报数前先用 `exception_info` 剔一遍。
+
+**17 道有 reward 记录的，全部 0**；异常分布：
+
+| 异常 | 题数 | 是什么 |
+|---|---|---|
+| `AgentTimeoutError` | 3 | 撞 2h 墙（`ctr-optimization` / `sound-change-cascade` / `lake-temp-glm`） |
+| `NonZeroAgentExitCodeError` | 3 | **安装阶段**失败（`roy-polymorph-cn` / `gsea-proteomics` = 坑 12；`risk-scorer-replay` = 坑 13） |
+| `EnvironmentStartTimeoutError` | 1 | `kv-live-surgery`（`ubuntu:24.04` + gdb/strace 全套装，3600s 没起完） |
+| `ValueError` | 1 | `batched-eval-parity`（`allow_internet=false`，Harbor 硬拒，见 9.2） |
+| `RuntimeError` | 1 | `nextjs-performance`（`npm ci` 撞坑 11） |
+
+**四条最值得看的读数：**
+
+1. 🔴 **「早停 + 零自检」的模式原样重现。** 17 道里有记录的，agent 阶段跨度
+   中位数 **13.8 分钟**（最短 1.4、最长 84.2），而任务给的是 8 小时。
+   多道在十几分钟内就自称完工，验证器全 0 —— 与 9.3 那五道是**同一个形状**，
+   样本从 5 涨到 15+ 之后结论没变。
+2. **四道是「差一个子断言」的擦边**（这类最值钱，说明方向对、收尾松）：
+   `embedding-drift-monitor` **1 failed / 10 passed**、
+   `glycan-ms2-elucidation` **1 failed / 11 passed**、
+   `session-window-debug` **1 failed / 6 passed**、
+   `mvcc-lsm-compaction` **1 failed / 14 passed**。
+3. ⚠️ **两道被 2h 掐掉**（`ctr-optimization` / `sound-change-cascade`）——
+   `--agent-timeout-multiplier 0.25` 是我设的，**这两条不能当官方成绩**。
+   9.3 那轮只咬掉 1 道，这轮 2 道 ⇒ **乘数本身就是个会改变结论的实验参数**，报数时必须点名。
+4. 🆕 **一道「零 token」**（`intrastat-meldung`）：轨迹里只有 3 条**空的** assistant 步、
+   间隔恰好 ~15 分钟（模型请求超时的节奏），`total_prompt_tokens = 0` ——
+   **一次成功的模型调用都没有**，而 Harbor 照常跑验证器、记 `reward=0`，
+   于是它在 `result.json` 里落进「完成」桶，**和「模型答错」无从区分**。
+   ⇒ 已在 `src/run.ts` 加守卫：**零 token 就非零退出**（记成 exception），
+   与装载阶段那条 TLS 自检是同一条原则 —— 让失败发生在正确的地方。
+
+**这一轮验证掉的 harness 修复**（都在 §六）：
+
+| 修的是什么 | 症状 | 复验方式与结果 |
+|---|---|---|
+| 坑 13 非 root 容器 | 安装脚本默认 root，apt + `/opt` 同时失效 | 真容器实跑（两处前缀 + stdout 交接 + 远端目录零写入） |
+| 坑 12 版本门 + 自检语法 | apt 给 node 12 ⇒ 自检自己 SyntaxError，被误报成「TLS 不通」 | 真容器实跑（`ubuntu:22.04` 拒 node 12 → 静态包 22.11.0） |
+| 坑 11 下载源 | `nodejs.org` 被中间人 ⇒ 静态包永远下不来 | 真容器实跑（官方源失败 → 清华源 50.6M 成功） |
+| 坑 3 的更正的兑现 | 写 `.loadcheck.mjs` / `.node-bin` 在非 root 下必挂 | 改成 `node -e` + stdout 标记，零文件写入 |
+
+**仍未修、也不用修的**：`nextjs-performance`（任务的 Dockerfile 里 `npm ci`，我们插不进去）、
+`batched-eval-parity`（Harbor 自身不支持该网络策略）、`kv-live-surgery`（构建太慢，
+预热能缓解但 3600s 仍紧）。
+
+### 9.5 跑 4.0 之前先预热
+
+见坑 10。要跑的题**先在 harbor 之外把镜像构建一遍**，把 buildkit 缓存填上：
+
+```bash
+export PATH="$HOME/.orbstack/bin:$PATH"
+docker build -t "probe/$task" "/tmp/tb-4.0/repo/tasks/$task/environment" \
+  && docker rmi "probe/$task"        # rmi 只删镜像，不动 buildkit 缓存
+```
+
+`sleep` 之外没有别的技巧，就是「把第一次的慢挪到跑之前」。
+
+### 9.6 下一步
 
 1. 定 `-m`（同一模型才谈得上和其它 harness 比），先 `-t` 单任务、再 `-k 5` 取均值
    （TB 的规矩：同任务跑 5 次，分数带 ±）；
-2. 全量：`terminal-bench@2.0` 89 个任务；`-n` 控制并发（本机 OrbStack 实测 `-n 3` 稳）；
-3. 结果上传 / 提交 leaderboard 走 Harbor Hub（`harbor upload jobs/<name>`）——
+2. 全量：`terminal-bench@2.0` 89 个任务 / **4.0 本机 42 个**；`-n` 控制并发
+   （本机 OrbStack 实测 `-n 3` 稳）；
+3. ⚠️ **跑之前先把 `--agent-timeout-multiplier` 定死并写下来** —— 它直接决定有几道题被掐，
+   而「被掐」和「答错」在 `reward.txt` 里一模一样（见 9.4 第 3 条）。
+   要拿能写榜的读数就得是 ×1（8h），代价是长尾很长；
+4. 结果上传 / 提交 leaderboard 走 Harbor Hub（`harbor upload jobs/<name>`）——
    ⚠️ 上传走的是同一个 Hub，本机这条链路待验。
