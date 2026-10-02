@@ -3,7 +3,7 @@
  *
  * ## 为什么需要它
  *
- * §7 是一张 **90 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
+ * §7 是一张 **92 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
  * 的唯一依据 —— 也是仓库里**最厚的一张对外承诺表**。
  *
  * 而它此前**零守卫**，且是被解析器**结构性**排除的：`usage-guide.test.ts` 的 `parseTables`
@@ -127,7 +127,7 @@ type Entry =
   | { key: string; gap: string; candidate: string };
 
 /**
- * 登记表（90 条，与 §7 的行一一对应；2026-09-29 复核：7 条 gap 已回填为 pin）。
+ * 登记表（92 条，与 §7 的行一一对应；2026-09-29 复核：7 条 gap 已回填为 pin）。
  *
  * `pin` 的 `marker` 是目标用例 `it(...)` 标题里的**一段原文**（或脚本里的原文），
  * A3 会逐条断言它在场 —— 引用一条其实不相关的用例会当场红。
@@ -691,6 +691,27 @@ const REGISTRY: ReadonlyArray<Entry> = [
       marker: '压缩失败不烧滞回额度：下一回合仍会重试（滞回记的是「上次成功」）',
     },
   },
+  // ---- 2026-10-02：TB 4.0 轨迹形态复核带来的两条主循环边界 ----
+  // 都在「运行时 + 可观测」两层，与射程复核的结论一致（TB 只走了 app.run() 返回值这条路）。
+  {
+    // 登记为 gap 而非 pin：run-config.test.ts 里 `config.contextPolicy === false` 那条断言
+    // 会在「缺省行为改变」时红（配置值就是裁不裁的唯一开关），但它钉的是**配置读数**；
+    // 「不注入 ⇒ 一个回合都不裁」这个**行为**本身，没有任何用例能证伪 —— 把 turn.ts 里
+    // `if (args.contextPolicy)` 的判据改掉，全套测试仍然全绿。
+    key: '缺省**不裁剪**上下文（长跑每回合重发全量历史 ⇒ 成本随回合数平方增长）',
+    gap: '「缺省不注入 contextPolicy ⇒ 主循环一个回合都不裁」这半句没有用例钉住 —— run-config.test.ts 只钉配置读数（config.contextPolicy 缺省为 false），「裁不裁」这个行为它管不到',
+    candidate: 'tests/engine/run-config.test.ts',
+  },
+  {
+    // 这条有真 pin：eventChars.test.ts 那条用例是**专门**为「这个开关会不会悄悄改变 agent
+    // 行为」立的门禁（把 trace 侧 content 截成 7 字符，断言回给模型的 tool_result 仍完整）。
+    // 与 traceLimits / maxEventChars 那两条（记账侧）正交 —— 记账侧有闸，模型侧没有。
+    key: '回给模型的 `tool_result` **不截断、也没有大小闸**',
+    pin: {
+      file: 'tests/engine/eventChars.test.ts',
+      marker: '回给模型的 tool_result 不受截断影响（截断只在记账侧）',
+    },
+  },
 ];
 
 const rows = parseBoundaryRows();
@@ -700,7 +721,7 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
   it('解析器没退化：§7 至少有 70 行（解析崩了会红，而不是空转绿）', () => {
     assert.ok(
       rows.length >= 70,
-      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 90 行）`,
+      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 92 行）`,
     );
   });
 
@@ -781,10 +802,14 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
     for (const e of REGISTRY) {
       if ('choice' in e) assert.ok(e.choice.length >= 8, `「${e.key}」的 choice 理由太短`);
     }
-    // 当前读数（2026-09-29 复核更新）：pin 56 / choice 10 / gap 24 = 90 行。
-    // 本轮复核把 7 条 gap 回填为 pin（缺省内存 store 不淘汰 / 能力引用两种粒度 / OpenAI 适配器
-    // 听端点的话 / MCP 连接器的超时只管装配期 / OTLP metrics 只推当前累计 / 工具没有 token
-    // 成本指标 / 同步 /run 撞上审批没人可批），另订正 1 条 gap 的理由（预算护栏不是硬实时）。
+    // 当前读数（2026-10-02 复核更新）：pin 57 / choice 10 / gap 25 = 92 行。
+    // 本轮新增 2 行（TB 4.0 轨迹形态复核带来的主循环两条边界）：一条 pin（模型侧无输出闸，
+    // 由 eventChars.test.ts 那条「记多少 ≠ 模型看到多少」的门禁钉住）、一条 gap（缺省不裁
+    // —— 配置读数 `config.contextPolicy=false` 会在缺省行为改变时红，但**裁剪行为本身**没人钉）。
+    // 上轮（2026-09-29）是 pin 56 / choice 10 / gap 24 = 90 —— 那次把 7 条 gap 回填为 pin
+    // （缺省内存 store 不淘汰 / 能力引用两种粒度 / OpenAI 适配器听端点的话 / MCP 连接器的超时
+    // 只管装配期 / OTLP metrics 只推当前累计 / 工具没有 token 成本指标 / 同步 /run 撞上审批没
+    // 人可批），另订正 1 条 gap 的理由（预算护栏不是硬实时）。
     // 首版（2026-09-26）是 38 / 9 / 30 = 77 —— 上面 §7 里那几个行数数字与这段都要一起改：
     // 它们是**读数**，写死在注释里就是为了让「表长大了而没人发现」在 review 时可见。
   });
