@@ -36,6 +36,15 @@ PROJECT_DIR = Path(__file__).resolve().parent
 REMOTE_DIR = PurePosixPath("/installed-agent/agentia-tb")
 INSTRUCTION_PATH = PurePosixPath("/installed-agent/instruction.txt")
 
+# 装载脚本在 stdout 上回传 node 绝对路径的那行标记。**交接只有这一处**，
+# 改它必须同步 `scripts/container-install-runtime.sh` 文件头的「输出契约」。
+#
+# 为什么不落 `.node-bin` 文件：**非 root 任务容器里写不进去**。Harbor 的上传走
+# `docker compose exec -T -u root … tar -xf`，远端目录整棵是 root 拥有的；
+# 实测（`USER nobody`）在 `/installed-agent/agentia-tb` 里 `touch` 是 Permission denied，
+# 于是「把解析结果写在远端目录、下一步再读」这条路在非 root 下必挂。
+NODE_BIN_MARKER = "AGENTIA_NODE_BIN="
+
 # 框架包的本体在工作区根（本示例是 `file:../..`），容器里没有工作区 ⇒ 得把**构建好的**
 # 包整个搬进去。可用 AGENTIA_PKG_ROOT 指向别处（例如解包后的 tarball）。
 PKG_ROOT = Path(os.environ.get("AGENTIA_PKG_ROOT", PROJECT_DIR.parent.parent)).resolve()
@@ -50,6 +59,10 @@ class Agentia(BaseInstalledAgent):
     # atif=True 告诉 Harbor：这个 agent 产出的轨迹就是 ATIF，不用再从日志反推。
     # 这是本适配器与「跑完拿 stdout 猜步骤」那类适配器的分界线。
     capabilities = AgentCapabilities(atif=True)
+
+    # install 阶段解析出的 node 绝对路径，供 run 阶段用（同一个 trial 里是同一个实例对象，
+    # Harbor 在 `Trial._setup_agent` 建实例、`_run_agent_phase` 复用）。
+    _node_bin: str | None = None
 
     @staticmethod
     def name() -> str:
@@ -90,27 +103,33 @@ class Agentia(BaseInstalledAgent):
             PROJECT_DIR / "scripts" / "container-install-runtime.sh",
             f"{REMOTE_DIR}/.install-runtime.sh",
         )
-        #
-        # 末尾是「装载自证」：让「搬进来的包能不能 import」当场失败，而不是等到 agent
-        # 跑起来才暴露成 `NonZeroAgentExitCodeError`（那要再花 10 分钟才知道不是 agent 的锅）。
-        # ⚠️ 自证必须落成**文件**再跑，不能用 `node --input-type=module -e`：
-        #   实测 `-e` 的 ESM 裸名不按 cwd 解析（报 Cannot find package），文件才会。
-        #   且文件必须写在 REMOTE_DIR 里，才够得着同级的 node_modules。
-        probe = (
-            "import('@migor/agentia')"
-            ".then(m => console.log('agentia loaded', m.AGENTIA_VERSION))"
-            ".catch(e => { console.error('LOAD FAILED:', e.message); process.exit(1); });"
-        )
-        await self.exec_as_agent(
+        # 一次调用走完「装 node → 补可信根 → 装载自证 → TLS 自检」：四步的顺序与判据
+        # 全在脚本里（那里能写注释、能本地 `sh -n`），Python 侧只负责调用与收尾解析。
+        result = await self.exec_as_agent(
             environment,
-            command=(
-                f"cd {shlex.quote(str(REMOTE_DIR))} && "
-                "sh .install-runtime.sh && "
-                f'printf "{probe}\\n" > .loadcheck.mjs && node .loadcheck.mjs'
-            ),
+            command=f"cd {shlex.quote(str(REMOTE_DIR))} && sh .install-runtime.sh",
             # TLS 自检要打 agent **真正要用的**那个端点 —— 打到别处等于没检查。
             env={"AGENTIA_TLS_CHECK_URL": self._tls_check_url()},
         )
+        self._node_bin = self._parse_node_bin(getattr(result, "stdout", None) or "")
+        if self._node_bin:
+            print(f"[agentia] 运行时 node = {self._node_bin}")
+        else:
+            print(
+                f"[agentia] 警告：装载脚本没有回传 {NODE_BIN_MARKER}… 标记，"
+                "run 阶段会退回 PATH 上的 node（bun 系镜像上那里是 bun 的兼容壳）"
+            )
+
+    @staticmethod
+    def _parse_node_bin(stdout: str) -> str | None:
+        """从装载脚本的 stdout 里取回 `AGENTIA_NODE_BIN=<绝对路径>`。
+
+        取**最后一行**：脚本是幂等的、可能被重跑，最后一行才是本次的结果。
+        """
+        for line in reversed(stdout.splitlines()):
+            if line.startswith(NODE_BIN_MARKER):
+                return line[len(NODE_BIN_MARKER) :].strip() or None
+        return None
 
     def _tls_check_url(self) -> str:
         """推导模型端点的「能证明 TLS 通」的 URL（4xx 也算通，只看握手）。
@@ -170,6 +189,7 @@ class Agentia(BaseInstalledAgent):
             await environment.upload_file(local, str(INSTRUCTION_PATH))
 
         logs_dir = self.environment_logs_dir or PurePosixPath("/logs/agent")
+        await self._ensure_logs_dir(environment, logs_dir)
         env: dict[str, str] = {
             "AGENTIA_TB_INSTRUCTION": str(INSTRUCTION_PATH),
             "AGENTIA_ATIF_OUT": f"{logs_dir}/trajectory.json",
@@ -181,8 +201,44 @@ class Agentia(BaseInstalledAgent):
             if value:
                 env[key] = value
 
+        # 走 install 阶段解析出的**绝对路径**，别让 bun 的兼容壳接走（脚本里的「坑四」）。
+        # `"node"` 这个兜底只在 install 没回传标记时才用到（正常流程不会）。
         await self.exec_as_agent(
             environment,
-            command=f"cd {shlex.quote(str(REMOTE_DIR))} && node dist/run.js",
+            command=(
+                f"cd {shlex.quote(str(REMOTE_DIR))} && "
+                f"{shlex.quote(self._node_bin or 'node')} dist/run.js"
+            ),
             env=env,
         )
+
+    @staticmethod
+    async def _ensure_logs_dir(environment: BaseEnvironment, logs_dir: PurePosixPath) -> None:
+        """确保 ATIF 要落的目录**对 agent 用户可写**。
+
+        多数任务镜像以 root 跑，`/logs` 直接建在 `/` 下即可。但 4.0 里有**非 root 任务**
+        （Dockerfile 写 `USER nobody` / `USER agent`）且其中两题**没有**建 `/logs`：
+        实测 `USER nobody` 的容器里 `/opt`、`/usr/local`、`$HOME`(=/nonexistent) 全不可写，
+        `/logs` 也不存在 ⇒ 直接写 ATIF 会 EACCES，把可跑的 trial 变成一条异常。
+
+        所以：先以 agent 身份试建；不成就**以 root 建好再把权限放宽**。
+        `/logs/agent` 是 **Harbor 的 agent 日志契约目录**，不是任务的评分区 ——
+        非 root 任务没提供它，补上是我们这边的责任（官方适配器也自己 `mkdir -p`，
+        见 harbor 的 `gemini_cli.py`）。这里不碰 `/logs/verifier` 与任务的任何交付路径。
+        """
+        quoted = shlex.quote(logs_dir.as_posix())
+        try:
+            result = await environment.exec(f"mkdir -p {quoted} && [ -w {quoted} ]")
+            if result.return_code == 0:
+                return
+        except Exception:  # noqa: BLE001 —— 探不动就往下走 root 兜底
+            pass
+        try:
+            # 0777 不是手滑：这是短暂的评测容器里、只放我们自己轨迹的目录，
+            # 而 agent 用户的 uid 在任务镜像里是什么我们并不知道（nobody 65534 / agent 1000 都见过）。
+            await environment.exec(
+                f"mkdir -p {quoted} && chmod 0777 {quoted}", user="root"
+            )
+            print(f"[agentia] 非 root 镜像：已由 root 建好可写的 {logs_dir}")
+        except Exception as exc:  # noqa: BLE001 —— 兜底失败不在这里判死刑
+            print(f"[agentia] 警告：{logs_dir} 可能不可写（{exc}），轨迹落盘会如实报错")

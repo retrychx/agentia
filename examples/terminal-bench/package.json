@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "selftest": "node dist/selftest.js",
     "live": "node dist/live-probe.js",
-    "verify:atif": "python3 scripts/verify_atif_schema.py"
+    "verify:atif": "python3 scripts/verify_atif_schema.py",
+    "check:guards": "bash scripts/check-run-guards.sh"
   },
   "dependencies": {
     "@migor/agentia": "file:../.."
