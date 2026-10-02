@@ -693,7 +693,11 @@ Harbor 的上传走 `docker compose exec -T -u root … tar -xf`。
 
 - **交互式命令会挂**（`vim` / `less` / 等 stdin）：靠超时兜底，超时后 SIGKILL 并**重建会话**
   ⇒ 工作目录会丢，这一步如实回给模型让它重新 `cd`。
-- **工具 I/O 不截断**（`maxEventChars: false`）：轨迹要全文，`cat` 大文件会让 trace 到几 MB。
+- **工具 I/O 不截断**（`maxEventChars: false`）：轨迹要全文 ⇒ trace 里 `tool.output` 的大小就等于
+  那一步工具**实际吐出的字节数**（没有上限，也不二次截断）；`cat` 大文件、PTY 刷屏回显都能把它
+  顶得很大。⚠️ 这个开关只管**记账侧**：回给模型的 `tool_result` 本来就不受它影响 —— 在这个设置
+  下两边都完整，所以「trace 体积」与「模型看到多少」是**同一件事**（别拿 trace 体积反推上下文，
+  在这里它们恰好相等，但那是这个设置的结果、不是框架的保证，见 `docs/usage-guide.md` §7）。
 - `src/atif.ts` 里的 `tool.input` / `tool.output` **只能写字面量**：这两个是跨层契约常量，
   v0.10.0 收窄 exports 后不在公共出口上。上游一旦改名，这里会**静默归零**
   （过滤器匹配不上 = 「没有工具调用」）。要改先回源核 `src/core/trace.ts`。
