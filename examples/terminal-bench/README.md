@@ -978,7 +978,54 @@ ValueError: network_mode='no-network' is not supported by EnvironmentType.DOCKER
 **两条根本不是「答错」**（交付物没被创建 / 断言只跑了一半）——
 用 `.workbuddy/probes/tb-job-buckets.py` 复算，可计面 0.250、**可计且跑完 0.500**（分母 4−2）。
 
-### 9.6 跑 4.0 之前先预热
+### 9.6 第四轮：把上限抬到 500，复跑那两道 —— 回答「是答错，还是步数不够」
+
+2026-10-02 09:11 起跑 → 11:10 收，**1h58m**。同两题，`AGENTIA_MAX_ITERATIONS=500`、
+`--agent-timeout-multiplier 1`（= **8h**）、`-n 2 -k 1`，合计 **$60.58**。
+
+| 题 | 上限 200 | 上限 500 | 步数 | 用时 | 花销 | 验证器 200 → 500 |
+|---|---|---|---|---|---|---|
+| `rs-archive-clone` | 201（被掐） | **412（自然收尾）** | 412 | 47.1 分 | $34.72 | **0/57 → 43/57** |
+| `risk-scorer-replay` | 201（被掐） | **337（自然收尾）** | 337 | 113.2 分 | $25.86 | **2/5 → 2/5**（同样 3 条败） |
+
+两题**这次都没撞上限**（sidecar：`truncated_by_harness: false`、`stop_reason: end_turn`）
+⇒ 500 够用；同时也说明 **200 把两题掐在了自然收尾的 48% 和 58% 处**。
+
+**⇒ 答案是一半对一半，必须分题说：**
+
+- `rs-archive-clone`：**旧旋钮是主因**。200 步时交付物**压根没被创建**（0/57，第一条断言就是
+  `/app/archive-clone` 不存在）；412 步时真造出来了，**43/57**。
+  **但抬到 500 也没做对** —— 14 条真败（`test_bad_lz_streams` ×6、`test_burst_repair`、
+  `test_recover_package` …），而且是**自认做完了**才收尾的 ⇒ 底下还有一层
+  「自评与真值脱节」（同 9.3 / 9.5 那个模式）。
+- `risk-scorer-replay`：**旋钮完全不是原因**。337 步、113 分钟、$25.86，
+  验证器读数与 200 步时**逐条一模一样**（2/5，同样 3 条断言败）
+  ⇒ 纯粹是能力缺口，多跑的 136 步和 5 倍的钱**没换来任何东西**。
+  ⚠️ 这条在提醒：**不是所有 0 分都能赖旋钮**。
+
+⚠️ **这两题的对照不能看合计**：合计 Mean 0.0，会得出「抬上限没用」的错结论；
+逐题看才看得到**一题翻盘、一题原地不动**。9.4 第 1 条「面值不可用」在这里的形态是
+「**合计不可用**」。
+
+⚠️ **两个旋钮参数别凭记忆写**：`--agent-timeout-multiplier` 的基准是 **8h**
+（`0.25 → 2h`、`1 → 8h`）。报之前 `cat jobs/<job>/config.json` 核对。
+
+⚠️ **账单别从 `result.json` 取**：本批它的 `cost_usd` / `n_input_tokens` 全是 **null**，
+日志里能看到 LiteLLM 拉 `raw.githubusercontent.com` 的价目表失败
+（`SSL: UNEXPECTED_EOF_WHILE_READING`，同一个 TLS 中间人）。
+要从 `<trial>/agent/agentia-run-status.json` 或 ATIF 的 `final_metrics` 汇总。
+
+⚠️ **`job.log` 里的 `docker compose cp failed` 是噪声不是假红**：Harbor 用相对路径 cp
+而 `--project-directory` 指向任务目录 ⇒ 解析成 `/private/tmp/…/tests/jobs/…`，
+报 `no such file or directory`。它**会退回 tar 流**，产物照样上传、验证器照样真跑
+（本批实测 43/57）⇒ 别拿它当失败。
+
+💡 **代价读数（影响「要不要铺开全池」的拍板）**：同一题 201 步 $8.11 → 412 步 **$34.72**
+（步数 ×2、**费用 ×4.3**，上下文累积）。4.0 至今 26 trial 合计 $99.74，
+**均值 $3.84 / 中位 $2.44 / max $34.72** —— 比同仓 2.0 时代的 $0.3～0.5 **高一个数量级**。
+⇒ 全池 42 题 × 2 trial 大致 **$400～700**，别复用早期那个 $80～200 的估算。
+
+### 9.7 跑 4.0 之前先预热
 
 见坑 10。要跑的题**先在 harbor 之外把镜像构建一遍**，把 buildkit 缓存填上：
 
@@ -990,7 +1037,7 @@ docker build -t "probe/$task" "/tmp/tb-4.0/repo/tasks/$task/environment" \
 
 `sleep` 之外没有别的技巧，就是「把第一次的慢挪到跑之前」。
 
-### 9.7 下一步
+### 9.8 下一步
 
 1. 定 `-m`（同一模型才谈得上和其它 harness 比），先 `-t` 单任务、再 `-k 5` 取均值
    （TB 的规矩：同任务跑 5 次，分数带 ±）；
