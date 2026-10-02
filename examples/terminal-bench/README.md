@@ -428,6 +428,12 @@ E: Failed to fetch …/curl_7.74.0-1.3+deb11u16_amd64.deb        404  Not Found
    于是在 `jobs/…/` 里逐文件翻**一个 `[agentia]` 字符都找不到** ⇒ 事后再也想不起
    「这条是跑完了还是被掐的」。ATIF 本身不带这个字段（`ATIF-v1.8` 没有 stop_reason），
    而**刻意不往 ATIF 里塞非规范字段**（Harbor 要解析它），所以另起一个文件。
+   ⚠️ **别把这条读成「框架没给这个信息」** —— 框架**早就**把它写在 trace 上了：
+   `src/engine/loop.ts` 收尾时 `setAttribute(rootId, 'stop_reason', …)`，且 `max_iterations`
+   不在 `SUCCESS_STOP_REASON` 表里 ⇒ 撞上限时 run root span 的 status 直接记 `error`。
+   缺的只是**落盘面**（本适配器走 `app.run()` 返回值 + `traceToAtif`，而 ATIF 装不下它）
+   —— 要在框架之外落这份状态，**正路是接 `TraceSink`**（`docs/observability.md` §1）。
+   这里是退一步的用法，别照抄成「框架缺可观测」。
 
 ⚠️ **两条被否掉的备选判据，别再造一遍**（都实测过，形态都很像）：
 

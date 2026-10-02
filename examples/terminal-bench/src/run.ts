@@ -150,14 +150,23 @@ await writeFile(ATIF_OUT, `${JSON.stringify(atif, null, 2)}\n`);
 /**
  * 旁路状态文件 —— **补一个实测出来的黑洞**。
  *
+ * ⚠️ **不是框架没给这个信息** —— 它**早就**写在 trace 上了：`src/engine/loop.ts` 收尾时
+ * `recorder.setAttribute(rootId, 'stop_reason', …)`，且 `max_iterations` 不在
+ * `SUCCESS_STOP_REASON` 表里 ⇒ 撞上限时 run root span 的 status 直接记 `error`。
+ * 缺的是**落盘面**：本适配器走的是 `app.run()` 的**返回值**路径，而 `traceToAtif` 转出来的
+ * `ATIF-v1.8` **规范里没有 stop_reason 这个字段** ⇒ 信号丢在转换边界上。
+ * （这正是「**绕过出口缝 ⇒ 重复发明**」的病例：要在框架之外落这份状态，本来就该接
+ *   `TraceSink`（`docs/observability.md` §1、§2 四条配方都建在它上面）；这里退一步，
+ *   用一个与 `trajectory.json` 同目录的旁路文件。）
+ *
  * 下面那行人可读结论（`[agentia] stop=…`）打在 **stdout** 上，而 Harbor 收集的是
  * `/logs/agent/` **目录里的文件**，agent 的 stdout **只在失败时**才被塞进 `_exec` 的异常正文
  * （实测：`jobs/2026-10-02__tb40-verify4/` 里逐文件找过，`[agentia]` 一个字符都没有 ——
- * 四条正好都是「正常退出」）。⇒ 一次**成功退出**的 trial，手里没有任何产物能回答
- * 「它是正常收尾的，还是我们放行了一种没分类的停法」；而 `reward.txt` 对所有情况都只写 0/1。
+ * 四条正好都是「正常退出」）。⇒ 一次**成功退出**的 trial，**落盘的产物里**没有任何一个
+ * 能回答「它是正常收尾的，还是被我们自己的旋钮掐掉的」；而 `reward.txt` 对所有情况都只写 0/1。
  *
- * ATIF 本身不带这个字段（`ATIF-v1.8` 没有 stop_reason），这里**刻意不往 ATIF 里塞
- * 非规范字段** —— Harbor 是要解析那个文件的。所以另起一个文件。
+ * ATIF 装不下它，这里**刻意不往 ATIF 里塞非规范字段** —— Harbor 是要解析那个文件的。
+ * 所以另起一个文件。
  *
  * 与 `trajectory.json` 同目录 ⇒ 跟着 Harbor 的 `/logs/agent` 契约目录一起被收走
  * （`trial.py::_download_role_logs` 走的是**整目录**下载，不是只取那一个文件名）。
