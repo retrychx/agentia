@@ -13,6 +13,9 @@ import { distReadyOrLoud } from './dist-guard.mjs';
  *  - W2/W3：下发浏览器的模块悄悄多一条**值导入** ⇒ 产物带 `import './dev-protocol.js'` ⇒
  *    浏览器取不到（STATIC 白名单没有它）⇒ 面板白屏，而 node 侧单测照样全绿
  *    （它们 import 的是 TS 源，不受白名单约束）。
+ *  - W4：并排 A/B 的**状态与 DOM 必须同源** —— 面板无 jsdom 单测，只能在文本层守
+ *    「清空 `state.compare` 必须走 `exitCompare()`」（评审实证：漏一次就留下张冠李戴的
+ *    右栏与差异摘要）。详见该用例的注释。
  */
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
@@ -27,10 +30,28 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // 纪律：存量条目只能**往下**调（拆分真做完了才调）；新增文件**必须**在这里登记
   // （不登记 = 「每个文件都在表里」那条断言会红）。棘轮在拆分期间持续偏红是有意的摩擦。
   const LINE_BUDGET = {
-    // 2026-09-23（面板卸载收口）：1226 → 1241（+15）。`pagehide` 时用 `sendBeacon` 通知
-    // 服务端收掉在飞的原生选择框 —— 只靠连接断开时，**刷新这个形态漏得掉**（浏览器不关
-    // 那条连接，服务端收不到 close）。注释占大头，行为只有 6 行。
-    'inspector-page.html': 1241,
+    // 2026-10-05（dev 调试工作台档 B —— **新功能**）：1241 → 1452（+211）= 双栏 DOM +
+    // 差异摘要区 + CSS + 渲染函数 + ⌘/Ctrl 点击交互。设计稿
+    // `docs/plans/2026-10-05-dev-workbench.md`。
+    // ⚠️ **这一笔的测试覆盖率为零**：面板是本仓**唯一没有单测**的复杂逻辑
+    //（`panel-logic.ts` 头注写明「所有判断都走 panel-logic，那份有单测，这份没有」）⇒
+    // 这里的渲染逻辑只有 `scripts/e2e-dev.ts` 间接兜。**如实标注，不假装已被验。**
+    // 下一步若还要长这个文件，该做的是**把这 211 行的判断抽进 panel-logic**，不是再抬基线。
+    // 2026-10-05（面板那211 行的**补债**，见下）：1452 → 1459（+7 = import 两行 +
+    // 接线改写）。**判断本身被搬走了**（`compareView` / `diffSideLabel` /
+    // `diffValueText` / `diffFetchErrorText` 四条进panel-logic，本文件只剩 DOM 接线）
+    // ⇒ 净增的是「接线 + 注释」，而**可测的判定面积变大**。
+    // 2026-10-05（**评审修复**）：1459 → 1477（+18）。三笔，**都是评审实证的缺陷**：
+    //   +14 普通单击改走 `exitCompare()`（原先只清 `state.compare`、不复位 DOM ⇒ 右栏与
+    //       差异摘要留在屏幕上而选中标记已消失，张冠李戴）+ 抽出 `resetCompareDom()`
+    //       消掉三处逐字重复的复位序列 + 那一大段「为什么必须走 exitCompare」的注；
+    //   +5 `refreshCompare` 的 `!res.ok` 分支不再 `continue`（静默留白）而是显式说
+    //       「读不到这条 run 的调用树（可能已被淘汰）」；
+    //   −1 删掉只写不读的 `state.diff` 字段（同批 3 处引用）与其承诺了不存在渲染的注释。
+    // 2026-10-05（**A/B 闭环补最后一跳**）：1477 → 1493（+16）= 收尾帧 `onmessage` 里
+    //   `autoPairTarget` 判定 + 自动进双栏 + 列表高亮跟着左栏走 + 一条说明用处的 notice。
+    //   判定本身在 panel-logic（可单测），本文件只留接线。
+    'inspector-page.html': 1493,
     // 2026-09-23 A 阶段（抽纯判定 → dev-logic.ts）：1148 → 1133
     // 2026-09-23 B 阶段（显式状态机 → dev-machine.ts）：1133 → 1054
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
@@ -48,12 +69,35 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // + `RouteCtx` / `InspectorState` + `handleRoutes` 分发器 + 只被路由用到的件。
     // 2026-09-23 追加（面板卸载收口）：545 → 578（+33）= **15 条**路由 ——
     // 新增 `POST /api/fs/pick/cancel`（面板 `pagehide` beacon 打它）+ `PICK_CANCEL_PATH`。
-    'inspector-routes.ts': 578,
-    'panel-logic.ts': 578,
-    'dev-runner.ts': 547,
+    // 2026-10-05（档 B，**新功能**）：578 → 688（+110）= `handleRunCompare`（并排 A/B
+    // 端点）+ `normalizeForDiff`。⚠️ 后者是**一笔自认的债**：它存在只因 `diffTraces` 的
+    // `pushAttrDiffs` / `pushEventDiffs` 不接受 `undefined`，而 `diff.ts` 是
+    // `src/engine/trace-diff.ts` 的**逐字同形移植副本** ⇒ 根治必须框架侧一起改
+    // （`?? {}` / `?? []`），那属`src/` 语义变更、要走 spec §10。本次取「消费侧归一化」
+    // 的零核心改动解 —— 如实记债，不假装它是必要开销。
+    'inspector-routes.ts': 688,
+    // 2026-10-05（档 B，**新功能**）：578 → 671（+93= 96 −3，biome 把 `comparability`
+    // 的签名收成单行）= `toggleCompare` / `COMPARE_MAX` / `capsKey` / `comparability`
+    // + 各自的口径注。**这一档的实质全在这里**（纯判定、可单测）。
+    // 2026-10-05（**补债**：把面板里的判断搬进来）：671 → 735（+64）=
+    //   `compareView`（三态视图判定）/ `diffSideLabel`（缺侧标签）/ `diffValueText`（差异取值）
+    //   / `diffFetchErrorText`（失败文案）+ 各自的「判错会怎样」注。
+    //   这四条原先长在 `inspector-page.html` 里**没有任何单测**（面板是本仓唯一
+    //   没单测的复杂逻辑）⇒ 搬进来之后它们进了 `panel-logic.test.mjs` 的射程。
+    //   净增 64 里大头是「为什么」的注释（判错的后果比函数体长，这是本仓记账惯例）。
+    // 2026-10-05（A/B 闭环补最后一跳）：735 → 763（+28）= `autoPairTarget`（新 run 收尾
+    //   在 **picking 态**时自动补第二条，把「改 prompt → 重跑 → 对照」从三步收成两步）
+    //   + 它的判据注（为什么空选择/已选两条/同一 id 都**不**配对：前两者是替用户决定、
+    //   挤掉刚选的那条）。**+28 里 22 行是注** —— 判据只有 3 行。
+    'panel-logic.ts': 763,
+    // 2026-10-05（档 A，**新功能**）：547 → 599（+52）= `registerJsonlSink()`（含它自己
+    // 的三条纪律 + 「两个导出都要，缺一不可」那条实测坑）+ `main()` 里一行调用。
+    'dev-runner.ts': 599,
     'diff.ts': 443,
     'harvest.ts': 389,
-    'dev-protocol.ts': 323,
+    // 2026-10-05（档 A，**新功能**）：323 → 337（+14）= `TRACE_LOG_REL` 常量 + 它的
+    // 「为什么」注（含「只增不减」这个代价的如实标注）。**只是数据，零行为。**
+    'dev-protocol.ts': 337,
     'markdown.ts': 296,
     'templates.ts': 259,
     'doctor.ts': 213,
@@ -140,7 +184,45 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // 补账（2026-09-27，R8 评审 ⑨⑩⑪⑫ 修复 —— **行为变更**，不是搬移）：8639 → 8671（+32）。
   //   全部落在 export.ts（见上方单文件基线的说明）——「CLI 移植副本与框架侧逐字对拍」
   //   这条不变量决定了这个涨幅不能靠抽件摊掉：两侧同增是**设计**，不是失守。
-  const TOTAL_BUDGET = 8671;
+  // 补账（2026-10-05，dev 调试工作台档 A + 档 B —— **新功能**）：8671 → 9154（+483）。
+  // 五笔逐项（与上面各文件的补账注一一对应，此处不重复解释）：
+  //     +14   dev-protocol.ts      `TRACE_LOG_REL` 常量 +注（只是数据，零行为）
+  //     +52   dev-runner.ts        `registerJsonlSink()` + `main()` 一行调用
+  //    +110   inspector-routes.ts  `handleRunCompare` + `normalizeForDiff`（后者是自认的债）
+  //     +93   panel-logic.ts       `toggleCompare` / `COMPARE_MAX` / `capsKey` / `comparability`（biome 格式化 −3）
+  //    +211   inspector-page.html  双栏 DOM + 摘要区 + CSS + 渲染 + ⌘/Ctrl 交互
+  //   ─────
+  //    +483   五笔之和；实测总量 +486（差 3 = `dev-machine.ts` 等未动文件在同批的净变化，
+  //           以 `TOTAL_BUDGET` 的实测值为准，逐文件基线见上）
+  //⚠️ 上行那句「差 3」的成因**没有逐行核过**，故只作备注、不当结论 —— 记账纪律与
+  //  §2「数字会腐烂，能现算的别信这里写的」同源：总量以断言实测为准。
+  //
+  // ⚠️ **这一笔的性质与前面十笔都不同，必须说清**：前面那些是「纯搬移的净增是结构开销」
+  // 或「纯注释」，本笔是**真新功能**，且其中 **211 行（面板）+ 110 行（路由）此前无单测**
+  // —— 守卫覆盖到的是**基线数字本身**，不是这批新行为。真正的行为断言在
+  // `test/inspector.test.mjs`（compare 路由三态：顺序 / 可比性 / 归一化）与
+  // `test/panel-logic.test.mjs`（判据六条），两者都做过**变异反向验证**。
+  //
+  // 补账（同日，**补债**：把面板里的判断搬进 panel-logic）：9154 → 9225（+71）。
+  // 两笔：panel-logic +64（四条新纯判定，详见该文件的补账注）、inspector-page.html +7
+  // （import 两行 + 接线改写；**判断本身是搬走的**，净增里大头是接线与注释）。
+  // ⚠️ 这一笔**不是**「零测试覆盖的新功能」，而是**把已有行为从无测试区搬进有测试区**
+  // —— 与上一笔性质相反，两笔都留着才看得出这笔的分量。上行「面板 211 行仍是覆盖缺口」
+  // 那句**在同日已部分兑现**（四条判断搬出来了；纯 DOM 接线仍未覆盖，如实保留该句）。
+  //
+  // 补账（同批，**评审修复**）：9225 → 9243（+18，**全在 `inspector-page.html`**）。
+  // 三笔都是评审实证的**缺陷**，不是新功能：① 普通单击不复位 DOM（那次评审里唯一
+  // 用户可见的一个）；② `refreshCompare` 读不到 trace 时静默留白；③ 删只写不读的
+  // `state.diff`。⚠️ ① 的修复**顺带补了文本层守卫 W4**（`state.compare = []` 只许在
+  // `exitCompare` 里）—— 面板无 jsdom 单测，这 +18 里**真正被自动验证的只有 W4
+  // 覆盖的那个形态**；其余两笔的验证仍是「读代码 + e2e-dev 兜端到端」，如实标注。
+  //
+  // 补账（同批，**A/B 闭环补最后一跳**）：9243 → 9287（+44 = panel-logic +28 +
+  // inspector-page.html +16）。**新功能，但很小**：一个纯判定（3 行）+ 一处接线。
+  // ⚠️ 与上一笔的分野：那条 +18 修的是**缺陷**，这笔加的是**承诺兑现**（设计稿 §0 说
+  // 「改一句 prompt 就能立刻重跑对照」，原先要手动 ⌘ 点两条）。判据 `autoPairTarget`
+  // 有单测（6 个断言）且做过变异验证（把 `length !== 1` 改成 `!== 2` ⇒ 红）。
+  const TOTAL_BUDGET = 9287;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
@@ -209,5 +291,36 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
         `dist/${name}.js 带有 re-export —— 同上`,
       );
     }
+  });
+
+  // ---------- W4：并排态的状态与 DOM 必须同源 ----------
+  it('W4 并排态：`state.compare = []` 只许出现在 exitCompare 里（清状态必须伴随 DOM 复位）', () => {
+    // **为什么这条存在**（2026-10-05 入库前评审实证的缺陷）：run 列表的**普通单击**分支
+    // 只做 `state.compare = []` 而**不复位 DOM** ⇒ 右栏残留上一对的调用树、差异摘要还是
+    // 上一对的 diff、`cmp-on` 布局仍在，而列表里的 `.run.cmp` 标记已经消失 ⇒ 用户按看到的
+    // 读，读到的是**张冠李戴**（正是该段注释自己写明要避免的形态）。
+    //
+    // 修法就是让「清空」只能走 `exitCompare()`（它内部调 `resetCompareDom()`）。
+    // 面板是本仓唯一没有单测的复杂逻辑（无 jsdom），所以只能在**文本层**守这一条。
+    //
+    // ⚠️ **射程**：守的是「裸清空」这个**已知形态**。`state.compare.length = 0` /
+    // `splice(0)` 之类绕过不在射程内 —— 与 W2/W3 同款定位：守卫不是证明，是「有人
+    // 再犯同一个形态时会被叫醒」。面板若将来有了 jsdom 单测，这条可以退成备忘。
+    const html = readFileSync(new URL('../src/inspector-page.html', import.meta.url), 'utf8');
+    const clears = [...html.matchAll(/state\.compare\s*=\s*\[\s*\]/g)];
+    assert.equal(
+      clears.length,
+      1,
+      `\`state.compare = []\` 出现了 ${clears.length} 次（只许 1 次，在 exitCompare 里）——` +
+        ' 别处清空会让 DOM 留在屏幕上（右栏与差异摘要还是上一对的）',
+    );
+    const fnStart = html.indexOf('function exitCompare()');
+    assert.ok(fnStart > 0, '找不到 `function exitCompare()`（改名了？那这条守卫要跟着改）');
+    const fnEnd = html.indexOf('\n      }', fnStart);
+    const at = clears[0].index;
+    assert.ok(
+      at > fnStart && at < fnEnd,
+      '清空 `state.compare` 不在 `exitCompare` 内 —— 新加的清空点必须调 `exitCompare()`',
+    );
   });
 });

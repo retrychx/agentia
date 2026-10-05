@@ -52,6 +52,11 @@ const suites = [
     ],
   },
   {
+    // ⚠️ **本套件测的是 `dist/`，不是 `src/`**（`test/dist-guard.mjs` 加 `../dist/*.js`）⇒
+    // 「改了 `packages/cli/src` 就得先 `npm run build:cli`」这条**没有断言守**：
+    // 产物陈旧时「新加的用例」会红（症状还算明显），但**源码里的错误不会被暴露**
+    //（跑的是旧产物，绿得毫无意义）。`scripts/verify-all.sh` 的步序（步 5 build:cli →
+    // 步 6 npm test）才是对的 —— **单独跑 `npm test` 不保证产物新鲜**。
     name: 'CLI 套件（packages/cli/test/*.test.mjs）',
     args: ['--test', 'packages/cli/test/*.test.mjs'],
   },
