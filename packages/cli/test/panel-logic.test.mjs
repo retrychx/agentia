@@ -721,3 +721,149 @@ describe('消息折叠判定（③ 长正文默认收起）', { skip: SKIP }, ()
     assert.equal(L.collapseDecision('').collapsed, false, '空正文不该折叠（它没有可展开的东西）');
   });
 });
+
+describe('面板并排 A/B（档 B）', () => {
+  it('toggleCompare：再点已选中的取消它；超过两块挤掉最早那条（不静默丢后来的）', () => {
+    if (SKIP) return;
+    // 单击 → 选第一块
+    assert.deepEqual(L.toggleCompare([], 'a'), ['a']);
+    // 再点已选中的 ⇒ 取消（用户要能改主意，不能「凑不满两块就不动」）
+    assert.deepEqual(L.toggleCompare(['a'], 'a'), []);
+    // 单选态重复点同一条 ⇒ 幂等，不产生 [a, a]
+    assert.deepEqual(L.toggleCompare(['a'], 'a'), []);
+    // 第二块
+    assert.deepEqual(L.toggleCompare(['a'], 'b'), ['a', 'b']);
+    // 第三块 ⇒ 挤掉最早（a），保留 b + c
+    assert.deepEqual(L.toggleCompare(['a', 'b'], 'c'), ['b', 'c']);
+    // 上限常量与行为一致（面板要按它显示「最多选两条」）
+    assert.equal(L.COMPARE_MAX, 2);
+    assert.equal(L.toggleCompare(['a', 'b'], 'c').length, L.COMPARE_MAX);
+  });
+
+  it('comparability：同能力+同目录 ⇒ 可比且**无提示**（不制造噪声）', () => {
+    if (SKIP) return;
+    const a = { toolSources: ['x', 'y'], workdir: '/w/p' };
+    const b = { toolSources: ['y', 'x'], workdir: '/w/p' };
+    const r = L.comparability(a, b);
+    assert.equal(r.level, 'comparable');
+    // ⚠️ 可比时 message 必须是空串 —— 面板据它决定要不要显示提示条。
+    // 非空 = 每一次正常 A/B 都飘一条「注意…」噪声 ⇒ 用户会学会无视它。
+    assert.equal(r.message, '', '可比时不该有任何提示文案');
+  });
+
+  it('comparability：能力全量有null 两种表示，归一化后**不能**判成不同', () => {
+    if (SKIP) return;
+    // RunNote.toolSources 用 null 表全量；面板侧 normalizeToolSources 回 undefined。
+    // 直接比数组会把「全量 vs 全量」判成不同 ⇒ 满屏「能力选择不同」的假警告。
+    const a = { toolSources: null, workdir: '/w/p' };
+    const b = { toolSources: [], workdir: '/w/p' };
+    assert.equal(L.comparability(a, b).level, 'comparable', 'null 与空集都是「全量」');
+  });
+
+  it('comparability：跨能力 ⇒ capabilities-differ（跨了进程重启，diff 意义有限）', () => {
+    if (SKIP) return;
+    const a = { toolSources: ['x'], workdir: '/w/p' };
+    const b = { toolSources: ['y'], workdir: '/w/p' };
+    const r = L.comparability(a, b);
+    assert.equal(r.level, 'capabilities-differ');
+    // 提示要说清**差在哪** + 给出可执行的出路
+    assert.match(r.message, /能力选择不同/);
+    assert.match(r.message, /只改 prompt/, '要告诉用户正确的做法是什么');
+  });
+
+  it('comparability：同能力跨目录 ⇒ workdir-differs，且提示里带上两个目录', () => {
+    if (SKIP) return;
+    const a = { toolSources: null, workdir: '/w/a' };
+    const b = { toolSources: null, workdir: '/w/b' };
+    const r = L.comparability(a, b);
+    assert.equal(r.level, 'workdir-differs', '跨目录是弱可比，不是不可比');
+    // ⚠️ 必须显示目录：否则「差在哪」会被读成「模型变了」—— 归因错到根上
+    assert.match(r.message, /\/w\/a/);
+    assert.match(r.message, /\/w\/b/);
+  });
+
+  it('comparability：note 缺失 ⇒ **不猜**，按不可比处理（宁可少给也不给错结论）', () => {
+    if (SKIP) return;
+    const note = { toolSources: null, workdir: '/w/p' };
+    const missA = L.comparability(null, note);
+    const missB = L.comparability(note, null);
+    assert.equal(missA.level, 'capabilities-differ', '缺 note 不等于「相同」');
+    assert.equal(missB.level, 'capabilities-differ');
+    assert.match(missA.message, /元信息/, '要说清是「元信息缺失」而不是「能力不同」');
+  });
+});
+
+describe('面板并排 A/B 的视图与取值判定（从DOM 抽出来的那批）', () => {
+  it('compareView：三态，**中间那态必须独立**（选了一条要保留选择）', () => {
+    if (SKIP) return;
+    // 三态而不是两态的理由（判据错的后果）：
+    // 把「选了一条」并进「不并排」⇒ ① 取消选择会连带清掉已选的第一条，
+    // ② 或保留选择却显示双栏（一栏的「并排」比不显示更困惑）。
+    assert.equal(L.compareView([]), 'single');
+    assert.equal(L.compareView(['a']), 'picking', '选了一条 ⇒ picking（单run 视图 + 保留选择）');
+    assert.equal(L.compareView(['a', 'b']), 'dual');
+    // 超过两块不该出现（toggleCompare 保证 ≤ COMPARE_MAX）；若真发生，按 dual 处理而不是崩
+    assert.equal(L.compareView(['a', 'b', 'c']), 'dual', '超量输入按 dual 处理，不抛');
+  });
+
+  it('diffSideLabel：缺侧判错会**静默指错方向**（A 独有被说成 B 侧少）', () => {
+    if (SKIP) return;
+    assert.equal(L.diffSideLabel('a'), 'A', "missing='a' = 只有 A 侧有");
+    assert.equal(L.diffSideLabel('b'), 'B');
+  });
+
+  it('diffValueText：null/undefined 显示「（无）」，**不许**折成空串或 0', () => {
+    if (SKIP) return;
+    // ⚠️ 这条是「读不出 vs 读数」那条纪律的字符串版：折成 0/空会让用户以为值真的是那样
+    assert.equal(L.diffValueText(null), '（无）');
+    assert.equal(L.diffValueText(undefined), '（无）');
+    assert.equal(L.diffValueText(0), '0', '**真的是 0** 时要显示 0（那是合法读数）');
+    assert.equal(L.diffValueText(''), '', '真的是空串时显示空串（不是「（无）」）');
+    assert.equal(L.diffValueText('x'), 'x', '字符串原样（不加工引号）');
+    assert.equal(L.diffValueText({ a: 1 }), '{"a":1}');
+  });
+
+  it('diffValueText：循环引用的对象回落 String()，不抛', () => {
+    if (SKIP) return;
+    const cyc = { a: 1 };
+    cyc.self = cyc;
+    // JSON.stringify 循环引用会抛 TypeError ⇒ 面板不能整块崩掉
+    assert.doesNotThrow(() => L.diffValueText(cyc));
+    assert.equal(typeof L.diffValueText(cyc), 'string');
+  });
+
+  it('diffFetchErrorText：解析失败单独说，**不许**折成「HTTP 500」', () => {
+    if (SKIP) return;
+    // 折成状态码的后果：token 过期 / 网关插页时显示「服务端故障」，真相是「响应不是 JSON」
+    assert.match(
+      L.diffFetchErrorText(200, null, true),
+      /响应不是合法 JSON/,
+      '解析失败要自己说，别伪装成服务端错误',
+    );
+    assert.match(L.diffFetchErrorText(200, null, true), /200/, '仍要带真实状态码');
+    // error 是非空字符串 ⇒ 用它（这是服务端给的真相）
+    assert.match(L.diffFetchErrorText(404, { error: 'run 不存在' }, false), /run 不存在/);
+    // error 缺失/空串/非字符串 ⇒ 回落状态码（**不能**用 || 把它折成空串显示出去）
+    assert.match(L.diffFetchErrorText(500, {}, false), /HTTP 500/);
+    assert.match(L.diffFetchErrorText(500, { error: '' }, false), /HTTP 500/);
+    assert.match(L.diffFetchErrorText(500, { error: 123 }, false), /HTTP 500/);
+  });
+
+  it('autoPairTarget：只在 picking 态自动补第二条（关掉「替用户决定」的三种形态）', () => {
+    if (SKIP) return;
+    // ① picking 态（已选一条）+ 新收尾的那条 ⇒ 配对（这一跳就是「立刻重跑对照」）
+    assert.deepEqual(L.autoPairTarget(['a'], 'b'), ['a', 'b'], 'picking 态必须能自动配上');
+    // ② 空选择 ⇒ 不配对。自动切双栏是**替用户决定**，用户没表达意图就不做
+    assert.equal(L.autoPairTarget([], 'b'), null, '没表达对比意图时不得自动进双栏');
+    // ③ 已选两条 ⇒ 不配对（再塞一条等于挤掉用户刚选的）
+    assert.equal(L.autoPairTarget(['a', 'c'], 'b'), null, '已选两条时不许挤掉其中一条');
+    // ④ 同一 id ⇒ 不配对（否则会出现 [a, a]）
+    assert.equal(L.autoPairTarget(['a'], 'a'), null, '同一条不得与自己配对');
+    // ⑤ **纯函数**：不改入参（面板那边拿到的是同一个 state.compare）
+    const sel = ['a'];
+    L.autoPairTarget(sel, 'b');
+    assert.deepEqual(sel, ['a'], '不许就地改入参');
+    // ⑥ 返回值长度恒为 2 ⇒ 配对后必进 dual 态（`compareView` 的 dual 分支）
+    assert.equal(L.autoPairTarget(['a'], 'b').length, L.COMPARE_MAX);
+  });
+});

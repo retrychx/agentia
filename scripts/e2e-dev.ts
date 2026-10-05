@@ -1002,7 +1002,96 @@ try {
     );
   }
 
-  // —— 16) Ctrl+C 的收尾：连**不响应 SIGTERM** 的 runner 也不能活成孤儿 ——
+  // —— 16) trace 落盘（档 A / plans/2026-10-05-dev-workbench.md §2.4）——
+  //    挂在这一步是因为它必须在 **dev 还活着** 时验：`.agentia/traces.jsonl` 是
+  //    runner 每run 收尾追加的，dev 一停就只剩文件、没法证明「是它写的」。
+  //    前面那十几步真跑过 ≥10 次 run，所以「行数 ≥ 1」是弱断言 —— 真正的判据是
+  //    **每行都能被 `extractTrace` 读出且 traceId 互不重复**（重复行 = sink 被注册两次，
+  //    那是本仓最忌讳的静默双写；这个坑只能靠「逐行可解析 + 唯一」咬出来）。
+  {
+    const logPath = join(proj, '.agentia', 'traces.jsonl');
+    assert(existsSync(logPath), `dev跑完这么多次 run，${logPath} 仍不存在 —— 落盘 sink 没挂上`);
+    const lines = readFileSync(logPath, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0);
+    assert(lines.length > 0, `${logPath} 存在但是空的（只有换行）—— sink 建了没收尾 flush？`);
+    const ids: string[] = [];
+    for (const [i, line] of lines.entries()) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (e) {
+        // 写入是 `appendFileSync` **同步**的 ⇒ 半行只在进程被 SIGKILL 打断时才可能。
+        // 那不该让整条e2e 红（它证明的是「跑完的 run 都落了」，不是「崩溃点也原子」）
+        // —— 但要说清是哪一行，否则下面所有断言都变得不可信。
+        console.warn(`  ⚠ ${logPath} 第 ${i + 1} 行不是合法 JSON（${(e as Error).message}），跳过`);
+        continue;
+      }
+      const t = parsed as { traceId?: unknown; spans?: unknown };
+      assert(
+        typeof t.traceId === 'string' && t.traceId.length > 0,
+        `第 ${i + 1} 行没有 traceId —— 落盘的形状不是裸 Trace（那是 CLI 四个命令的输入格式）`,
+      );
+      assert(
+        Array.isArray(t.spans) && t.spans.length > 0,
+        `第 ${i + 1} 行（traceId=${t.traceId}）的 spans 是空数组 —— 记的是空账还是提取时机不对？`,
+      );
+      // 上面的 assert 已经把 traceId 收窄成 string，但 TS **不跨语句**带窄化
+      // （assert 的签名是 `asserts`，但这里的 t 是解构出来的局部类型）⇒ 显式取一次。
+      ids.push(t.traceId as string);
+    }
+    const dup = ids.filter((id, i) => ids.indexOf(id) !== i);
+    assert(
+      dup.length === 0,
+      `同一个 traceId 落了两行（${[...new Set(dup)].join(', ')}）—— sink 被注册了两次，` +
+        '增量那套是「不保证送达」，落盘这条必须是「恰好一次」',
+    );
+  }
+
+  // —— 17) 并排 A/B 的端点在**真 dev 环**里跑得通（档 B）——
+  //    前面十几步已经跑过 ≥10 次 run，`state.runs` 里有 plenty 两条可比。
+  //    这里守的是**端到端接线**（单测守不到）：compare 路由没被 `/api/runs/` 前缀吃掉、
+  //    可比性判据随note 回来、真 trace（有 rootSpanId）能算出差异。
+  //    ⚠️ 单测里那条 `assert.notEqual(status, 404)` 在这里也要有 —— 顺序反了就是 404。
+  {
+    // ⚠️ 三条纪律（都踩过）：① 本文件的 `assert` 是**自定义**两参函数（不是 node:assert）；
+    // ② `.json` 后**不能再 await**（`api()` 内部已 await 过，再 await 拿到的是 Promise 的
+    // 属性 ⇒ undefined —— 症状是「长度是 undefined」）；③ 必须走 `api()` 而不是裸 `fetch`：
+    // 它才带 `x-agentia-token`（裸 fetch 会 403）。
+    const raw = (await api('/api/runs')).json as unknown as Array<{ traceId: string }>;
+    assert(
+      Array.isArray(raw) && raw.length >= 2,
+      `面板里只有 ${Array.isArray(raw) ? raw.length : '非数组'} 条 run —— 前面那十几步没跑出两条可比？`,
+    );
+    const [a, b] = raw;
+    const res = await api(`/api/runs/compare?a=${a.traceId}&b=${b.traceId}`);
+    assert(res.status !== 404, 'compare 不该落进 handleRunDetail（路由顺序反了）');
+    assert(res.status === 200, `compare 应 200，实际 ${res.status}`);
+    const body = res.json as {
+      diff?: { equal?: unknown };
+      comparability?: { level?: unknown };
+      notes?: { a?: unknown; b?: unknown };
+    };
+    // 真 trace 一定带 rootSpanId ⇒ diff 能真的走起来（不是「恒无差异」那种假绿）
+    assert(
+      !!body.diff && typeof body.diff.equal === 'boolean',
+      `compare 没返回 diff 的形状：${JSON.stringify(body).slice(0, 200)}`,
+    );
+    assert(
+      !!body.comparability && typeof body.comparability.level === 'string',
+      'compare 没返回可比性判据（面板会静默给一份没意义的 diff）',
+    );
+    // note 也要跟着回来 —— 前面那些 run 是经面板跑的，必有记账
+    assert(
+      !!body.notes && !!body.notes.a && !!body.notes.b,
+      'compare 没回 note（面板无法显示上下文）',
+    );
+    // 同一条与自己比 ⇒ 400（否则恒「无差异」）
+    const same = await api(`/api/runs/compare?a=${a.traceId}&b=${a.traceId}`);
+    assert(same.status === 400, `同一条与自己比应 400，实际 ${same.status}`);
+  }
+
+  // —— 18) Ctrl+C 的收尾：连**不响应 SIGTERM** 的 runner 也不能活成孤儿 ——
   //    旧的 SIGINT 处理器是「shutdown(); setTimeout(() => process.exit(0), 50)」：父进程
   //    50 ms 就没了，而 `stopChild()` 给子进程的宽限期是 3 s（SIGTERM 之后等满才补
   //    SIGKILL）⇒ 那段宽限连同 SIGKILL 兜底一起消失，'exit' 钩子此刻也已空转
@@ -1060,7 +1149,11 @@ try {
     'dev e2e: OK（IPC 就绪 / .env 生效 / 能力收窄 / .md 重启 / .env 重启 / 中止在飞 run / 清空对话 / ' +
       '重启总账 4 次无自噬 / 重启窗口内的 409 / 坏会话文件报警 / dev -- "问题" 透传 / ' +
       '右栏实时（增量帧先于 run-done，折回 == 收尾） / 工作目录真到工具（IN_A vs IN_B） / ' +
-      'lastError 不跨代复用（失败标记不盖到下一代） / Ctrl+C 不留孤儿）',
+      'lastError 不跨代复用（失败标记不盖到下一代） / trace 落盘（逐行可解析 + traceId 不重复） / ' +
+      // ⚠️ 横幅即**覆盖面声明**：第 17 步（compare 端到端）跑过了就得列进来 ——
+      // 「跑了但没记」等于覆盖面对外不可见，后人会以为那条路没人验过。
+      '并排 A/B 端点（路由顺序 / 判据 / note 回传 / 同一条 400） / ' +
+      'Ctrl+C 不留孤儿）',
   );
 } catch (e) {
   // 失败时把 dev 的输出一起打出来 —— 它是子进程的 stdout/stderr，不主动捞就什么都看不到

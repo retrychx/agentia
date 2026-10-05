@@ -332,6 +332,194 @@ export function rememberNote<T>(
   }
 }
 
+// ---------- 并排 A/B 的可比性判据（档 B / plans/2026-10-05-dev-workbench.md §3.3） ----------
+
+/** 对比选择态的**上限**：并排就是并排两块，第三块没有版面（也读不过来） */
+export const COMPARE_MAX = 2;
+
+/**
+ * 点 run 条目时**对比选择**该怎么变（⌘/Ctrl + 单击；普通单击仍是「打开」）。
+ *
+ * 三条口径：
+ * - **再点已选中的那条 ⇒ 取消它**（而不是「凑不满两块就不动」）—— 用户要能改主意；
+ * - **超过两块 ⇒ 挤掉最早选的那条**（FIFO）：不静默丢弃后来的选择；
+ * - **单选状态下重复点同一条** ⇒ 原样返回（幂等，不产生 `[a, a]`）。
+ *
+ * 为什么不设「未满两块时点了就退出对比」：那会让「我想退出对比」需要额外的按钮
+ * （面板已经有「打开」这个天然出口了 —— 普通单击就回到单run 视图）。
+ */
+export function toggleCompare(selected: string[], id: string): string[] {
+  if (selected.includes(id)) return selected.filter((x) => x !== id);
+  if (selected.length < COMPARE_MAX) return [...selected, id];
+  return [selected[1], id];
+}
+
+/** 并排对比要看的两条 run 的**开发侧元信息**（`RunNote` 的形状，见 dev-protocol.ts） */
+export interface ComparableNote {
+  /**
+   * 能力选择的**三种全量表示**都要收（`null` / `undefined` / `[]`）—— 见 `capsKey`。
+   * `RunNote.toolSources` 声明的是 `string[] | null`，但面板侧的
+   * `normalizeToolSources` 会回 `undefined`、且把空集也当全量；判据若只认一种
+   * 就会把「全量 vs 全量」判成不同 ⇒ 每次正常 A/B 都飘一条假警告（实测踩过）。
+   */
+  toolSources: string[] | null | undefined;
+  workdir: string;
+}
+
+/** 可比性判定的结果。`level` 决定面板显示多强的提示 —— 见 `comparability` 的注释 */
+export interface Comparability {
+  level: 'comparable' | 'workdir-differs' | 'capabilities-differ';
+  /** 给面板直接显示的一句话（中文，与面板其余文案同口径） */
+  message: string;
+}
+
+/**
+ * 「全量」的归一化键：空/null/undefined **都是**全量（与 `normalizeToolSources` 同口径）。
+ *
+ * ⚠️ **分隔符用 `'\\n'`，不是 `'\u0000'`** —— 别照抄 `dev-logic.sameToolSources` 的 NUL：
+ * 它比的是**拼接后的字符串**（NUL 不可能出现在能力名里，安全），而这里若把**字面 NUL
+ * 字符**打进 `.ts` 源文件，整个文件会被 `file`/grep 判成 **binary**（实测踩过：
+ * `grep` 报「Binary file matches」、`tsc` 照过，但源码审查工具与 diff 全废）。
+ * 能力名走 `^[A-Za-z0-9_-]{1,64}$`（框架装配期校验），换行同样不可能出现。
+ */
+function capsKey(toolSources: string[] | null | undefined): string {
+  if (toolSources === null || toolSources === undefined || toolSources.length === 0) return '*';
+  return [...toolSources].sort().join('\n');
+}
+
+/**
+ * 面板此刻该显示成什么样子（档 B 的视图判定，从 DOM 里抽出来以便单测）。
+ *
+ * ⚠️ 三个态而不是「并排 / 不并排」两态 —— 中间那态（**选了一条、还没选第二条**）必须
+ * 独立出来：它显示单 run 视图但**保留选择**。若把它并进「不并排」，两种后果二选一：
+ * ① 每次取消选择都把用户已选的第一条也清掉（选第二条得从头点两下）；
+ * ② 保留选择但显示双栏 ⇒「并排」只有一栏，比不显示更让人困惑。
+ *
+ * 判据用 `COMPARE_MAX`（=2）而不是硬编码 2：上限若被改，这里跟着改；
+ * ⚠️ 面板里**不许**再写 `length < 2` 这类字面量 —— 那是本文件存在的意义（单源）。
+ */
+export type CompareView = 'single' | 'picking' | 'dual';
+
+export function compareView(compare: string[]): CompareView {
+  if (compare.length === 0) return 'single';
+  return compare.length < COMPARE_MAX ? 'picking' : 'dual';
+}
+
+/**
+ * 新 run 收尾后**自动**把它补进对比（把「改 prompt → 重跑 → 对照」这一跳补上）。
+ *
+ * 为什么要有：档 B 落地时那条承诺是「改一句 prompt 就能**立刻重跑对照**」，可配对要用户
+ * 手动 ⌘ 点两条 —— 三步操作不是「立刻」。这个判定把中间那一步吞掉。
+ *
+ * 为什么**只在 picking 态**（已选一条、还没选第二条）触发：
+ * - 空选择 ⇒ 用户还没表达对比意图，自动切双栏是**替用户决定**（会被读成面板在乱跳）；
+ * - 已选两条 ⇒ 用户已经选好了，再塞一条等于**挤掉**他刚选的那条；
+ * - dev 环是**单飞**的 ⇒ picking 态下新收尾的那条必然是用户刚跑的那条，而他在 picking
+ *   态下的意图几乎必然是「拿它跟刚跑的这条比」⇒ 误伤概率极低。
+ *
+ * ⚠️ **不静默**：触发时面板播一条 notice（调用侧负责），所以「为什么屏幕变双栏了」用户
+ * 立刻知道；退出路径 = 普通单击任意一条（那条路径有单测，且本批刚补过「必须走
+ * `exitCompare()`」的守卫 W4）。
+ *
+ * ⚠️ **不动单飞**：这是「事后回看」的自动化，不是「同时跑」—— 真并发要改
+ * `shouldDeferRestart` 那条单源化判据（设计稿 §8 的「不做」）。
+ *
+ * @returns 新的选择数组；`null` = 不该自动配对（调用侧保持原样，别自己改成 `[]`）
+ */
+export function autoPairTarget(selected: string[], incomingId: string): string[] | null {
+  if (selected.length !== 1) return null;
+  const base = selected[0];
+  if (base === incomingId) return null;
+  return [base, incomingId];
+}
+
+/**
+ * 一条差异该怎么显示（`renderDiff` 里的分支，抽出来以便单测）。
+ *
+ * 为什么值得抽：`sp.missing` 那条判错的后果是**静默指错方向** —— 缺侧记录会显示成
+ * 「B侧少一个能力」，而真相是 A 侧独有。`diff-a` / `diff-b` 是**展示用**的标签
+ * （`diffTraces` 的 `missing` 真值是 `'a' | 'b'`，由 `packages/cli/src/diff.ts` 定）。
+ */
+export function diffSideLabel(missing: string): 'A' | 'B' {
+  return missing === 'a' ? 'A' : 'B';
+}
+
+/**
+ * 差异值的一行文本（`null` / `undefined` ⇒「（无）」）。
+ *
+ * ⚠️ **不能用 `??` 把缺省折成空串或 0**：那会让「字段不存在」显示成「值是 0/空」——
+ * 本仓反复踩的那类假读数（读数与「读不出」在业务上可分时，不许拿缺省值糊过去）。
+ */
+export function diffValueText(v: unknown): string {
+  if (v === null || v === undefined) return '（无）';
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    return String(v);
+  }
+}
+
+/**
+ * compare 端点**失败**时的那句提示（档 B）。
+ *
+ * ⚠️ **不能用 `body.error || res.status`**：`||` 把「服务端返回了空串 / 没有 error 字段」
+ * 一律折成状态码 —— 那是本仓反复踩的「读不出伪装成读数」同族（`?? 0` 那条纪律的字符串版）。
+ * 口径：`error` 是**非空字符串**才用它，否则回落 HTTP 状态码（那个一定是真的）。
+ * ⚠️ 也不要把「读body 失败」折成空对象就完事 —— 那样显示的是「读差异失败：500」而真相是
+ * 「响应不是 JSON」（网关插了页 / token 过期返回 HTML）。
+ */
+export function diffFetchErrorText(
+  status: number,
+  body: { error?: unknown } | null,
+  parseFailed: boolean,
+): string {
+  if (parseFailed) return `读差异失败：响应不是合法 JSON（HTTP ${status}）`;
+  const e = body?.error;
+  return `读差异失败：${typeof e === 'string' && e.length > 0 ? e : `HTTP ${status}`}`;
+}
+
+/**
+ * 两条 run 的差异**能不能归因到「我改了什么」**。
+ *
+ * ⚠️ **这是本档最容易做错的地方**：`diffTraces` 比的是 span 路径与字段，它**不知道**
+ * 面板的四个输入里哪些变了。能力选择与工作目录是 **app 级**的（换它们要重启进程，
+ * `RunRequest` 的注释已写明）⇒ 两条跨了能力选择的 run，`runConfigSnapshot` 整个变了，
+ * diff 出来的差异**大部分与「我改的那句话」无关**。此时静默给一份 diff = 让用户
+ * 误读（本仓最忌讳的那类假绿）。所以口径是**显式分三档**：
+ *
+ * - `comparable` —— 同能力 + 同工作目录 ⇒ 差异可归因（**推荐路径**：只改 prompt / 多轮）；
+ * - `workdir-differs` —— 能力同、目录不同 ⇒ 可比，但摘要必须显示目录不同，
+ *     否则「差在哪」会被读成「模型变了」；
+ * - `capabilities-differ` —— 能力选择不同（**跨了进程重启**）⇒ 提示比对意义有限。
+ *
+ * 判据用 `capsKey` 归一化：`null`（`RunNote` 的全量）、`undefined`（面板侧
+ * `normalizeToolSources` 的全量）、`[]`（被它归一化成全量的那个陷阱值）**三者同义**。
+ * 直接比数组会把「全量 vs 全量」判成不同 ⇒ 每次正常 A/B 都飘一条假警告。
+ */
+export function comparability(a: ComparableNote | null, b: ComparableNote | null): Comparability {
+  // note 缺失（trace 落盘后重启面板、或 note 先于 trace 被淘汰）⇒ **不猜**，按不可比处理
+  if (a === null || b === null) {
+    return {
+      level: 'capabilities-differ',
+      message: '这两条 run 里有一条缺少开发期元信息（能力选择 / 工作目录不可知），比对意义有限',
+    };
+  }
+  if (capsKey(a.toolSources) !== capsKey(b.toolSources)) {
+    return {
+      level: 'capabilities-differ',
+      message: '这两条 run 的能力选择不同（跨了进程重启），比对意义有限 —— 建议只改 prompt 后重跑',
+    };
+  }
+  if (a.workdir !== b.workdir) {
+    return {
+      level: 'workdir-differs',
+      message: `注意：这两条 run 的工作目录不同（${a.workdir} vs ${b.workdir}）`,
+    };
+  }
+  return { level: 'comparable', message: '' };
+}
+
 // ---------- run 收尾的反馈语 ----------
 
 /**
