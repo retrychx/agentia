@@ -6124,7 +6124,12 @@ Vercel AI SDK **不做什么**、代价是什么、**什么场景该选别人**�
   → v0.9.5（**外部深评 P2 表最后三条收口**（K5 记忆回写可选 CAS / T4 非终态流缓冲配额 /
     K2 四类能力注册表）+ 两处判据订正；**无破坏性变更**）；
   → v0.10.0（**对外承诺从「文档上的一句话」改成可执行的断言**（稳定性策略 / 三个不发布的包 / CI 运行环境 / README 数字现算 / `exports` 收窄）+ **补齐上线与选型的对外表达面**（`docs/deployment.md` / 官网 `/tradeoffs` / 推广稿定稿）；**有破坏性变更**：深路径导入会被拒，迁移见 CHANGELOG 的迁移小节）；
-  `AGENTIA_VERSION = '0.10.0'`。决策均见 §10。
+  → v0.10.1（**从「看得见一次 run」到「留得下、比得出」**：dev 面板每次 run 收尾落盘
+    `.agentia/traces.jsonl`（恰好是 `report` / `diff` / `harvest` / `export` 四个命令的输入）
+    + 并排比两条 run（含「改一句 prompt 立刻重跑对照」的自动补对）+ `packages/trace-view`
+    补规模棘轮与三条行为断言 + §7 补登记两条长跑边界；**无破坏性变更**，框架代码零改动，
+    新增一处用户可见文件 `traces.jsonl`（只增不减））；
+  `AGENTIA_VERSION = '0.10.1'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
