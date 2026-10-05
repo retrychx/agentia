@@ -20,7 +20,9 @@
     "examples/code-review/src",
     "examples/grpc-host/src",
     "examples/eval-gate/src",
-    "examples/terminal-bench/src"
+    "examples/terminal-bench/src",
+    "examples/patrol/src",
+    "examples/patrol/drill.ts"
   ],
   "exclude": ["node_modules", "dist", "tests/fixtures/capabilities-loadfail", "tests/types"]
 }

@@ -1,0 +1,22 @@
+{
+  "name": "agentia-patrol-example",
+  "private": true,
+  "type": "module",
+  "description": "Agentia 巡检示例：一个真实干活的 Agent 服务（只读巡检 + 产出报告 + 危险动作走人工审批）",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "drill": "tsx drill.ts",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "build": "tsc -p tsconfig.json",
+    "serve": "node dist/main.js"
+  },
+  "dependencies": {
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}
