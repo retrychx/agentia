@@ -54,6 +54,24 @@ const sample = (id) => ({
   ],
 });
 
+/**
+ * 带 `rootSpanId` 的样本 —— `agentia diff` / `/api/runs/compare` 的**必要条件**。
+ *
+ * ⚠️ 为什么必须单独一个构造器（而不是给 `sample()` 补上这个字段）：`diffTraces`
+ * 找根靠 `spans.find((s) => s.spanId === a.rootSpanId)`，**找不到就整棵 walk 都不走**
+ * ⇒ `equal` 恒 `true`、`spans` 恒空。于是「样本缺 rootSpanId」这个形态的表现是
+ * **一份看起来正常的「无差异」结论** —— 最坏的假绿类型。测试里所有要比对的样本
+ * 都必须走这个函数，让那个形态**没有入口**。
+ *
+ * `patch` 改 `totalUsage`（差异判据用）：默认 10/5，两条完全一样 ⇒ 恒无差异。
+ */
+const withRoot = (id, patch = {}) => {
+  const t = sample(id);
+  t.rootSpanId = 'r';
+  t.totalUsage = { ...t.totalUsage, ...patch };
+  return t;
+};
+
 /** 带会话根的 trace：run 根 span 的 `session.id` 是 D6 那个 join 的键 */
 const sampleWithSession = (id, sessionId) => {
   const t = sample(id);
@@ -269,6 +287,101 @@ describe('inspector 服务', () => {
       await post(base, '/ingest', sample('n2'));
       const list2 = await (await fetch(`${base}/api/runs`)).json();
       assert.equal(list2[0].note, null, '非 dev 起的 run 没有记账');
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('并排 A/B：/api/runs/compare 不被 /api/runs/ 前缀吃掉，且可比性判据随行', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const srv = await startInspector();
+    try {
+      const base = `http://127.0.0.1:${srv.port}`;
+      srv.noteRun('a1', {
+        prompt: '第一版',
+        workdir: '/w/proj',
+        toolSources: ['code-review'],
+        multiTurn: false,
+      });
+      srv.noteRun('b1', {
+        prompt: '第二版',
+        workdir: '/w/proj',
+        toolSources: ['code-review'],
+        multiTurn: false,
+      });
+      await post(base, '/ingest', withRoot('a1'));
+      await post(base, '/ingest', withRoot('b1', { inputTokens: 99 }));
+
+      // ① 路由顺序：这条若被 `/api/runs/` 前缀先吃掉，traceId 会变成
+      //    "compare" ⇒ 恒404 且报错是「run 不存在」，完全指错方向。
+      //    所以这里**只断言不是 404**（那是顺序错的症状），不只断言 200。
+      const res = await fetch(`${base}/api/runs/compare?a=a1&b=b1`);
+      assert.notEqual(res.status, 404, 'compare 不该落进 handleRunDetail（路由顺序反了）');
+      assert.equal(res.status, 200);
+      const body = await res.json();
+
+      // ② diff 真的算出了东西：`withRoot('b1')` 把 inputTokens 改成 99 ⇒ 必须有差异。
+      //    ⚠️ 这条同时钉住 `rootSpanId` 那个陷阱：`diffTraces` 靠
+      //    `spans.find(s => s.spanId === rootSpanId)` 找根，**找不到就整棵 walk 都不走**
+      //    ⇒`equal` 恒 true。没有 `rootSpanId` 的样本会让本断言假绿。
+      assert.equal(body.diff.equal, false, 'token 不同 ⇒ 必须报差异');
+      assert.ok(body.diff.summary.length > 0, 'run 级 summary 至少一条（totalUsage 差）');
+
+      // ③ 可比性：同能力 + 同目录 ⇒ comparable 且**无提示**（空 message）。
+      assert.equal(body.comparability.level, 'comparable');
+      assert.equal(body.comparability.message, '', '可比时不显示任何提示（不制造噪声）');
+
+      // ④ note 一起回：面板要显示「这两条当时用了什么能力 / 在哪个目录」。
+      assert.equal(body.notes.a.workdir, '/w/proj');
+      assert.deepEqual(body.notes.b.toolSources, ['code-review']);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('并排 A/B：不可比的组合显式降级（跨能力 / 跨目录 / note缺失 / 同一条）', async (t) => {
+    if (SKIP) return t.skip(SKIP);
+    const srv = await startInspector();
+    try {
+      const base = `http://127.0.0.1:${srv.port}`;
+      // 跨能力选择（= 跨了进程重启）⇒ capabilities-differ
+      srv.noteRun('c1', { prompt: 'p', workdir: '/w/p', toolSources: ['x'], multiTurn: false });
+      srv.noteRun('c2', { prompt: 'p', workdir: '/w/p', toolSources: ['y'], multiTurn: false });
+      // 同能力、跨目录 ⇒ workdir-differs
+      srv.noteRun('c3', { prompt: 'p', workdir: '/w/p', toolSources: null, multiTurn: false });
+      srv.noteRun('c4', { prompt: 'p', workdir: '/w/other', toolSources: null, multiTurn: false });
+      // 没有 note 的一条（非 dev 起的 run）⇒ 不猜，按不可比处理
+      for (const id of ['c1', 'c2', 'c3', 'c4', 'c5']) await post(base, '/ingest', withRoot(id));
+
+      const get = async (a, b) => (await fetch(`${base}/api/runs/compare?a=${a}&b=${b}`)).json();
+
+      const crossCaps = await get('c1', 'c2');
+      assert.equal(crossCaps.comparability.level, 'capabilities-differ', '跨能力必须降级');
+      assert.match(crossCaps.comparability.message, /能力选择不同/, '提示要说清差在哪');
+
+      // c3/c4 的 `toolSources` 都是 `null`（全量）⇒ 这条同时钉住「全量不该被判成不同」，
+      // 否则会先落进 capabilities-differ 而不是这里。
+      // ⚠️ 面板侧 `normalizeToolSources` 那个 `undefined` 表示**到不了服务端**
+      //（`noteRun` 存的是 `RunNote.toolSources: string[] | null`）⇒ 它的覆盖在
+      // `panel-logic.test.mjs` 的 `comparability` 用例里，**不要**在这里写同义重复断言
+      //（评审实证：原先那条 `bothFull` 与这条是同一对 run、同一断言，零信息量）。
+      const crossDir = await get('c3', 'c4');
+      assert.equal(crossDir.comparability.level, 'workdir-differs', '跨目录只是弱可比');
+      assert.match(crossDir.comparability.message, /\/w\/other/, '提示里要带上两个目录');
+
+      const noNote = await get('c1', 'c5');
+      assert.equal(
+        noNote.comparability.level,
+        'capabilities-differ',
+        'note 缺失不猜 —— 宁可说不可比，也不给一份没上下文的 diff',
+      );
+      assert.match(noNote.comparability.message, /元信息/);
+
+      // 缺参 / 同一条 / 未知 run
+      assert.equal((await fetch(`${base}/api/runs/compare?a=c1`)).status, 400, '缺 b ⇒ 400');
+      const same = await fetch(`${base}/api/runs/compare?a=c1&b=c1`);
+      assert.equal(same.status, 400, '同一条与自己比 ⇒ 400（否则恒「无差异」）');
+      assert.equal((await fetch(`${base}/api/runs/compare?a=c1&b=nope`)).status, 404);
     } finally {
       await srv.close();
     }
