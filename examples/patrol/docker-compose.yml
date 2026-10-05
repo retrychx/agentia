@@ -1,0 +1,44 @@
+# Agentia 巡检示例 —— compose 编排。
+# 用法：export DEEPSEEK_API_KEY=sk-... PATROL_TOKEN=$(openssl rand -hex 16) && docker compose up --build
+#      （或把变量写进同目录 .env，compose 会自动读取；.env 已 gitignore）
+
+services:
+  patrol:
+    build:
+      # 构建上下文是**仓库根** —— 示例跑仓库里的框架源码，镜像里先从源码构建（见 Dockerfile 头部说明）
+      context: ../..
+      dockerfile: examples/patrol/Dockerfile
+    image: agentia-patrol-example
+    environment:
+      # 缺省就报错退出，避免「起来了但没模型凭据」的静默失败
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?请先 export DEEPSEEK_API_KEY（或写进 .env）}
+      PATROL_TOKEN: ${PATROL_TOKEN:?请先 export PATROL_TOKEN（或写进 .env）}
+      PATROL_ROOT: /workspace
+      PATROL_REPORTS: /data/reports
+      PATROL_DB: /data/patrol.db
+      # 价目表：换成你端点的真实价，否则 maxCostUsd 读数是假的
+      PATROL_PRICE_IN: ${PATROL_PRICE_IN:-1}
+      PATROL_PRICE_OUT: ${PATROL_PRICE_OUT:-2}
+    ports:
+      - '3000:3000'
+    volumes:
+      - patrol-data:/data
+      # 巡检目标：**只读**挂载。agent 的写面只有 /data/reports，宿主的挂载就是这条约定的物理落实。
+      # 想巡哪个目录就把下面这行改掉（前缀 :ro 别去掉）。
+      - ${PATROL_TARGET:-./sample-workspace}:/workspace:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then(r=>r.json()).then(j=>process.exit(j.draining?1:0)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # 必须 > PATROL_DRAIN_TIMEOUT_MS（缺省 15s）：容器停之前留够优雅停机时间（deployment.md §5）
+    stop_grace_period: 25s
+    restart: unless-stopped
+
+volumes:
+  patrol-data:
