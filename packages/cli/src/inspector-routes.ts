@@ -32,7 +32,60 @@ import {
   type RunRequest,
   type TraceRecordEventLike,
 } from './dev-protocol.js';
+// 并排 A/B：复用 `diff.ts` 那份**去类型移植副本**（CLI 零运行时依赖、不能 import 框架）
+// ⇒ 面板看到的差异与 `agentia diff a.jsonl b.jsonl` 逐字相同。
+// 可比性判据放 panel-logic（不是 diff.ts）：它判的是**面板四个输入**的差异，
+// 与 span 配对算法无关；放一起会让两个不同的关注点混在一个文件里。
+//
+// ⚠️ 严格 Trace 类型用 `Parameters<typeof diffTraces>[0]` 取，**不从 diff.ts 导出它**：
+// 那边的 `interface Trace` 是「逐字同形移植」的**内部**声明，导出它等于给这份副本开
+// 公共面（旁人会开始 import 它，于是改算法时它也成了要同步的第二个副本 —— 正是
+// 逐字对拍要防的那件事）。用 Parameters 取，签名改了这里自动跟着变，零漂。
+import { diffTraces } from './diff.js';
+import { comparability } from './panel-logic.js';
 import type { DevHooks, RunSummary, TraceLike } from './inspector.js';
+
+/**
+ * `diffTraces` 要的**严格** `Trace` 形状（从签名反推，不另写一份 interface ——
+ * 另写就是第二处会漂的形状声明）。
+ */
+type StrictTrace = Parameters<typeof diffTraces>[0];
+
+/**
+ * 宽松 `TraceLike` → `diffTraces` 能吃的形状，**补上缺省的空容器**。
+ *
+ * ⚠️ **为什么不直接强转**（`ta as unknown as StrictTrace`，本仓的坏习惯）：
+ * `diffTraces` 内部有 `pushAttrDiffs` / `pushEventDiffs`，两者都**直接** `Object.keys(x)` /
+ * `x.length`，参数为 `undefined` 时抛 `Cannot convert undefined or null to object`。
+ * 而 `validateTrace`（入站校验）**只**要求 `spanId` / `name` / `startedAt` ——
+ * `attributes` 与 `events` 不在必填之列 ⇒ 一条裁剪过的 trace 能合法进 `/ingest`，
+ * 于是 compare 路由会500。
+ *
+ * ⚠️ **为什么不改 `diff.ts`**：它是 `src/engine/trace-diff.ts` 的**逐字同形移植副本**
+ * （注释与 `structure.test.mjs` 都声明「改算法必须两边同步」）⇒ 在CLI 侧单方面加固会让
+ * 两侧**分叉**，而逐字对拍守护（`test/diff.test.mjs`）会当场红。那条路的正解是**框架侧
+ * 一起改**（`attributes ?? {}` / `events ?? []`），属`src/` 语义变更，要走 spec §10 ——
+ * **不在本稿范围**。这里在**消费侧**归一化，是零核心改动的正解。
+ *
+ * 归一化只补「缺省空容器」，**不改任何真值**：span 树、usage、rootSpanId、以及
+ * **已存在的 events 一律原样保留**（⚠️ 把 `events` 清空是静默失真 —— 那样「事件序列
+ * 差异」永远测不出来，而 diff 看起来仍然「正常」，比抛错更坏）。
+ */
+function normalizeForDiff(t: TraceLike): StrictTrace {
+  return {
+    ...t,
+    spans: (t.spans ?? []).map((s) => ({
+      ...s,
+      attributes: s.attributes ?? {},
+      // ⚠️ `TraceLike`（面板的宽松投影）**漏了`events` 字段** —— 运行时它是有的
+      //（`POST /ingest` 收到的是裸 `Trace`），但类型上访问不到 ⇒ 只能按索引读。
+      // `Array.isArray` 守卫是必要的：缺失时补 `[]`，**存在时原样保留**。
+      events: Array.isArray((s as { events?: unknown }).events)
+        ? (s as { events?: unknown }).events
+        : [],
+    })),
+  } as unknown as StrictTrace;
+}
 
 /** token 的 cookie 名（面板首帧带 `?t=` 拿到它之后，后续请求自动带上） */
 export const TOKEN_COOKIE = 'agentia_dev_token';
@@ -351,6 +404,56 @@ function handleRunDetail(ctx: RouteCtx): void {
   ctx.json(ctx.res, 200, t);
 }
 
+/**
+ * 并排 A/B：`GET /api/runs/compare?a=<id>&b=<id>` → `{ diff, comparability }`。
+ *
+ * **为什么在服务端算diff，不在浏览器里算**：`diffTraces` 是框架的纯函数，而 CLI 侧
+ * 已有一份**去类型移植副本**（`diff.ts`；CLI 零运行时依赖、不能 import 框架，注释
+ * 声明「改算法必须两边同步」、逐字对拍守护在 `test/diff.test.mjs`）。复用那一份
+ * 才能保证「面板里看到的差异」与「`agentia diff a.jsonl b.jsonl` 得到的差异」**逐字
+ * 相同** —— 另写一份就是本仓反复踩的「两处口径会漂」。
+ *
+ * ⚠️ **可比性判据一起返回**（档 B §3.3）：`diffTraces` 不知道面板四个输入里哪些变了，
+ * 跨了能力选择（app 级、重启进程）的两条 run 比出来的差异多半与用户改的那句话无关。
+ * 服务端算完一起给，面板**必须**把它显示出来 —— 静默给一份没意义的 diff 比不给更糟。
+ */
+function handleRunCompare(ctx: RouteCtx): void {
+  const a = ctx.url.searchParams.get('a');
+  const b = ctx.url.searchParams.get('b');
+  if (!a || !b) {
+    ctx.json(ctx.res, 400, { error: '缺少 a 或 b 参数（各给一个 traceId）' });
+    return;
+  }
+  if (a === b) {
+    // 不是「无害的重复」：同一条跟自己比恒等于无差异，面板会显示一份「没有差异」的
+    // 结论，而用户以为自己选了两条不同的 run。
+    ctx.json(ctx.res, 400, { error: 'a 与 b 是同一条 run —— 选两条不同的才能比出差异' });
+    return;
+  }
+  const { runs, notes } = ctx.state;
+  // ⚠️ 两个 `get` 都要，**且都要用 `!` 显式收窄** —— 只查一次（`const ta = ...; if (!ta) 404`）
+  // 之后 TS 不会把「另一个也非空」这件事带过 `return`（Map.get 的返回是 `| undefined`，
+  // 与局部变量的控制流分析无关）。写成 `!ta || !tb` 才既短又能让 TS 收窄。
+  const ta = runs.get(a);
+  const tb = runs.get(b);
+  if (!ta || !tb) {
+    const missing = ta ? b : a;
+    ctx.json(ctx.res, 404, { error: `run 不存在（可能已被淘汰）：${missing}` });
+    return;
+  }
+  const noteA = notes.get(a) ?? null;
+  const noteB = notes.get(b) ?? null;
+  // 形状转换与 `diff.ts` 的 `readFirstTrace`（`:356`）**同款思路**（宽松投影 → 严格源类型），
+  // 但**多一步 `normalizeForDiff`** —— 直接强转会在裁剪过的 trace 上 500（那里讲清了原因）。
+  ctx.json(ctx.res, 200, {
+    diff: diffTraces(normalizeForDiff(ta), normalizeForDiff(tb)),
+    comparability: comparability(noteA, noteB),
+    // note 一起回：面板要显示「这两条当时用了什么能力 / 在哪个目录」，
+    // 否则一个「不可比」的结论没有上下文（用户不知道为什么这次比对不可信）。
+    notes: { a: noteA, b: noteB },
+  });
+}
+
 function handleDevState(ctx: RouteCtx): void {
   ctx.json(ctx.res, 200, ctx.dev ? ctx.dev.state() : unavailableDevState());
 }
@@ -553,13 +656,20 @@ async function handleStatic(ctx: RouteCtx): Promise<void> {
  * 的实现抛出，如 `pickFolder` 的 409/501）会**穿过本函数**冒泡给调用方的 catch，
  * 由那里统一映射成状态码。
  *
- * ⚠️ 顺序即优先级：`/api/runs` 必须排在 `/api/runs/` 之前（后者是前缀匹配）。
+ * ⚠️ 顺序即优先级：`/api/runs` 必须排在 `/api/runs/` 之前（后者是前缀匹配），
+ * **而 `/api/runs/compare` 必须排在 `/api/runs/` 之前** —— 它是那条前缀的**子路径**，
+ * 放后面会被 `handleRunDetail` 先吃掉，而那个 handler 会把 `compare?a=…&b=…`
+ * 整段当成 traceId 去查表 ⇒ 恒 404，且报错信息是「run 不存在」，完全指错方向。
+ * （`ctx.path` 是 `url.pathname`、**不含** query，所以前缀匹配按 `/api/runs/compare` 判。）
  */
 export async function handleRoutes(ctx: RouteCtx): Promise<void> {
   const { req, path } = ctx;
   if (req.method === 'POST' && path === '/ingest') return handleIngest(ctx);
   if (req.method === 'POST' && path === '/ingest-event') return handleIngestEvent(ctx);
   if (req.method === 'GET' && path === '/api/runs') return handleListRuns(ctx);
+  // ⚠️ 顺序咬人：`compare` **必须**在下一行之前 —— 它是 `/api/runs/` 的子路径，
+  // 放后面会被 `handleRunDetail` 先吃掉（traceId 变成 "compare" ⇒ 恒 404 且报错指错方向）。
+  if (req.method === 'GET' && path === '/api/runs/compare') return handleRunCompare(ctx);
   if (req.method === 'GET' && path.startsWith('/api/runs/')) return handleRunDetail(ctx);
   if (req.method === 'GET' && path === '/api/dev') return handleDevState(ctx);
   if (req.method === 'GET' && path === '/api/fs') return handleFsList(ctx);

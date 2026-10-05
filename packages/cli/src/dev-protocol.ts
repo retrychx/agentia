@@ -319,5 +319,19 @@ export const SESSION_REL = '.agentia/session.json';
  * 用户刚「清空」掉的对话会**自己回来**（那是最典型的静默不一致）。
  */
 export const SESSION_ID_REL = '.agentia/dev-session-id';
+/**
+ * dev 环**落盘 trace** 的位置（相对项目根）。
+ *
+ * 为什么与 `session.json` 同目录：`.agentia/` 已被脚手架 gitignore（`templates/gitignore`），
+ * 它就是 dev 环的本机状态目录 —— 落在这里的东西不进版本库、不用再问一次「要不要 ignore」。
+ *
+ * 文件格式 = `jsonlTraceSink` 的格式（一行一条**裸** `Trace`），而那正是 CLI 四个命令的
+ * **输入**：`agentia report` / `diff` / `harvest` / `export`（`src/integrations/file-sink.ts`
+ * 的头注逐字点名了前三个，`export` 是R8-P3b 加的同族）。⇒ dev 环跑过的 run 直接可被它们读。
+ *
+ * ⚠️ **只增不减**：刻意不轮转、不自动清（dev 单条 trace 以百 KB 计；真要清是用户自己
+ * `rm`）。要长期开着一个 dev 环的得知道这件事 —— 写在 `usage-guide.md` §2.2。
+ */
+export const TRACE_LOG_REL = '.agentia/traces.jsonl';
 /** dev 环**初始** sessionId（面板「清空」后依次变成 `dev-2` / `dev-3` …） */
 export const DEV_SESSION_ID = 'dev';

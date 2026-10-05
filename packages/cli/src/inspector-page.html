@@ -72,6 +72,28 @@
       #ttl { flex: none; }
       #trace { flex: 1 1 auto; min-height: 140px; overflow: auto; }
       #summary, #reply, .usage { flex: none; max-height: 38vh; overflow: auto; }
+      /* 并排 A/B：两棵树各占一半、**各自独立滚**（一棵树很长时不该把另一棵推出屏幕 ——
+         与「树是唯一无界部分」那条纪律同款，只是现在无界的部分有两块）。
+         `#trace2` 只在并排时存在（单run 时 hidden），此时 `#trace` 让出 50%。 */
+      .cmp-on #trace { flex: 1 1 50%; }
+      .tr-compare {
+        flex: 1 1 50%; min-height: 140px; overflow: auto;
+        border-left: 1px solid var(--border);
+      }
+      #diffbar { flex: none; max-height: 30vh; overflow: auto; padding-bottom: 6px; }
+      #diff-note {
+        padding: 5px 8px; margin-bottom: 6px; border-left: 2px solid var(--warn);
+        background: var(--pop); color: var(--text); border-radius: 0 4px 4px 0;
+      }
+      #diff-body .dfield { padding: 1px 0; color: var(--faint); }
+      #diff-body .dfield b { color: var(--text); font-weight: 500; }
+      #diff-body .dspan { padding: 1px 0 1px 12px; color: var(--faint); }
+      #diff-body .dpath { color: var(--ice); }
+      #diff-body .dempty { padding: 4px 0; color: var(--faint); }
+      /* run 列表里被选进对比的两条：给出**独立于 active** 的标记（active 是「正在看的那条」，
+         两者可以不同 —— 正在看的可能不在对比里）。用左边框双线区分，不靠颜色。 */
+      .run.cmp { box-shadow: inset 2px 0 0 var(--warn); }
+      .run.cmp.active { box-shadow: inset 2px 0 0 var(--ice), inset 4px 0 0 var(--warn); }
       /* 窄屏：两栏并排已经太窄 ⇒ 回到单列 + 整页滚动（此时「整页滚」才是唯一合理的形态） */
       @media (max-width: 860px) {
         html, body { height: auto; }
@@ -79,9 +101,10 @@
         main { grid-template-columns: minmax(0, 1fr); }
         aside { overflow: visible; }
         section { overflow: visible; }
-        #runs, #chat, #trace { overflow: visible; }
-        #trace { min-height: 320px; }
-        #summary, #reply, .usage { max-height: none; }
+        #runs, #chat, #trace, .tr-compare { overflow: visible; }
+        #trace, .tr-compare { min-height: 320px; }
+        .cmp-on #trace { flex: 1 1 auto; }
+        #summary, #reply, .usage, #diffbar { max-height: none; }
       }
       .run {
         display: block; width: 100%; text-align: left; cursor: pointer;
@@ -259,7 +282,21 @@
       </aside>
       <section>
         <div id="ttl"></div>
-        <div id="trace"><div class="tr-empty">// 选一个 run 查看调用树</div></div>
+        <!--
+          并排 A/B 的差异摘要（档 B）。默认 hidden，只有选满两条 run 才出现。
+          三段结构：可比性提示（不可比时才有 —— 可比时**不显示**，见 comparability 的注释）、
+          run 级 summary、逐span 差异。
+        -->
+        <div id="diffbar" hidden>
+          <div id="diff-note" class="diff-note" hidden></div>
+          <div id="diff-body"></div>
+        </div>
+        <!--
+          双栏容器：并排时这里是**两个** trace 视图，单run 时只有一个。
+          ⚠️ 不用「同一棵树改CSS 成两半」—— trace-view 的树是自绘的，两棵树必须两个容器。
+        -->
+        <div id="trace" class="tr-single"><div class="tr-empty">// 选一个 run 查看调用树</div></div>
+        <div id="trace2" class="tr-compare" hidden></div>
         <!-- 能力排行（G2）：哪个能力慢 / 贵 / 爱失败 —— 调优从这里下手 -->
         <div id="summary"></div>
         <pre id="reply" hidden></pre>
@@ -320,9 +357,16 @@
         HISTORY_DRAFT,
         applyTraceEvent,
         browseTarget,
+        autoPairTarget,
         capabilityBadge,
         chatViewVisible,
         collapseDecision,
+        comparability,
+        COMPARE_MAX,
+        compareView,
+        diffSideLabel,
+        diffValueText,
+        diffFetchErrorText,
         emptyTraceAccumulator,
         filterSelected,
         formatToolSources,
@@ -339,6 +383,7 @@
         runDoneNotice,
         runIsFailure,
         shortenPath,
+        toggleCompare,
         turnKey,
       } from './panel-logic.js';
 
@@ -349,6 +394,10 @@
       const chatSidEl = $('chat-sid');
       const chatClearEl = $('chat-clear');
       const traceEl = $('trace');
+      const trace2El = $('trace2');
+      const diffbarEl = $('diffbar');
+      const diffNoteEl = $('diff-note');
+      const diffBodyEl = $('diff-body');
       const summaryEl = $('summary');
       const ttlEl = $('ttl');
       const liveEl = $('live');
@@ -376,6 +425,167 @@
         usage: { in: $('u-in'), out: $('u-out') },
       });
 
+      // 并排 A/B 的**第二棵**树。刻意不共用 `view`：`createTraceView` 绑一个容器 +
+      // 一个 usage 出口，两棵树塞进同一容器会互相清空（trace-view 的 `playTrace` 是
+      // 整容器替换式的）。共用 `u-in`/`u-out` 也无意义 —— 那两个读数属于「正在看的那条」。
+      const view2 = createTraceView(trace2El);
+
+      // ---------- 并排 A/B（档 B） ----------
+
+      /**
+       * 复位并排的 **DOM**（**不动** `state.compare`）—— 让 `exitCompare` 与
+       * `refreshCompare` 的 picking 分支共用同一份复位序列。
+       *
+       * 抽出来不是为了省行数：这两处一旦分叉，就只剩一处是对的 —— 评审实证的缺陷
+       * 正是「清了状态、没复位 DOM」的形态（`trace2` 留着上一对的树 + 差异摘要还是
+       * 旧的，而列表里的选中标记已经没了 ⇒ 用户按看到的读，读到的是张冠李戴）。
+       * ⚠️ 面板里**只许这一处**做复位序列；guard 在 `test/structure.test.mjs`（W4）。
+       */
+      function resetCompareDom() {
+        trace2El.replaceChildren();
+        trace2El.hidden = true;
+        diffbarEl.hidden = true;
+        document.body.classList.remove('cmp-on');
+        renderList();
+      }
+
+      /**
+       * 退出并排，回到单 run 视图（清选择 + 复位 DOM）。
+       *
+       * 为什么必须把 `trace2` **清空**而不是只 `hidden`：它内部是 trace-view 自己建的
+       * DOM，留着旧树而下一轮 `hidden` ⇒ 再进并排时若新树没画成功，用户看到的是
+       * **上一轮别的 run 的调用树**，却以为在比当前两条 —— 静默张冠李戴，最坏的一种。
+       */
+      function exitCompare() {
+        state.compare = [];
+        resetCompareDom();
+      }
+
+      /** 选满两条 ⇒ 拉差异 + 双栏；不足两条 ⇒ 回单 run 视图（三态判定在 panel-logic） */
+      async function refreshCompare() {
+        const mode = compareView(state.compare);
+        if (mode === 'single') {
+          exitCompare();
+          return;
+        }
+        if (mode === 'picking') {
+          // 只选了一条：双栏显示一条是误导（「并排」却只有一栏）⇒ 回单run 视图，
+          // 但**保留选择**（用户正在挑第二条，别把第一条也清了）。
+          resetCompareDom();
+          return;
+        }
+        const [a, b] = state.compare;
+        document.body.classList.add('cmp-on');
+        trace2El.hidden = false;
+        diffbarEl.hidden = false;
+        renderList();
+        for (const [id, v, el] of [
+          [a, view, traceEl],
+          [b, view2, trace2El],
+        ]) {
+          const res = await fetch('/api/runs/' + encodeURIComponent(id));
+          if (!res.ok) {
+            // ⚠️ **不能 `continue`（静默留白）**：那一栏会空着，看起来像「这条没有调用树」，
+            // 而真相是「这条 run 已不在内存 ring 里了」（`/api/runs` 只回 50 条）。
+            // 面板不解释 ⇒ 用户把它归因到别处（改坏了？）—— 与本档「不静默」口径同源。
+            el.replaceChildren();
+            const miss = document.createElement('div');
+            miss.className = 'tr-empty';
+            miss.textContent = `读不到这条 run 的调用树（可能已被淘汰）：${id}`;
+            el.appendChild(miss);
+            continue;
+          }
+          const t = await res.json();
+          el.replaceChildren();
+          playTrace(v, t);
+        }
+        await loadDiff(a, b);
+      }
+
+      /**
+       * 拉并渲染差异摘要。
+       *
+       * ⚠️ **可比性提示必须先于差异显示** —— 用户看到一堆 span 差异却不知道这两条
+       * 根本不可比（跨了能力选择），结论会归因到错的地方。顺序即语义。
+       * 且可比时**不显示**提示条（`message` 为空串）—— 每次都飘一条噪声等于没有提示。
+       */
+      async function loadDiff(a, b) {
+        diffBodyEl.replaceChildren();
+        const res = await fetch(
+          `/api/runs/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
+        );
+        if (!res.ok) {
+          // ⚠️ 解析失败要**单独说**（`parseFailed`）—— 折成「HTTP 500」会把
+          // 「响应不是 JSON」（网关插页 / token 过期返 HTML）说成服务端故障。
+          let body = null;
+          let parseFailed = false;
+          try {
+            body = await res.json();
+          } catch {
+            parseFailed = true;
+          }
+          const d = document.createElement('div');
+          d.className = 'dempty';
+          d.textContent = diffFetchErrorText(res.status, body, parseFailed);
+          diffBodyEl.appendChild(d);
+          return;
+        }
+        const payload = await res.json();
+        if (payload.comparability.message) {
+          diffNoteEl.textContent = payload.comparability.message;
+          diffNoteEl.hidden = false;
+        } else {
+          diffNoteEl.textContent = '';
+          diffNoteEl.hidden = true;
+        }
+        renderDiff(payload.diff);
+      }
+
+      /** 差异摘要的渲染。**没有差异时如实说「无差异」**，不显示空区块。 */
+      function renderDiff(diff) {
+        diffBodyEl.replaceChildren();
+        if (diff.equal) {
+          const d = document.createElement('div');
+          d.className = 'dempty';
+          d.textContent = '两条 trace 等价（无结构与字段差异）';
+          diffBodyEl.appendChild(d);
+          return;
+        }
+        for (const s of diff.summary) {
+          const row = document.createElement('div');
+          row.className = 'dfield';
+          const name = document.createElement('b');
+          name.textContent = s.field;
+          row.append(
+            name,
+            document.createTextNode(` ${diffValueText(s.a)} → ${diffValueText(s.b)}`),
+          );
+          diffBodyEl.appendChild(row);
+        }
+        for (const sp of diff.spans) {
+          const row = document.createElement('div');
+          row.className = 'dspan';
+          const path = document.createElement('span');
+          path.className = 'dpath';
+          path.textContent = sp.path;
+          row.appendChild(path);
+          if (sp.missing) {
+            row.appendChild(
+              document.createTextNode(` （只在 ${diffSideLabel(sp.missing)} 侧）`),
+            );
+          }
+          for (const [k, v] of Object.entries(sp.fields)) {
+            const f = document.createElement('div');
+            f.className = 'dfield';
+            const key = document.createElement('b');
+            key.textContent = k;
+            f.append(key, document.createTextNode(` ${diffValueText(v.a)} → ${diffValueText(v.b)}`));
+            row.appendChild(f);
+          }
+          diffBodyEl.appendChild(row);
+        }
+      }
+
       // ---------- 状态 ----------
       // 只放「渲染要用到的东西」；所有判断都走 panel-logic（那份有单测，这份没有）
       const state = {
@@ -391,6 +601,13 @@
         tab: 'runs',
         list: [],
         current: null,
+        /**
+         * **并排 A/B 的选择**（最多 `COMPARE_MAX` 条traceId）：⌘/Ctrl + 单击 run 条目
+         * 往里加、再点一次取消、超过两块挤掉最早那条（规则全在 panel-logic 的
+         * `toggleCompare`，那份有单测）。选满两条 ⇒ 右栏切双栏 + 顶部一条差异摘要。
+         *空数组 = 单run 视图（`state.current` 那一套照旧）。
+         */
+        compare: [],
         reply: '',
         /**
          * 这段回复是**哪个 traceId** 的（`run-done` 带回来的）。`open()` 靠它判断
@@ -539,7 +756,11 @@
           // runIsFailure，与通知条同一条语义）—— 给中止的 run 标红会让用户以为
           // 是自己把工程改坏了，而那正是「aborted 也带 error」这条引擎约定造成的误读。
           const tone = runIsFailure(r) ? ' err' : r.stopReason === 'aborted' ? ' aborted' : '';
-          b.className = 'run' + tone + (r.traceId === state.current ? ' active' : '');
+          b.className =
+            'run' +
+            tone +
+            (r.traceId === state.current ? ' active' : '') +
+            (state.compare.includes(r.traceId) ? ' cmp' : '');
           b.type = 'button';
 
           const r1 = document.createElement('span');
@@ -565,7 +786,23 @@
             r3.textContent = `${short(r.note.workdir)} · ${caps}${r.note.multiTurn ? ' · 多轮' : ''}`;
             b.appendChild(r3);
           }
-          b.addEventListener('click', () => open(r.traceId));
+          // 普通单击 = 打开那一条；**⌘/Ctrl + 单击** = 进出并排 A/B 的选择。
+          // 为什么不做成「勾选框」：run 条目整行是 button，塞 checkbox 要改点击语义
+          //（点勾选框不该打开那条）—— 而「修饰键 + 单击」是列表多选的通用手势。
+          b.addEventListener('click', (ev) => {
+            if (ev.metaKey || ev.ctrlKey) {
+              state.compare = toggleCompare(state.compare, r.traceId);
+              void refreshCompare();
+              return;
+            }
+            // 普通单击切到别的 run ⇒ 退出并排（否则右栏两棵树与左栏高亮不一致，
+            // 用户点谁就以为在看谁）。
+            // ⚠️ **必须走 `exitCompare()`，不能只清 `state.compare`** —— 它顺带复位 DOM。
+            // 只清状态会让右栏与差异摘要**留在屏幕上**（内容还是上一对的），而列表里的选中
+            // 标记已经没了 ⇒ 用户按看到的读，读到的是张冠李戴（评审实证的形态）。
+            if (state.compare.length > 0) exitCompare();
+            open(r.traceId);
+          });
           runsEl.appendChild(b);
         }
       }
@@ -1174,6 +1411,21 @@
         await refreshSession();
         renderChat();
         await open(s.traceId);
+        // 「改 prompt → 重跑 → 对照」这一跳（档 B 收尾）：用户已经选了一条（picking 态），
+        // 而新 run 刚收尾 ⇒ **自动**补上第二条并进双栏。判定在 panel-logic（带单测），
+        // `null` 表示「不该配对」（空选择 / 已选两条 / 同一 id）。
+        // ⚠️ **不静默**：播一条 notice 说清屏幕为什么变双栏了；退出 = 普通单击任意一条。
+        const paired = autoPairTarget(state.compare, s.traceId);
+        if (paired) {
+          state.compare = paired;
+          // ⚠️ `refreshCompare` 的排布是「左栏 = 第一条」⇒ 列表高亮必须跟着走，
+          // 否则又出现「点谁以为在看谁」的失真（与守卫 W4 守的是同一类）。
+          // 而 `#ttl` 与右上角 usage 读数**留在最新那条**（用户最关心刚跑的那次）——
+          // 这个分工是有意的，别在「统一」的名义下把它抹平。
+          state.current = paired[0];
+          setNotice('已把新 run 与上一条并排（普通单击任意一条退出对比）', false);
+          void refreshCompare();
+        }
       };
       es.addEventListener('dev', async (m) => {
         const ev = JSON.parse(m.data);

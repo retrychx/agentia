@@ -30,6 +30,7 @@ import {
   DEV_CONFIG_REL,
   type DevMessage,
   type RunnerMessage,
+  TRACE_LOG_REL,
 } from './dev-protocol.js';
 
 /** 框架侧对象的最小结构面（CLI 不 import 框架包 —— 保持零运行时依赖） */
@@ -125,6 +126,55 @@ function registerEventSink(): void {
   if (port <= 0) return;
   const token = process.env.AGENTIA_INSPECT_TOKEN || undefined;
   eventSink = createInspectEventSink({ port, ...(token ? { token } : {}) });
+}
+
+/**
+ * ③ **落盘** trace（档A / `docs/plans/2026-10-05-dev-workbench.md` §2）：每次 run 收尾往
+ * `.agentia/traces.jsonl` 追加一行裸Trace。
+ *
+ * 为什么值得挂：那个文件的格式**恰好就是** CLI 三个命令的输入（`jsonlTraceSink` 的头注
+ * 逐字点名了 `agentia report` / `diff` / `harvest`，加上 `export` 是四个）⇒ 挂上之后
+ * 面板里跑过的每一次 run，立刻变成「`agentia report` 看哪个能力慢/贵/爱失败」、
+ * 「`agentia diff` 改 prompt 后轨迹漂没漂」这两件事的**现成输入**。开发期最贵的
+ * 一件事是「拿不到刚才那次 run 的数据」，这一行就把它解决了。
+ *
+ * 三条纪律（每条都有代价，如实标注）：
+ * - **写失败不阻断 run**（`catch` + `console.warn`）：与 `registerTraceSink` 同款 ——
+ *   观测是增强项，磁盘满 / 目录只读不该让dev 起不来。
+ * - **不轮转、不清空**：dev 单条 trace 以百 KB 计，而 `.agentia/` 已被脚手架 gitignore。
+ *   代价是**长跑 dev 环会攒一个只增不减的文件**；要清就是用户自己 `rm`（文档里写一句）。
+ * - **单进程写者前提天然满足**：该 sink 的契约是「多进程写同一文件会交错」，而 dev环
+ *   只有 runner 这一个写者（父进程走HTTP 收，不碰这个文件）。
+ *
+ * ⚠️ **两条缝，不是替代关系**：落盘管「事后能查」，`onTraceEvent` 管「此刻看到」。
+ * 挂落盘**不碰** `opts.onTraceEvent`（那行仍在 `runOnce` 里），反之亦然。
+ *
+ * ⚠️ **顺序**：`createApp` 构造期对 `defaultSinks` 取快照 ⇒ 任何 sink 都必须早于
+ * 用户 app 的 import（`main()` 里 `registerTraceSink` 那条注释已为这件事把关）。
+ */
+async function registerJsonlSink(): Promise<void> {
+  try {
+    const req = createRequire(join(root, 'package.json'));
+    const entry = req.resolve('@migor/agentia');
+    const mod = (await import(pathToFileURL(entry).href)) as {
+      jsonlTraceSink?: (options: { path: string }) => unknown;
+      registerDefaultTraceSink?: (sink: unknown) => void;
+    };
+    if (typeof mod.jsonlTraceSink !== 'function') {
+      throw new Error('@migor/agentia 未导出 jsonlTraceSink（版本过旧？）');
+    }
+    // ⚠️ 两个导出都要，缺一不可：`jsonlTraceSink` 只是**工厂**（返回 `TraceSink`），
+    // 真正让框架每run 收尾调它的是 `registerDefaultTraceSink`（与上面 inspector 那条同款）。
+    // 只写前者 = 建了个 sink 变量没人用 ⇒ 静默不落盘（本仓最忌讳的那类假绿）。
+    if (typeof mod.registerDefaultTraceSink !== 'function') {
+      throw new Error('@migor/agentia 未导出 registerDefaultTraceSink（版本过旧？）');
+    }
+    mod.registerDefaultTraceSink(mod.jsonlTraceSink({ path: join(root, TRACE_LOG_REL) }));
+  } catch (e) {
+    // 同 registerTraceSink：挂不上是增强项缺失，不阻断 dev。**不静默** —— 打在终端上，
+    // 否则「跑了一堆 run 却发现 report 没数据」会查不到原因。
+    console.warn(`[agentia] trace 未落盘（${TRACE_LOG_REL}）：${(e as Error).message}`);
+  }
 }
 
 // ---------- dev.config.ts（**数据**，不是逻辑） ----------
@@ -493,6 +543,8 @@ async function runOnce(msg: Extract<DevMessage, { type: 'run' }>): Promise<void>
 async function main(): Promise<void> {
   // ⚠️ 顺序不能换：sink 必须早于用户 app 的 import（createApp 构造期对 defaultSinks 快照）
   await registerTraceSink();
+  // 落盘 sink（档 A）：同样必须早于 import —— 它也是 defaultSinks 的一员。
+  await registerJsonlSink();
   // 增量出口只是个 HTTP 出口（不碰框架注册表），但同样在这里建：一个进程一次。
   registerEventSink();
   let built: BuildResult;
