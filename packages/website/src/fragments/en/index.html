@@ -1,0 +1,173 @@
+<header class="hero" id="top">
+    <canvas id="orchestra" aria-hidden="true"></canvas>
+    <div class="hero-content">
+      <p class="hero-kicker" data-intro>DECLARATIVE AGENT FRAMEWORK</p>
+      <h1>
+        <span class="line" data-intro>Declare four kinds of capability,</span><br />
+        <span class="line accent" data-intro>ship a working agent service</span>
+      </h1>
+      <p class="hero-sub" data-intro>
+        <span class="hs-line">Declare <b class="hl">four kinds of capability</b> with decorators + DI; a main agent orchestrates them.</span>
+        <span class="hs-line">Every run yields structured output and an <b class="hl">observable call tree</b><em class="hs-tags">(trace, cost, metrics)</em> — a service you can put straight into production.</span>
+      </p>
+      <div class="hero-actions" data-intro>
+        <a class="btn btn-primary" href="#quickstart">Quickstart</a>
+        <a class="btn btn-ghost" href="/en/playground">Try it live →</a>
+        <a class="btn btn-ghost" href="https://github.com/retrychx/agentia" target="_blank" rel="noopener">GitHub repo ↗</a>
+      </div>
+      <div class="hero-install" data-intro>
+        <span class="prompt">$</span>
+        <code id="install-cmd">npm i -g @migor/cli && agentia create my-app</code>
+        <span class="caret" aria-hidden="true"></span>
+        <button type="button" class="copy" id="copy-install" aria-label="Copy" onclick="navigator.clipboard.writeText('npm i -g @migor/cli && agentia create my-app');this.textContent='Copied';this.classList.add('copied');clearTimeout(window.__copyT);window.__copyT=setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},1600)">Copy</button>
+      </div>
+      <div class="hero-stats" data-intro>
+        <span><b>4</b> capability kinds</span><i></i>
+        <span><b>1:1</b> run ↔ trace</span><i></i>
+        <span><b>0</b> runtime dependencies</span><i></i>
+        <span><b>3</b> trigger modes</span><i></i>
+        <span><b>0</b> reflection</span>
+      </div>
+    </div>
+
+    <!-- Hero product evidence: a self-playing trace call tree from one run (reuses the
+         @migor/trace-view renderer and the same scenario script as the playground). The copy
+         says trace is "core", so the hero should show it → this replaced the generic
+         node-network canvas that said nothing unique about the framework. Labelled
+         "recorded replay": it is not a live call, so visitors don't mistake it for live. -->
+    <aside class="hero-demo" aria-label="Trace call tree: a recorded replay of one run">
+      <div class="hero-demo-bar">
+        <i></i><i></i><i></i>
+        <em>run · reviewing a document</em>
+        <button type="button" class="hero-demo-replay" id="hero-replay">Replay</button>
+      </div>
+      <div class="hero-demo-tree" id="hero-trace"></div>
+      <div class="hero-demo-foot">
+        <span class="hu"><i>input</i><b id="hero-in">—</b></span>
+        <span class="hu"><i>output</i><b id="hero-out">—</b></span>
+        <span class="hu"><i>cost estimate</i><b id="hero-cost">—</b></span>
+        <span class="hu-note">Recorded replay · the data is the trace the framework itself produced (runId == traceId)</span>
+      </div>
+    </aside>
+  </header>
+
+  <section class="section" id="capabilities">
+    <p class="sec-label" data-reveal>01 — CAPABILITIES</p>
+    <h2 data-reveal>Four kinds of capability, one abstraction</h2>
+    <p class="section-sub" data-reveal>Capabilities are what a service is made of. All four kinds sit on the main agent's menu as callable entries — declare once, let the model do the dispatching.</p>
+    <div class="grid grid-4">
+      <div class="card" data-card>
+        <div class="card-tag">@Tool</div>
+        <h3>Function calls</h3>
+        <p>A class method is a tool. Arguments are parsed against a JSON Schema and validated before execution; a failure comes back as <code>is_error</code> and the run keeps going.</p>
+      </div>
+      <div class="card" data-card>
+        <div class="card-tag">@Skill</div>
+        <h3>Code-driven flow</h3>
+        <p>Call the model on demand from deterministic code: how many times, when to stop, how to post-process — all decided by your code.</p>
+      </div>
+      <div class="card" data-card>
+        <div class="card-tag">@SubAgent</div>
+        <h3>Isolated sub-agents</h3>
+        <p>Its own loop with a trimmed context. Intermediate work stays inside; only the final report flows back to the main context.</p>
+      </div>
+      <div class="card" data-card>
+        <div class="card-tag">@Prompt</div>
+        <h3>Plain-text assets</h3>
+        <p>Templates and playbooks. Pulled into context when the model decides it needs them; supports volatile and static constants.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-alt" id="features">
+    <p class="sec-label" data-reveal>02 — FEATURES</p>
+    <h2 data-reveal>Built for production</h2>
+    <div class="grid grid-3">
+      <div class="feature feature--key" data-card>
+        <span class="feature-flag">Core</span>
+        <h3>Observable: trace as a first-class citizen</h3>
+        <p>runId == traceId, built in from turn 0. Every model round-trip and capability call is accounted for — tokens, cost, latency, error class — and sub-agents recurse into a tree. One trace exit feeds OTLP or a sink of your own, <strong>per-capability and per-model metrics</strong> are derived from the trace (nothing to instrument), and <code>agentia report</code> prints a one-line tuning report of which capability is slow / expensive / error-prone.</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>CLI and directory conventions</h3>
+        <p><code>create</code> scaffolds, <code>g</code> generates capabilities. One capability per folder, long text in .md; assembly works from either a directory scan or an explicit registry.</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>Static checks at assembly time</h3>
+        <p>Duplicate menu entries, missing references, DI cycles — all fail at startup, not in production.</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>Long context and budgets</h3>
+        <p>Drop the oldest tool pairs first, then summarize and compress; the context-budget guardrail carries hysteresis so it does not flap; CJK-aware token estimation. <code>maxTotalTokens</code> / <code>maxCostUsd</code> stop the run hard once accounted, ending with <code>budget_exceeded</code>.</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>Three trigger modes</h3>
+        <p>Synchronous RPC, asynchronous tasks, and scheduled dispatch share one input contract; idempotent de-duplication, resume from disk.</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>Capability middleware</h3>
+        <p><code>CapabilityMiddleware</code> wraps every capability call in an onion model: auth / rate limiting / caching / auditing are all cross-cutting, accounted for at the trace level, with zero intrusion into business capabilities; the host side also gets graceful shutdown and <code>/healthz</code>.</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>Reflection-free decorators</h3>
+        <p>Standard Stage 3 decorators + explicit DI, no bet on reflect-metadata; works with tsx / esbuild / tsgo.</p>
+      </div>
+      <div class="feature" data-card>
+        <h3>MCP and evals</h3>
+        <p>An MCP server's tools map onto menu entries in one line — connectors (stdio / StreamableHTTP) are <strong>built in</strong> and use only the standard library, adding no third-party dependency (the framework still never imports the MCP SDK); <code>defineEval</code> turns "did my prompt change cause a regression?" into assertions over a trace.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="quickstart">
+    <p class="sec-label" data-reveal>03 — QUICKSTART</p>
+    <h2 data-reveal>Running in three minutes</h2>
+    <div class="steps">
+      <div class="step" data-card>
+        <div class="step-no">1</div>
+        <div>
+          <h3>Scaffold</h3>
+          <pre><code><span class="cmd">npm</span> i -g @migor/cli
+<span class="cmd">agentia</span> create my-app
+<span class="cmd">cd</span> my-app && npm install</code></pre>
+        </div>
+      </div>
+      <div class="step" data-card>
+        <div class="step-no">2</div>
+        <div>
+          <h3>Generate capabilities</h3>
+          <pre><code><span class="cmd">agentia</span> g subagent doc-reviewer   <span class="cm"># isolated sub-agent</span>
+<span class="cmd">agentia</span> g skill note-writer      <span class="cm"># code-driven flow</span>
+<span class="cmd">agentia</span> g prompt style-guide     <span class="cm"># text asset</span></code></pre>
+        </div>
+      </div>
+      <div class="step" data-card>
+        <div class="step-no">3</div>
+        <div>
+          <h3>Run</h3>
+          <pre><code><span class="cm"># put ANTHROPIC_API_KEY into the .env the scaffold generated</span>
+<span class="cmd">npm</span> run dev</code></pre>
+        </div>
+      </div>
+    </div>
+    <div class="code-block" data-reveal>
+      <div class="code-title"><i></i><i></i><i></i><em>src/tools/weather/index.ts</em></div>
+      <pre><code><span class="kw">import</span> { Tool } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">Weather</span> {
+  <span class="dec">@Tool</span>({
+    description: <span class="str">'Get the weather for a city'</span>,
+    schema: {
+      type: <span class="str">'object'</span>,
+      properties: { city: { type: <span class="str">'string'</span> } },
+      required: [<span class="str">'city'</span>],
+      additionalProperties: <span class="kw">false</span>,
+    },
+    strict: <span class="kw">true</span>,
+  })
+  <span class="fn">get_weather</span>(input: { city: <span class="kw">string</span> }) {
+    <span class="kw">return</span> <span class="str">`Shanghai 72°F sunny (${input.city})`</span>;
+  }
+}</code></pre>
+    </div>
+  </section>

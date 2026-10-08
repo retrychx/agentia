@@ -13,9 +13,11 @@ choosing a library (how big is the install?): `npm i @migor/agentia` puts exactl
 `node_modules` and pulls in no vendor SDK. These numbers are recomputed by
 `tests/docs/scoreboard.test.ts` on every run; hand-written figures rot.
 
-> This is a **summary**. The authoritative and always-current documentation is Chinese:
-> [`docs/usage-guide.md`](./docs/usage-guide.md) (API reference, type wiring, known limits) and the
-> [website](https://agentia-web.pages.dev). We keep this file short on purpose — a hand-maintained
+> This is a **summary**. The [website](https://agentia-web.pages.dev/en) is **bilingual** — the English
+> pages mirror the Chinese ones section by section — but the authoritative and always-current
+> **long-form** documentation is Chinese:
+> [`docs/usage-guide.md`](./docs/usage-guide.md) (API reference, type wiring, known limits; the same
+> text is served verbatim at `/llms-full.txt`). We keep this file short on purpose — a hand-maintained
 > full translation drifts.
 
 ## Requirements
@@ -148,7 +150,7 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 | Production observability recipes | [`docs/observability.md`](./docs/observability.md) |
 | Examples (complete app / minimal deploy / observability) | [`examples/`](./examples/) |
 | Design spec & roadmap | [`docs/spec.md`](./docs/spec.md) · [`docs/roadmap.md`](./docs/roadmap.md) |
-| Website · Playground | [agentia-web.pages.dev](https://agentia-web.pages.dev) · [playground](https://agentia-web.pages.dev/playground) |
+| Website · Playground | [agentia-web.pages.dev/en](https://agentia-web.pages.dev/en) · [playground](https://agentia-web.pages.dev/en/playground) |
 
 ## Stability & versioning
 

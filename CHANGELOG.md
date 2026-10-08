@@ -744,6 +744,47 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### 官网 · 全站英文版（`/en`）+ 语言自动检测与手动切换（2026-10-08 ①）
+
+- **是什么**：站点从中文单语扩成中 / 英两版 —— `index / docs / api / playground / tradeoffs`
+  五页**逐节对译** + 英文 404，挂在 `/en/*`（中文仍在根路径，是默认入口）。此前整站只有中文
+  （`fragments/` 下没有 `en/`、也没有 `/en` 路由）⇒ 对外检索面**没有英文落点**，而这正是本仓
+  「瓶颈在产品面 / 分发面」那句话里最直接的一格。
+- **语言怎么定**：`<head>` 最前的一段 `is:inline` 脚本，三条判据 —— ① 先读
+  `localStorage['agentia-lang']`（用户**显式**切过）；② 否则看 `navigator.languages` 里有没有
+  中文；③ 拿不到语言信息就**不跳**（宁可停在默认的中文版，也不猜）。⚠️ 自动跳转**只读不写**
+  localStorage —— 写了就等于把「自动」记成「用户选择」，用户之后手动点回中文会被**立刻弹走**；
+  只有 Nav 的切换控件才写。手动切换在导航右侧（`中 / EN`），指向**同页**的另一种语言。
+- **URL 形态**：`build.format: 'file'` 下英文首页的产物是**扁平的 `en.html`** ⇒ 首页地址是
+  `/en`（无尾斜杠）；`public/_worker.js` 加一条 `/en/` → `/en` 的 308 收敛（访客看到
+  `/en/docs` 会顺手猜 `/en/`）。站点地址一律干净形态（`.html` 会被 Cloudflare Pages 308）。
+- **SEO / agent 面**：两版各自 canonical 指自身，`hreflang` 三处互指（`x-default` 指中文版）；
+  `sitemap.xml.ts` 增 5 条 `/en/*`；`llms.txt.ts` 加「Documentation (English)」节；
+  `scripts/check-website-agent-readiness.mjs` 与 `scripts/build-md-variants.mjs` 的页面枚举改成
+  **递归** —— 不改则英文页**全部在产物守卫射程外**，且拿不到 `.md` 变体（GEO 档 C/D 直接退化）。
+- **英文 docs 页不摆第二份「已知边界」表**：那张表是构建期从**中文** `docs/usage-guide.md` §7
+  抠的，英文页手写第二份必然漂移 ⇒ 改成「一句说明 + 指回单源」；`llms-full.txt` 保持中文单源不动。
+- **客户端脚本文案**（首屏 trace 自播 / 回放面板 / BYOK 真实模式）是**运行期**插进 DOM 的，
+  构建期无从替换 ⇒ 新增 `packages/website/src/scripts/lang.js` 的 `pt(zh, en)` 接缝，中英**贴在一起写**
+  （不抽两份平行数组 —— 那会漂移，而且没有任何东西看得出来）；语言取 `<html lang>`
+  （服务端已经定下的事实），**不读 `localStorage`**（否则「服务端渲了英文页、脚本文案出中文」
+  这种错配就有了可能）。
+- **守卫 `tests/docs/website-i18n.test.ts`**：页面集合一一对应 / 中英 fragment 的 `id` 集合逐页
+  相等 + 剧本骨架（span id / 事件类型 / 顺序 / `usage`）逐例相等 / 英文面 0 CJK（fragment **与
+  真跑客户端脚本**）/ `<html lang>` 映射与三处 `hreflang` / 检测脚本**只读不写** localStorage /
+  五条 `/en` 路由已登记进 sitemap + llms.txt + `_worker.js`。**反向验证过 19 条**（各恰好点名
+  那条，复原后 `sha256` 逐字节一致）—— 其中第一版有一条**假守卫**（裸正则被文件头注释里的
+  `lang='en'` 满足），是变异验证当场抓出来的。
+- ⚠️ 两处如实标注的**射程**：① 该守卫**不看 `dist/`** —— `npm test` 在 `verify-all` 里早于官网
+  构建（步 6 vs 步 8）；产物侧仍由步 8 的 `scripts/check-website-agent-readiness.mjs` 守。
+  ② 「英文面 0 CJK」走**行为断言**（子进程喂假 DOM + 假 `fetch` 真跑，见
+  `tests/fixtures/website-i18n-harness.mjs`）而非源码扫描：本仓 `typescript` 是 7.x（tsgo），
+  主入口已不再导出经典 parser API，而手写扫描器会被 `playground.js` 里**带反引号 / 引号的正则**
+  （`/^\s*```/`、`/[&<>"']/g`）带偏（实测 24 处假命中）⇒ 它能抓「新增一段没包 `pt()` 的中文」，
+  抓不到「**永远跑不到的死分支**」里漏包。
+- 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
+  既有使用者不需要任何动作。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

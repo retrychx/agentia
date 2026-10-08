@@ -24,6 +24,11 @@
  *  ③ **`.md` 不存在就照旧。** 改写后拿不到 200 就打回原样，让 Pages 的硬 404 继续生效；
  *     绝不把「没有 markdown 变体」变成「这个页面不存在」。
  *
+ *  ④ **`/en/` 规范化到 `/en`（2026-10-08 官网英文版）。** `build.format: 'file'` 下
+ *     英文首页的产物是**扁平的 `en.html`**（不是 `en/index.html`）⇒ Pages 对 `/en/`
+ *     只会回 404。而 `/en/` 是很自然的输入（访客看到 `/en/docs` 会猜 `/en/`）。
+ *     这里 308 到最终形态 —— 与 Pages 自己对 `x.html` 的处理同向。
+ *
  * 缓存注意：改写走的是**另一个 URL**（`/docs` → `/docs.md`），所以边缘缓存天然按路径分开，
  * 不会把 markdown 回给浏览器；`vary: Accept` 仍写上，把「同一 URL 两种表示」这件事说清楚。
  */
@@ -35,6 +40,10 @@ export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url);
+      // 见边界 ④：英文首页的产物是扁平的 en.html ⇒ 把目录形态收敛到它
+      if (url.pathname === '/en/') {
+        return Response.redirect(new URL('/en', url).href, 308);
+      }
       // 媒体类型按 RFC 9110 大小写不敏感（`Text/Markdown` 与 `text/markdown` 同义）⇒ 先归一
       const wantsMarkdown = (request.headers.get('accept') ?? '')
         .toLowerCase()

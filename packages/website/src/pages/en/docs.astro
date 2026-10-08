@@ -1,0 +1,22 @@
+---
+// English docs page. Mirrors src/pages/docs.astro, with one deliberate difference: the Chinese page
+// injects the §7 "known boundaries" table at build time from the Chinese single source
+// docs/usage-guide.md. This page carries a pointer to that single source instead, because a second
+// hand-written table here would inevitably drift (see docs/plans/2026-10-08-website-i18n.md §4).
+import Base from '../../layouts/Base.astro';
+import content from '../../fragments/en/docs.html?raw';
+
+const footerLinks = [
+    { href: '/en', label: 'Home' },
+    { href: '/en/playground', label: 'Playground' },
+    { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+];
+---
+<Base title='Guide — Agentia' description='The Agentia guide: quickstart, the four capability kinds, layout conventions and assembly, capability middleware, trigger modes, long-context policy, structured results, observability (trace as a first-class citizen), hard cost control, CLI reference and environment variables.' page='docs' lang='en' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../../scripts/scrollspy.js';
+  </script>
+</Base>

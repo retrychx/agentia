@@ -1,0 +1,73 @@
+<header class="pg-head">
+    <div class="pg-mode" id="pg-mode" role="tablist" aria-label="Run mode">
+      <button type="button" class="pg-mode-btn active" data-mode="sim" role="tab">Simulated demo</button>
+      <button type="button" class="pg-mode-btn" data-mode="real" role="tab">Real model (your own key)</button>
+    </div>
+    <span class="pg-badge" id="pg-badge"><i></i><span id="pg-badge-text">Simulated demo: a local pre-recorded script, not a real model call</span></span>
+    <h1>Watch a run happen</h1>
+    <p id="pg-head-sub">Pick a task and watch the main agent think, pick a capability off its menu, open an llm.turn, call the capability and assemble the result. On the right is Agentia's <strong>observability surface</strong> itself: the trace call tree and the token / cost figures grow in step with the replay — one run == one trace, built in from turn 0, not a separate tracing SDK bolted on.</p>
+  </header>
+
+  <div class="pg-byok" id="pg-byok" hidden>
+    <p class="pg-byok-note">
+      <strong id="byok-note-lead">Your key is stored only in browser localStorage and sent straight to the API — it never passes through any server.</strong>
+      This page is purely static with no backend at all; you can hit "Clear" at any time to delete the locally saved key.
+    </p>
+    <div class="pg-byok-row">
+      <label class="pg-byok-field pg-byok-provider">
+        <span>Provider</span>
+        <select id="byok-provider">
+          <option value="anthropic">Anthropic</option>
+          <option value="deepseek">DeepSeek</option>
+        </select>
+      </label>
+      <label class="pg-byok-field">
+        <span id="byok-key-label">Anthropic API Key</span>
+        <input type="password" id="byok-key" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="pg-byok-field pg-byok-model">
+        <span>Model</span>
+        <select id="byok-model"></select>
+        <input type="text" id="byok-model-custom" placeholder="Custom model name" autocomplete="off" spellcheck="false" hidden />
+      </label>
+      <button class="pg-btn pg-btn-replay pg-byok-clear" id="byok-clear" type="button">Clear</button>
+    </div>
+  </div>
+
+  <main class="pg-layout" id="pg-layout">
+    <!-- Left: scenarios -->
+    <aside>
+      <p class="pg-col-label">01 — TASK</p>
+      <div id="pg-scenarios"></div>
+      <div class="pg-actions">
+        <button type="button" class="pg-btn pg-btn-run" id="btn-run">Run</button>
+        <button type="button" class="pg-btn pg-btn-replay" id="btn-replay" disabled>Replay</button>
+      </div>
+    </aside>
+
+    <!-- Middle: menu + replay -->
+    <section>
+      <p class="pg-col-label">02 — REPLAY</p>
+      <div class="pg-menu" id="pg-menu"></div>
+      <div class="pg-term">
+        <div class="pg-term-bar"><i></i><i></i><i></i><em>run replay</em></div>
+        <div class="pg-term-body" id="term-body">
+          <div class="pg-term-empty" id="term-empty">Pick a task on the left and hit "Run" to start the replay</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right: trace + usage -->
+    <aside>
+      <p class="pg-col-label">03 — TRACE (runId == traceId)</p>
+      <div class="pg-trace" id="trace-body">
+        <div class="tr-empty" id="trace-empty">// waiting for the run to start…</div>
+      </div>
+      <div class="pg-usage">
+        <div class="u-row"><span>input tokens</span><b id="u-in">0</b></div>
+        <div class="u-row"><span>output tokens</span><b id="u-out">0</b></div>
+        <div class="u-row"><span>cost estimate</span><b class="u-cost" id="u-cost">$0.0000</b></div>
+        <div class="u-note" id="u-note">Estimated at claude-opus-5 rates ($5 input / $25 output per million tokens, the same table the framework ships), for illustration only.</div>
+      </div>
+    </aside>
+  </main>

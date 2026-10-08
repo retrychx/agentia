@@ -1,7 +1,12 @@
 ---
 // 页脚。links 由各页传入（保留迁移前各页脚链接的既有差异，做到零视觉回归）。
 // 传给 Base 的 footerLinks 形如 [{ href, label, external? }]。
-const { links = [] } = Astro.props;
+// 语言面（2026-10-08）：品牌句随 `lang` 变；links 的文案由各页按自己的语言给。
+const { links = [], lang = 'zh' } = Astro.props;
+const tagline =
+  lang === 'en'
+    ? 'Agentia — a declarative framework for agent services'
+    : 'Agentia — 声明式 Agent 服务开发框架';
 ---
 <footer class="footer">
   <div class="footer-links">
@@ -9,5 +14,5 @@ const { links = [] } = Astro.props;
       <a href={l.href} target={l.external ? '_blank' : undefined} rel={l.external ? 'noopener' : undefined}>{l.label}</a>
     ))}
   </div>
-  <p>Agentia — 声明式 Agent 服务开发框架</p>
+  <p>{tagline}</p>
 </footer>

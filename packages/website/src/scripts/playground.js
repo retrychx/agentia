@@ -5,6 +5,7 @@
 import { createTraceView, fmtArg, rawArg, fmtNum, fmtMs } from '@migor/trace-view';
 import { SCENARIOS } from './scenarios.js';
 import { playScript } from './trace-player.js';
+import { pt } from './lang.js';
 
 (() => {
   /* 预置场景脚本与回放游标都抽到了同级模块（首屏自播共用同一份数据与节奏）。 */
@@ -97,7 +98,9 @@ import { playScript } from './trace-player.js';
   }
 
   function panelThink(text) {
-    addBlock(el('div', 'tp-block tp-think', '主 agent 思考中… ' + text));
+    addBlock(
+      el('div', 'tp-block tp-think', pt('主 agent 思考中… ', 'main agent thinking… ') + text),
+    );
   }
 
   function panelNote(text) {
@@ -114,7 +117,7 @@ import { playScript } from './trace-player.js';
 
   function panelFinalOpen() {
     const block = el('div', 'tp-block tp-final');
-    block.appendChild(el('div', 'tp-head', '✓ 最终报告'));
+    block.appendChild(el('div', 'tp-head', pt('✓ 最终报告', '✓ Final report')));
     streamEl = el('div', 'tp-stream tp-caret');
     block.appendChild(streamEl);
     addBlock(block);
@@ -307,9 +310,11 @@ import { playScript } from './trace-player.js';
   /* ========== 回放引擎 ========== */
   function resetPanels() {
     termBody.innerHTML = '';
-    termBody.appendChild(el('div', 'pg-term-empty', '任务：' + state.scenario.task));
+    termBody.appendChild(el('div', 'pg-term-empty', pt('任务：', 'Task: ') + state.scenario.task));
     traceBody.innerHTML = '';
-    traceBody.appendChild(el('div', 'tr-empty', '// 等待 run 开始…'));
+    traceBody.appendChild(
+      el('div', 'tr-empty', pt('// 等待 run 开始…', '// waiting for the run to start…')),
+    );
     renderUsage({ input: 0, output: 0 });
     streamEl = null;
   }
@@ -346,7 +351,16 @@ import { playScript } from './trace-player.js';
         if (ev.note) panelNote(ev.note);
         if (ev.finalOpen) panelFinalOpen();
         if (ev.done) {
-          addBlock(el('div', 'tp-note', '— run 完成：trace 已归档，runId == traceId —'));
+          addBlock(
+            el(
+              'div',
+              'tp-note',
+              pt(
+                '— run 完成：trace 已归档，runId == traceId —',
+                '— run complete: the trace is archived, runId == traceId —',
+              ),
+            ),
+          );
         }
       },
     });

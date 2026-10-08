@@ -1,0 +1,22 @@
+---
+// English trade-offs page. Mirrors src/pages/tradeoffs.astro: body content lives in
+// src/fragments/en/tradeoffs.html and is injected verbatim; the shell comes from Base.astro.
+import Base from '../../layouts/Base.astro';
+import content from '../../fragments/en/tradeoffs.html?raw';
+
+const footerLinks = [
+  { href: '/en', label: 'Home' },
+  { href: '/en/docs', label: 'Docs' },
+  { href: '/en/api', label: 'API' },
+  { href: '/en/playground', label: 'Playground' },
+  { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+  { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+];
+---
+<Base title='Trade-offs — Agentia' description='Agentia trade-offs: what we do not do, what that costs, and when you should pick something else — situations it does not fit, things deliberately left out (and the price of zero runtime dependencies), a cost list, and an in-repo path to verify each claim.' page='tradeoffs' lang='en' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../../scripts/scrollspy.js';
+  </script>
+</Base>

@@ -7,12 +7,51 @@
 //      （实测 /docs.html → /docs、/index.html → /）。用它等于每次点击多一跳。
 //   ② 相对路径在本站的 404 页上是**错的**：404 页会以**任意**请求路径被送出
 //      （/foo/bar/baz 也回它），浏览器按 /foo/bar/ 解析 `./docs` ⇒ 又落回 404。
-const { page = 'home' } = Astro.props;
+//
+// 语言面（2026-10-08）：导航文案与站内链接都随 `lang` 变；`zhHref` / `enHref` 是
+// 「本页在两种语言下的地址」，由 Base.astro 算好传进来（页面不各算一次）。
+// 切换控件点击时**写** localStorage（自动检测只读不写，见 Base.astro 的注释）。
+const {
+  page = 'home',
+  lang = 'zh',
+  zhHref = '/',
+  enHref = '/en',
+} = Astro.props;
 const isHome = page === 'home';
+const isEn = lang === 'en';
+/** 站内链接的语言前缀：英文站挂在 `/en` 下，中文站是根 */
+const L = isEn ? '/en' : '';
+/** 品牌 logo 指向**当前语言**的首页 */
+const homeHref = isEn ? '/en' : '/';
+const navText = isEn
+  ? {
+      capabilities: 'Capabilities',
+      features: 'Features',
+      quickstart: 'Quickstart',
+      home: 'Home',
+      playground: 'Playground',
+      docs: 'Docs',
+      api: 'API',
+      tradeoffs: 'Trade-offs',
+      menu: 'Open menu',
+      switchLabel: 'Language',
+    }
+  : {
+      capabilities: '能力',
+      features: '特性',
+      quickstart: '快速开始',
+      home: '首页',
+      playground: 'Playground',
+      docs: '文档',
+      api: 'API',
+      tradeoffs: '取舍',
+      menu: '打开菜单',
+      switchLabel: '语言',
+    };
 ---
 <nav class:list={['nav', !isHome && 'scrolled']}>
   <div class="nav-inner">
-    <a class="brand" href={isHome ? '#top' : '/'}>
+    <a class="brand" href={isHome ? '#top' : homeHref}>
       <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
         <rect x="1.5" y="1.5" width="29" height="29" rx="7" stroke="currentColor" stroke-width="1.6"></rect>
         <circle cx="16" cy="16" r="3.4" fill="currentColor"></circle>
@@ -22,29 +61,46 @@ const isHome = page === 'home';
       </svg>
       <span>Agentia</span>
     </a>
-    <button class="nav-toggle" type="button" aria-label="打开菜单" aria-expanded="false" aria-controls="nav-links">
+    <button class="nav-toggle" type="button" aria-label={navText.menu} aria-expanded="false" aria-controls="nav-links">
       <span></span><span></span><span></span>
     </button>
     <div class="nav-links" id="nav-links">
       {isHome ? (
         <>
-          <a href="#capabilities">能力</a>
-          <a href="#features">特性</a>
-          <a href="#quickstart">快速开始</a>
-          <a href="/playground">Playground</a>
-          <a href="/docs">文档</a>
-          <a href="/api">API</a>
-          <a href="/tradeoffs">取舍</a>
+          <a href="#capabilities">{navText.capabilities}</a>
+          <a href="#features">{navText.features}</a>
+          <a href="#quickstart">{navText.quickstart}</a>
+          <a href={`${L}/playground`}>{navText.playground}</a>
+          <a href={`${L}/docs`}>{navText.docs}</a>
+          <a href={`${L}/api`}>{navText.api}</a>
+          <a href={`${L}/tradeoffs`}>{navText.tradeoffs}</a>
         </>
       ) : (
         <>
-          <a href="/">首页</a>
-          <a href="/playground">Playground</a>
-          <a href="/docs">文档</a>
-          <a href="/api">API</a>
-          <a href="/tradeoffs">取舍</a>
+          <a href={homeHref}>{navText.home}</a>
+          <a href={`${L}/playground`}>{navText.playground}</a>
+          <a href={`${L}/docs`}>{navText.docs}</a>
+          <a href={`${L}/api`}>{navText.api}</a>
+          <a href={`${L}/tradeoffs`}>{navText.tradeoffs}</a>
         </>
       )}
+      <div class="lang-switch" role="group" aria-label={navText.switchLabel}>
+        <a
+          href={zhHref}
+          class:list={[!isEn && 'is-active']}
+          aria-current={!isEn ? 'true' : undefined}
+          hreflang="zh-CN"
+          lang="zh-CN"
+          onclick="try{localStorage.setItem('agentia-lang','zh')}catch(e){}">中</a>
+        <span aria-hidden="true">/</span>
+        <a
+          href={enHref}
+          class:list={[isEn && 'is-active']}
+          aria-current={isEn ? 'true' : undefined}
+          hreflang="en"
+          lang="en"
+          onclick="try{localStorage.setItem('agentia-lang','en')}catch(e){}">EN</a>
+      </div>
       <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>
     </div>
   </div>

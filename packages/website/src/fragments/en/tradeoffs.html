@@ -1,0 +1,152 @@
+<main class="docs-layout">
+    <aside class="docs-nav" id="docs-nav">
+      <p class="dn-title">CONTENTS</p>
+      <a href="#position">Positioning: the two layers</a>
+      <a href="#not-for">When not to use it</a>
+      <a href="#nope">Things deliberately skipped</a>
+      <a href="#cost">The cost list</a>
+      <a href="#pick-us">When to pick it</a>
+      <a href="#verify">How to verify it yourself</a>
+    </aside>
+
+    <div class="docs-content">
+      <header class="api-hero">
+        <p class="api-kicker">TRADE-OFFS · @migor/agentia</p>
+        <h1>Trade-offs</h1>
+        <p class="api-lede">
+          This page <strong>does not list strengths</strong>. It spells out <strong>what we don't do</strong>,
+          <strong>what those omissions cost</strong>, and <strong>when you should pick something else</strong>.
+          The genuinely hard question when evaluating a library is never "what does it have" — it is
+          "where does it stop, and who does the work past that line".
+        </p>
+        <div class="api-chips">
+          <span class="api-chip"><b>0</b> runtime dependencies</span>
+          <span class="api-chip"><b>2</b> layers (runtime + observability)</span>
+          <span class="api-chip"><b>0.x</b> minors may contain breaking changes</span>
+          <span class="api-chip"><b>Node only</b> Deno / Bun / edge unverified</span>
+        </div>
+      </header>
+
+      <!-- Positioning — "only two layers" is this repo's own written positioning (the phrase
+           "give the seam, not the policy" appears 4 times in spec.md); this page does not
+           restate it on the repo's behalf. -->
+      <section id="position">
+        <h2>Positioning: the two layers it occupies</h2>
+        <p>
+          This framework <strong>deliberately occupies only two layers</strong>: the <strong>runtime</strong>
+          (four kinds of capability + main-agent orchestration + host exports) and <strong>observability</strong>
+          (trace / cost / metrics are <strong>first-class</strong>, not bolted on).
+          That is the entire content of the "can it go straight to production" claim.
+        </p>
+        <p>
+          Every other layer — orchestrator UI, evaluation platform, memory / vector services, hosting and
+          deployment artifacts — is <strong>out of scope</strong>. The test is written down in the repo:
+          <strong>give the seam, not the policy</strong> (it appears four times in <code>docs/spec.md</code>).
+          So the answer to "should this be built in" is: <strong>anything that pulls in a third-party
+          dependency stays out of the core</strong> — because the core's selling point is
+          <strong>zero runtime dependencies</strong> (guarded by
+          <code>tests/architecture/no-runtime-deps.test.ts</code>, not a verbal promise).
+        </p>
+        <p>
+          ⚠️ There is exactly one rule, and it is written in <code>docs/usage-guide.md</code>:
+          <strong>"does it pull in a third-party dependency", not "would users like it"</strong>.
+          That is why the MCP stdio connector is <strong>built in</strong> (standard library only), while host
+          integrations such as gRPC can only ever be a <strong>recipe + example</strong>
+          (<code>examples/grpc-host/</code> already proves "swapping the host = composing outside the seam").
+        </p>
+      </section>
+
+      <!-- When not to use it — this section is the acceptance point of review P1-1. -->
+      <section id="not-for">
+        <h2>When not to use it</h2>
+        <p>Every row below means "<strong>this road is closed — don't pick it</strong>", not "it will get better later".</p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>If your situation is…</th><th>Why not pick it</th><th>Whose home turf that is</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>You want <strong>visual orchestration / low code</strong>: drag-and-drop flowcharts, editing the flow online</td><td>This framework is a <strong>library</strong>; orchestration lives in code (decorators + DI). There is no visual editor, and none is planned</td><td>LangGraph's graphs and state machines; Mastra's workflows and platform UI</td></tr>
+            <tr><td>You want <strong>Python</strong></td><td>TypeScript only. Deno / Bun / edge runtime are <strong>unverified</strong> (outside the <code>engines</code> promise and outside CI)</td><td>LangGraph (Python-native), the various Python SDKs</td></tr>
+            <tr><td>You want a <strong>hosted platform</strong> (managed runs, managed memory, managed evals)</td><td>This framework ships no service. What it hands you is "<strong>a service you can deploy yourself</strong>", not the platform that runs it for you</td><td>Products that are "framework + platform" in one, such as Mastra</td></tr>
+            <tr><td>You want <strong>batteries-included vector retrieval / an eval platform</strong></td><td>Zero runtime dependencies ⇒ no vendor SDKs installed. In <code>src/</code>, <code>grep -rniE "embedding|vector|retriev"</code> returning <strong>zero hits is deliberate</strong></td><td>Whoever needs retrieval brings their own service (see "RAG" in the next section)</td></tr>
+            <tr><td>You need <strong>client-side streaming UI bindings</strong> (React/Vue hooks like <code>useChat</code>)</td><td>There is no client SDK and no React binding. A server is the only shape it takes</td><td>The UI layer of the Vercel AI SDK</td></tr>
+            <tr><td>You need a <strong>1.0-grade stability promise</strong></td><td>Currently <code>0.x</code>: <strong>minors may contain breaking changes</strong> (the rule is "it must leave a trace", not "it won't happen")</td><td>Anything that has shipped 1.0 at a size you accept</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="nope">
+        <h2>Things deliberately left out (and who fills the gap)</h2>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>Not doing</th><th>Reason (in-repo source of truth)</th><th>How that gap gets filled</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>No vendor SDKs installed</td><td>Zero runtime dependencies is the selling point ⇒ adapters must be <strong>hand-written + global <code>fetch</code></strong></td><td>Point <code>ANTHROPIC_BASE_URL</code> at a compatible endpoint to switch model providers</td></tr>
+            <tr><td>No built-in <strong>logging layer / sampling / redaction / storage / deployment artifacts</strong></td><td><code>docs/spec.md</code> §9.3 <strong>locks this</strong> (stop asking for it to be "added")</td><td>The four recipes in <code>docs/observability.md</code> + <code>examples/observability/</code> + <code>grafana-dashboard.json</code></td></tr>
+            <tr><td>No built-in <strong>RAG</strong></td><td>Not a missing feature: the shape of <code>@Prompt</code> is exactly "the model can call it; assets are pulled first and injected"</td><td>Replace that <code>asset()</code> with <code>search(query)</code> — <strong>zero changes</strong> in <code>src/</code></td></tr>
+            <tr><td>No built-in <strong>channel / transport layer</strong></td><td>Same rule: anything needing a third-party client stays out of the core</td><td><code>examples/grpc-host/</code> already proves "swapping the host = composing outside the seam", and it runs in e2e</td></tr>
+            <tr><td>No <strong>client SDK / React bindings</strong></td><td>Not in those two layers</td><td>The server returns structured results; the front end consumes them</td></tr>
+            <tr><td>The three <code>@migor/*</code> companion packages are <strong>not published to npm</strong></td><td>A mechanism, not an oversight: <code>private: true</code> — with no exceptions (<code>tests/docs/stability.test.ts</code> guards the set)</td><td>Copy the directory or use <code>file:</code>; <code>npm i @migor/trace-view</code> will <strong>404</strong>, and that is a decision, not a bug</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="cost">
+        <h2>The cost list</h2>
+        <p>What you pay for choosing it, spelled out item by item (every line is verifiable yourself):</p>
+        <ul>
+          <li><strong>You have to read the docs for assembly and conventions</strong>: decorators + DI are
+              <strong>explicit</strong> — directory conventions, provider registration,
+              <code>loadEnvFile()</code> belonging in the assembly module rather than the entry point (put it
+              in the wrong place and <code>agentia dev</code> silently fails to read <code>.env</code>). What
+              you get in return is "no magic"; the cost is that the first step involves reading.</li>
+          <li><strong>You wire up the observability consumer side yourself</strong>: there is exactly one
+              exit (the seam <code>TraceSink.export(trace)</code>), but <strong>where to store it, how to query
+              it, whether to sample and redact</strong> is your call (the recipes are there; none of it is
+              default behaviour).</li>
+          <li><strong>By default the trace does not record assistant text</strong>: to get it you must turn on
+              <code>traceContent:'full'</code> explicitly, and that is <strong>priced by output bytes</strong>
+              (measured <strong>13.6×</strong> for large outputs, only 1.0× for small ones — see
+              <a href="/en/docs#perf">Performance order of magnitude</a>).</li>
+          <li><strong><code>/healthz</code> and <code>/metrics</code> are unauthenticated</strong>: in
+              production you must restrict the reachability of <code>/metrics</code> at the reverse proxy
+              (the metrics carry sensitive readings such as capability names and cost). The full list is in
+              <code>docs/deployment.md</code>.</li>
+          <li><strong>0.x</strong>: every minor may be "this time we fixed a spot where a promise wasn't kept".
+              The rule is that <strong>breaking changes must leave a trace</strong> (a CHANGELOG migration
+              section) — not that there won't be any.</li>
+          <li><strong>Node only</strong>: the only store that touches a built-in module is
+              <code>SqliteTaskStore</code> (it needs <code>node:sqlite</code> from Node ≥ 22.5), and it
+              <strong>fails loudly at construction time</strong> when that is unavailable.</li>
+        </ul>
+      </section>
+
+      <section id="pick-us">
+        <h2>When to pick it</h2>
+        <p>Conversely there are only three cases, and all of them are verifiable:</p>
+        <ol>
+          <li>You use <strong>TypeScript / Node</strong> and need to deliver a <strong>service you can deploy</strong> (not a demo).</li>
+          <li>You treat <strong>trace / cost / metrics</strong> as first-class — they decide whether you dare to ship; they are not logs bolted on afterwards.</li>
+          <li>You care about the <strong>install surface</strong>: <code>npm i @migor/agentia</code> adds <strong>one</strong> package and <strong>zero</strong> runtime dependencies (no vendor SDKs).</li>
+        </ol>
+      </section>
+
+      <section id="verify">
+        <h2>How to verify it yourself</h2>
+        <p>
+          Every claim on this page points at something checkable in the repo — <strong>don't trust this page, go run it</strong>:
+        </p>
+        <ul>
+          <li>Stability promises and "which packages are not published": <a href="/en/docs#versioning">Versioning &amp; stability</a>;
+              <code>tests/docs/stability.test.ts</code> guards the wording.</li>
+          <li>The full boundary list (dozens of rows, each with a guard): <code>docs/usage-guide.md</code> §7 "Known boundaries".
+              The table on the docs page is <strong>generated at build time from the single source</strong>, so it cannot drift.</li>
+          <li>Performance order of magnitude and the re-run commands: <a href="/en/docs#perf">Performance order of magnitude</a>
+              (⚠️ milliseconds are local-machine figures, not an SLA).</li>
+          <li>Deployment checklist: <code>docs/deployment.md</code>.</li>
+          <li>Zero dependencies itself: <code>tests/architecture/no-runtime-deps.test.ts</code>.</li>
+        </ul>
+      </section>
+    </div>
+  </main>
