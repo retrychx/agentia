@@ -62,7 +62,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -289,6 +289,72 @@ describe('verify-all.sh ↔ ci.yml：工具链的自我描述必须互为真值'
       'verify-all.sh 的收尾消息里出现了写死的计数（`另有 N 个`）。\n' +
         '  ⇒ 这里曾写「3 个」而清单只列了 2 个 —— 计数与清单分居两处就迟早各说各话。\n' +
         '     用数组长度展开（见脚本上一行注释）算出来 —— 数字和清单分居两处就迟早各说各话。',
+    );
+  });
+
+  // ── 「等新版本上线」的判据必须绑在**本次运行的身份**上（2026-10-08）─────────────
+  //
+  // 修的是一条真缺陷：那条轮询原本判「`robots.txt` 里出现 `Sitemap: ` 行」，注释写着
+  // 「它是本轮新增的产物，只有新版才可能有」—— 而那一行自 PR #119 起**每一版都有**
+  // ⇒ 条件恒为真、从不等待。实测：第 1 次探测就报「已在线上」，而 AFDocs 同时读到
+  // **旧的 sitemap**，刷出两条假 FAIL（llms-txt-links-resolve / llms-txt-coverage）。
+  // ⇒ **「只有新版才有的字面量」会随版本变旧、然后恒真**；不会腐烂的判据只有
+  //   「本次运行自己的身份」。这条守卫钉的是那个性质，不是某个具体字符串。
+  it('「等新版本上线」的判据要绑 $GITHUB_SHA，且站点真按它输出构建标记', async () => {
+    const job = jobs.find((j) => j.id === 'deploy-website');
+    assert.ok(job, 'ci.yml 里没有 `deploy-website` job —— 解析锚点坏了，或 job 被改名');
+
+    // ① 判据侧：必须是「**轮询**里拿本次提交去比」。
+    //    ⚠️ 形状不能再松，两个理由都是变异当场打出来的（第一版两处都假绿）：
+    //      · 只匹配 `${GITHUB_SHA}` → 同一个 job 里**构建期自证**那行也有它，
+    //        轮询退回旧的 `Sitemap: ` 形态照样能匹配；
+    //      · 不锚 `curl … |` → 说明注释里那句「`# build: <sha>` == 本次运行的 ${GITHUB_SHA}」也算数。
+    const m = /curl[^\n|]*\|[^\n]*grep -qF "([^"$]*)\$\{GITHUB_SHA\}"/.exec(job.body);
+    assert.ok(
+      m,
+      'deploy-website 里找不到「按本次提交判新鲜度」的轮询 —— 期望的形状是 `curl … | grep -qF "<标记>"`，\n' +
+        '     而「本次提交」是 **shell 变量展开**（不是写死的字面量）。\n' +
+        '  ⇒ 判据必须是「本次运行要部署的那个提交」；固定字面量会随版本变旧、然后恒真' +
+        ' —— 这正是它腐烂过一次的形态（旧版等的是 `Sitemap: ` 行）。\n' +
+        '     改写法时这条守卫要跟着改，但**别删掉它**：它守的是那个性质，不是那个字符串。',
+    );
+    const marker = m[1];
+    assert.ok(marker.length > 0, '轮询匹配到了，但标记是空串 —— 那样下游的核验会空转成绿');
+
+    // ② 生产侧：**真跑** robots.txt.ts，看它按 $GITHUB_SHA 输出什么。
+    //    为什么不核源码文本：那个文件的**注释里**也写着同一个标记 —— 核文本会被自己的注释
+    //    喂绿（变异 C3 的第一版就是这么 exit 0 的）。行为断言则注释 / 排版 / 重构都骗不过。
+    //    `robots.txt.ts` 只有 `import type`（编译期擦除）⇒ 运行时零依赖，可以直接 import。
+    const { GET } = (await import(
+      pathToFileURL(join(repoRoot, 'packages', 'website', 'src', 'pages', 'robots.txt.ts')).href
+    )) as { GET: (ctx: { site: URL }) => Response };
+    const render = async (sha: string | undefined) => {
+      const saved = process.env.GITHUB_SHA;
+      try {
+        if (sha === undefined) delete process.env.GITHUB_SHA;
+        else process.env.GITHUB_SHA = sha;
+        return await GET({ site: new URL('https://agentia-web.pages.dev') }).text();
+      } finally {
+        if (saved === undefined) delete process.env.GITHUB_SHA;
+        else process.env.GITHUB_SHA = saved;
+      }
+    };
+
+    const sha = 'cafebabe0123456789abcdef0123456789abcdef';
+    const withSha = await render(sha);
+    assert.ok(
+      withSha.includes(`${marker}${sha}`),
+      `robots.txt.ts 没有把 $GITHUB_SHA 按 \`${marker}<sha>\` 输出 ——\n` +
+        '  ⇒ ci.yml 那侧等的就是这个串；对不上只会白等 120s 再照旧打分，' +
+        '而本步是 continue-on-error、退化不会红（正是它腐烂过一次的原因）。',
+    );
+    // 反向：没给 SHA（本地构建）时**不许**输出这一行 ——
+    // 「这一行在不在」本身就是「这份产物是不是 CI 构建的」的判据，编个假缺省值就把它废了。
+    const withoutSha = await render(undefined);
+    assert.ok(
+      !withoutSha.includes(marker),
+      `没设 GITHUB_SHA 时 robots.txt.ts 仍然输出了 \`${marker}\` ——\n` +
+        '  ⇒ 那等于给判据编了个假缺省值（它又会恒真）。本地构建就该没有这一行。',
     );
   });
 });

@@ -12,6 +12,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
  *   · 该改写的改写（含 content-type 与 vary）
  *   · 不该碰的一律原样透传（有扩展名的路径、没 .md 变体的路径、无该请求头的普通访问）
  *   · 协商失败/抛异常 → 退回静态资产，**绝不把 404 变成 200、也不把请求打成 500**
+ *   · `/en/` → `/en` 那条例外规则（边界 ④）的状态码 / 目标 / **缓存头** ——
+ *     它当初就是因为「Pages 自己那条 308 与 `Response.redirect()` 都不带 cache 头」
+ *     才由我们接手的，所以缓存头是这条规则的**存在理由**，不能只核个状态码。
  */
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -136,6 +139,41 @@ describe('官网内容协商：_worker.js', () => {
       calls.map((c) => c.url),
       ['/docs/'],
     );
+  });
+
+  // ── 边界 ④：`/en/` → `/en`（2026-10-08 官网英文版）──────────────────────
+  //
+  // 为什么值得单独钉：这条 308 是**我们**发、而不是交给 Pages 自己那条规范化的，
+  // 全部理由就在响应头（见 _worker.js 边界 ④）。所以判据除了状态码与目标，
+  // 必须**含缓存头** —— 少了这一条，把实现换回 `Response.redirect()` 也不会红，
+  // 而那正是会退化成「裸 308」的那一步。
+  it('/en/ 由我们 308 到 /en，且带着缓存头（不交给 Pages 的裸 308）', async () => {
+    const { env, calls } = fakeEnv(() => ok('text/html'));
+    const res = await worker.fetch(get('/en/'), env);
+    assert.equal(res.status, 308);
+    assert.equal(res.headers.get('location'), 'https://agentia-web.pages.dev/en');
+    assert.equal(
+      res.headers.get('cache-control'),
+      'public, max-age=0, must-revalidate',
+      '这条 308 丢了缓存头 —— Pages 自己那条 308 与 Response.redirect() 都不带，' +
+        '接手它的理由就是补上这个头',
+    );
+    assert.deepEqual(calls, [], '/en/ 是我们的规则负责的，不该再去问静态资产');
+  });
+
+  it('/en/ 的规范化与 Accept 无关（带 text/markdown 也是 308，不会给 .md）', async () => {
+    const { env, calls } = fakeEnv(() => ok('text/markdown'));
+    const res = await worker.fetch(get('/en/', 'text/markdown'), env);
+    assert.equal(res.status, 308);
+    assert.deepEqual(calls, [], '规范化没做，反而去协商了 markdown');
+  });
+
+  it('/en（无尾斜杠）不拦：它是英文首页本体，必须原样透传', async () => {
+    const html = ok('text/html; charset=utf-8', '<html>en</html>');
+    const { env, calls } = fakeEnv(() => html);
+    const res = await worker.fetch(get('/en'), env);
+    assert.equal(res, html, '/en 被拦了 —— 它是英文首页本体，不是待规范化的目录形态');
+    assert.deepEqual(calls, [{ url: '/en', method: 'GET' }]);
   });
 
   it('没有 .md 变体 ⇒ 退回原样：404 仍是 404，绝不变成 200', async () => {

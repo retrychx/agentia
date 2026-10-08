@@ -25,9 +25,22 @@
  *     绝不把「没有 markdown 变体」变成「这个页面不存在」。
  *
  *  ④ **`/en/` 规范化到 `/en`（2026-10-08 官网英文版）。** `build.format: 'file'` 下
- *     英文首页的产物是**扁平的 `en.html`**（不是 `en/index.html`）⇒ Pages 对 `/en/`
- *     只会回 404。而 `/en/` 是很自然的输入（访客看到 `/en/docs` 会猜 `/en/`）。
- *     这里 308 到最终形态 —— 与 Pages 自己对 `x.html` 的处理同向。
+ *     英文首页的产物是**扁平的 `en.html`**（不是 `en/index.html`）⇒ 英文首页的规范地址是
+ *     `/en`；而 `/en/` 是很自然的输入（访客看到 `/en/docs` 会猜 `/en/`）。这里 308 到最终形态。
+ *
+ *     ⚠️ 这条规则**不是**「Pages 自己处理不了才补的」—— 实测（2026-10-08）Pages 会把
+ *     `/docs/`、`/en/docs/` 这类「产物里存在 `x.html`」的目录形态 308 到干净形态
+ *     （回的是**相对** `location: /docs`），`/en/` 同理。**留下这条规则的理由是响应头**：
+ *     Pages 自己那条 308 一个 cache 头都不带，而 `Response.redirect()` 同样只给 `location`
+ *     （Node 与 workerd 行为一致，实测过）。由我们发，才能把缓存语义写进去。
+ *     （本条初版注释写着「Pages 对 `/en/` 只会回 404」—— 那是**错的**，别照着它往下推。）
+ *
+ *     ⚠️ 顺带更正一处更早的归因：2026-10-08 部署后 AFDocs 报 `cache-header-hygiene`
+ *     「1 of 7 endpoints」时，我先把账算在**这条** 308 头上。**不是它** —— AFDocs 会
+ *     **跟随重定向**（它报 `/en/` 的 cacheControl 是跳转后 200 那页的头），逐端点复测
+ *     静态资源、`.md`、llms/sitemap 也全部合格。那次的真因是**判据腐烂 ⇒ 在部署传播窗口里
+ *     打分**（见 `.github/workflows/ci.yml` 那条轮询判据的注释）。补这个头是**卫生**，
+ *     不是那次红的解药。
  *
  * 缓存注意：改写走的是**另一个 URL**（`/docs` → `/docs.md`），所以边缘缓存天然按路径分开，
  * 不会把 markdown 回给浏览器；`vary: Accept` 仍写上，把「同一 URL 两种表示」这件事说清楚。
@@ -42,7 +55,19 @@ export default {
       const url = new URL(request.url);
       // 见边界 ④：英文首页的产物是扁平的 en.html ⇒ 把目录形态收敛到它
       if (url.pathname === '/en/') {
-        return Response.redirect(new URL('/en', url).href, 308);
+        // 显式构造而不是 `Response.redirect()`：后者只给一个 `location` 头、
+        // 不带任何 cache 头（实测 Node 与 workerd 都是 `[['location', …]]`）——
+        // 那正好是 AFDocs 的 cache-header-hygiene 说的「missing cache headers」形态。
+        return new Response(null, {
+          status: 308,
+          headers: {
+            location: new URL('/en', url).href,
+            // 取值与站内其余响应**同一档**（不是为这条特殊挑的）：全站统一成
+            // 「可 revalidate」比给一条 308 单独调一个 max-age 更好推理；
+            // 长 max-age 也不是选项 —— 这条规则将来若改形态，访客不该被钉在旧跳转上。
+            'cache-control': 'public, max-age=0, must-revalidate',
+          },
+        });
       }
       // 媒体类型按 RFC 9110 大小写不敏感（`Text/Markdown` 与 `text/markdown` 同义）⇒ 先归一
       const wantsMarkdown = (request.headers.get('accept') ?? '')
