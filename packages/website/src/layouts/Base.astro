@@ -54,6 +54,11 @@ const ogImage = new URL('og.png', site).href;
 //      用户手输的 `/en/` 由 `public/_worker.js` 308 到 `/en`（产物里没有 `en/index.html`）。
 //   ③ hreflang 的两个地址必须**互指且各自 canonical 指向自身**：本仓的产物守卫会核
 //      canonical 与该页在 sitemap 里的 loc 一致；两版若互指 canonical，守卫当场红。
+//   ④ **语言协商在服务端**（2026-10-09 从客户端搬来）：`public/_worker.js` 按 `Accept-Language`
+//      对中文路径回 302 到 `/en`；`hl` cookie（Nav 的切换控件写）表示**显式选择**、优先于自动
+//      检测 —— 两者缺一就有**循环**（英文浏览器点「中」→ 落 `/` → 又被弹回 `/en`，用户出不来）。
+//      ⚠️ **别再往这里加客户端跳转脚本**：它留在每一页 HTML 里，AFDocs 会逐页判 `js-redirect`
+//      FAIL（正是本轮修掉的那条），而且会把「先画中文再闪成英文」的重排带回来。设计稿 §9。
 const isEn = lang === 'en';
 const htmlLang = isEn ? 'en' : 'zh-CN';
 // 中文侧路径：英文页去掉 `/en` 前缀（`/en` → `/`、`/en/docs` → `/docs`）
@@ -85,60 +90,8 @@ const llmsHint = isEn
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- 语言自动检测：必须在**任何样式与内容之前**同步执行，否则会先画出中文再闪成英文。
-         本脚本是 is:inline（不被 Astro 打包、不延后），且刻意放在 <head> 最前。
-         ⚠️ 判据三条（与 docs/plans/2026-10-08-website-i18n.md §3 一致）：
-           ① localStorage['agentia-lang']（用户**显式**切换过）优先；
-           ② 否则看 navigator.languages 里有没有中文；
-           ③ 拿不到语言信息 ⇒ **不跳**（宁可停在默认的中文版，也不要猜）。
-         ⚠️ 自动跳转**只读不写** localStorage —— 写了就等于把「自动」记成「用户选择」，
-            用户之后手动点回中文会被立刻弹走。只有 Nav 的切换控件才写。
-         ⚠️ 用 location.replace（不留历史条目），并带上 query 与 hash。 -->
-    <script is:inline>
-      (function () {
-        try {
-          var K = 'agentia-lang';
-          var stored = null;
-          try {
-            stored = localStorage.getItem(K);
-          } catch (e) {
-            stored = null;
-          }
-          var p = location.pathname;
-          // 交给 Cloudflare Pages 的 308 去收敛 `.html` 形态（本脚本不参与）
-          if (/\.html?$/.test(p)) return;
-          var isEn = p === '/en' || p.indexOf('/en/') === 0;
-          var wantEn;
-          if (stored === 'zh' || stored === 'en') {
-            wantEn = stored === 'en';
-          } else {
-            var langs =
-              navigator.languages && navigator.languages.length
-                ? navigator.languages
-                : [navigator.language || ''];
-            var known = false;
-            var hasZh = false;
-            for (var i = 0; i < langs.length; i++) {
-              var l = langs[i];
-              if (!l) continue;
-              known = true;
-              if (/^zh\b/i.test(l)) {
-                hasZh = true;
-                break;
-              }
-            }
-            if (!known) return;
-            wantEn = !hasZh;
-          }
-          if (wantEn === isEn) return;
-          var zhPath = isEn ? p.replace(/^\/en(\/|$)/, '/') : p;
-          var target = wantEn ? (zhPath === '/' ? '/en' : '/en' + zhPath) : zhPath;
-          location.replace(target + location.search + location.hash);
-        } catch (e) {
-          /* 任何异常都不该影响页面可用性 */
-        }
-      })();
-    </script>
+    <!-- 语言协商由服务端 `public/_worker.js` 按 `Accept-Language` 决定（302 到 `/en`）；
+         ⚠️ 这里刻意**不放客户端跳转** —— 理由见 docs/plans/2026-10-08-website-i18n.md §9。 -->
     <title>{title}</title>
     <meta name="description" content={description} />
     <!-- 绝对路径：404 页会以**任意**请求路径被送出（/foo/bar/baz 也回它），
