@@ -1,0 +1,22 @@
+---
+// English playground page. Mirrors src/pages/playground.astro.
+import Base from '../../layouts/Base.astro';
+import content from '../../fragments/en/playground.html?raw';
+// trace call-tree styles (.tr-*) come from the shared package — the site and the CLI inspector
+// use the same one, so rendering cannot drift.
+import '@migor/trace-view/style.css';
+
+const footerLinks = [
+    { href: '/en', label: 'Home' },
+    { href: '/en/docs', label: 'Docs' },
+    { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+];
+---
+<Base title='Playground — Agentia' description='Agentia Playground: a replay of the main agent orchestrating four kinds of capability — watch the framework observable surface (trace call tree, tokens and cost) grow in step with a run, right in the browser.' page='playground' lang='en' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../../scripts/playground-entry.js';
+  </script>
+</Base>

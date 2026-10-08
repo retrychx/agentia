@@ -31,6 +31,10 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 产物名 → 站点路径的映射与 markdown 变体生成器**共用一份实现**（单一真源）——
+// 两处口径一旦分叉，`.md` 里声明的「本页地址」会与守卫核的 `<loc>` / og:url 对不上，
+// 而两处各自的断言都还是绿的。
+import { toCleanPath } from '../packages/website/scripts/build-md-variants.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(repoRoot, 'packages', 'website', 'dist');
@@ -83,14 +87,25 @@ check('robots.txt 有绝对 Sitemap 行', () => {
    期望集合从 dist 自己枚举（排除 404.html：错误页不该进 sitemap），
    而不是在脚本里再抄一份页面清单 —— 那样加页面时守卫会跟着一起漏。
 
+   ⚠️ **递归枚举**（2026-10-08 英文站）：产物既有顶层的 `en.html`，也有子目录的
+   `en/docs.html`。只扫顶层的旧实现在加了英文站之后会**把整个 `/en/*` 放出门外** ——
+   英文页没有 markdown 变体、没有 canonical 核对、不进 sitemap 比对，而这里照样全绿。
+
    ⚠️ 枚举到的是**文件名**（docs.html），要映射成**站点 URL**（/docs）再比对。
-   Cloudflare Pages 对产物里存在的 `x.html` 一律 308 到 `/x`，所以站点 URL 是干净形态。 */
-const builtPages = readdirSync(dist)
-  .filter((f) => f.endsWith('.html') && f !== '404.html')
-  .sort();
-/** 产物文件名 → 站点 URL 路径（`index.html` → `/`，`docs.html` → `/docs`） */
-const toCleanPath = (file) =>
-  (file === 'index.html' ? '/' : `/${file}`).replace(/index\.html$/, '/').replace(/\.html$/, '');
+   Cloudflare Pages 对产物里存在的 `x.html` 一律 308 到 `/x`，所以站点 URL 是干净形态。
+   映射函数 `toCleanPath` 与生成器共用（见文件头 import）。 */
+function collectPages(dir, prefix = '') {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      out.push(...collectPages(join(dir, entry.name), `${prefix}${entry.name}/`));
+    } else if (entry.name.endsWith('.html') && entry.name !== '404.html') {
+      out.push(`${prefix}${entry.name}`);
+    }
+  }
+  return out.sort();
+}
+const builtPages = collectPages(dist);
 const expectedLocs = builtPages.map((f) => new URL(toCleanPath(f), ORIGIN).href).sort();
 
 check('sitemap.xml 与产物页面集合一致', () => {
@@ -289,6 +304,30 @@ const HTML_TAG = new RegExp(
     `|th|thead|title|tr|ul)(?=[\\s/>])`,
   'i',
 );
+
+/* HTML 实体解码 —— 为什么必须有它（2026-10-08 英文站）：
+   本守卫从**原始 HTML 文本**里抠标题，而 `.md` 变体是 `node-html-parser` **解析后**渲染的
+   （解析器会把文本里的 `&amp;` 解回 `&`）。不解码就是拿「编码形态」比「解码形态」：
+   标题里出现任何实体（英文站的 `Layout &amp; assembly` 就是这样）都会**假红** ——
+   报「标题文本在 markdown 里丢了」，而它一个字都没丢。**假红与假绿同罪**：它会让人
+   去改一份本来正确的产物。这里覆盖命名实体与十进制 / 十六进制数字实体，
+   解码方向与解析器一致；遇到本表没登记的命名实体**原样留着**（宁可红得可疑，也不静默猜）。
+   ⚠️ 顺序：先剥标签、再解码 —— 反过来的话 `&lt;code&gt;` 会被当成真标签剥掉。 */
+const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+const decodeEntities = (s) =>
+  s.replace(
+    /&(?:#([0-9]+)|#[xX]([0-9a-fA-F]+)|([a-zA-Z][a-zA-Z0-9]*));/g,
+    (whole, dec, hex, name) => {
+      const code = dec ? Number(dec) : hex ? Number.parseInt(hex, 16) : NaN;
+      if (dec !== undefined || hex !== undefined) {
+        return Number.isFinite(code) && code >= 0 && code <= 0x10ffff
+          ? String.fromCodePoint(code)
+          : whole;
+      }
+      const named = NAMED_ENTITIES[name];
+      return named === undefined ? whole : named;
+    },
+  );
 const stripCode = (md) =>
   md
     .replace(/```[\s\S]*?```/g, '')
@@ -315,8 +354,8 @@ for (const p of mdPages) {
       must(a === b, `${label} 数量不一致：markdown ${a} vs 页面 ${b}（有内容被静默丢弃）`);
     }
     for (const m of html.matchAll(/<h([23])[^>]*>([\s\S]*?)<\/h\1>/g)) {
-      const text = m[2]
-        .replace(/<[^>]*>/g, '')
+      // 先剥标签、再解实体（顺序见 decodeEntities 注释）；两侧都归一到「解码后的折叠文本」
+      const text = decodeEntities(m[2].replace(/<[^>]*>/g, ''))
         .replace(/\s+/g, ' ')
         .trim();
       if (text) must(md.includes(text), `标题文本在 markdown 里丢了：${text.slice(0, 40)}`);

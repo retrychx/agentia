@@ -2,7 +2,12 @@
  * 浏览器内迷你 agent 循环：fetch 直连 Anthropic Messages API（dangerous-direct-browser-access），
  * key 只存 localStorage。面板 / trace 树 / usage 计数全部复用 playground.js 暴露的
  * window.AgentiaPlayground 共用面，模拟模式代码路径不受影响。
+ *
+ * 双语（2026-10-08 官网英文版）：文案与演示数据用 `pt(zh, en)` 就地取一，语言来自
+ * `<html lang>`（见 ./lang.js）—— 与 scenarios.js 同一条口径（中英贴在一起写，不抽平行副本）。
  */
+import { pt, PG_EN } from './lang.js';
+
 (() => {
   const pg = window.AgentiaPlayground;
   if (!pg) return; // playground.js 未加载时不启用
@@ -37,8 +42,10 @@
       models: ['claude-haiku-4-5-20251001'],
       keyPlaceholder: 'sk-ant-...',
       price: { input: 1, output: 5 }, // $/M tokens（haiku 4.5，同框架内置价格表 DEFAULT_PRICING）
-      priceNote:
+      priceNote: pt(
         'token 为 API 返回真实值；成本按 claude-haiku-4.5 估算（input $1 / output $5 每百万 token，同框架内置价格表），改模型后单价可能不准。',
+        'Tokens are the real values returned by the API; cost is estimated at claude-haiku-4.5 rates ($1 input / $5 output per million tokens, the same table the framework ships) and may be off once you change the model.',
+      ),
       headers: (key) => ({
         'x-api-key': key,
         'anthropic-version': '2023-06-01',
@@ -53,7 +60,10 @@
       models: ['deepseek-v4-pro', 'deepseek-flash'],
       keyPlaceholder: 'sk-...',
       price: null, // 无公开单价对照 → 成本显示为 —
-      priceNote: 'token 为 API 返回真实值；DeepSeek 无公开单价对照，成本不作估算（显示为 —）。',
+      priceNote: pt(
+        'token 为 API 返回真实值；DeepSeek 无公开单价对照，成本不作估算（显示为 —）。',
+        'Tokens are the real values returned by the API; DeepSeek has no published unit price to compare against, so cost is not estimated (shown as —).',
+      ),
       headers: (key) => ({
         authorization: 'Bearer ' + key,
         'anthropic-version': '2023-06-01',
@@ -77,71 +87,170 @@
   const PRICE_SIM = { input: 5, output: 25 };
 
   const COPY_SIM = {
-    badge: '模拟演示：本地预置脚本，非真实模型调用',
-    sub: '选一个任务，看主 agent 如何思考、从菜单选中能力、发起 llm.turn、调用能力并汇总产出。右侧就是 Agentia 的可观测面本体：trace 调用树与 token / 成本随回放同步生长 —— 一次 run == 一条 trace，Turn 0 起内建，不是另配的追踪 SDK。',
-    note: '按 claude-opus-5 单价估算（input $5 / output $25 每百万 token，同框架内置价格表），仅演示用途。',
+    badge: pt(
+      '模拟演示：本地预置脚本，非真实模型调用',
+      'Simulated demo: a local pre-recorded script, not a real model call',
+    ),
+    sub: pt(
+      '选一个任务，看主 agent 如何思考、从菜单选中能力、发起 llm.turn、调用能力并汇总产出。右侧就是 Agentia 的可观测面本体：trace 调用树与 token / 成本随回放同步生长 —— 一次 run == 一条 trace，Turn 0 起内建，不是另配的追踪 SDK。',
+      "Pick a task and watch the main agent think, pick a capability off its menu, open an llm.turn, call the capability and assemble the result. On the right is Agentia's observability surface itself: the trace call tree and the token / cost figures grow in step with the replay — one run == one trace, built in from turn 0, not a separate tracing SDK bolted on.",
+    ),
+    note: pt(
+      '按 claude-opus-5 单价估算（input $5 / output $25 每百万 token，同框架内置价格表），仅演示用途。',
+      'Estimated at claude-opus-5 rates ($5 input / $25 output per million tokens, the same table the framework ships), for illustration only.',
+    ),
   };
   function copyReal(p) {
     return {
-      badge: '真实模型：浏览器直连 ' + p.host + '，产生真实 token 消耗',
-      sub:
+      badge: pt(
+        '真实模型：浏览器直连 ' + p.host + '，产生真实 token 消耗',
+        'Real model: the browser talks straight to ' + p.host + ', incurring real token usage',
+      ),
+      sub: pt(
         '同一个任务，换真实模型跑一遍：浏览器内迷你 agent 循环直连 ' +
-        p.label +
-        '（' +
-        p.host +
-        '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，token 用量是 API 返回的真实值 —— 右侧调用树是按框架 trace 的形状（span 层级 / 事件 / usage 口径）在浏览器侧现场构造的演示数据，并非框架 recorder 的原样产物；渲染与 CLI inspector 共用同一份 @migor/trace-view。',
+          p.label +
+          '（' +
+          p.host +
+          '，Anthropic Messages 协议），三个工具（天气 / 计算器 / 文本资产）为本地 JS 实现，token 用量是 API 返回的真实值 —— 右侧调用树是按框架 trace 的形状（span 层级 / 事件 / usage 口径）在浏览器侧现场构造的演示数据，并非框架 recorder 的原样产物；渲染与 CLI inspector 共用同一份 @migor/trace-view。',
+        'The same task, run once with a real model: a mini agent loop inside the browser talks straight to ' +
+          p.label +
+          ' (' +
+          p.host +
+          ', Anthropic Messages protocol). The three tools (weather / calculator / text asset) are local JS implementations, and the token usage is the real value returned by the API — the call tree on the right is demo data constructed in the browser to match the shape of a framework trace (span levels / events / usage semantics), not a verbatim product of the framework recorder; rendering is shared with the CLI inspector via the same @migor/trace-view.',
+      ),
       note: p.priceNote,
     };
   }
 
   /* ========== 内置工具（与场景联动） ========== */
-  const WEATHER = {
-    上海: '上海：今天晴 24~31°C，明天多云 23~29°C，东南风 3 级。',
-    杭州: '杭州：今天阵雨转晴 23~30°C，明天晴 22~28°C，湿度 78%。',
-    北京: '北京：今天晴 18~27°C，明天晴 17~26°C，北风 2 级，空气良。',
-    深圳: '深圳：今天多云有雷阵雨 26~32°C，明天阵雨 25~31°C，湿度 85%。',
-    成都: '成都：今天阴 20~26°C，明天小雨 19~24°C，微风。',
-  };
+  /* 城市表：[中文名, 英文名, 当前语言下的天气文案]。
+     `WEATHER` **两个名字都收** —— 模型可能按场景任务的用词回中文名（中文页）或英文名（英文页），
+     收两个键就不会漏；而「未收录城市」提示里列的是**当前语言**那一列（`CITY_NAMES`）。 */
+  const CITY_TABLE = [
+    [
+      '上海',
+      'Shanghai',
+      pt(
+        '上海：今天晴 24~31°C，明天多云 23~29°C，东南风 3 级。',
+        'Shanghai: today sunny 24–31°C, tomorrow cloudy 23–29°C, SE wind force 3.',
+      ),
+    ],
+    [
+      '杭州',
+      'Hangzhou',
+      pt(
+        '杭州：今天阵雨转晴 23~30°C，明天晴 22~28°C，湿度 78%。',
+        'Hangzhou: today showers clearing to sunny 23–30°C, tomorrow sunny 22–28°C, humidity 78%.',
+      ),
+    ],
+    [
+      '北京',
+      'Beijing',
+      pt(
+        '北京：今天晴 18~27°C，明天晴 17~26°C，北风 2 级，空气良。',
+        'Beijing: today sunny 18–27°C, tomorrow sunny 17–26°C, N wind force 2, air quality good.',
+      ),
+    ],
+    [
+      '深圳',
+      'Shenzhen',
+      pt(
+        '深圳：今天多云有雷阵雨 26~32°C，明天阵雨 25~31°C，湿度 85%。',
+        'Shenzhen: today cloudy with thunderstorms 26–32°C, tomorrow showers 25–31°C, humidity 85%.',
+      ),
+    ],
+    [
+      '成都',
+      'Chengdu',
+      pt(
+        '成都：今天阴 20~26°C，明天小雨 19~24°C，微风。',
+        'Chengdu: today overcast 20–26°C, tomorrow light rain 19–24°C, light breeze.',
+      ),
+    ],
+  ];
+  const WEATHER = {};
+  for (const [zh, en, text] of CITY_TABLE) {
+    WEATHER[zh] = text;
+    WEATHER[en] = text;
+  }
+  /** 「未收录城市」提示里列出的城市名（当前语言那一列） */
+  const CITY_NAMES = CITY_TABLE.map(([zh, en]) => (PG_EN ? en : zh));
 
   const ASSETS = {
-    'doc-weekly-report':
+    'doc-weekly-report': pt(
       '《运营周报 · 草稿》\n摘要：本周 DAU 均值 11.8 万，营收环比持平。\n核心指标：DAU 均值 12.4 万（环比 +3.1%），7 日留存 41.2%。\n渠道分析：自然量占比 62%，付费渠道占比 38%（未标注数据来源）。\n附录：取数 SQL 与统计窗口待补。',
-    'review-checklist':
+      'Operations weekly · draft\nSummary: average DAU 118k this week, revenue flat week over week.\nCore metrics: average DAU 124k (+3.1% WoW), 7-day retention 41.2%.\nChannel analysis: organic 62%, paid 38% (no source annotation).\nAppendix: extraction SQL and statistical window to be added.',
+    ),
+    'review-checklist': pt(
       '文档审查清单：① 摘要与正文指标口径一致；② 引用数据可溯源；③ 环比/同比定义统一；④ 章节结构完整（摘要 / 指标 / 分析 / 附录）。',
-    'metrics-weekly':
+      'Document review checklist: ① the summary and body agree on metric definitions; ② cited data is traceable; ③ period-over-period / year-over-year definitions are consistent; ④ the section structure is complete (summary / metrics / analysis / appendix).',
+    ),
+    'metrics-weekly': pt(
       '上周核心指标：DAU 均值 118,420（环比 +3.1%）；WAU 402,311；7 日留存 41.2%；营收 ¥2.31M（环比 -1.4%）。',
-    'report-style':
+      "Last week's core metrics: average DAU 118,420 (+3.1% WoW); WAU 402,311; 7-day retention 41.2%; revenue ¥2.31M (-1.4% WoW).",
+    ),
+    'report-style': pt(
       '周报文体：三段式（核心指标速览 / 异动分析 / 下周跟进项）；每段不超过 4 条；指标保留一位小数；结论先行。',
-    'packing-playbook':
+      "Report style: three sections (core metrics at a glance / notable changes / next week's follow-ups); at most 4 items per section; metrics to one decimal place; conclusion first.",
+    ),
+    'packing-playbook': pt(
       '短途出行清单：雨具（折叠伞）、防晒 SPF30+、证件、充电宝、速干外套、常用药；高铁出行留意返程末班时间。',
+      'Short-trip checklist: rain gear (folding umbrella), sunscreen SPF30+, ID, power bank, quick-dry jacket, regular medication; if travelling by high-speed rail, watch the last train home.',
+    ),
   };
 
   const TOOL_SCHEMAS = [
     {
       name: 'get_weather',
-      description: '查询城市天气（演示数据，仅覆盖：上海 / 杭州 / 北京 / 深圳 / 成都）',
+      description: pt(
+        '查询城市天气（演示数据，仅覆盖：上海 / 杭州 / 北京 / 深圳 / 成都）',
+        'Look up city weather (demo data; only covers: Shanghai / Hangzhou / Beijing / Shenzhen / Chengdu)',
+      ),
       input_schema: {
         type: 'object',
-        properties: { city: { type: 'string', description: '城市名，如「上海」' } },
+        properties: {
+          city: {
+            type: 'string',
+            description: pt('城市名，如「上海」', 'City name, e.g. "Shanghai"'),
+          },
+        },
         required: ['city'],
       },
     },
     {
       name: 'calculator',
-      description: '计算四则运算表达式，如 (118420-114858)/114858*100',
+      description: pt(
+        '计算四则运算表达式，如 (118420-114858)/114858*100',
+        'Evaluate an arithmetic expression, e.g. (118420-114858)/114858*100',
+      ),
       input_schema: {
         type: 'object',
-        properties: { expression: { type: 'string', description: '只含数字与 +-*/(). 的表达式' } },
+        properties: {
+          expression: {
+            type: 'string',
+            description: pt(
+              '只含数字与 +-*/(). 的表达式',
+              'An expression containing only digits and the characters +-*/().',
+            ),
+          },
+        },
         required: ['expression'],
       },
     },
     {
       name: 'read_asset',
-      description: '读取预置文本资产（文档 / 清单 / 指标 / 文体 / 出行 playbook）',
+      description: pt(
+        '读取预置文本资产（文档 / 清单 / 指标 / 文体 / 出行 playbook）',
+        'Read a preloaded text asset (document / checklist / metrics / style / trip playbook)',
+      ),
       input_schema: {
         type: 'object',
         properties: {
-          name: { type: 'string', enum: Object.keys(ASSETS), description: '资产名' },
+          name: {
+            type: 'string',
+            enum: Object.keys(ASSETS),
+            description: pt('资产名', 'Asset name'),
+          },
         },
         required: ['name'],
       },
@@ -157,31 +266,51 @@
         const city = String(input?.city || '');
         text =
           WEATHER[city] ||
-          '未收录城市「' +
-            city +
-            '」（演示数据仅覆盖：' +
-            Object.keys(WEATHER).join(' / ') +
-            '）。';
+          pt(
+            '未收录城市「' + city + '」（演示数据仅覆盖：' + CITY_NAMES.join(' / ') + '）。',
+            'City not covered: "' +
+              city +
+              '" (the demo data only covers: ' +
+              CITY_NAMES.join(' / ') +
+              ').',
+          );
       } else if (name === 'calculator') {
         const expr = String(input?.expression || '');
         if (!expr || !/^[0-9+\-*/().\s]+$/.test(expr)) {
-          throw new Error('表达式只允许数字与 +-*/(). 字符');
+          throw new Error(
+            pt(
+              '表达式只允许数字与 +-*/(). 字符',
+              'The expression may only contain digits and the characters +-*/().',
+            ),
+          );
         }
         const value = Function('"use strict"; return (' + expr + ');')();
         if (typeof value !== 'number' || !Number.isFinite(value)) {
-          throw new Error('表达式结果不是有限数值');
+          throw new Error(
+            pt('表达式结果不是有限数值', 'The expression did not evaluate to a finite number'),
+          );
         }
         text = expr + ' = ' + value;
       } else if (name === 'read_asset') {
         const key = String(input?.name || '');
         text =
           ASSETS[key] ||
-          '资产「' + key + '」不存在（可选：' + Object.keys(ASSETS).join(' / ') + '）。';
+          pt(
+            '资产「' + key + '」不存在（可选：' + Object.keys(ASSETS).join(' / ') + '）。',
+            'Asset "' +
+              key +
+              '" does not exist (available: ' +
+              Object.keys(ASSETS).join(' / ') +
+              ').',
+          );
       } else {
-        throw new Error('未知工具：' + name);
+        throw new Error(pt('未知工具：' + name, 'Unknown tool: ' + name));
       }
     } catch (e) {
-      text = '工具执行失败：' + (e?.message ? e.message : String(e));
+      text = pt(
+        '工具执行失败：' + (e?.message ? e.message : String(e)),
+        'Tool execution failed: ' + (e?.message ? e.message : String(e)),
+      );
       isError = true;
     }
     return { text, isError, ms: Math.max(1, Math.round(performance.now() - t0)) };
@@ -189,18 +318,27 @@
 
   /* ========== 场景 → system 提示 ========== */
   const SYSTEMS = {
-    'doc-review':
+    'doc-review': pt(
       '你是文档审查 agent。先用 read_asset 拉取「doc-weekly-report」文档与「review-checklist」清单，逐条核对结构、事实与数据口径（数字可用 calculator 验证），最后输出分条审查结论。用中文回答。',
-    'weekly-report':
+      'You are a document-review agent. First pull the "doc-weekly-report" document and the "review-checklist" with read_asset, then check the structure, the facts and the metric definitions item by item (use calculator to verify numbers), and finally output a bulleted review conclusion. Answer in English.',
+    ),
+    'weekly-report': pt(
       '你是运营周报 agent。先用 read_asset 拉取「metrics-weekly」指标与「report-style」文体资产，需要算环比用 calculator，然后按文体要求产出一份简短周报。用中文回答。',
-    'weather-trip':
+      'You are an operations-report agent. First pull the "metrics-weekly" metrics and the "report-style" asset with read_asset, use calculator for week-over-week figures, then produce a short report following the style requirements. Answer in English.',
+    ),
+    'weather-trip': pt(
       '你是出行建议 agent。用 get_weather 查相关城市天气（仅覆盖上海/杭州/北京/深圳/成都），需要时用 read_asset 拉取「packing-playbook」清单，最后给出分条出行建议。用中文回答。',
+      'You are a trip-advisor agent. Use get_weather to check the weather in the relevant cities (only Shanghai / Hangzhou / Beijing / Shenzhen / Chengdu are covered), use read_asset to pull the "packing-playbook" checklist when needed, and finally give a bulleted trip plan. Answer in English.',
+    ),
   };
 
   const REAL_MENU = [
-    { name: 'tool:get_weather', desc: '查询城市天气（内置假数据）' },
-    { name: 'tool:calculator', desc: '四则运算求值' },
-    { name: 'tool:read_asset', desc: '读取预置文本资产' },
+    {
+      name: 'tool:get_weather',
+      desc: pt('查询城市天气（内置假数据）', 'Look up city weather (built-in fake data)'),
+    },
+    { name: 'tool:calculator', desc: pt('四则运算求值', 'Evaluate an arithmetic expression') },
+    { name: 'tool:read_asset', desc: pt('读取预置文本资产', 'Read a preloaded text asset') },
   ];
 
   /* ========== Anthropic 协议直连（服务商可切换） ========== */
@@ -237,9 +375,9 @@
   /* ========== 错误块（含重试） ========== */
   function panelError(text) {
     const block = pg.el('div', 'tp-block tp-error');
-    block.appendChild(pg.el('div', 'tp-head', '✕ 调用失败'));
+    block.appendChild(pg.el('div', 'tp-head', pt('✕ 调用失败', '✕ Request failed')));
     block.appendChild(pg.el('div', 'tp-body', text));
-    const retry = pg.el('button', 'tp-retry', '重试');
+    const retry = pg.el('button', 'tp-retry', pt('重试', 'Retry'));
     retry.addEventListener('click', () => realRun());
     block.appendChild(retry);
     pg.addBlock(block);
@@ -249,20 +387,42 @@
     const p = prov();
     if (err && err.kind === 'http') {
       if (err.status === 401)
-        return '鉴权失败（401）：API key 无效或已撤销，请检查上面的 key 后重试。';
+        return pt(
+          '鉴权失败（401）：API key 无效或已撤销，请检查上面的 key 后重试。',
+          'Authentication failed (401): the API key is invalid or revoked — check the key above and retry.',
+        );
       if (err.status === 402)
-        return '余额不足（402）：该 key 的账户额度已用尽，请充值或换一个 key。';
-      if (err.status === 429) return '触发限流（429）：请求太密或额度不足，请稍后重试。';
-      return (
-        'API 返回错误（HTTP ' + err.status + '）' + (err.message ? '：' + err.message + '。' : '。')
+        return pt(
+          '余额不足（402）：该 key 的账户额度已用尽，请充值或换一个 key。',
+          'Insufficient balance (402): the account for this key is out of credit — top up or use another key.',
+        );
+      if (err.status === 429)
+        return pt(
+          '触发限流（429）：请求太密或额度不足，请稍后重试。',
+          'Rate limited (429): too many requests or insufficient quota — retry later.',
+        );
+      return pt(
+        'API 返回错误（HTTP ' +
+          err.status +
+          '）' +
+          (err.message ? '：' + err.message + '。' : '。'),
+        'The API returned an error (HTTP ' +
+          err.status +
+          ')' +
+          (err.message ? ': ' + err.message + '.' : '.'),
       );
     }
-    return (
+    return pt(
       '网络 / CORS 错误：浏览器未能连通 ' +
-      p.host +
-      '。本页为纯静态托管，直连 ' +
-      p.label +
-      '（不经过任何服务器）；若请求被拦截，请检查网络连通性、代理，或确认该端点放行浏览器跨域。'
+        p.host +
+        '。本页为纯静态托管，直连 ' +
+        p.label +
+        '（不经过任何服务器）；若请求被拦截，请检查网络连通性、代理，或确认该端点放行浏览器跨域。',
+      'Network / CORS error: the browser could not reach ' +
+        p.host +
+        '. This page is purely static and talks straight to ' +
+        p.label +
+        ' (no server in between); if the request is blocked, check your network and proxy, or confirm the endpoint allows browser cross-origin requests.',
     );
   }
 
@@ -274,11 +434,18 @@
     if (!key) {
       pg.resetPanels();
       pg.panelNote(
-        '请先在页面顶部填入 ' +
-          p.label +
-          ' API Key —— key 只存浏览器 localStorage，直连 ' +
-          p.host +
-          '，不经过任何服务器。',
+        pt(
+          '请先在页面顶部填入 ' +
+            p.label +
+            ' API Key —— key 只存浏览器 localStorage，直连 ' +
+            p.host +
+            '，不经过任何服务器。',
+          'Enter your ' +
+            p.label +
+            ' API key at the top of the page first — the key is stored only in browser localStorage and goes straight to ' +
+            p.host +
+            ', with no server in between.',
+        ),
       );
       keyInput.focus();
       byokEl.classList.add('pg-byok-pulse');
@@ -295,7 +462,14 @@
     pg.traceReset(sc);
     pg.renderUsage({ input: 0, output: 0 });
     pg.panelNote(
-      '— 真实模型调用：' + model + ' · 工具为浏览器内 JS 实现 · 最多 ' + MAX_ITERATIONS + ' 轮 —',
+      pt(
+        '— 真实模型调用：' + model + ' · 工具为浏览器内 JS 实现 · 最多 ' + MAX_ITERATIONS + ' 轮 —',
+        '— real model call: ' +
+          model +
+          ' · tools are JS implementations inside the browser · at most ' +
+          MAX_ITERATIONS +
+          ' rounds —',
+      ),
     );
 
     const usageAcc = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
@@ -310,7 +484,9 @@
         const spanId = 'turn-' + iter;
         pg.traceStart({ id: spanId, parent: 'root', kind: 'llm.turn', name: model });
         openSpanId = spanId; // 异常时用它把 span 收尾，避免 trace 留下永远转圈的 ◌
-        pg.panelLlmOpen('llm.turn · 主 agent（' + model + '）');
+        pg.panelLlmOpen(
+          pt('llm.turn · 主 agent（' + model + '）', 'llm.turn · main agent (' + model + ')'),
+        );
         const t0 = performance.now();
         const resp = await callApi(p, key, model, system, messages);
         if (stale()) return;
@@ -335,7 +511,12 @@
         const toolUses = blocks.filter((b) => b && b.type === 'tool_use');
         if (resp.stop_reason === 'tool_use' && toolUses.length > 0) {
           if (iter === MAX_ITERATIONS) {
-            pg.panelNote('已达 ' + MAX_ITERATIONS + ' 轮工具循环上限，提前收尾。');
+            pg.panelNote(
+              pt(
+                '已达 ' + MAX_ITERATIONS + ' 轮工具循环上限，提前收尾。',
+                'Reached the ' + MAX_ITERATIONS + '-round tool-loop cap; stopping early.',
+              ),
+            );
             break;
           }
           messages.push({ role: 'assistant', content: blocks });
@@ -367,7 +548,12 @@
         }
 
         if (resp.stop_reason === 'max_tokens') {
-          pg.panelNote('（模型输出达到 max_tokens 上限，可能被截断）');
+          pg.panelNote(
+            pt(
+              '（模型输出达到 max_tokens 上限，可能被截断）',
+              '(the model output hit the max_tokens cap and may be truncated)',
+            ),
+          );
         }
         break;
       }
@@ -400,7 +586,10 @@
           pg.el(
             'div',
             'tp-note',
-            '— run 结束：usage 为 ' + p.label + ' API 返回的真实 token 计数 —',
+            pt(
+              '— run 结束：usage 为 ' + p.label + ' API 返回的真实 token 计数 —',
+              '— run finished: usage is the real token count returned by the ' + p.label + ' API —',
+            ),
           ),
         );
         pg.setRunning(false);
@@ -426,18 +615,26 @@
     });
     const custom = document.createElement('option');
     custom.value = CUSTOM_MODEL;
-    custom.textContent = '自定义…';
+    custom.textContent = pt('自定义…', 'Custom…');
     modelInput.appendChild(custom);
     syncModelVisibility();
-    noteLead.textContent =
-      '你的 key 只存浏览器 localStorage，直接发往 ' + p.host + '，不经过任何服务器。';
+    noteLead.textContent = pt(
+      '你的 key 只存浏览器 localStorage，直接发往 ' + p.host + '，不经过任何服务器。',
+      'Your key is stored only in browser localStorage and sent straight to ' +
+        p.host +
+        ', never through any server.',
+    );
   }
 
   /** 「自定义…」时露出文本框并给出占位提示 */
   function syncModelVisibility() {
     const isCustom = modelInput.value === CUSTOM_MODEL;
     modelCustom.hidden = !isCustom;
-    if (isCustom) modelCustom.placeholder = '自定义模型名（缺省 ' + prov().defaultModel + '）';
+    if (isCustom)
+      modelCustom.placeholder = pt(
+        '自定义模型名（缺省 ' + prov().defaultModel + '）',
+        'Custom model name (default ' + prov().defaultModel + ')',
+      );
   }
 
   /** 把「模型名」写进控件：命中预设则选中它，否则走「自定义…」并填文本框；空 → 该服务商默认模型 */

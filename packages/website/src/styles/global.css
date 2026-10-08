@@ -220,6 +220,35 @@ code {
   border-color: var(--ice);
   background: var(--ice-dim);
 }
+/* 语言切换（2026-10-08 官网英文版）：与 nav 链接同排，当前语言高亮。
+   ⚠️ 必须写成 `.nav-links .lang-switch a`（0,2,1）—— `.nav-links a` 是 (0,1,1)，
+   `.lang-switch a`（0,1,1）与它同分但**更先出现**，压不过 ⇒ 字号与颜色当场变样。
+   （`.nav-cta` 踩过同一个坑，见上面两条 !important 的注释。） */
+.lang-switch {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+}
+.lang-switch > span {
+  color: var(--border-strong);
+  font-size: 12px;
+}
+.nav-links .lang-switch a {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 2px 5px;
+  color: var(--muted);
+  /* 底线留给「当前语言」—— 用 transparent 打底，切换时不产生 1px 位移 */
+  border-bottom: 1px solid transparent;
+}
+.nav-links .lang-switch a:hover {
+  color: var(--text);
+}
+.nav-links .lang-switch a.is-active {
+  color: var(--text);
+  border-bottom-color: var(--ice);
+}
 /* 折叠开关：桌面隐藏，≤520px 才出现（见文件末尾的窄屏块） */
 .nav-toggle {
   display: none;
@@ -2080,8 +2109,12 @@ pre code {
      只**每次都把 CTA 按钮的下边框抹掉**（`a:last-child` 0,2,1 压过下面 `.nav-links
      .nav-cta` 的 0,2,0），手机版菜单里 GitHub 按钮只剩左/上/右三条边（2026-09-30 实报）。
      改成只对「普通链接」生效：当前 CTA 在时本规则不命中（无副作用），将来若 CTA 被移除，
-     最后一条普通链接才需要去线，否则会与菜单容器的 border-bottom 挨成双线。 */
-  .nav-links a:not(.nav-cta):last-child {
+     最后一条普通链接才需要去线，否则会与菜单容器的 border-bottom 挨成双线。
+     ⚠️ 用**直接子选择器 `>`**（2026-10-08 英文站）：语言切换 `.lang-switch` 是 `.nav-links`
+     里的一个 div，它内部最后一个 `<a>`（`EN`）也满足 `:last-child` —— 不加 `>` 的话这条
+     规则会顺手把折叠菜单里「当前语言」的下划线抹掉（与下面 `.is-active` 同分同胜）。
+     本规则要表达的是「**顶层**最后一条普通链接」，`>` 才是它本来的意思。 */
+  .nav-links > a:not(.nav-cta):last-child {
     border-bottom: none;
   }
   .nav-links .nav-cta {
@@ -2091,6 +2124,16 @@ pre code {
     /* biome-ignore lint/complexity/noImportantStyles: 承重 —— 菜单里的 CTA 要压过本文件 202 行基础态的 12.5px !important（同为 !important 时靠后手胜）。 */
     font-size: 13.5px !important;
     border: 1px solid var(--border-strong);
+  }
+  /* 语言切换在折叠菜单里也占一行（与普通链接同款分隔线）—— 否则它会继承
+     `.nav-links a` 的 `padding: 13px 0` 与下边框，「中 / EN」被拆成两行带下划线。 */
+  .nav-links .lang-switch {
+    padding: 13px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-links .lang-switch a {
+    padding: 0;
+    font-size: 15px;
   }
   /* 菜单展开时给透明导航一条实底，否则浮在 hero 上读不清 */
   .nav.menu-open {

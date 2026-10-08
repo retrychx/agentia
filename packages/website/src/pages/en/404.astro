@@ -1,0 +1,42 @@
+---
+// English 404 page (Astro's reserved special route).
+//
+// ⚠️ Mirrors src/pages/404.astro. The Chinese page's long comment explains why this file must
+// exist at all: without a `404.html` in the build output, Cloudflare Pages answers **any**
+// unmatched path with the root `index.html` at status 200 (a soft 404), so agents guessing
+// `.md` URLs or crawling robots/sitemap never receive the "there is nothing here" signal.
+//
+// This one lives at `dist/en/404.html`. `build.format: 'file'` keeps it out of the sitemap and
+// out of the markdown-variant pass (both skip `404.html` by name).
+//
+// Layout reuses the home hero (`.hero` in global.css is a base class and does not depend on
+// `.page-*`), so no new CSS is introduced.
+import Base from '../../layouts/Base.astro';
+---
+
+<Base
+  title="404 — page not found | Agentia"
+  description="The page you requested does not exist. Go back to the home page or read the guide."
+  page="home"
+  lang="en"
+>
+  <main class="hero">
+    <div class="hero-content">
+      <p class="hero-kicker">404 · PAGE NOT FOUND</p>
+      <h1>
+        <span class="line">This page doesn't exist</span>
+      </h1>
+      <p class="hero-sub">
+        <span class="hs-line">The link may be stale, or the address mistyped.</span>
+        <span class="hs-line"
+          >For the guide, you can read the plain-text version at <code>/llms-full.txt</code>.</span
+        >
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="/en">Back to home</a>
+        <a class="btn btn-ghost" href="/en/docs">Docs</a>
+        <a class="btn btn-ghost" href="/en/api">API reference</a>
+      </div>
+    </div>
+  </main>
+</Base>

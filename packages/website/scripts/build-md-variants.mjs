@@ -41,6 +41,35 @@ const DIST = join(here, '..', 'dist');
 /** 与 astro.config.mjs 的 site 一致：.md 里的指引必须写绝对地址 */
 const ORIGIN = 'https://agentia-web.pages.dev';
 
+/**
+ * 产物相对路径 → 站点路径（`index.html` → `/`、`en.html` → `/en`、`en/docs.html` → `/en/docs`）。
+ *
+ * ⚠️ 与 `scripts/check-website-agent-readiness.mjs` 的 `toCleanPath` **必须同口径**：守卫拿它
+ * 核 sitemap 的 `<loc>` 与 og:url，这里拿它写 `.md` 里的「本页 markdown 地址」—— 两处一旦
+ * 分叉，产物会自己声明一个守卫不认的地址。所以这里 export，守卫直接 import 它（单一真源）。
+ *
+ * ⚠️ 英文首页是**扁平**的 `en.html`（`build.format: 'file'` 的产物形态），不是 `en/index.html`
+ * ⇒ 它的站点路径是 `/en`，没有尾斜杠。
+ */
+export function toCleanPath(file) {
+  return (file === 'index.html' ? '/' : `/${file}`)
+    .replace(/index\.html$/, '/')
+    .replace(/\.html$/, '');
+}
+
+/** 递归收集 dist 下的页面产物（相对 dist 的路径；排除错误页与 `_astro/` 资源） */
+function collectPages(dir, prefix = '') {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      out.push(...collectPages(join(dir, entry.name), `${prefix}${entry.name}/`));
+    } else if (entry.name.endsWith('.html') && entry.name !== '404.html') {
+      out.push(`${prefix}${entry.name}`);
+    }
+  }
+  return out.sort();
+}
+
 /** 整棵子树都不进 markdown 的元素（外壳/装饰/交互控件） */
 const SKIP_TAGS = new Set([
   'script',
@@ -304,16 +333,17 @@ function main() {
     console.error(`[website-md] 找不到 ${DIST} —— 先跑 \`astro build\``);
     process.exit(1);
   }
-  const pages = readdirSync(DIST)
-    .filter((f) => f.endsWith('.html') && f !== '404.html')
-    .sort();
+  // ⚠️ **递归**（2026-10-08 英文站）：`en.html` 在顶层、`en/docs.html` 在子目录 ——
+  // 只扫顶层的旧实现会让英文页**一份 markdown 变体都没有**，而那正是 `Accept: text/markdown`
+  // 协商（public/_worker.js）的唯一数据源。见 docs/plans/2026-10-08-website-i18n.md §5。
+  const pages = collectPages(DIST);
   if (pages.length === 0) {
     console.error('[website-md] dist 里没有页面产物 —— 站点结构变了？');
     process.exit(1);
   }
   const written = [];
   for (const file of pages) {
-    const page = file === 'index.html' ? '/' : `/${file.replace(/\.html$/, '')}`;
+    const page = toCleanPath(file);
     const html = readFileSync(join(DIST, file), 'utf8');
     const md = htmlToMarkdown(html, { page });
     const out = file.replace(/\.html$/, '.md');

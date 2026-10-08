@@ -216,8 +216,10 @@ describe('伞形术语改名：面向使用者的表面不得残留旧术语', (
     for (const needle of ['src/registry.ts', '四分类', 'src/tools']) {
       assert.ok(cliReadme.includes(needle), `CLI README 应写明 ${needle}`);
     }
-    // 官网首页导航标签已改称「能力」（曾是「单元」）
+    // 官网首页导航标签已改称「能力」（曾是「单元」）。
+    // ⚠️ 2026-10-08 官网 i18n：文案从行内字面量收进 `navText` 表（中/英各一份），
+    // 所以判据从 `>能力<` 移到 zh 表项上 —— 不变的是「这个词叫能力、不叫单元」。
     const nav = readFileSync(join(repoRoot, 'packages/website/src/components/Nav.astro'), 'utf8');
-    assert.ok(nav.includes('>能力<'), '首页导航标签应为「能力」');
+    assert.ok(nav.includes("capabilities: '能力'"), '首页导航标签应为「能力」');
   });
 });

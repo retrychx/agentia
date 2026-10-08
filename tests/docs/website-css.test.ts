@@ -140,12 +140,17 @@ describe('官网手机版折叠菜单：CTA 按钮的边框完整性', () => {
       null,
       '出现裸 `a:last-child { border-bottom: none }` —— CTA 恒为最后一项，这条规则只会把' +
         '按钮的下边框抹掉（特异性压过 .nav-links .nav-cta）。要表达「最后一条普通链接不画线」，' +
-        '请写成 `.nav-links a:not(.nav-cta):last-child`。',
+        '请写成 `.nav-links > a:not(.nav-cta):last-child`。',
     );
+    // ⚠️ 选择器须是**直接子选择器 `>`**（2026-10-08 英文站）：`.lang-switch` 内部最后那个
+    // `<a>`（`EN`）也是个 `:last-child`，不带 `>` 时这条规则会连带抹掉折叠菜单里「当前语言」
+    // 的下划线。本规则要限定的是**顶层**最后一条普通链接。判据两条：`:not(.nav-cta)` 在场（保 CTA），
+    // `>` 在场（不误伤嵌套锚点）。
     assert.match(
       raw,
-      /\.nav-links a:not\(\.nav-cta\):last-child\s*\{[^}]*border-bottom:\s*none/,
-      '缺少「最后一条普通链接不画线」的规则（须以 :not(.nav-cta) 排除 CTA）',
+      /\.nav-links > a:not\(\.nav-cta\):last-child\s*\{[^}]*border-bottom:\s*none/,
+      '缺少「顶层最后一条普通链接不画线」的规则（须写成 `.nav-links > a:not(.nav-cta):last-child`：' +
+        '`>` 限制到顶层、`:not(.nav-cta)` 排除 CTA）',
     );
   });
 

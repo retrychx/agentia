@@ -1,0 +1,712 @@
+<main class="docs-layout">
+    <aside class="docs-nav" id="docs-nav">
+      <p class="dn-title">CONTENTS</p>
+      <p class="dn-group">Getting started</p>
+      <a href="#start">Quickstart</a>
+      <a href="#scenarios">Scenario guide</a>
+      <p class="dn-group">Capabilities &amp; assembly</p>
+      <a href="#capabilities">Four capability kinds</a>
+      <a href="#structure">Layout &amp; assembly</a>
+      <a href="#middleware">Middleware</a>
+      <p class="dn-group">Runtime &amp; observability</p>
+      <a href="#triggers">Trigger modes</a>
+      <a href="#context">Long-context policy</a>
+      <a href="#typed">Structured results</a>
+      <a href="#observability">Observability</a>
+      <a href="#hosting">Hosting &amp; exports</a>
+      <a href="#models">Models &amp; memory</a>
+      <a href="#stability">Stability &amp; streaming</a>
+      <a href="#hardening">Host hardening</a>
+      <a href="#budget">Hard cost control</a>
+      <a href="#ecosystem">Ecosystem &amp; observability</a>
+      <p class="dn-group">Cross-cutting &amp; reference</p>
+      <a href="#crosscut">Approval, guardrails &amp; isolation</a>
+      <a href="#cli">CLI reference</a>
+      <a href="#env">Environment variables</a>
+      <a href="#versioning">Versioning &amp; stability</a>
+      <a href="#perf">Performance order of magnitude</a>
+    </aside>
+
+    <div class="docs-content">
+      <header class="api-hero">
+        <p class="api-kicker">DOCS · @migor/agentia</p>
+        <h1>Guide</h1>
+        <p class="api-lede">
+          From a three-minute smoke test to production hardening: the four capability kinds, directory
+          assembly, middleware, trigger modes, long context, <strong>observability</strong> and hard cost
+          control. Every API and command matches <code>docs/usage-guide.md</code> word for word; for a
+          quick scan of the exported surface see the <a href="/en/api">public API reference</a>.
+        </p>
+      </header>
+
+      <!-- Quickstart -->
+      <section id="start">
+        <h2>Quickstart</h2>
+        <p>Agentia is a declarative framework for agent services: decorators declare four kinds of capability, the main agent acts as a router and orchestrates them, and one run hands back structured output plus a complete call tree (runId == traceId) with tokens / cost / metrics accounted for all the way down — replayable and auditable. Running in three minutes:</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
+          <pre><code><span class="cmd">npm</span> i -g @migor/cli
+<span class="cmd">agentia</span> create my-app        <span class="cm"># scaffold: four category folders + src/registry.ts + .env</span>
+<span class="cmd">cd</span> my-app && npm install
+<span class="cmd">agentia</span> g subagent doc-reviewer  <span class="cm"># generate a capability and register it automatically</span>
+<span class="cm"># put ANTHROPIC_API_KEY into the .env the scaffold generated (.gitignore already covers it)</span>
+<span class="cmd">npm</span> run dev -- <span class="str">"review docs/report.md for me"</span></code></pre>
+        </div>
+        <p>The entry point <code>src/main.ts</code> does exactly one thing: assemble the app, then trigger a run.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/main.ts</em></div>
+          <pre><code><span class="kw">import</span> { createApp, SystemPrompt } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
+  name: <span class="str">'my-app'</span>,
+  discover: [<span class="str">'src/tools'</span>, <span class="str">'src/skills'</span>, <span class="str">'src/prompts'</span>, <span class="str">'src/subagents'</span>], <span class="cm">// four category folders; order is assembly order</span>
+  system: <span class="kw">new</span> <span class="fn">SystemPrompt</span>().<span class="fn">add</span>(<span class="str">'role'</span>, <span class="str">'You are the main agent of my-app; dispatch the capabilities on your menu as the task requires.'</span>, <span class="kw">true</span>),
+});
+
+<span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>([{ role: <span class="str">'user'</span>, content: process.argv[<span class="dec">2</span>] }]);
+console.<span class="fn">log</span>(result.finalText);</code></pre>
+        </div>
+      </section>
+
+      <!-- Scenario guide -->
+      <section id="scenarios">
+        <h2>Scenario guide</h2>
+        <p>Find the recipe by what you want to do: five cards, each with a minimal skeleton and a link to go deeper. Every API and command matches <code>docs/usage-guide.md</code> word for word.</p>
+
+        <h3>Ship an HTTP agent service</h3>
+        <p>One handler serves synchronous <code>POST /run</code> (SSE when <code>Accept: text/event-stream</code> is set), asynchronous <code>POST /tasks</code> (de-duplicated by idempotency key) and the <code>GET /healthz</code> probe. Auth goes through the <code>authenticate</code> seam (it intercepts before the body is read) and shutdown goes through <code>drain</code> — unfinished tasks stay in the store, and <code>resumePending()</code> picks them up after a restart.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>server.ts</em></div>
+          <pre><code><span class="kw">import</span> { createServer } <span class="kw">from</span> <span class="str">'node:http'</span>;
+<span class="kw">import</span> { createApp, createHttpHandler, AsyncRunner, SqliteTaskStore, HttpException } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({ name: <span class="str">'my-app'</span>, providers, system });
+<span class="kw">const</span> runner = <span class="kw">new</span> <span class="fn">AsyncRunner</span>(app, { store: <span class="kw">new</span> <span class="fn">SqliteTaskStore</span>(<span class="str">'./tasks.db'</span>) });
+<span class="kw">await</span> runner.<span class="fn">resumePending</span>(); <span class="cm">// restart resumes queued/running, it does not discard them</span>
+
+<span class="kw">const</span> handler = <span class="fn">createHttpHandler</span>(app, {
+  runner,
+  authenticate: <span class="kw">async</span> (req) =&gt; {
+    <span class="kw">if</span> (!<span class="fn">verify</span>(req.headers.authorization)) <span class="kw">throw new</span> <span class="fn">HttpException</span>(<span class="dec">401</span>, { error: <span class="str">'invalid credentials'</span> });
+  },
+});
+<span class="fn">createServer</span>(handler).<span class="fn">listen</span>(<span class="dec">8080</span>);
+<span class="cm">// POST /run (sync / SSE)  POST /tasks (async)  GET /tasks/:id  GET /healthz</span>
+process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; handler.<span class="fn">drain</span>({ timeoutMs: <span class="dec">15_000</span> })); <span class="cm">// signal handling belongs to the host</span></code></pre>
+        </div>
+        <p>See “<a href="#triggers">Trigger modes</a>” and “<a href="#hardening">Host hardening</a>”; for a complete runnable example (four capabilities + three trigger modes + auth + the full observability stack + a Dockerfile) see <code>examples/complete</code>.</p>
+        <p>Want to add a <strong>gRPC</strong> entry point as well: that is a <strong>host-side</strong> concern, and the framework does not build it in (there is exactly one rule — is the client in the standard library: the MCP connector can be built with <code>spawn</code> + <code>fetch</code> and adds no dependency, whereas gRPC would pull in <code>@grpc/grpc-js</code>). The recipe is in <code>docs/usage-guide.md</code> §6.2, and a host + client + end-to-end you can copy is in <code>examples/grpc-host</code> — it spells out the four semantics most easily missed: deadline / cancellation → <code>signal</code>, metadata <code>traceparent</code> → run-root link, framework errors → gRPC status codes, trace → sink.</p>
+
+        <h3>Put monitoring on a run</h3>
+        <p>Metrics and trace go through the <strong>same seam</strong>: <code>metricsSink()</code> satisfies <code>TraceSink</code>, and wiring it into <code>sinks</code> gives you the <code>agentia_*</code> metric family (four levels: run / capability / model / score, where scores come from <code>attachScore</code> as <code>agentia_score</code> / <code>agentia_score_total</code>); <code>createOtlpExporter</code> aligns with the OTel GenAI semconv on export (<code>gen_ai.*</code> keys, recognised directly by Langfuse / Grafana / Datadog).</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>observe.ts</em></div>
+          <pre><code><span class="kw">import</span> { metricsSink, createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> metrics = <span class="fn">metricsSink</span>();
+<span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
+  name: <span class="str">'my-app'</span>, providers, system,
+  sinks: [metrics, <span class="fn">createOtlpExporter</span>({ endpoint: <span class="str">'http://localhost:4318'</span> })],
+});
+<span class="fn">createHttpHandler</span>(app, { metrics }); <span class="cm">// built-in GET /metrics (unauthenticated, still answers while draining)</span></code></pre>
+        </div>
+        <p>The Grafana dashboard JSON ships with the repo (<code>examples/observability/grafana-dashboard.json</code>, built against the default prefix of <code>metricsSink</code> — import and use). See “<a href="#observability">Observability</a>” and “<a href="#ecosystem">Ecosystem &amp; observability</a>”.</p>
+
+        <h3>Offline evals and harvesting from production</h3>
+        <p><code>defineEval</code> + <code>scriptedClient</code> run offline in CI: scripted model round-trips with assertions written against the trace; <strong>each case automatically <code>attachScore</code>s its verdict onto its trace</strong> (<code>value</code> 0|1, <code>source</code> is the eval name), which a downstream <code>metricsSink</code> can aggregate into a pass rate. For production incidents, <code>agentia harvest</code> turns them back into eval case skeletons.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>evals/doc-review.ts</em></div>
+          <pre><code><span class="kw">import</span> { defineEval, scriptedClient } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> report = <span class="kw">await</span> <span class="fn">defineEval</span>({
+  name: <span class="str">'doc-review'</span>,
+  app: () =&gt; app,
+  cases: [{ input: <span class="str">'Summarise this document'</span>, client: <span class="fn">scriptedClient</span>([searchMsg, submitMsg]) }],
+  expect: (r, { trace }) =&gt; { <span class="cm">/* assert stopReason / tool sequence / result.typed */</span> },
+}).<span class="fn">run</span>();
+<span class="kw">if</span> (!report.ok) process.<span class="fn">exit</span>(<span class="dec">1</span>); <span class="cm">// failing cases carry the full trace; in CI you only read report.ok</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
+          <pre><code><span class="cmd">agentia</span> harvest trace.jsonl --failed --limit <span class="dec">5</span> --out evals/harvested.ts  <span class="cm"># production trace → eval case skeleton</span></code></pre>
+        </div>
+        <p><strong>A skeleton is not a finished test</strong>: the trace does not record assistant text (so the script holds placeholders), and the pre-filled <code>expect</code> transcribes what actually happened (which is not the same as what should happen) — review it by hand before it enters CI. See “<a href="#ecosystem">Ecosystem &amp; observability</a>” and “<a href="#cli">CLI reference</a>”.</p>
+
+        <h3>prompt / model A/B</h3>
+        <p>Run the same input through two runs (swap the model or the <code>SystemPrompt</code> version) and let <code>diffTraces</code> surface the structural and cost differences. Without writing code, <code>agentia diff</code> compares two on-disk traces directly and <strong>exits 1 when they differ</strong>, so CI can block “the trajectory drifted after a prompt / model change”. To “re-run from turn N with a different question”, use <code>forkMessages</code> — it produces a set of messages you feed back into <code>app.run</code>, which starts a <strong>new run, not a continuation</strong>.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>ab.ts</em></div>
+          <pre><code><span class="kw">import</span> { diffTraces, forkMessages } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> a = <span class="kw">await</span> app.<span class="fn">run</span>(input, { model: <span class="str">'claude-sonnet-5'</span> });
+<span class="kw">const</span> b = <span class="kw">await</span> app.<span class="fn">run</span>(input, { model: <span class="str">'claude-opus-5'</span> });
+<span class="kw">const</span> diff = <span class="fn">diffTraces</span>(a.result.trace, b.result.trace); <span class="cm">// run-level summary + per-span field diff</span>
+
+<span class="cm">// Forked replay: truncate before turn 3 of the main loop (0-based) and continue with a different question</span>
+<span class="kw">const</span> messages = <span class="fn">forkMessages</span>(a.result.trace, {
+  atTurn: <span class="dec">3</span>,
+  append: [{ role: <span class="str">'user'</span>, content: <span class="str">'Different angle: give me the conclusion first, then the evidence.'</span> }],
+});
+<span class="kw">const</span> c = <span class="kw">await</span> app.<span class="fn">run</span>(messages); <span class="cm">// a new run, continuing from the real tool history before the fork point</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
+          <pre><code><span class="cmd">agentia</span> diff a.jsonl b.jsonl   <span class="cm"># compare two on-disk traces (same input shape as agentia report); exits 1 when they differ</span></code></pre>
+        </div>
+        <p>See “<a href="#cli">CLI reference</a>”; for the lossy boundaries (the trace records neither assistant text nor the original input) see the <a href="#limits">Known boundaries</a> section and the A/B part of <code>/llms-full.txt</code>.</p>
+
+        <h3>Human gate (HITL)</h3>
+        <p>Middleware can <code>await</code> a human decision before letting a call through, and the engine will wait for the tool result: <strong>allow</strong> = <code>next()</code>; <strong>reject</strong> = do not call <code>next()</code> (short-circuit, the side effect never happens); <strong>reject and redirect the model</strong> = throw (the result is recorded as <code>is_error</code> and the run continues).</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>approval.ts</em></div>
+          <pre><code><span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> requireApproval: <span class="fn">CapabilityMiddleware</span> = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">if</span> (!DANGEROUS.<span class="fn">has</span>(call.capability.name)) <span class="kw">return</span> <span class="fn">next</span>();
+  <span class="kw">const</span> ok = <span class="kw">await</span> <span class="fn">askHuman</span>(call.capability.name, call.input); <span class="cm">// the run simply waits here, for a person</span>
+  <span class="kw">if</span> (!ok) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">`not approved: ${call.capability.name}`</span>); <span class="cm">// → is_error, the model takes another route</span>
+  <span class="kw">return</span> <span class="fn">next</span>();
+};
+<span class="fn">createApp</span>({ system, providers, middleware: [requireApproval] });</code></pre>
+        </div>
+        <p><strong>Cross-process suspend / resume is supported</strong>: once you declare <code>@Tool({ approval: 'required' })</code>, every model call suspends the task as <code>suspended</code> (message history and the pending list are persisted with the task, so a restart loses nothing), and <code>POST /tasks/:id/approve</code> resumes from the breakpoint with that decision — see “<a href="#crosscut">Cross-cutting recipes</a>” and the API reference.</p>
+      </section>
+
+      <!-- Four capability kinds -->
+      <section id="capabilities">
+        <h2>Four capability kinds</h2>
+        <p>Capabilities are what a service is made of. All four kinds sit on the main agent's menu as callable entries, share one namespace, and are de-duplicated at assembly time.</p>
+
+        <h3>@Tool — function calls</h3>
+        <p>A class method is a tool. Arguments are parsed against a JSON Schema and validated before execution; a failure comes back as <code>is_error</code> and the run keeps going.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/tools/weather/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { Tool } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">Weather</span> {
+  <span class="dec">@Tool</span>({
+    description: <span class="str">'Get the weather for a city'</span>,
+    schema: {
+      type: <span class="str">'object'</span>,
+      properties: { city: { type: <span class="str">'string'</span> } },
+      required: [<span class="str">'city'</span>],
+      additionalProperties: <span class="kw">false</span>,
+    },
+    strict: <span class="kw">true</span>,
+  })
+  <span class="fn">get_weather</span>(input: { city: <span class="kw">string</span> }) {
+    <span class="kw">return</span> <span class="str">`Shanghai 72°F sunny (${input.city})`</span>;
+  }
+}</code></pre>
+        </div>
+
+        <h3>@Skill — code-driven flow</h3>
+        <p>The method body is a deterministic script: whether to call the model, how many times, and how to post-process the result are all decided by code. Model calls happen only at an explicit <code>ctx.llm()</code>, accounted for as an llm.turn under the skill's own capability span.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/skills/weekly-report/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { Skill } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+<span class="kw">import type</span> { SkillContext } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">WeeklyReport</span> {
+  <span class="dec">@Skill</span>({
+    description: <span class="str">'Ask the LLM for key points on a given topic'</span>,
+    schema: {
+      type: <span class="str">'object'</span>,
+      properties: { topic: { type: <span class="str">'string'</span> } },
+      required: [<span class="str">'topic'</span>],
+      additionalProperties: <span class="kw">false</span>,
+    },
+  })
+  <span class="kw">async</span> <span class="fn">weekly_report</span>(input: { topic: <span class="kw">string</span> }, ctx: SkillContext) {
+    <span class="kw">const</span> r = <span class="kw">await</span> ctx.<span class="fn">llm</span>({ prompt: <span class="str">`Give three key points on "${input.topic}"`</span> });
+    <span class="kw">return</span> r.text; <span class="cm">// the return value is the product, handed back to the main agent as a tool_result</span>
+  }
+}</code></pre>
+        </div>
+
+        <h3>@SubAgent — isolated sub-agents</h3>
+        <p>Its own loop with a trimmed context. The method body never executes — the framework starts another agent from the <code>system</code> you gave it; intermediate work stays inside and only the final report flows back to the main context.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/subagents/doc-reviewer/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { SubAgent, asset } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">DocReviewer</span> {
+  <span class="dec">@SubAgent</span>({
+    description: <span class="str">'Review a document independently, in the role set by system.md'</span>,
+    schema: {
+      type: <span class="str">'object'</span>,
+      properties: { task: { type: <span class="str">'string'</span> } },
+      required: [<span class="str">'task'</span>],
+      additionalProperties: <span class="kw">false</span>,
+    },
+    system: <span class="fn">asset</span>(<span class="kw">import</span>.meta.url, <span class="str">'./system.md'</span>),
+  })
+  <span class="cm">// the method body never runs: only the method name and decorator metadata are read</span>
+  <span class="fn">doc_reviewer</span>(_input: { task: <span class="kw">string</span> }): <span class="kw">void</span> {}
+}</code></pre>
+        </div>
+
+        <h3>@Prompt — plain-text assets</h3>
+        <p>Templates and playbooks, compiled into a side-effect-free fetch tool on the menu: the model calls it when it decides it needs the text, and the text is injected into context as a tool_result. Long text lives in a sibling .md file.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/prompts/style-guide/index.ts</em></div>
+          <pre><code><span class="kw">import</span> { Prompt, asset } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">export default class</span> <span class="fn">StyleGuide</span> {
+  <span class="dec">@Prompt</span>({ description: <span class="str">'Writing conventions (the description says when to fetch it)'</span> })
+  <span class="fn">style_guide</span>(): <span class="kw">string</span> {
+    <span class="kw">return</span> <span class="fn">asset</span>(<span class="kw">import</span>.meta.url, <span class="str">'./asset.md'</span>);
+  }
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- Layout and assembly -->
+      <section id="structure">
+        <h2>Layout &amp; assembly</h2>
+        <p>Four category folders, one folder per capability, long text in .md files; each capability is a class with a default export whose decorator declares what it is.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>project layout</em></div>
+          <pre><code>my-app/
+├─ src/
+│  ├─ main.ts                    <span class="cm"># createApp assembly entry point</span>
+│  ├─ registry.ts                <span class="cm"># explicit registry (kept up to date by agentia g)</span>
+│  ├─ tools/weather/index.ts     <span class="cm"># @Tool</span>
+│  ├─ skills/weekly-report/      <span class="cm"># @Skill</span>
+│  ├─ prompts/style-guide/       <span class="cm"># @Prompt (with asset.md)</span>
+│  └─ subagents/doc-reviewer/    <span class="cm"># @SubAgent (with system.md)</span>
+└─ tsconfig.json                 <span class="cm"># include: ['src'] — one src covers everything</span></code></pre>
+        </div>
+        <h3>Two assembly routes</h3>
+        <ul>
+          <li><strong>Directory scan</strong>: <code>createApp({ discover: ['src/tools', …] })</code> takes one directory or a list of them (<strong>order is assembly order</strong>), scans <code>&lt;name&gt;/index.ts</code> in each at startup, and registers a default-exported class under the folder name as its DI token (because it uses dynamic import, a <code>createApp</code> with <code>discover</code> returns a Promise).</li>
+          <li><strong>Explicit registry</strong>: <code>createApp({ providers, system })</code>, where <code>providers</code> comes from <code>src/registry.ts</code> (maintained automatically by <code>agentia g</code>).</li>
+        </ul>
+        <p>Use either route or mix the two; for the same token the later one wins and the menu is never collected twice. Assembly runs static checks: duplicate menu entries, reference existence, DI cycles — all failing at startup rather than in production.</p>
+      </section>
+
+      <!-- Middleware -->
+      <section id="middleware">
+        <h2>Middleware (CapabilityMiddleware)</h2>
+        <p>Hooks around every capability call (tool / skill / subagent / prompt): auth, rate limiting, result caching, audit logging, timeout wrapping and other cross-cutting concerns live here, not inside business capabilities.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>signature</em></div>
+          <pre><code><span class="kw">type</span> <span class="fn">CapabilityMiddleware</span> = (call: CapabilityCall, next: CapabilityNext) =&gt; <span class="kw">unknown</span>;
+
+<span class="kw">interface</span> <span class="fn">CapabilityCall</span> {
+  <span class="kw">readonly</span> capability: AgentTool;   <span class="cm">// name / description / inputSchema are readable</span>
+  <span class="kw">readonly</span> input: <span class="kw">unknown</span>;   <span class="cm">// arguments that already passed schema validation</span>
+  <span class="kw">readonly</span> ctx?: ToolRunContext;
+}
+<span class="cm">// Pass through to the next layer; next(newInput) can rewrite the arguments, default keeps the current input</span>
+<span class="kw">type</span> <span class="fn">CapabilityNext</span> = (input?: <span class="kw">unknown</span>) =&gt; <span class="kw">unknown</span>;</code></pre>
+        </div>
+        <h3>The onion model</h3>
+        <ul>
+          <li>Chain order = registration order: <strong>the first registered is the outermost layer</strong>, wrapping like an onion;</li>
+          <li><code>next()</code> passes through, <code>next(newInput)</code> rewrites the arguments; <strong>not calling next short-circuits</strong> (result caching, for instance);</li>
+          <li>Throwing is treated as a capability failure: the engine wraps it into <code>is_error</code> for the model and the run continues;</li>
+          <li>Wrapping happens at assembly time (in the AgentApp constructor) with zero intrusion into the engine; an empty chain passes straight through at no cost.</li>
+        </ul>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>src/main.ts — registration</em></div>
+          <pre><code><span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
+  name: <span class="str">'my-app'</span>,
+  discover: [<span class="str">'src/tools'</span>, <span class="str">'src/skills'</span>, <span class="str">'src/prompts'</span>, <span class="str">'src/subagents'</span>],
+  middleware: [auth, cached], <span class="cm">// auth is the outermost layer</span>
+  system,
+});</code></pre>
+        </div>
+        <h3>Example: auth</h3>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>middleware/auth.ts</em></div>
+          <pre><code><span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="cm">// Sensitive capabilities require an authorisation marker in the execution context, otherwise fail as a capability error</span>
+<span class="kw">export const</span> auth: CapabilityMiddleware = (call, next) =&gt; {
+  <span class="kw">if</span> (call.capability.name.startsWith(<span class="str">'admin:'</span>) &amp;&amp; !call.ctx) {
+    <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">'forbidden: missing execution context'</span>);
+  }
+  <span class="kw">return</span> <span class="fn">next</span>();
+};</code></pre>
+        </div>
+        <h3>Example: result caching</h3>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>middleware/cache.ts</em></div>
+          <pre><code><span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> store = <span class="kw">new</span> <span class="fn">Map</span>&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;();
+
+<span class="cm">// A hit short-circuits (next is not called); a miss passes through and writes back</span>
+<span class="kw">export const</span> cached: CapabilityMiddleware = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">const</span> key = <span class="str">`${call.capability.name}:${JSON.stringify(call.input)}`</span>;
+  <span class="kw">if</span> (store.<span class="fn">has</span>(key)) <span class="kw">return</span> store.<span class="fn">get</span>(key);
+  <span class="kw">const</span> out = <span class="kw">await</span> <span class="fn">next</span>();
+  store.<span class="fn">set</span>(key, out);
+  <span class="kw">return</span> out;
+};</code></pre>
+        </div>
+      </section>
+
+      <!-- Trigger modes -->
+      <section id="triggers">
+        <h2>Trigger modes</h2>
+        <p>Synchronous RPC, asynchronous tasks and scheduled dispatch share one input contract; swapping the host does not change the semantics.</p>
+        <h3>Synchronous RPC</h3>
+        <p><code>await app.run(messages)</code> hands back the result and the trace directly — a good fit for request-response hosts.</p>
+        <h3>Asynchronous tasks</h3>
+        <p><code>AsyncRunner</code> returns a task record as soon as you submit and runs it in the background; <code>FileTaskStore</code> snapshots one JSONL line at a time, and after a host restart <code>resumePending()</code> picks queued/running tasks back up.</p>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>async submit</em></div>
+          <pre><code><span class="kw">const</span> task = <span class="kw">await</span> runner.<span class="fn">submit</span>(
+  [{ role: <span class="str">'user'</span>, content: <span class="str">'Generate last week\u2019s ops report'</span> }],
+  { idempotencyKey: <span class="str">'weekly-report:2026-W36'</span> },
+);</code></pre>
+        </div>
+        <h3>Scheduled dispatch</h3>
+        <p>The Scheduler supports <code>every</code> (interval) and <code>at</code> (fixed time) schedules, turning a due schedule into an asynchronous task submission.</p>
+        <h3>Idempotency</h3>
+        <p>The async host has at-least-once semantics: submitting the same <code>idempotencyKey</code> again returns the existing record as long as the previous task has not failed (last-wins de-duplication); a failed task under the same key may be resubmitted as a new task.</p>
+      </section>
+
+      <!-- Long-context policy -->
+      <section id="context">
+        <h2>Long-context policy</h2>
+        <p><code>createBudgetPolicy</code> provides a budget-driven context guardrail whose rules carry hysteresis, so it does not compress over and over on every turn:</p>
+        <ul>
+          <li>Estimate tokens for the whole message set; at or under budget → pass through unchanged (the fast path);</li>
+          <li>Over budget, first do <strong>context editing</strong>: drop the oldest tool pairs, without extra model calls;</li>
+          <li>Still over budget and a <code>summarize</code> is available → <strong>compaction</strong>: turn the old prefix into a summary and keep only the most recent <code>keepRecent</code> items; if fewer than <code>compactEvery</code> turns have passed since the last compaction, skip (anti-flapping);</li>
+          <li>The framework does not invent tokens for you: the default token estimate is a CJK-aware heuristic, and you can inject one backed by <code>/count_tokens</code> in production.</li>
+          <li>Only <strong>new messages</strong> are estimated: history is append-only, so the prefix estimate is reused, which makes each turn's estimation cost proportional to what this turn added rather than to the whole history.</li>
+        </ul>
+        <div class="code-block">
+          <div class="code-title"><i></i><i></i><i></i><em>policy</em></div>
+          <pre><code><span class="kw">import</span> { createBudgetPolicy } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> policy = <span class="fn">createBudgetPolicy</span>({
+  budgetTokens: <span class="dec">60_000</span>,   <span class="cm">// budget (estimated input tokens)</span>
+  keepRecent: <span class="dec">20</span>,          <span class="cm">// how many recent messages compaction keeps</span>
+  editBeforeCompact: <span class="kw">true</span>,  <span class="cm">// edit before compacting</span>
+  compactEvery: <span class="dec">1</span>,          <span class="cm">// compaction hysteresis (turns)</span>
+  <span class="cm">// summarize: (historyText) =&gt; ...,  // compaction only happens if you provide this</span>
+});</code></pre>
+        </div>
+      </section>
+
+      <!-- Structured results -->
+      <section id="typed">
+        <h2>Structured results</h2>
+        <p>Give <code>run</code> a <code>resultSchema</code> and the model submits its result through a hidden <code>submit_result</code> tool; the framework validates it and attaches it to <code>result.typed</code> — no more guessing JSON out of plain text.</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>typed.ts</em></div>
+        <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
+  resultSchema: {
+    type: <span class="str">'object'</span>,
+    properties: { pass: { type: <span class="str">'boolean'</span> }, reason: { type: <span class="str">'string'</span> } },
+    required: [<span class="str">'pass'</span>, <span class="str">'reason'</span>],
+    additionalProperties: <span class="kw">false</span>,
+  },
+});
+<span class="fn">console</span>.log(result.typed); <span class="cm">// { pass: true, reason: '…' }</span></code></pre></div>
+        <p>The schema can also come from zod (an optional peer): <code>fromZod(z.toJSONSchema(S), S)</code>. Validation runs through zod, and the error path goes back to the model verbatim so it can correct itself.</p>
+      </section>
+
+      <!-- Observability: the core selling point -->
+      <section id="observability">
+        <h2>Observability: trace as a first-class citizen</h2>
+        <p>One run == one trace (<code>traceId === runId</code>), <strong>built in from turn 0</strong> — not a third-party tracing SDK bolted on. This is the line between Agentia and an agent demo that stops at “it runs”: <strong>the four kinds of capability decide what it can do, the trace decides whether you dare to ship it</strong>.</p>
+        <ul>
+          <li><strong>Every step accounted for</strong>: each span carries model, input / output / cache tokens, estimated cost, status and error class. The rule is explicit — <code>totalUsage</code> accumulates from <code>llm.turn</code> only, while a capability span's usage is the aggregate of its descendants, never double-counted.</li>
+          <li><strong>The exit is one seam</strong>: <code>TraceSink { export(trace) }</code> — and the run delivers on <strong>both the success and failure paths</strong>, with a throwing sink unable to affect the run. Persistence, querying, sampling and redaction are all done outside the seam by composing sinks; the framework does not choose your policy (working code in <code>examples/observability/</code>, write-up in <code>docs/observability.md</code>).</li>
+          <li><strong>Cost is controllable</strong>: <code>priceOverrides</code> patches the price table; when a model is not in the table the framework <strong>emits an explicit <code>usage.unpriced</code> event</strong> (it does not silently treat it as zero); see “Hard cost control” below.</li>
+          <li><strong>Replayable</strong>: <code>traceToMessages(trace)</code> linearises a finished trace back into messages for the model, as the basis for debugging and for “change the prompt and run it again”.</li>
+          <li><strong>Exportable</strong>: <code>createOtlpExporter({ endpoint })</code> pushes OTLP and <strong>aligns with the OTel GenAI semconv</strong> on export (it adds <code>gen_ai.*</code> keys: the run root as <code>invoke_agent</code>, <code>gen_ai.request.model</code> on <code>llm.turn</code>, and <code>score</code> events translated to <code>gen_ai.evaluation.result</code>, while the existing <code>usage.*</code> keys stay); <code>metricsSink()</code> puts metrics through the same seam too (Prometheus text or OTLP metrics), <strong>with zero dependencies throughout</strong>. Wiring is in “<a href="#scenarios">Scenario guide</a> · Put monitoring on a run”.</li>
+          <li><strong>Visible locally</strong>: <code>agentia dev</code> starts a local inspector panel sharing one renderer with <code>@migor/trace-view</code> — the site Playground uses the same one, so three surfaces run one implementation and cannot drift.</li>
+        </ul>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>observe.ts</em></div>
+        <pre><code><span class="kw">import</span> { createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages);
+
+result.trace.spans;       <span class="cm">// the call tree: llm.turn / capability spans / events</span>
+result.trace.totalUsage;  <span class="cm">// token totals (accumulated from llm.turn only)</span>
+
+<span class="cm">// The exit is one seam: persistence / sampling / redaction / metrics are composed outside it; no policy is built in</span>
+<span class="kw">await</span> <span class="fn">createOtlpExporter</span>({ endpoint: <span class="str">'http://localhost:4318'</span> }).<span class="fn">export</span>(result.trace);</code></pre></div>
+        <p>Metrics and the tuning report (“which capability is slow / expensive / error-prone”) are in “<a href="#ecosystem">Ecosystem &amp; observability</a>” below.</p>
+      </section>
+
+      <section id="hosting">
+        <h2>Hosting &amp; exports</h2>
+        <p>The <code>server.ts</code> below wires the HTTP host, a SQLite task store and the OTLP exporter together.</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>server.ts</em></div>
+        <pre><code><span class="kw">import</span> { createServer } <span class="kw">from</span> <span class="str">'node:http'</span>;
+<span class="kw">import</span> { createHttpHandler, SqliteTaskStore, AsyncRunner, createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> runner = <span class="kw">new</span> <span class="fn">AsyncRunner</span>(app, { store: <span class="kw">new</span> <span class="fn">SqliteTaskStore</span>(<span class="str">'./tasks.db'</span>) });
+<span class="fn">createServer</span>(<span class="fn">createHttpHandler</span>(app, { runner })).<span class="fn">listen</span>(<span class="dec">8080</span>);
+<span class="cm">// POST /run (sync / SSE)  POST /tasks (async)  GET /tasks/:id (polling)  GET /healthz (probe)</span>
+
+<span class="kw">const</span> otlp = <span class="fn">createOtlpExporter</span>({ endpoint: <span class="str">'http://localhost:4318'</span> });
+<span class="kw">await</span> otlp.<span class="fn">export</span>(result.trace);</code></pre></div>
+      </section>
+
+      <section id="models">
+        <h2>Models &amp; memory</h2>
+        <p>The engine depends only on the <code>ModelClient</code> structural surface: Anthropic satisfies it natively, and OpenAI-compatible endpoints (DeepSeek and friends) plug in with one line of <code>createOpenAIClient</code>; the <code>memory</code> option hydrates and writes back the blackboard between runs.</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>models.ts</em></div>
+        <pre><code><span class="kw">import</span> { createOpenAIClient, InMemoryMemoryStore } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
+  client: <span class="fn">createOpenAIClient</span>({ baseURL: <span class="str">'https://api.deepseek.com'</span> }),
+  model: <span class="str">'deepseek-chat'</span>,
+  memory: { store: <span class="kw">new</span> <span class="fn">InMemoryMemoryStore</span>(), keys: [<span class="str">'profile'</span>] },
+});</code></pre></div>
+      </section>
+
+      <section id="stability">
+        <h2>Stability &amp; streaming</h2>
+        <p>Cancellation, retries and streaming share one per-call options object, carried from the entry point all the way to the model request.</p>
+        <ul>
+          <li><strong>Cancellation propagation</strong>: <code>signal</code> travels all the way to <code>ModelClient.messages.stream</code> (both built-in Anthropic and OpenAI adapters forward it); an interruption does not bubble an exception, and the run closes with <code>stopReason='aborted'</code>. The HTTP host builds in “client disconnect ⇒ abort”, and <code>AsyncRunner.runTimeoutMs</code> <strong>aborts an in-flight run</strong> when it hits.</li>
+          <li><strong>Retries and backoff</strong>: on by default (<code>maxAttempts=3</code>, exponential backoff + jitter), and only failures where <strong>the attempt produced no text at all</strong> are retried — text already streamed cannot be taken back. Each attempt opens its own <code>llm.turn</code> span.</li>
+          <li><strong>SSE streaming</strong>: <code>POST /run</code> with <code>Accept: text/event-stream</code> emits <code>text.delta</code> / <code>run.end</code> / <code>error</code> frame by frame; without that header it still answers with unary JSON. <strong>With backpressure protection</strong>: once downstream backlog (<code>res.writableLength</code>) exceeds <code>sseMaxBufferedBytes</code> (8 MiB by default) the stream is closed and the corresponding run is aborted — otherwise one client that connects but never reads would exhaust memory.</li>
+        </ul>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>run.ts</em></div>
+        <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
+  signal: controller.signal,                        <span class="cm">// cancellation propagates into in-flight model requests</span>
+  retry: { maxAttempts: <span class="dec">3</span>, baseDelayMs: <span class="dec">500</span> },   <span class="cm">// on by default; retry: false turns it off</span>
+  onText: (delta) =&gt; process.stdout.<span class="fn">write</span>(delta),  <span class="cm">// streaming text deltas</span>
+});</code></pre></div>
+      </section>
+
+      <section id="hardening">
+        <h2>Host hardening</h2>
+        <p>The framework does not implement token / JWT auth, and it does not subscribe to process signals — that belongs to the host or a reverse proxy.</p>
+        <ul>
+          <li><code>authenticate</code> intercepts at the entry, <strong>before the body is read</strong> (including unknown paths, so it never reveals whether a path exists); throwing <code>HttpException</code> answers with its status / body, while any other throw answers 401 with the detail going only to server logs.</li>
+          <li><code>drain({ timeoutMs })</code>: refuse new work → wait for in-flight work to finish → force-close any SSE streams still open at the timeout; <strong>unfinished tasks stay in the store</strong> and the next start calls <code>resumePending()</code> to continue them (they are not discarded).</li>
+          <li><code>GET /healthz</code> → <code>{ ok, inFlight, uptimeMs, draining }</code>: unauthenticated (a probe cannot carry credentials) and still answering 200 while draining; <code>inFlight</code> = in-flight synchronous runs + queued/running async tasks.</li>
+        </ul>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>server.ts</em></div>
+        <pre><code><span class="kw">const</span> handler = <span class="fn">createHttpHandler</span>(app, {
+  authenticate: <span class="kw">async</span> (req) =&gt; {
+    <span class="kw">if</span> (!<span class="fn">verify</span>(req.headers.authorization)) <span class="kw">throw new</span> <span class="fn">HttpException</span>(<span class="dec">401</span>, { error: <span class="str">'invalid credentials'</span> });
+  },
+});
+<span class="fn">createServer</span>(handler).<span class="fn">listen</span>(<span class="dec">8080</span>);
+process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; handler.<span class="fn">drain</span>());  <span class="cm">// signal handling belongs to the host</span></code></pre></div>
+      </section>
+
+      <section id="budget">
+        <h2>Hard cost control</h2>
+        <p>This is <strong>complementary to the long-context policy, not the same thing</strong>: the context policy changes the messages <em>before sending</em> (to avoid 400s / premature compaction), whereas this changes the run's outcome <em>after accounting</em> — its purpose is <strong>controlling spend</strong>.</p>
+        <ul>
+          <li><code>maxTotalTokens</code> / <code>maxCostUsd</code>: checked after each turn's accounting; going over closes the run with <code>stopReason='budget_exceeded'</code> (counted as a failure) and records a <code>budget.exceeded</code> event on the run root. The scope is the <strong>whole run</strong> (sub-agents included).</li>
+          <li>Two deliberate semantics: <strong>a turn where the model finished naturally is not re-labelled a failure</strong> for going over (the task did in fact complete); and on overrun the framework <strong>does not execute that turn's tools</strong> (so no further side effects are produced).</li>
+          <li><code>toolTimeoutMs</code>: a timeout <strong>does not kill the run</strong> — that tool_result is recorded as <code>is_error</code> so the model takes another route; <code>maxToolConcurrency</code> caps parallel tools within one turn. ⚠️ A timeout means “we stopped waiting”, not cancellation — <code>AgentTool.run</code> receives no signal. It is the <strong>sole arbiter</strong>: when it is set, a tool's own timeout (the MCP bridge's <code>timeoutMs</code>) takes no part in the decision.</li>
+          <li><code>priceOverrides</code>: <strong>patches</strong> the price table — override a built-in model's rates, or price a non-Anthropic endpoint (DeepSeek / self-hosted). It is the precondition for <code>maxCostUsd</code> to work at all: with an unlisted model the cost stays 0 and the guardrail never fires, so the framework <strong>says so explicitly</strong> via the <code>usage.unpriced</code> event, the <code>model_unpriced_turns_total</code> metric and the <code>onUnpricedModel</code> callback — never silently.</li>
+        </ul>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>guards.ts</em></div>
+        <pre><code><span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>(messages, {
+  maxTotalTokens: <span class="dec">200_000</span>,  <span class="cm">// cumulative token cap (whichever comes first)</span>
+  maxCostUsd: <span class="dec">0.5</span>,         <span class="cm">// cumulative cost cap (requires the model to be in the price table)</span>
+  toolTimeoutMs: <span class="dec">10_000</span>,     <span class="cm">// per-tool timeout → is_error, does not kill the run</span>
+  maxToolConcurrency: <span class="dec">4</span>,     <span class="cm">// cap on parallel tools within one turn</span>
+});</code></pre></div>
+      </section>
+
+      <section id="ecosystem">
+        <h2>Ecosystem &amp; observability</h2>
+        <p>All three go through existing extension points: an MCP tool is just an <code>AgentTool</code>, metrics are just a <code>TraceSink</code>, and evals are assertions written against a trace.</p>
+        <ul>
+          <li><strong>MCP</strong>: <code>mcpTools(client, { server })</code> maps a server's <code>tools/list</code> onto menu entries. <strong>The connectors ship in the box</strong> (<code>createStdioMcpConnector</code> / <code>createStreamableHttpMcpConnector</code>, using only <code>node:child_process</code> + global <code>fetch</code>); the framework <strong>does not import the MCP SDK</strong>, and the <code>McpClientLike</code> seam remains (the official SDK / a remote server / your own transport all still fit). Characters that are unfriendly to an LLM are normalised to <code>_</code>, and the <strong>original name</strong> is recorded as the <code>mcp.tool.&lt;menu name&gt;</code> attribute keyed by menu name (one entry per call, so parallel calls do not overwrite each other) for auditing / replay. <strong>There is one timeout arbiter</strong>: when the engine sets <code>toolTimeoutMs</code>, the bridge's <code>timeoutMs</code> takes no part in the decision (a connector's own <code>timeoutMs</code> covers only the assembly-time handshake and <code>tools/list</code>), and both paths share one verdict and one accounting entry (<code>errorKind='timeout'</code>).</li>
+          <li><strong>evals</strong>: <code>scriptedClient([...])</code> scripts the model round-trips and <code>defineEval({ app, cases, expect })</code> writes assertions against the trace — whether a prompt change, a model swap or a new tool caused a regression is answered by assertions rather than by eye. Failing cases carry the full trace.</li>
+          <li><strong>Metrics</strong>: <code>metricsSink()</code> satisfies <code>TraceSink</code> natively, and <strong>all three dimensions are derived from the trace with nothing to instrument</strong> — run level, plus <strong>capability level</strong> (call count, failure count, latency, tokens, cost for each tool / skill / subagent: tools read the <code>tool.output</code> event on the turn, skills / subagents read the capability span) and <strong>model level</strong> (attributed per model, plus a count of “turns whose cost could not be computed”). Durations come in two flavours: a histogram that aggregates across instances, and exact percentiles within the window; <code>render()</code> produces Prometheus text, <code>createHttpHandler({ metrics })</code> builds in <code>GET /metrics</code>, and <code>export:'otlp'</code> pushes to an OTel collector (hand-written JSON, zero dependencies). <strong>Score-level metrics</strong>: <code>attachScore</code> writes a <code>score</code> event onto the run root which aggregates into <code>agentia_score{name,source}</code> (gauge, latest value) and <code>agentia_score_total</code> (counter, number of entries) — eval verdicts / LLM-judge / human labels all take this route; a ready-made Grafana dashboard ships with the repo (<code>examples/observability/grafana-dashboard.json</code>). <strong>Note that <code>createHttpHandler({ metrics })</code> only renders</strong> — for the numbers to actually accumulate you must wire <strong>the same</strong> sink into <code>createApp({ sinks: [metricsSink()] })</code>, otherwise they stay 0 and nothing is reported.</li>
+          <li><strong>Tuning report</strong>: <code>buildRunReport(trace)</code> turns a trace into a ranking of <strong>which capability is slow / expensive / error-prone</strong> (<code>mergeRunReports</code> aggregates across runs), and one CLI line <code>agentia report traces.jsonl</code> prints the table (you produce that jsonl yourself: attach a <code>TraceSink</code> that appends JSON lines, or export from <code>FileTaskStore</code>); the <code>agentia dev</code> panel shows the same ranking. Faced with a pile of knobs, this is your basis for deciding which to turn.</li>
+          <li><strong>Prompt versioning</strong>: <code>new SystemPrompt({ version })</code> writes the version into the run root as <code>system.version</code>, so a trace can answer “which version of the prompt produced this result”. <strong>Multi-tenant quotas</strong>: combine <code>middleware</code> (intercept) + <code>TraceSink</code> (accounting) + BudgetGuard (per-call cap).</li>
+        </ul>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>ecosystem.ts</em></div>
+        <pre><code><span class="kw">import</span> { createApp, createStdioMcpConnector, mcpTools, metricsSink, defineEval, scriptedClient } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="cm">// 1) MCP: a server's tools become menu entries (the connector ships in the box; you can also pass any object implementing listTools/callTool)</span>
+<span class="kw">const</span> mcp = <span class="fn">createStdioMcpConnector</span>([<span class="str">'uvx'</span>, <span class="str">'mcp-server-time'</span>]);
+<span class="kw">const</span> tools = <span class="kw">await</span> <span class="fn">mcpTools</span>(mcp, { server: <span class="str">'time'</span> });
+<span class="kw">const</span> app = <span class="fn">createApp</span>({ system, providers, tools, sinks: [<span class="fn">metricsSink</span>()] });
+
+<span class="cm">// 2) evals: scripted round-trips + assertions against the trace</span>
+<span class="kw">const</span> report = <span class="kw">await</span> <span class="fn">defineEval</span>({
+  name: <span class="str">'time-flow'</span>,
+  app: () =&gt; app,
+  cases: [{ input: <span class="str">'What time is it in Shanghai?'</span>, client: <span class="fn">scriptedClient</span>([toolCallTurn, finalTurn]) }],
+  expect: (r, { trace }) =&gt; { <span class="cm">/* assert stopReason / which tools were called / typed */</span> },
+}).<span class="fn">run</span>();
+<span class="kw">if</span> (!report.ok) <span class="fn">console</span>.error(report.cases.<span class="fn">filter</span>((c) =&gt; !c.ok));
+
+<span class="cm">// 3) metrics: Prometheus text; expose a route that returns metricsSink().render()</span></code></pre></div>
+      </section>
+
+      <!-- Cross-cutting seams -->
+      <section id="crosscut">
+        <h2>Approval, guardrails &amp; code isolation</h2>
+        <p>For guardrails and code isolation the framework <strong>only gives the seam, not a subsystem</strong> (the policies differ too much for hard-coding to be right); approval, beyond the gate seam, also has built-in <strong>suspend / resume</strong> (HITL). Every recipe uses existing extension points only; for the full boundaries see the <a href="#limits">Known boundaries</a> section and <code>/llms-full.txt</code>.</p>
+
+        <h3>Approval gate</h3>
+        <p>Middleware can <code>await</code> a human decision before letting a call through — the engine will wait for the tool result. <strong>Allow</strong> = <code>next()</code>; <strong>reject</strong> = do not call <code>next()</code> (short-circuit, the side effect never happens); <strong>reject and redirect the model</strong> = throw (recorded as <code>is_error</code>, run continues). <strong>For durable approval that survives a process or restart</strong>, use <code>@Tool({ approval: 'required' })</code>: the run suspends as <code>suspended</code> (message history persisted), and <code>POST /tasks/:id/approve</code> resumes execution with that decision — see <code>AsyncRunner.approve</code> and <code>ApprovalDecision</code> in the API reference.</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>approval.ts</em></div>
+        <pre><code><span class="kw">import</span> { createApp } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+<span class="kw">import type</span> { CapabilityMiddleware } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
+
+<span class="kw">const</span> DANGEROUS = <span class="kw">new</span> <span class="fn">Set</span>([<span class="str">'send_email'</span>, <span class="str">'deploy'</span>, <span class="str">'delete_records'</span>]);
+
+<span class="kw">const</span> requireApproval: <span class="fn">CapabilityMiddleware</span> = <span class="kw">async</span> (call, next) =&gt; {
+  <span class="kw">if</span> (!DANGEROUS.<span class="fn">has</span>(call.capability.name)) <span class="kw">return</span> <span class="fn">next</span>();
+  <span class="kw">const</span> ok = <span class="kw">await</span> <span class="fn">askHuman</span>(call.capability.name, call.input); <span class="cm">// wait in place (the run stops here)</span>
+  <span class="kw">if</span> (!ok) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">`not approved: ${call.capability.name}`</span>); <span class="cm">// → is_error, the model reroutes</span>
+  <span class="kw">return</span> <span class="fn">next</span>();                                     <span class="cm">// allow</span>
+};
+
+<span class="fn">createApp</span>({ system, providers, middleware: [requireApproval] });</code></pre></div>
+
+        <h3>Content guardrails</h3>
+        <p>Input (wrap <code>app.run</code>; on the HTTP side use <code>createHttpHandler({ authenticate })</code>, which intercepts <strong>before the body is read</strong>), before a tool call (<code>middleware</code>), and output (wrap the return value, or attach <code>sinks</code>).</p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>guard.ts</em></div>
+        <pre><code><span class="kw">const</span> callable = {
+  name: app.name,
+  <span class="kw">async</span> <span class="fn">run</span>(msgs, opts) {
+    <span class="kw">const</span> out = <span class="kw">await</span> app.<span class="fn">run</span>(<span class="fn">redactInput</span>(msgs), opts);   <span class="cm">// input guardrail</span>
+    <span class="kw">if</span> (<span class="fn">flagged</span>(out.result.finalText)) <span class="kw">throw new</span> <span class="fn">Error</span>(<span class="str">'output blocked by guardrail'</span>); <span class="cm">// output guardrail</span>
+    <span class="kw">return</span> out;
+  },
+};</code></pre></div>
+
+        <h3>Code execution isolation</h3>
+        <p>The framework <strong>never executes model-generated code</strong> — <code>@Skill</code> runs a method body you wrote and <code>@Tool</code> runs a function you wrote, so model output only ever becomes text / a <code>tool_result</code>. Isolation is done <strong>inside the tool implementation</strong> (Docker / a subprocess / a micro-VM, your call) and the framework takes no part in it — the <code>AgentTool.run(input) → output</code> contract keeps isolation entirely within the implementation. The one place it touches the edge: if a tool spawns a subprocess, it must kill it on cancellation (the framework's timeout means “stopped waiting”, not cancellation).</p>
+      </section>
+
+      <!-- Known boundaries. Unlike the Chinese page, this one does NOT render the boundaries table:
+           it is extracted at build time from the Chinese single source docs/usage-guide.md §7, and a
+           second hand-written copy here would inevitably drift — the repo's rule is that the site
+           never carries a second hand-written copy of a single-sourced document. See
+           docs/plans/2026-10-08-website-i18n.md §4. -->
+      <section id="limits">
+        <h2>Known boundaries (stated plainly)</h2>
+        <p>What the framework <strong>does not guarantee</strong> — the basis for deciding whether you can use it. It is a long list (dozens of entries, each one guarded in the repo), and it lives in a single source: <code>docs/usage-guide.md</code> §7, which is written in Chinese. That same text is served verbatim at <code>/llms-full.txt</code>, and the <a href="/docs#limits">Chinese docs page</a> renders the whole table at build time.</p>
+        <p>Read it at the source rather than trusting a copy here: <a href="https://github.com/retrychx/agentia/blob/main/docs/usage-guide.md">docs/usage-guide.md §7 on GitHub</a> · <a href="/llms-full.txt"><code>/llms-full.txt</code></a>. The English summary of the same commitments is under <a href="#versioning">Versioning &amp; stability</a> below.</p>
+      </section>
+
+      <section id="cli">
+        <h2>CLI reference</h2>
+        <p>Install globally with <code>npm i -g @migor/cli</code> and use the <code>agentia</code> command.</p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>Command</th><th>What it does</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>agentia create &lt;name&gt;</td><td>Scaffolds a new project: the four category folders (with .gitkeep), a src/registry.ts registry, src/app.ts (the assembly factory) + src/main.ts (a thin entry point) + src/dev.config.ts, and tsconfig.</td></tr>
+            <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>Generates a capability into the matching category folder (tool → src/tools/, skill → src/skills/, prompt → src/prompts/, subagent → src/subagents/) and registers it in src/registry.ts automatically; long-text assets (system.md / asset.md) are generated along with it.</td></tr>
+            <tr><td>agentia dev</td><td>Starts a local inspector panel: type a prompt to drive one real run (with ↑/↓ history), multi-select capabilities (narrowing the menu), choose the working directory, toggle multi-turn, then inspect the call tree in trace-view. The CLI manages file watching itself (the allow-list includes .md, so editing a text asset needs no restart). Binds 127.0.0.1 only, with Origin checks and a one-time token per launch.</td></tr>
+            <tr><td>agentia doctor</td><td>Assembly health check: unregistered / dangling capabilities, naming rules, duplicate entries.</td></tr>
+            <tr><td>agentia report &lt;trace.jsonl&gt;</td><td>Builds a tuning report from an on-disk trace file: capability latency / cost / error-rate rankings (merged per capability across lines). One JSON object per line — either a bare Trace or a TaskRecord containing <code>result.trace</code>. <strong>You produce the file</strong>: attach a <code>TraceSink</code> that appends JSON lines, or export from <code>FileTaskStore</code>.</td></tr>
+            <tr><td>agentia harvest &lt;trace.jsonl&gt;</td><td>Turns a production trace into an eval case scaffold (<code>--out &lt;file.ts&gt;</code> / <code>--failed</code> / <code>--limit N</code>): the scriptedClient script is rebuilt from the main loop's llm.turn entries, and expect is pre-filled with tool-sequence assertions. <strong>A scaffold is not a finished test</strong> — assistant text is a placeholder (the trace records no text), so review by hand before it enters CI.</td></tr>
+            <tr><td>agentia diff &lt;a.jsonl&gt; &lt;b.jsonl&gt;</td><td>A/B comparison of the call trees in two on-disk trace files (same input shape as <code>agentia report</code>): prints a run-level summary plus per-span differences, and <strong>exits 1 when they differ</strong> — so CI can block “the trajectory drifted after a prompt / model change”. The in-code equivalent is <code>diffTraces</code>.</td></tr>
+            <tr><td>agentia add &lt;pkg&gt;</td><td>Installs a third-party capability package (a defineModule package) and registers it in the registry.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <!-- Environment variables -->
+      <section id="env">
+        <h2>Environment variables</h2>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>Variable</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>ANTHROPIC_API_KEY</td><td>Required. Anthropic API key (ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL are also supported for compatible endpoints).</td></tr>
+            <tr><td>.env (<code>loadEnvFile()</code>)</td><td>The framework does <strong>not</strong> read <code>.env</code> on its own: the scaffold's <code>loadEnvFile()</code> in <code>src/app.ts</code> loads it into <code>process.env</code> (it lives in the assembly module so that both entry points — <code>agentia dev</code> and <code>npm start</code> — pick it up). <strong>Real environment variables win</strong> — a key that is already defined (even as an empty string) is not overwritten by the file unless you pass <code>{ override: true }</code> explicitly.</td></tr>
+            <tr><td>AGENTIA_MODEL</td><td>Optional. Global default-model override; falls back to <code>claude-opus-5</code> when unset. An explicitly passed model wins over everything.</td></tr>
+            <tr><td>OPENAI_API_KEY</td><td>Optional. Key for OpenAI-compatible providers, used in multi-provider setups.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <!-- Versioning & stability — this section mirrors the "Stability & versioning" section of the
+           repo-root README.md, and the Chinese docs page. Not injected from a single source on
+           purpose: the README is the first reading surface on the npm page (readers should not have
+           to click through for this promise) and site readers should not have to jump to GitHub.
+           Drift is prevented by a guard: tests/docs/stability.test.ts requires the same set of
+           promise anchors here and in the README, and fails if any one is missing. -->
+      <section id="versioning">
+        <h2>Versioning &amp; stability</h2>
+        <p>
+          <strong>What <code>0.x</code> means</strong>: version numbers follow SemVer, but during
+          <code>0.x</code> a <strong>minor release may contain breaking changes</strong>. There is exactly
+          one rule — <strong>a breaking change must leave a trace</strong>: the corresponding entry in
+          <code>CHANGELOG.md</code> must carry a dedicated section for it (with a heading containing the
+          migration wording) that spells out <strong>what you have to change</strong>.
+        </p>
+        <div class="code-block"><div class="code-title"><i></i><i></i><i></i><em>count them</em></div>
+        <pre><code><span class="cm"># List every section that asks you to act (this page deliberately hard-codes no count — written numbers rot)</span>
+<span class="cmd">grep</span> -nE <span class="str">'^#{3,4} .*(迁移|破坏性)'</span> CHANGELOG.md</code></pre></div>
+        <p>
+          ⚠️ <strong>Stated plainly</strong>: this discipline was <strong>tightened over time</strong> — an
+          early <code>0.7.1</code> (a type-surface change) put the migration step in a block quote at the
+          top of the version entry with no dedicated section. So that command gives a <strong>lower
+          bound</strong>, not the full set; to read everything, read the whole entry for a release.
+        </p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>Surface</th><th>Promised</th><th><strong>Not</strong> promised</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Public API</td><td>The <strong>named exports</strong> of <code>@migor/agentia</code> (source of truth <code>src/index.ts</code>, with a reverse full-coverage guard on the site's API page) plus the command-line surface of <code>@migor/cli</code></td><td>Deep-path imports (<code>dist/**</code>), internal module paths, <code>packages/*</code>, <code>examples/*</code> — this boundary is <strong>sealed</strong> by the <code>exports</code> field in <code>package.json</code> (guarded by <code>tests/architecture/package-exports.test.ts</code>)</td></tr>
+            <tr><td>Behaviour</td><td>The <strong>migration steps</strong> written in that version's entry</td><td>Any behaviour change not written into the migration notes</td></tr>
+            <tr><td>Runtime</td><td>The range declared in <code>engines.node</code>; CI runs the whole chain on <strong>every version</strong> in that range</td><td>Deno / Bun / edge runtime (<strong>unverified</strong>); EOL Node versions (dropped in a minor)</td></tr>
+            <tr><td>Dependencies</td><td><strong>Zero third-party runtime dependencies</strong> (guarded by <code>tests/architecture/no-runtime-deps.test.ts</code>, not a verbal promise)</td><td><code>devDependencies</code> and the dependency surface of <code>examples/*</code></td></tr>
+          </tbody>
+        </table></div>
+        <h3>The 1.0 bar</h3>
+        <p>All three are checkable, not slogans:</p>
+        <ul>
+          <li>Every item in <code>docs/spec.md</code> §11 “open items” is either delivered or <strong>explicitly struck out</strong> (with a written reason why it does not block);</li>
+          <li><code>docs/guards.md</code> §2 “to be guarded” is empty — every declared boundary is held by a machine rather than by someone remembering;</li>
+          <li>The public export surface goes <strong>three consecutive minors without a breaking change</strong>.</li>
+        </ul>
+      </section>
+
+      <!-- Performance order of magnitude — mirrors the same section in the README (same benchmarks,
+           same re-run commands; drift prevented by tests/docs/bench-numbers.test.ts). Note that this
+           page deliberately does NOT turn milliseconds into a promise (they are local-machine figures)
+           and deliberately does NOT run the benchmarks in CI (timing benchmarks only add noise there). -->
+      <section id="perf">
+        <h2>Performance order of magnitude</h2>
+        <p>
+          The framework ships five benchmarks (<code>scripts/bench-*.ts</code>). They answer
+          <strong>shape</strong> questions — which cost is paid under what conditions, and what a different
+          implementation would save — not an SLA.
+        </p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>Your question</th><th>Local reading (<strong>order of magnitude</strong>)</th><th>Shape conclusion (machine-independent)</th><th>Re-run</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>How expensive is assembling an app</td><td>Pure assembly <code>0.4 ms</code>; discovery + assembly <code>8.1 ms</code>; whole-process start + assembly <code>4040 ms</code> (of which cold assembly ≈2963 ms, and process start alone is 1077 ms)</td><td>In a long-lived runner, changing the capability selection pays only <code>S2</code> (≈8 ms) and <strong>not</strong> <code>S6b</code> (≈4 s) ⇒ a <strong>~500×</strong> difference; of those 4 s, ~1.1 s is <code>tsx</code> starting up, unrelated to the framework</td><td><code>npm run bench:assembly</code></td></tr>
+            <tr><td>When does an MCP connector cost you</td><td>Cold <code>279.5 ms</code>; warm (connector reused) <code>0.3 ms</code></td><td>Only <strong>rebuilding the connector</strong> pays the cold cost ⇒ a <strong>~900×</strong> difference</td><td><code>npm run bench:assembly</code></td></tr>
+            <tr><td>Does recording trace content cost much</td><td>Large outputs (≈37 KB each) over 5 calls: default <code>17.2 KB</code> / untruncated <code>233.9 KB</code> (<strong>13.6×</strong>) / truncated at 200 <code>6.2 KB</code></td><td>The default <strong>already truncates</strong>; <code>traceContent:'full'</code> is a switch that <strong>charges by output bytes</strong> (measured at only 1.0× for small outputs)</td><td><code>PAYLOAD_ROWS=1000 CALLS='[5,20]' npm run bench:trace</code></td></tr>
+            <tr><td>Cost of a metrics snapshot / OTLP flush</td><td><code>snapshot()</code> <code>6.56 ms</code>; <code>buildOtlpPayload()</code> <code>0.073 ms</code></td><td>Flush cost is <strong>almost entirely in <code>snapshot()</code></strong> ⇒ skipping it saves ≈6.5 ms per call, <strong>proportional to flush frequency</strong></td><td><code>npm run bench:otlp</code></td></tr>
+            <tr><td>Due-scanning of suspended tasks</td><td>sqlite N=10000: full-table <code>list()</code> <code>61.9 ms</code> / due index <code>listDue</code> <code>0.1 ms</code></td><td>Whether the index exists is <strong>structural</strong> ⇒ a <strong>~600×</strong> difference, not a tuning matter</td><td><code>npx tsx scripts/bench-resume-scan.ts 10000</code></td></tr>
+            <tr><td>Shape of the redis store's <code>list()</code></td><td>N=10000: <strong>10001</strong> round-trips, <strong>42.1 MB</strong> parsed, pure CPU <code>104.1 ms</code>; with an auxiliary ZSET ⇒ <strong>1001</strong> round-trips</td><td>Round-trip count is a <strong>structural quantity</strong> (the thing a different implementation would save); latency is extrapolated only (no redis instance on this machine)</td><td><code>npx tsx scripts/bench-redis-due.ts 10000</code></td></tr>
+          </tbody>
+        </table></div>
+        <p>
+          ⚠️ <strong>Milliseconds are not a promise</strong>: they move with the machine / Node version /
+          load, and copying them as an SLA would be wrong. What stays constant is the <strong>shape</strong>
+          (how many times larger, how many round-trips, what a given cost is proportional to).
+          The five benchmarks <strong>deliberately stay out of CI</strong> (timing benchmarks only add noise
+          on CI machines) ⇒ nothing guards these numbers, so if you want them, run them yourself using
+          the “Re-run” column.
+        </p>
+      </section>
+    </div>
+  </main>

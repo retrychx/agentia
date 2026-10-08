@@ -15,13 +15,24 @@ import type { APIRoute } from 'astro';
  *
  * 增删页面时要同步三处：本清单、`llms.txt.ts` 的「文档」节、以及 `scripts/check-website-agent-readiness.mjs`
  * 的交叉核对（它会断言 llms.txt 里出现了清单中的每一条 URL，任一处漂移即构建红）。
+ *
+ * 语言面（2026-10-08）：中英两版**都在本清单里**（守卫第 3 条拿 sitemap 与 dist 的实际产物
+ * 页面集合互为真值 ⇒ 少写一条 `loc` 就是构建红）。英文首页的路径是 `/en`（无尾斜杠）——
+ * `build.format: 'file'` 下英文首页的产物是扁平的 `en.html`，不是 `en/index.html`。
  */
 const PAGES = [
+  // 中文（默认语言，站点入口）
   { path: '/', priority: '1.0' },
   { path: '/docs', priority: '0.9' },
   { path: '/api', priority: '0.8' },
   { path: '/playground', priority: '0.7' },
   { path: '/tradeoffs', priority: '0.7' },
+  // 英文（与中文逐页一一对应；优先级各降一档 —— 中文是默认入口）
+  { path: '/en', priority: '0.9' },
+  { path: '/en/docs', priority: '0.8' },
+  { path: '/en/api', priority: '0.7' },
+  { path: '/en/playground', priority: '0.6' },
+  { path: '/en/tradeoffs', priority: '0.6' },
 ] as const;
 
 const FALLBACK_SITE = 'https://agentia-web.pages.dev';

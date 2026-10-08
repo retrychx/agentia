@@ -84,6 +84,17 @@ export const GET: APIRoute = ({ site }) => {
 - [取舍对照](${abs('/tradeoffs')}): **不做什么**、代价是什么、**什么场景该选别人**（不适用场景）
 - [Playground](${abs('/playground')}): 浏览器内跑一次真实 run（自带 Key，直连 Anthropic / DeepSeek）
 
+## Documentation (English)
+
+The site is bilingual. These pages mirror the Chinese ones section by section; the
+authoritative long-form guide (\`/llms-full.txt\`) is in Chinese only.
+
+- [Home](${abs('/en')}): positioning and the four capability kinds
+- [Docs](${abs('/en/docs')}): the guide and worked examples
+- [API reference](${abs('/en/api')}): the exported surface
+- [Trade-offs](${abs('/en/tradeoffs')}): what we don't do, what that costs, and when to pick something else
+- [Playground](${abs('/en/playground')}): run a real run in the browser (bring your own key)
+
 ## 安装与脚手架
 
 \`\`\`bash

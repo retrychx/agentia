@@ -1,0 +1,23 @@
+---
+// English home page. Mirrors src/pages/index.astro: the body content lives in
+// src/fragments/en/index.html and is injected verbatim; the shell (head/nav/footer)
+// comes from Base.astro with lang='en'.
+import Base from '../../layouts/Base.astro';
+import content from '../../fragments/en/index.html?raw';
+// Hero trace self-play styles — the same file the playground page uses (renderer lives in @migor/trace-view)
+import '@migor/trace-view/style.css';
+
+const footerLinks = [
+    { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/cli', label: '@migor/cli', external: true },
+];
+---
+<Base title='Agentia — a declarative framework for agent services' description='A declarative framework for building production agent services: decorators + DI declare four kinds of capability, a main agent orchestrates them, and every run yields structured output plus an observable call tree (trace, cost, metrics).' page='home' lang='en' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../../scripts/site.js';
+    import '../../scripts/hero-trace.js';
+  </script>
+</Base>

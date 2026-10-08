@@ -1,0 +1,22 @@
+---
+// English API reference page. Mirrors src/pages/api.astro: the body content lives in
+// src/fragments/en/api.html and is injected verbatim; the shell (head/nav/footer) comes
+// from Base.astro with lang='en'.
+import Base from '../../layouts/Base.astro';
+import content from '../../fragments/en/api.html?raw';
+
+const footerLinks = [
+    { href: '/en', label: 'Home' },
+    { href: '/en/playground', label: 'Playground' },
+    { href: '/en/docs', label: 'Guide' },
+    { href: 'https://github.com/retrychx/agentia', label: 'GitHub', external: true },
+    { href: 'https://www.npmjs.com/package/@migor/agentia', label: '@migor/agentia', external: true },
+];
+---
+<Base title='API reference — Agentia' description='Agentia public API reference: the core data model, the engine runtime kernel and long-context policy, the run lifecycle and triggers, the observability surface (trace / TraceSink / metrics / OTLP export), the explicit DI container, and the declarative toolkit and assembly.' page='api' lang='en' footerLinks={footerLinks}>
+  <Fragment set:html={content} />
+
+  <script>
+    import '../../scripts/scrollspy.js';
+  </script>
+</Base>
