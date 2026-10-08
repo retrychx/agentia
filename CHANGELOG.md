@@ -785,6 +785,65 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
   既有使用者不需要任何动作。
 
+### 官网 · 手机版重点特性卡的 `Core` 徽章压住标题（2026-10-08 ②）
+
+- **病例**：390px 手机截图 —— 英文首页「Built for production」那张重点卡的 `Core` 徽章叠在
+  标题 `Observable: trace as a first-class citizen` 的首行上（暗色小字下像两个字叠印）。
+- **根因**：`.feature-flag` 是 `position: absolute; top: 16px; right: 18px`。桌面端这张卡
+  `grid-column: span 2` 跨两列、标题一侧有富余，撞不上；**单列窄屏下标题换行**，首行末端
+  直接钻进徽章底下。中英共用同一套 CSS ⇒ 不是「英文站专有」，标题一长就复现。
+- **修法**：在**已有的单列断点**（`@media (max-width: 560px)`，即那条把 `.feature--key` 的
+  `grid-column` 收回 `auto` 的地方）把徽章放回正常流：`position: static` +
+  `display: inline-block` + `margin-bottom`。⚠️ **只写 `position: static` 不够** ——
+  `<span>` 默认 `display: inline`，内联元素的 `padding` / `border` 不参与行高计算，
+  徽章框照样会叠到下一行去。
+- **守卫**：`tests/docs/website-css.test.ts` 增两条 —— ①「单列断点里 `.feature-flag` 必须
+  收回正常流（且不是内联）」；②「该断点须覆盖手机宽度（≥480px）」。**反向验证过 4 条**
+  （删掉整条规则 / `static`→`absolute` / 去掉 `display` / 断点 `560→360`），各点名对应断言，
+  复原后 `sha256` 逐字节一致。⚠️ 断言前**先剥注释**：本仓踩过「守卫被同文件注释满足」的假绿。
+- 顺手把 `docs/guards.md` §1 里 `website-css.test.ts` 那行补准：**2026-09-30 加的
+  「折叠菜单 CTA 边框」守卫一直没登记**（那行仍写着「反向验证过 3 条」）。本次给它补做
+  4 条变异验证，该行一并更新。同样**不涉及包**（改的是 `packages/website` 的样式与网站守卫）。
+
+### 官网 · 部署后的 agent 打分不再在半传播状态下跑；`/en/` 的 308 补缓存头（2026-10-08 ③）
+
+- **修掉一条腐烂的判据（真缺陷，非本次引入）**：`ci.yml` 的 `deploy-website` 在打分前要「等新
+  版本真上线」，而那条判据是「`robots.txt` 里出现 `Sitemap: ` 行」—— 注释写着「它是本轮新增的
+  产物，只有新版才可能有」。**那一行自 PR #119 起每一版都有** ⇒ 条件恒为真、从不等待。实测当场
+  中了：第 1 次探测就报「已在线上」，而 AFDocs 读到的是**上一版的 sitemap**，据此刷出两条 **假
+  FAIL**（`llms-txt-links-resolve` 报「2 条坏链」、`llms-txt-coverage` 报「5 links not in
+  sitemap」—— 而 11 条链接逐条复测全是 200）。
+  ⇒ 判据换成「**本次运行的提交**」：站点侧由 `packages/website/src/pages/robots.txt.ts` 在构建期
+  写下 `# build: <GITHUB_SHA>`（本地构建**不写** —— 「这一行在不在」本身就是「这份产物是不是 CI
+  构建的」的判据，不给它编假缺省值），CI 侧轮询等线上出现**同一个 SHA**。等不到不再静默：轮询
+  超时留 `::warning::`，而构建产物里没有该行则 `::error::` 并**跳过打分**。
+  ⚠️ **教训（写进 `ci.yml` 与 `robots.txt.ts` 的注释）**：判据不能是「某个只有新版才有的字面量」
+  —— 它会随版本变旧、然后恒真；只能是「本次运行自己的身份」。
+- **`/en/` 的 308 补上缓存头**：`public/_worker.js` 原先用 `Response.redirect()`，它只给一个
+  `location`、**不带任何 cache 头**（Pages 自己那条尾斜杠 308 同样不带）—— 而这条规则由我们接手
+  的理由**正是响应头**（否则没有任何地方能补）。改成显式 `new Response(...)` 并带上与站内其余响应
+  同一档的 `public, max-age=0, must-revalidate`。行为用例增 3 条（`/en/` ⇒ 308 + 目标 + **缓存头**
+  + 不劳烦 `ASSETS`；带 `Accept: text/markdown` 仍 308；`/en` 本体不拦），**反向验证 2 条**
+  各点名对应断言。
+  ⚠️ 两处更正：① 那条注释原先写着「Pages 对 `/en/` 只会回 404」，**是错的**（实测 Pages 会把
+  `/docs/`、`/en/docs/` 这类「产物里存在 `x.html`」的目录形态自己 308 到干净形态）；② 上一轮我曾把
+  那次 `cache-header-hygiene` FAIL 的账算在**这条 308** 头上 —— **也不是它**（AFDocs 会跟随重定向，
+  逐端点复测静态资源 / `.md` / llms / sitemap 全合格）。那次的真因就是上面那条**腐烂的判据**。
+  补这个头是显式的**卫生**，不是那次红的解药。
+- **守卫加固（并更正一处误判）**：`tests/docs/website-i18n.test.ts` 里「检测脚本用了
+  `location.replace`」这条断言原先直接匹配脚本原文 —— 一条**写着同样字面量的注释**就能把它喂绿。
+  现在先剥**整行注释**再断言，并给剥壳器加了自证断言。⚠️ 上一轮我把风险说成「靠那段 HTML 注释
+  用了全角括号才没爆」—— **不对**：那段注释在 `<script>` 块**之外**、根本不在被断言的字符串里；
+  真实（也较窄）的风险是**脚本块内**的注释。同一守卫里另一条「`_worker.js` 的 `/en/` 规范化必须是
+  308」原先钉死了整条 `Response.redirect(...)` 表达式 ⇒ 上面那次**行为等价**的改写把它打红了；已改成
+  只核**登记**（分支在场 + 是 308），行为交给真跑用例 —— **钉实现的字面量会把「等价改写」判成回归**。
+- **新增元守卫**：`tests/scripts/verify-all-wiring.test.ts` 增一条 —— 把「等新版上线」判据的
+  **两端契约**钉住（`ci.yml` 侧必须按本次提交比；生产侧**真跑** `robots.txt.ts`，按打桩的
+  `GITHUB_SHA` 核**渲染出来的产物**，并钉住「没给 SHA 时不输出这一行」）。写这条守卫时**我自己先
+  写出两条假守卫**（判据侧匹配整个 job body ⇒ 被同一 job 里另一处同样的串满足；生产侧核源码文本
+  ⇒ 被文件自己的注释满足），都是变异验证当场抓到的，已收紧。
+- 同样**不涉及包**（改的是 `.github/workflows/ci.yml`、`packages/website` 与 `tests/`）。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

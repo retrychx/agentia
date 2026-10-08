@@ -217,17 +217,52 @@ jobs:
       - name: Agent 可读性打分（只报告，不阻断）
         continue-on-error: true
         run: |
-          # 先等新部署真上线：Cloudflare Pages 的 production 别名有秒级传播延迟，
-          # 不等就直接打分，打的是**上一版**，报告会指向已经修好的问题。
-          # 信号取 robots.txt 出现 `Sitemap: ` 行 —— 它是本轮新增的产物，只有新版才可能有。
+          SITE=https://agentia-web.pages.dev
+
+          # ① 自证：**本次构建的产物里写着本次提交**。
+          #    这是下面那条轮询判据的前置 —— 没有它，「等不到新版本」会被误读成「部署太慢」，
+          #    而真因可能是构建期没拿到 GITHUB_SHA（或 robots.txt.ts 里那行被删了）。
+          #    注：本步是 continue-on-error，所以 `exit 1` **不阻断**流水线，
+          #    但会在 run 上留一条 error 标注（本步的失败不静默）。
+          if [ -z "${GITHUB_SHA}" ]; then
+            echo "::error::GITHUB_SHA 为空 —— 本步的新鲜度判据靠它定位「本次运行要部署的那个提交」"
+            exit 1
+          fi
+          if ! grep -qF "build: ${GITHUB_SHA}" packages/website/dist/robots.txt; then
+            echo "::error::本次构建产物 packages/website/dist/robots.txt 里没有 \`build: ${GITHUB_SHA}\` —— 构建期没拿到 GITHUB_SHA，或 packages/website/src/pages/robots.txt.ts 里那行被删了"
+            exit 1
+          fi
+
+          # ② 等新部署真上线：Cloudflare Pages 的 production 别名有秒级传播延迟，
+          #    不等就直接打分，打的是**上一版**，报告会指向已经修好的问题。
+          #
+          #    判据 = 「线上 robots.txt 里的 `# build: <sha>` == 本次运行的 $GITHUB_SHA」
+          #    （那行由 packages/website/src/pages/robots.txt.ts 在构建期写入；
+          #     两端的契约由 tests/scripts/verify-all-wiring.test.ts 双向核对。）
+          #
+          #    ⚠️ 2026-10-08 换掉过一版判据（旧版：「robots.txt 里出现 `Sitemap: ` 行」，
+          #    注释写着「它是本轮新增的产物，只有新版才可能有」）。那条**腐烂**了 ——
+          #    `Sitemap:` 行是 PR #119 加进去的、此后每一版都有 ⇒ 条件恒为真、从不等待。
+          #    实测：第 1 次探测就报「已在线上」，而 AFDocs 同时读到**旧的 sitemap**，
+          #    刷出两条假 FAIL（llms-txt-links-resolve / llms-txt-coverage）。
+          #    ⇒ **判据不能是「某个只有新版才有的字面量」**（她会随版本变旧、然后恒真），
+          #      必须是「本次运行自己的身份」—— 后者不可能腐烂。
+          waited=0
           for i in $(seq 1 30); do
-            if curl -sS --max-time 10 https://agentia-web.pages.dev/robots.txt | grep -q '^Sitemap: '; then
+            if curl -sS --max-time 10 "$SITE/robots.txt" | grep -qF "build: ${GITHUB_SHA}"; then
               echo "新版已在线上（第 ${i} 次探测）"
+              waited=1
               break
             fi
             echo "等待部署生效…（第 ${i} 次）"
             sleep 4
           done
+          # 等不到**不阻断**（本步只报告），但必须在 UI 上留一条 warning：
+          # 否则下面那份报告会静默地打在上一个版本上 —— 而那正是本步存在的意义。
+          if [ "$waited" -ne 1 ]; then
+            echo "::warning::等了 120s 仍未在线上看到提交 ${GITHUB_SHA}，下面的报告可能打的是上一版"
+          fi
+
           # 版本钉死我们在 2026-09-21 实测过的那版：报告步骤不需要「永远最新」，
           # 但很怕它某天换了一版检查口径、在只报告的步骤里刷出一堆看不懂的噪声。
-          npx --yes afdocs@0.20.0 check https://agentia-web.pages.dev --format scorecard
+          npx --yes afdocs@0.20.0 check "$SITE" --format scorecard

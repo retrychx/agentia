@@ -163,3 +163,61 @@ describe('官网手机版折叠菜单：CTA 按钮的边框完整性', () => {
     );
   });
 });
+
+describe('官网重点特性卡：Core 徽章在单列下不得压住标题', () => {
+  /**
+   * 病例（2026-10-08 用户实报的 390px 手机截图）：
+   *
+   * `.feature--key` 右上角的 `Core` 徽章是 `position: absolute; top: 16px; right: 18px`。
+   * 桌面端这张卡跨两列（`grid-column: span 2`）、标题一侧有富余，撞不上；**单列窄屏下标题会
+   * 换行**，首行末端直接钻进绝对定位的徽章底下 —— 英文页标题
+   * `Observable: trace as a first-class citizen` 实测可见（中英共用同一套 CSS，标题一长就是
+   * 同一个病，不是「英文站专有」）。暗色小字下的压字极容易被当成设计，肉眼守不住，所以钉两条：
+   *  ① 单列断点（判据 = 那条把 `grid-column` 收回 `auto` 的规则所在的 media 块）必须把
+   *     `.feature-flag` 收回正常流 —— 而且**不能只写 `position: static`**：`<span>` 默认
+   *     `display: inline`，内联元素的 `padding` / `border` 不参与行高计算，徽章框照样会叠到
+   *     下一行去。必须同时给它块级/行内块级的 `display`。
+   *  ② 该断点要覆盖手机宽度 —— 断点收到 360px 以下，390px 这档仍会压字。
+   *
+   * ⚠️ 断言前**先剥注释**：本仓踩过「守卫被同一文件里的注释满足」的假绿（见
+   * `tests/docs/website-i18n.test.ts` 的 `lang='en'` 案）—— 病例注释里正会写到这两个属性名。
+   */
+  const stripped = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  /** 单列断点 = 把 `.feature--key` 的 `grid-column` 收回 `auto` 的那个 media 块 */
+  const singleCol = mediaBlocks(raw)
+    .map((b) => ({ ...b, clean: stripped(b.body) }))
+    .find((b) => /\.feature--key\s*\{[^}]*grid-column:\s*auto/.test(b.clean));
+
+  it('单列断点里 .feature-flag 被收回正常流（且不是内联）', () => {
+    assert.ok(
+      singleCol,
+      '找不到「`.feature--key { grid-column: auto }`」所在的单列断点 —— 测试需要更新',
+    );
+    const flagRule = /\.feature-flag\s*\{([^}]*)\}/.exec(singleCol.clean)?.[1];
+    assert.ok(
+      flagRule,
+      '单列断点里没有 `.feature-flag` 规则 —— 徽章在单列下仍是绝对定位，标题换行后首行会钻到它底下',
+    );
+    assert.match(
+      flagRule,
+      /position:\s*static/,
+      '单列断点里 `.feature-flag` 仍是绝对定位 —— 标题换行后首行会钻到徽章底下（压字）',
+    );
+    assert.match(
+      flagRule,
+      /display:\s*(inline-block|block|flex)/,
+      '只写了 `position: static` 不够：`<span>` 默认 `display: inline`，内联元素的 padding/border ' +
+        '不参与行高计算，徽章框会叠到下一行。请同时给 `display: inline-block`（或块级）。',
+    );
+  });
+
+  it('该断点覆盖手机宽度（收得太窄则 390px 吃不到修复）', () => {
+    assert.ok(singleCol, '找不到单列断点');
+    const px = Number(/max-width:\s*(\d+)px/.exec(singleCol.query)?.[1] ?? Number.NaN);
+    assert.ok(
+      Number.isFinite(px) && px >= 480,
+      `单列断点取到 ${px}px —— 太窄：390px 这档手机仍是单列，却吃不到这条修复`,
+    );
+  });
+});

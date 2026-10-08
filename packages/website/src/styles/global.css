@@ -925,6 +925,17 @@ pre code {
   .feature--key {
     grid-column: auto;
   }
+  /* Core 徽章（病例：2026-10-08 用户实报 390px 手机截图 —— 英文页标题
+     "Observable: trace as a first-class citizen" 在单列下折成两行，**首行末端钻进了
+     绝对定位的徽章底下**，看起来像两个字叠印）。桌面端徽章靠 `position: absolute`
+     钉在卡片右上角，那是因为跨两列时标题一侧有富余；**单列时富余消失**，同一个绝对定位
+     就成了压字。⇒ 与上面 `.feature--key` 收 span 同一条件（单列）下，把徽章放回正常流：
+     自己做一行，标题拿回整宽 —— 任何标题长度都不会再撞上它。 */
+  .feature-flag {
+    position: static;
+    display: inline-block;
+    margin-bottom: 10px;
+  }
   /* （窄屏 h1 字号规则已删）：桌面 clamp(34px, 6.6vw, 62px) 是贯穿全宽的连续曲线，
      390px 下落到 34px 下限 —— 两行标语放得下、不折孤字，且与桌面无边界跳变。
      旧的 clamp(30px, 9.5vw, 42px) 在 560/561 边界比桌面公式大 4px，会突然缩一截。 */

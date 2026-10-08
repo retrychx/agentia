@@ -55,6 +55,47 @@ const CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
 const read = (p: string) => readFileSync(p, 'utf8');
 const countCjk = (s: string) => (s.match(new RegExp(CJK.source, 'g')) ?? []).length;
 
+/**
+ * 只剥**整行都是注释**的行（`// …` 与 `/* … *\/` 块），用来给 ④ 那组「某段代码在场」的断言兜底。
+ *
+ * 为什么需要它：`assert.match(detect, /location\.replace\(/)` 这类断言问的是「**代码里**有没有」，
+ * 但正则不认识代码与注释 —— 脚本块里**一条写着同样字面量的注释**就能把它喂绿，而真代码被删。
+ * 本仓已经在同一个文件里栽过一次同款（① 的 `lang='en'` 被**头部注释**满足），登记过的形状叫
+ * 「同一字面量在两处出现」。这段脚本里本来就带注释（`// 交给 Cloudflare Pages 的 308 …`、
+ * `/* 任何异常都不该影响页面可用性 *\/`），所以这不是假想风险。
+ *
+ * ⚠️ 边界（如实标注）：**按行**判定，不处理「代码同一行尾部的 `// …`」。要满足上面那些断言，
+ * 行内混合形态仍须**同一行里真有那段代码** —— 所以按行剥已经挡掉了「一条独立注释把断言喂绿」
+ * 这个现实形态。不写字符级扫描器：本仓实测它会在正则/字符串字面量里错位（见头注「射程」那段）。
+ * 「剥壳器自己是活的」由紧跟其后的自证断言负责 —— 退化成恒等函数时它会红，而不是静默失效。
+ */
+const stripJsCommentLines = (js: string): string => {
+  const out: string[] = [];
+  let inBlock = false;
+  for (const line of js.split('\n')) {
+    const t = line.trim();
+    if (inBlock) {
+      if (t.includes('*/')) inBlock = false;
+      continue;
+    }
+    if (t.startsWith('/*')) {
+      if (!t.includes('*/')) inBlock = true;
+      continue;
+    }
+    if (t.startsWith('//')) continue;
+    out.push(line);
+  }
+  return out.join('\n');
+};
+
+// 自证：拿一段含注释的样本跑一遍。少了它，剥壳器哪天退化成恒等函数也没人知道，
+// 而那种「退化」不会红、只会让 ④ 那组断言悄悄回到「可被注释满足」的状态。
+assert.equal(
+  stripJsCommentLines('a;\n// location.replace(\n/* if (!known) return; */\nc;'),
+  'a;\nc;',
+  'stripJsCommentLines 退化了（没剥掉整行注释）',
+);
+
 /** 剥掉代码块与 <script>，只留散文（英文页里这些位置不该有中文） */
 const stripCode = (html: string) =>
   html
@@ -348,18 +389,18 @@ describe('官网双语：语言机制在场且方向正确', () => {
     const m = /<script is:inline>([\s\S]*?)<\/script>/.exec(base);
     assert.ok(m, 'Base.astro 里找不到 is:inline 的语言检测脚本');
     const detect = m[1] as string;
-    assert.ok(detect.includes("'agentia-lang'"), '检测脚本没读 agentia-lang');
-    assert.match(detect, /localStorage\.getItem/, '检测脚本没有以 localStorage 为首选判据');
-    assert.match(detect, /navigator\.languages/, '检测脚本没有回落看 navigator.languages');
-    assert.match(detect, /\^zh\\b/i, '检测脚本没有「语言列表里有中文吗」的判据');
-    assert.match(
-      detect,
-      /location\.replace\(/,
-      '检测脚本没有用 location.replace（会留下历史条目）',
-    );
-    assert.match(detect, /if \(!known\) return;/, '拿不到语言信息时必须**不跳** —— 缺这条回落');
+    // ⚠️ 断言一律打在**剥掉整行注释**的代码上（理由见 stripJsCommentLines 的头注）：
+    //    这段脚本里本来就有注释，一条含 `location.replace(` 的注释足以把下面那条断言喂绿。
+    const code = stripJsCommentLines(detect);
+    assert.ok(code.length > 200, `剥注释后只剩 ${code.length} 字符 —— 抽取或剥壳退化了`);
+    assert.ok(code.includes("'agentia-lang'"), '检测脚本没读 agentia-lang');
+    assert.match(code, /localStorage\.getItem/, '检测脚本没有以 localStorage 为首选判据');
+    assert.match(code, /navigator\.languages/, '检测脚本没有回落看 navigator.languages');
+    assert.match(code, /\^zh\\b/i, '检测脚本没有「语言列表里有中文吗」的判据');
+    assert.match(code, /location\.replace\(/, '检测脚本没有用 location.replace（会留下历史条目）');
+    assert.match(code, /if \(!known\) return;/, '拿不到语言信息时必须**不跳** —— 缺这条回落');
     assert.ok(
-      !/setItem/.test(detect),
+      !/setItem/.test(code),
       '检测脚本**不得写** localStorage —— 写了就把「自动跳转」记成「用户选择」，' +
         '用户之后手动点回中文会被立刻弹走（只有 Nav 的切换控件才写）',
     );
@@ -394,10 +435,18 @@ describe('官网双语：语言机制在场且方向正确', () => {
 
     const worker = read(join(WEB, 'public', '_worker.js'));
     assert.ok(worker.includes("url.pathname === '/en/'"), '_worker.js 没有 /en/ 的规范化分支');
+    // ⚠️ 这里只核**登记**（分支在场 + 是 308），**不核实现写法**。
+    //    原先它钉的是 `Response.redirect(new URL('/en', url).href, 308)` 这条完整表达式 ——
+    //    2026-10-08 为了给这条 308 补 `cache-control` 把它换成显式的 `new Response(...)`，
+    //    实现等价、行为没变，这条断言却红了（改对的代码被一条文本钉住）。**钉实现的字面量
+    //    会把「换个等价写法」判成回归** —— 与 ① 里 `lang='en'` 那条正好是同一枚硬币的两面：
+    //    那条太松（被注释满足），这条太紧（被实现绑架）。
+    //    行为那半边（状态码 / 目标 / 缓存头 / 不去问 ASSETS）交给
+    //    `tests/docs/website-markdown-negotiation.test.ts` **真跑** worker 守 —— 文本层不重复钉。
     assert.match(
       worker,
-      /Response\.redirect\(new URL\('\/en', url\)\.href, 308\)/,
-      '_worker.js 的 /en/ 规范化必须是 308 到 /en（扁平产物 en.html，没有 en/index.html）',
+      /status:\s*308/,
+      '_worker.js 的 /en/ 规范化不是 308（扁平产物 en.html，没有 en/index.html）',
     );
   });
 });
