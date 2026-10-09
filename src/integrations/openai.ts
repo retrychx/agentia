@@ -26,7 +26,10 @@ import type { ModelClient } from '../core/tool.js';
  * executeRun / runAgent 的 client 选项。兼容端点（DeepSeek 等）换 baseURL 即可。
  *
  * 剩余边界（**协议层面无法对齐**，不是没做）：
- * - cache token 恒 0：OpenAI 形态没有 prompt cache 计量字段；
+ * - cache_creation 恒 0：OpenAI 形态没有「缓存写」计量字段；
+ *   但 DeepSeek 的 `prompt_cache_hit_tokens` 会映射进 `cache_read_input_tokens`
+ *   （且从 input_tokens 里**拆出**，不双计 —— 见 `inputUsageOf`）；纯 OpenAI 端点
+ *   没有这两个字段，cache_read 仍恒 0；
  * - refusal 为近似：finish_reason=content_filter 近似映射为 'refusal'，
  *   语义上接近但不等同 Anthropic 的流式分类器干预。
  *
@@ -201,6 +204,13 @@ interface OpenAIChatResponse {
 interface OpenAIUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
+  /**
+   * DeepSeek 等兼容端点的上下文缓存计量（纯 OpenAI 端点没有这两个字段）。
+   * 口径与 Anthropic **相反**：`prompt_tokens = hit + miss`，hit **已含在** prompt_tokens
+   * 里（Anthropic 的 input_tokens 则不含 cache_read）——映射时必须拆开，见 `inputUsageOf`。
+   */
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
 }
 
 /** 流式分片（`data:` 行的 payload） */
@@ -525,6 +535,27 @@ function applyChunk(
   if (choice.finish_reason) acc.finish = choice.finish_reason;
 }
 
+/**
+ * OpenAI usage → `Message.usage` 输入侧口径对齐（DeepSeek 缓存计量，2026-10-09 外部审查）。
+ *
+ * DeepSeek 在 usage 里多回 `prompt_cache_hit_tokens`（agent loop 场景前缀缓存命中率常达
+ * 80–95%），此前被整个丢弃、cache_read 恒 0 ⇒ 成本/记账系统性失真。映射时的关键口径：
+ * **`prompt_tokens` 已含命中部分**（官方口径 `prompt_tokens = hit + miss`），而 Anthropic 形态的
+ * `input_tokens` **不含** cache_read、`costEstimate` 对两者分别计价 —— 直接透传会让命中部分
+ * 被计两次（一次全价 in、一次 0.1× cache_read）。所以拆出来：`input_tokens` 只留未命中部分
+ * （= prompt_tokens − hit，与 miss 同值），`cache_read_input_tokens` 记命中数。
+ * 纯 OpenAI 端点没有这两个字段 ⇒ hit 取 0，行为与旧版逐字一致。
+ */
+function inputUsageOf(u: OpenAIUsage | undefined): {
+  inputTokens: number;
+  cacheReadTokens: number;
+} {
+  const prompt = u?.prompt_tokens ?? 0;
+  const hit = typeof u?.prompt_cache_hit_tokens === 'number' ? u.prompt_cache_hit_tokens : 0;
+  // Math.max 只兜畸形回报（hit > prompt_tokens）：宁可不拆，也别把 input_tokens 弄成负数
+  return { inputTokens: Math.max(0, prompt - hit), cacheReadTokens: hit };
+}
+
 /** 累积器 → Message */
 function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): Message {
   const content: ContentBlock[] = [];
@@ -545,6 +576,7 @@ function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): Me
   }
 
   const hasToolCalls = calls.length > 0;
+  const { inputTokens, cacheReadTokens } = inputUsageOf(acc.usage);
   return {
     id: acc.id ?? 'chatcmpl-unknown',
     type: 'message',
@@ -554,11 +586,11 @@ function accumulatorToMessage(acc: StreamAccumulator, fallbackModel: string): Me
     stop_reason: mapStopReason(acc.finish, hasToolCalls),
     stop_sequence: null,
     usage: {
-      input_tokens: acc.usage?.prompt_tokens ?? 0,
+      input_tokens: inputTokens,
       output_tokens: acc.usage?.completion_tokens ?? 0,
-      // OpenAI 形态无 cache 计量：恒 0
+      // OpenAI 形态无「缓存写」计量：恒 0；缓存读见 inputUsageOf（DeepSeek 命中数）
       cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
+      cache_read_input_tokens: cacheReadTokens,
       // 端点忽略了 stream_options.include_usage（或压根没回）⇒ 上面是**替身 0**，
       // 如实标出来让「成本恒 0」有信号（2026-09-28 外部深评 S2）
       ...(acc.usage ? {} : { unreported: true as const }),
@@ -616,6 +648,7 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
     );
   }
 
+  const { inputTokens, cacheReadTokens } = inputUsageOf(data.usage);
   return {
     id: data.id ?? 'chatcmpl-unknown',
     type: 'message',
@@ -625,11 +658,11 @@ function toAnthropicMessage(data: OpenAIChatResponse, model: string): Message {
     stop_reason: mapStopReason(choice?.finish_reason, (msg.tool_calls?.length ?? 0) > 0),
     stop_sequence: null,
     usage: {
-      input_tokens: data.usage?.prompt_tokens ?? 0,
+      input_tokens: inputTokens,
       output_tokens: data.usage?.completion_tokens ?? 0,
-      // OpenAI 形态无 cache 计量：恒 0
+      // OpenAI 形态无「缓存写」计量：恒 0；缓存读见 inputUsageOf（DeepSeek 命中数）
       cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
+      cache_read_input_tokens: cacheReadTokens,
       // 非流式同理：没回 usage 时不静默填 0（2026-09-28 外部深评 S2）
       ...(data.usage ? {} : { unreported: true as const }),
     },

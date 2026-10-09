@@ -1117,7 +1117,7 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 | API | 说明 |
 |---|---|
 | `createAnthropicClient` | 默认 ModelClient（Anthropic）：自定义只传 `apiKey` / `baseURL`；框架**零运行时依赖**，不装厂商 SDK |
-| `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、cache token 恒 0） |
+| `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、DeepSeek 的 `prompt_cache_hit_tokens` 映射进 `cache_read_input_tokens` 并从 input_tokens 拆出不双计，其余端点 cache token 恒 0） |
 | `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
 | `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用 |
 | `traceToMessages` | 把 trace 还原成 messages（重放基底） |

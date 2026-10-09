@@ -186,6 +186,65 @@ describe('createOpenAIClient', () => {
     assert.equal(streamed, '稍等');
   });
 
+  it('DeepSeek 缓存计量：prompt_cache_hit_tokens → cache_read，且从 input_tokens 拆出不双计', async () => {
+    // DeepSeek 的 usage 口径：prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens
+    // （hit **已含在** prompt_tokens 里，与 Anthropic 的 input_tokens 不含 cache_read 相反）。
+    // 直接透传会让 costEstimate 把命中部分计两次（全价 in + 0.1× cache_read）⇒ 必须拆开。
+    const { fetchImpl } = fakeFetch([
+      {
+        body: chatResponse({
+          usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 7,
+            prompt_cache_hit_tokens: 800,
+            prompt_cache_miss_tokens: 200,
+          },
+        }),
+      },
+    ]);
+    const client = createOpenAIClient({ fetchImpl });
+    const msg = await client.messages
+      .stream({ model: 'm', max_tokens: 1, messages: [] })
+      .finalMessage();
+    assert.deepEqual(
+      {
+        input: msg.usage.input_tokens,
+        output: msg.usage.output_tokens,
+        cacheRead: msg.usage.cache_read_input_tokens,
+        cacheCreation: msg.usage.cache_creation_input_tokens,
+      },
+      { input: 200, output: 7, cacheRead: 800, cacheCreation: 0 },
+      'input_tokens 只剩未命中部分（= miss），命中数进 cache_read_input_tokens —— 总账不双计',
+    );
+  });
+
+  it('不带 prompt_cache_* 字段（纯 OpenAI 端点）：cache 恒 0、input_tokens 原样（行为与旧版逐字一致）', async () => {
+    const { fetchImpl } = fakeFetch([{ body: chatResponse({}) }]);
+    const client = createOpenAIClient({ fetchImpl });
+    const msg = await client.messages
+      .stream({ model: 'm', max_tokens: 1, messages: [] })
+      .finalMessage();
+    assert.equal(msg.usage.input_tokens, 11, '没有 hit 字段时 input_tokens 就是 prompt_tokens');
+    assert.equal(msg.usage.cache_read_input_tokens, 0);
+    assert.equal(msg.usage.cache_creation_input_tokens, 0);
+  });
+
+  it('畸形回报（hit > prompt_tokens）：input_tokens 不跌破 0（宁可不拆也不记负数）', async () => {
+    const { fetchImpl } = fakeFetch([
+      {
+        body: chatResponse({
+          usage: { prompt_tokens: 10, completion_tokens: 1, prompt_cache_hit_tokens: 999 },
+        }),
+      },
+    ]);
+    const client = createOpenAIClient({ fetchImpl });
+    const msg = await client.messages
+      .stream({ model: 'm', max_tokens: 1, messages: [] })
+      .finalMessage();
+    assert.equal(msg.usage.input_tokens, 0);
+    assert.equal(msg.usage.cache_read_input_tokens, 999, '命中数如实记录（是上游的口径问题）');
+  });
+
   it('finish_reason 映射：length→max_tokens、content_filter→refusal', async () => {
     const { fetchImpl } = fakeFetch([
       { body: chatResponse({ choices: [{ finish_reason: 'length', message: { content: 'a' } }] }) },

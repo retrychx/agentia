@@ -626,6 +626,56 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
   },
 };
 
+/**
+ * `badValue: 'rejects-nan'` 旋钮的对账探针（2026-10-09 补：此前 A4 只穷尽 `throws` 类，
+ * 这两个旋钮的 NaN 闸只有 tests/engine/budget.test.ts 在守，对账表这一层是空的）。
+ *
+ * 键的类型从表本身 `Extract` 出来 ⇒ 表里新增一条 rejects-nan 旋钮而漏了探针，
+ * `typecheck:tests` 当场红（与 PROBES 同款机制）；运行期互查见下面的用例。
+ *
+ * 每条探针要断两个方向，缺一不可：
+ * 1. **NaN 构造期被拒**（`x > NaN` 恒 false ⇒ 闸静默失效，方向与「设了个上限」相反）；
+ * 2. **0 / 负数 / ±Infinity 照旧放行**（与 `throws` 类区分开 —— 它们都有合法读法；
+ *    0 的语义本身由上面 PROBES 里那条「0 读作 immediate」的探针守）。
+ */
+type RejectsNanKnob = Extract<
+  (typeof LIMIT_SEMANTICS)[number],
+  { badValue: 'rejects-nan' }
+>['knob'];
+
+const REJECTS_NAN_PROBES: Record<RejectsNanKnob, () => void> = {
+  'BudgetGuardOptions.maxTotalTokens': () => {
+    assert.throws(
+      () => createBudgetGuard({ maxTotalTokens: Number.NaN }),
+      (e: unknown) =>
+        e instanceof RangeError && /maxTotalTokens 收到 NaN/.test((e as Error).message),
+      'NaN 必须构造期抛 RangeError（闸否则会静默失效）',
+    );
+    assert.doesNotThrow(
+      () => createBudgetGuard({ maxTotalTokens: 0 }),
+      '0 = 第一次记账就超预算（合法）',
+    );
+    assert.doesNotThrow(() => createBudgetGuard({ maxTotalTokens: -1 }), '负数同理放行');
+    assert.doesNotThrow(
+      () => createBudgetGuard({ maxTotalTokens: Number.POSITIVE_INFINITY }),
+      'Infinity = 不限（合法）',
+    );
+  },
+  'BudgetGuardOptions.maxCostUsd': () => {
+    assert.throws(
+      () => createBudgetGuard({ maxCostUsd: Number.NaN }),
+      (e: unknown) => e instanceof RangeError && /maxCostUsd 收到 NaN/.test((e as Error).message),
+      'NaN 必须构造期抛 RangeError（闸否则会静默失效）',
+    );
+    assert.doesNotThrow(() => createBudgetGuard({ maxCostUsd: 0 }), '0 = 第一笔成本就超（合法）');
+    assert.doesNotThrow(() => createBudgetGuard({ maxCostUsd: -1 }), '负数同理放行');
+    assert.doesNotThrow(
+      () => createBudgetGuard({ maxCostUsd: Number.POSITIVE_INFINITY }),
+      'Infinity = 不限（合法）',
+    );
+  },
+};
+
 describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards §2 待守形状①）', () => {
   for (const sem of LIMIT_SEMANTICS) {
     it(`${sem.knob} —— 0 读作「${sem.zero}」（${sem.where}）`, async () => {
@@ -780,6 +830,17 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
       [],
       '这些旋钮声明了 badValue: throws，却没有对账 case —— 文案与表可能已经漂开',
     );
+  });
+
+  it('rejects-nan 旋钮逐条对账：NaN 构造期被拒、0/负数/±Infinity 照旧放行（A4 的第五类补全）', () => {
+    // 运行期互查（tsx 不做类型检查，Record 的编译期守卫生效不到这里 —— 与末尾探针互查同款兜底）
+    const declared = LIMIT_SEMANTICS.filter((s) => s.badValue === 'rejects-nan').map((s) => s.knob);
+    assert.deepEqual(
+      Object.keys(REJECTS_NAN_PROBES).sort(),
+      [...declared].sort(),
+      'REJECTS_NAN_PROBES 与表里的 rejects-nan 旋钮漂移了 —— 两边必须一一对应',
+    );
+    for (const knob of declared) REJECTS_NAN_PROBES[knob]!();
   });
 
   it('探针与表一一对应（运行期互查 —— tsx 不做类型检查，Record 的编译期守卫生效不到这里）', () => {

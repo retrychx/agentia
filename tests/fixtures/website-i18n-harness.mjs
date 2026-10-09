@@ -14,6 +14,12 @@
  * ⚠️ DOM 桩是**记录型**的，不是断言型的：凡 `textContent` / `innerHTML` / `pg.el(_,_,text)` /
  * `appendChild` 收到的字符串都被收进 `written`。这样「英文页是否漏出中文」不必解析源码文本
  * （那需要 JS 解析器，见守卫头注的射程说明），而是**真跑出来的**。
+ *
+ * ⚠️ 记录面必须覆盖**全部用户可见文本通道**，不只是 textContent：placeholder / value /
+ * title / aria-label 的 setter 与 setAttribute('aria-*'/'title'/'placeholder'/'value') 同样
+ * 进 `written`（2026-10-09 #219 审查：playground-real.js 的 keyInput.placeholder 与
+ * modelCustom.placeholder 两处文案走 placeholder 通道，原来不记录 ⇒ 漏包 pt() 也不红，
+ * 变异验证当场抓到）。
  */
 
 const [lang, modulePath, mode] = process.argv.slice(2);
@@ -31,9 +37,11 @@ class El {
   constructor(tag = 'div') {
     this.tagName = tag;
     this._text = '';
-    this.value = '';
+    this._value = '';
+    this._placeholder = '';
+    this._title = '';
+    this._attrs = {};
     this.hidden = false;
-    this.placeholder = '';
     this.dataset = {};
     this.handlers = {};
   }
@@ -50,6 +58,43 @@ class El {
   set innerHTML(v) {
     this._html = v == null ? '' : String(v);
     record(this._html);
+  }
+  /* 以下四个 setter 都是**用户可见文本通道**：漏记一条，「英文面 0 CJK」就漏管一条 */
+  get value() {
+    return this._value;
+  }
+  set value(v) {
+    this._value = v == null ? '' : String(v);
+    record(this._value);
+  }
+  get placeholder() {
+    return this._placeholder;
+  }
+  set placeholder(v) {
+    this._placeholder = v == null ? '' : String(v);
+    record(this._placeholder);
+  }
+  get title() {
+    return this._title;
+  }
+  set title(v) {
+    this._title = v == null ? '' : String(v);
+    record(this._title);
+  }
+  get ariaLabel() {
+    return this._attrs['aria-label'] ?? null;
+  }
+  set ariaLabel(v) {
+    this.setAttribute('aria-label', v == null ? '' : String(v));
+  }
+  setAttribute(name, value) {
+    const v = String(value);
+    this._attrs[name] = v;
+    if (/^aria-/.test(name) || name === 'title' || name === 'placeholder' || name === 'value')
+      record(v);
+  }
+  getAttribute(name) {
+    return name in this._attrs ? this._attrs[name] : null;
   }
   get classList() {
     if (!this._cls) this._cls = { add() {}, remove() {}, toggle() {} };
@@ -99,7 +144,11 @@ globalThis.localStorage = {
   removeItem: (k) => store.delete(k),
 };
 
-/* 假 fetch：把 agent 循环驱动完（一次工具往返 + 一次 401），全部确定性 ------------ */
+/* 假 fetch：把 agent 循环驱动完（一次工具往返 + 401 + 429 + 网络错误），全部确定性 --------
+ *
+ * ⚠️ 错误分支要**逐条**驱动到（2026-10-09 #219 审查：剧本原本只有 401，而 describeError
+ * 还有 402 / 429 / 网络错误分支 —— 那些分支的中文文案漏包 pt() 时，行为断言永远跑不到）。
+ * 402 与 401 同形（http + status），429 与网络错误是另外两种形态，所以补这两条。 */
 
 const requests = [];
 let fetchStep = 0;
@@ -132,10 +181,15 @@ const scripted = [
   },
   // 第 3 次调用：HTTP 401（走 describeError + panelError 那条）
   { ok: false, status: 401, body: { error: { message: 'bad key' } } },
+  // 第 4 次调用：HTTP 429（describeError 的限流分支）
+  { ok: false, status: 429, body: { error: { message: 'slow down' } } },
+  // 第 5 次调用：fetch 直接 reject（describeError 的网络 / CORS 分支）
+  { reject: new TypeError('Failed to fetch') },
 ];
 globalThis.fetch = async (url, opts) => {
   requests.push({ url: String(url), body: JSON.parse(opts.body) });
   const step = scripted[Math.min(fetchStep++, scripted.length - 1)];
+  if (step.reject) throw step.reject;
   return {
     ok: step.ok,
     status: step.status ?? 200,
@@ -192,6 +246,13 @@ if (mode === 'scenarios') {
   keyInput.value = 'sk-test';
   await pg.state.realRun(); // 工具往返（fetch 第 1、2 次）
   await pg.state.realRun(); // 401 错误路径（fetch 第 3 次）
+  await pg.state.realRun(); // 429 限流分支（fetch 第 4 次）
+  await pg.state.realRun(); // 网络 / CORS 分支（fetch 第 5 次 reject）
+  // 「自定义…」分支：syncModelVisibility 里 modelCustom.placeholder 的文案只有这条路才跑到
+  // （'__custom__' 是 playground-real.js 里 CUSTOM_MODEL 的哨兵值 —— 改了它这里要同步）
+  const modelInput = el('#byok-model');
+  modelInput.value = '__custom__';
+  modelInput.handlers.change?.();
   keyInput.value = '';
   providerSel.value = 'deepseek';
   providerSel.handlers.change?.(); // 真实模式下调 loadProvider ⇒ 另一份 copyReal / priceNote

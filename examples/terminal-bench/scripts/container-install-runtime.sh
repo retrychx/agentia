@@ -239,21 +239,61 @@ PY
     }
 
     # 逐个源试。`download` 已经自带 3 次重试（对付抖动），这一层对付的是「策略性拦断」。
+    #
+    # ⚠️ 完整性校验**不是可选项**：包来自镜像站（坑 11 已实测这条链路上有 TLS 中间人），
+    # 不核 sha256 的话「下载成功」不等于「下的是 node」。每个源的目录结构与官方一致
+    # （同源分发，SHASUMS256.txt 都在版本目录下）⇒ 同一份校验逻辑通用。
+    # 校验失败 / 拿不到校验和 ⇒ 换下一个源；所有源都过不了 ⇒ fail（不装来路不明的 node）。
+    sha256_of() { # $1=文件；stdout 出 hex 摘要。工具链按可得性挑，一个都没有 ⇒ 返回 1
+      if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+      elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"
+      elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" | awk '{print $NF}'
+      else
+        return 1
+      fi
+    }
+
+    SUMS="/tmp/SHASUMS256-${NODE_DIST_VERSION}.txt"
     GOT=""
     for base in $NODE_SOURCES; do
       URL="${base}/node-${NODE_DIST_VERSION}-linux-x64.tar.gz"
-      rm -f "$TARBALL"
-      if download "$URL" "$TARBALL"; then
-        GOT="$URL"
-        break
+      rm -f "$TARBALL" "$SUMS"
+      if ! download "$URL" "$TARBALL"; then
+        echo "[runtime] 这个源拿不到（换下一个）：$URL" >&2
+        continue
       fi
-      echo "[runtime] 这个源拿不到（换下一个）：$URL" >&2
+      if ! download "${base}/SHASUMS256.txt" "$SUMS"; then
+        echo "[runtime] 这个源拿不到 SHASUMS256.txt，无法校验（换下一个）：$base" >&2
+        continue
+      fi
+      EXPECTED="$(awk -v f="node-${NODE_DIST_VERSION}-linux-x64.tar.gz" '$2 == f {print $1}' "$SUMS")"
+      if [ -z "$EXPECTED" ]; then
+        echo "[runtime] SHASUMS256.txt 里没有 ${NODE_DIST_VERSION} 的条目（换下一个源）：$base" >&2
+        continue
+      fi
+      ACTUAL="$(sha256_of "$TARBALL" 2>/dev/null || true)"
+      if [ -z "$ACTUAL" ]; then
+        echo "[runtime] 容器里没有可用的 sha256 工具（sha256sum / python3 / openssl 都缺），拒绝不校验就装" >&2
+        exit 1
+      fi
+      if [ "$EXPECTED" != "$ACTUAL" ]; then
+        echo "[runtime] ⚠️ sha256 不符（换下一个源）：$URL" >&2
+        echo "[runtime]   期望 $EXPECTED" >&2
+        echo "[runtime]   实际 $ACTUAL" >&2
+        continue
+      fi
+      GOT="$URL"
+      break
     done
     [ -n "$GOT" ] || {
-      echo "[runtime] 所有下载源都失败；最后一个试的是 $URL" >&2
+      echo "[runtime] 所有下载源都失败或没通过 sha256 校验；最后一个试的是 $URL" >&2
       exit 1
     }
-    echo "[runtime] 静态包来自：$GOT"
+    rm -f "$SUMS"
+    echo "[runtime] 静态包来自：$GOT（sha256 已核）"
 
     # 安装前缀必须**自己可写**：非 root 容器里 /opt 与 $HOME 都可能写不了（坑六实测：
     # `USER nobody` 时 `/opt` / `/usr/local` 全 DENIED 且 `HOME=/nonexistent`）。

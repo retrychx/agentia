@@ -98,6 +98,12 @@ export interface TaskRecord {
 
 export interface TaskStore {
   save(rec: TaskRecord): MaybePromise<void>;
+  /**
+   * 取任务记录。返回的必须是**反序列化副本 / 快照，不是内部活引用** ——
+   * engine/transport 的纪律是「先变异 rec、再 `await save` 落库」（如 resume-scanner /
+   * approval-supervisor 的「重读 → 改 status → 先落库再派发」）：若 `get` 交出活引用，
+   * 变异会在 `save` 之前就被其他读者看见，「未落库的中间态」直接对外可见。
+   */
   get(taskId: string): MaybePromise<TaskRecord | undefined>;
   /** 幂等键 → 最近一次任务（last-wins） */
   byIdempotency(key: string): MaybePromise<TaskRecord | undefined>;

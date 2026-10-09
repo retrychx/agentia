@@ -883,6 +883,39 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
   既有使用者不需要任何动作。
 
+### 深度评审收口：框架记账 / patrol 软链边界 / soak 假红假绿 / i18n 守卫记录面（2026-10-09 ②）
+
+> 对 0.9.5 → 0.10.1 全窗口 + 在制品做了三轮深度评审（框架内核 / CLI / exports / soak /
+> terminal-bench / patrol / 官网 i18n / CI），本节是发现的修复批次。每处修法都带变异验证
+> （改坏 → 点名断言红 → 复原核 diff）。
+
+- **`createOpenAIClient` 接 DeepSeek 缓存计量**（`src/integrations/openai.ts`）：DeepSeek 的
+  `prompt_cache_hit_tokens` 此前被整个丢弃且 cache 恒记 0 —— agent loop 前缀缓存命中率常达
+  80–95%，成本读数系统性高估数倍。现映射进 `cache_read_input_tokens`，且因 DeepSeek 口径
+  `prompt_tokens` **已含**命中部分（与 Anthropic 相反），`input_tokens` 拆出未命中部分防双计；
+  无这两个字段的端点行为逐字不变。决策依据见 spec §10 2026-10-09 ①。
+  **对包的对外面**：DeepSeek 端点的记账口径变准（原先恒 0）—— 修正而非破坏；其余无公共 API 变更。
+- **patrol 示例的边界校验补上 realpath**（`examples/patrol/src/workspace.ts`）：原实现只有词法判定，
+  根内指向外部的符号链接可读出界（数据外泄给模型）、`quarantine_path` 可把界外真文件移进隔离区
+  （审批人只见 benign 相对路径）；头注却声称「软链逃逸一律抛错」。现为词法 + 真身两道校验，
+  walk 不跟随软链，注释/README 与实现对齐。
+- **terminal-bench 适配器五处**：基础设施错误（限流/5xx/超时/连接/上下文超长）不再落进能力分母
+  （新增 exit 4 桶）；bash 哨兵锚定整行（`set -x` 不再污染）；`harbor_agent.py` 版本从真值派生
+  （不再硬编码）；任务转换不再静默丢 `docker-compose.yaml`（单服务提取 ENV/WORKDIR/ENTRYPOINT，
+  做不到的响亮告警）与原版 `run-tests.sh`（保留原文 + 尾部接 reward 落盘，测试依赖安装不再丢失）；
+  容器内静态 node 包补 SHASUMS256 校验。
+- **soak 验证工具**：`e2e-soak-suspend` 看门狗余量从真实预算逐轮派生（旧写死 +30s 在长档必假红）、
+  approve 臂补「人工批落地 ≥1」闸（微档不再空转恒绿）、续跑段 link 校验从「存在」升级为
+  「指向上一段」；`e2e-soak-app` 头注改为如实表述（假端点只回 echo，subagent/skill 链路本档未压到）。
+- **官网 i18n 守卫补记录面**（`tests/fixtures/website-i18n-harness.mjs`）：`placeholder`/`value`/
+  `title`/`aria-label`/`setAttribute` 通道此前不被记录 —— 英文页漏包 `pt()` 直接显示中文也全绿；
+  假 fetch 剧本补 429 与网络错误分支。`_worker.js` 的 `/en/` → 308 补上 query/hash 保留。
+  ⚠️ 本批另有两条**在 rebase 时被 ①（服务端 302）吸收**：客户端检测脚本已删除 ⇒
+  「404 页跳过跳转」与「只读 localStorage 断言加强」两条随之失效（对象不存在了）；
+  404 形态的残留（坏路径被 302 到 `/en/<坏路径>` 再 404）记为已知边界，见 PR #222 描述。
+- 契约注释两条（不改行为）：`MemorySnapshot.rev` 声明「水合成功时不得为 undefined」；
+  `TaskStore.get` 声明「必须返回副本而非内部活引用」（transport 的「先落库再派发」纪律依赖它）。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

@@ -15,7 +15,7 @@
 | `src/live-probe.ts` | TS | 真模型试跑（迷你 trial）：**不需要 Docker**，要 key |
 | `scripts/verify_atif_schema.py` | Python | 用 Harbor 自己那份 `Trajectory` 模型校验产物 |
 | `scripts/tb_task_to_harbor.py` | Python | Terminal-Bench 原生任务 → Harbor 任务（数据集后端不可达时的替代路，见第八节） |
-| `scripts/container-install-runtime.sh` | sh | 容器内备好运行时：node（apt → 静态包兜底）+ `ca-certificates` + TLS 自检 |
+| `scripts/container-install-runtime.sh` | sh | 容器内备好运行时：node（apt → 静态包兜底，**sha256 必核**）+ `ca-certificates` + TLS 自检 |
 
 ⚠️ **这个包没有发布到 registry** —— `npm i @migor/agentia-terminal-bench` 会 **404**
 （`"private": true`）。它是**示例**，不是框架的发布面；拿到它的方式是**把
@@ -176,13 +176,14 @@ npm run verify:atif                   # 用 Harbor 的模型校验
 
 **它不证明「agent 能完成任务」**。后者要真模型 + 真容器。别拿自检通过当跑分。
 
-### 5.1 两条「非能力失败」的守卫，也有一条离线自检（2026-10-02 加）
+### 5.1 三条「非能力失败」的守卫，也有一条离线自检（2026-10-02 加，2026-10-09 扩到三条）
 
 ```bash
-npm run check:guards        # 假端点 + 三条断言，几十秒，不花钱
+npm run check:guards        # 假端点 + 五条断言，几十秒，不花钱
 ```
 
-这两条守卫各自对应一种**看着像 agent 答错的 0 分**（零 token = 坑 5；撞循环上限 = 坑 6.1），
+这三条守卫各自对应一种**看着像 agent 答错的 0 分**（零 token = 坑 5；撞循环上限 = 坑 6.1；
+基础设施故障 = 坑 6.2），
 而它们的失败模式恰恰是**悄悄不生效** —— 守卫哑了的话 `reward.txt` 上一切照旧，没有任何东西会红。
 端到端验证一次真容器要几十分钟 + 几美元 ⇒ 不会有人为了改一行守卫去跑它。所以这里造病例：
 
@@ -191,6 +192,14 @@ npm run check:guards        # 假端点 + 三条断言，几十秒，不花钱
 | 撞循环上限 | 假端点每轮都回 `run_command` 的 tool_call + `AGENTIA_MAX_ITERATIONS=1` | **exit 3**、stderr 有说明、sidecar 的 `truncated_by_harness=true` |
 | 正常收尾（反向对照） | 假端点回纯文本 | **exit 0**、stderr 为空、`truncated_by_harness=false` |
 | 零 token | 假端点回文本但 `usage` 全 0 | **exit 2**（第一条守卫，**不能被后加的遮住**） |
+| 持续基础设施故障 | 第 1 轮正常回 tool_call（tokens>0），之后恒 **500** | **exit 4**、sidecar 的 `infra_error=true`（零 token 守卫接不住它） |
+| 上下文超长 | 同上，但之后恒 **400**「prompt is too long」 | **exit 4**、`infra_error=true`（api 类里唯一算基础设施的子类） |
+
+⚠️ exit 4 的判据（哪些算「基础设施」，写在 `src/run.ts` 的 `isInfraError`）：
+框架分类表里四类 retryable 错误（`rate_limit` / `server` / `timeout` / `connection` ——
+引擎已重试过还失败 = 持续故障）+ `api` 类里 message 命中「上下文超长」的那一小撮
+（框架缺省不裁剪长上下文，量的是适配器配置不是能力）。**真能力失败不收**：
+api 4xx 里的请求构造错等照常 exit 0、进 reward 0 桶。宁可漏抬，不可错抬。
 
 假端点在 `scripts/stub-openai-endpoint.mjs`（只实现 `${baseURL}/v1/chat/completions` 一种路径，
 上游路径一改它就 404、检查当场红，不会静默退化成「模型没答」）。
@@ -449,6 +458,18 @@ E: Failed to fetch …/curl_7.74.0-1.3+deb11u16_amd64.deb        404  Not Found
 chess-best-move / qemu-alpine-ssh / qemu-startup，都是那个 41 步的批次），
 而 18 步的 `polyglot-c-py` **没**被标 —— 与上面「复跑直接证伪」那张表的结论一致。
 
+#### 6.2 ⚠️ 基础设施错误混进「完成」桶（2026-10-09，深度审查发现）
+
+坑 5 与坑 6.1 各守住一个端点：「一次都没调成」（零 token，exit 2）与「被自己的旋钮
+掐断」（exit 3）。中间那块原来是个洞：**跑到一半、tokens > 0、然后撞上持续故障** ——
+429 把重试耗尽、端点 5xx、连接断、上下文超长 400（框架缺省不裁剪长上下文）——
+旧代码一路 `process.exit(0)`，Harbor 照常跑验证器记 reward=0，落进「完成」桶，
+与「模型答错」无从区分。200→500 的上限提升放大了暴露面（跑得越久，撞故障窗口的概率越高）。
+
+⇒ `src/run.ts` 加第三条守卫：`stop=error` 且错误属基础设施（判据见 §5.1 的
+`isInfraError` 说明）⇒ **exit 4**，与 install 阶段 TLS 自检同一条原则 ——
+让失败发生在正确的地方。sidecar 同步落 `infra_error` 字段，事后复核有据。
+真能力失败（api 4xx 里的请求构造错等）**不收**，照常进 reward 0 桶。
 
 ⚠️ 判据（与坑 5 并列）：**读数先分桶，再分列**；而且**逐条判、别按题取并集**。
 ⚠️ 后者是踩过的：把「本题里有一条假红」取成「本题是假红」，等于把环境问题记成 agent 不会做。
@@ -457,6 +478,8 @@ chess-best-move / qemu-alpine-ssh / qemu-startup，都是那个 41 步的批次�
 
 1. **`result.json` 的 `exception_info` 非空 ⇒ 不进能力分母。** 这一桶里再分：
    `NonZeroAgentExitCodeError` 且 message 是 install 那句命令 ⇒ **还没到 agent**（坑 7）；
+   `NonZeroAgentExitCodeError` 且 stderr 里有「掐断 / 零 token / 基础设施故障」⇒
+   **我们自己的守卫主动拦的**（exit 2/3/4，坑 5 / 6.1 / 6.2 —— 分对了桶，别回算）；
    `AgentSetupTimeoutError` / `NetworkConnectionError` ⇒ 装自己那步的网络问题（坑 7）；
    `AgentTimeoutError` ⇒ 先看轨迹**末步是不是收尾总结**（坑 2 —— 是，那就是做完不退）。
 2. **否则看 `verifier/test-stdout.txt` 里有没有 pytest 形态的断言证据**
@@ -608,7 +631,9 @@ cd /installed-agent/agentia-tb && sh .install-runtime.sh && … node .loadcheck.
 
 两处受它影响，都已处理：
 - **装 node 的静态包**：`container-install-runtime.sh` 改成**多源**——
-  官方在前（能直连的环境行为不变），然后清华 / npmmirror，逐个试。
+  官方在前（能直连的环境行为不变），然后清华 / npmmirror，逐个试；
+  且**每个源下载后必核同目录的 `SHASUMS256.txt`**（sha256 不符即换源，
+  全不过即 fail）—— 中间人能拦 TLS 就能换包，「下载成功」不等于「下的是 node」。
   ✅ 复验：`ubuntu:22.04` 上官方源 `curl: (60) self-signed` → 清华源 50.6M 秒下、装成。
 - **任务自带的 `npm ci`**：⚠️ **这一处我们修不了** —— 它写在任务的 Dockerfile 里，
   `docker compose build` 的构建上下文没有我们插脚的缝。⇒ 本网络窗口下
@@ -703,9 +728,10 @@ Harbor 的上传走 `docker compose exec -T -u root … tar -xf`。
   （过滤器匹配不上 = 「没有工具调用」）。要改先回源核 `src/core/trace.ts`。
 - ATIF 的 `message` 只在 `traceContent: 'full'` 时有真值（框架缺省不记正文）。
 - **每次 trial 另外落一份 `agentia-run-status.json`**（与 `trajectory.json` 同目录）：里面有
-  `stop_reason` / `iterations` / `max_iterations` / `truncated_by_harness`。
+  `stop_reason` / `error_type` / `iterations` / `max_iterations` / `truncated_by_harness` / `infra_error`。
   ⚠️ **它不在 ATIF 规范里**（`ATIF-v1.8` 没有 stop_reason），是刻意旁路出来的
-  —— 因为「跑完了」和「被自己的上限掐了」在 `reward.txt` 上都是 0，见 §六 坑 6.1。
+  —— 因为「跑完了」和「被自己的上限掐了」在 `reward.txt` 上都是 0，见 §六 坑 6.1；
+  `infra_error` 同理，标的是坑 6.2 那一桶。
 
 ---
 
@@ -755,15 +781,32 @@ harbor run -p /tmp/tb-official/terminal-bench -a harbor_agent:Agentia -m deepsee
 - **构建上下文 = TB 任务根整份**，不是只有 Dockerfile：扫 236 个 Dockerfile 里有
   32 个 `COPY task-deps/`、18 个 `COPY tests/`，还有 `etc/ src/ resources/ data/`…
   TB 的 compose 没写 `context:` ⇒ 默认就是任务根。只搬 Dockerfile 会直接 build 失败。
+- **compose 里的环境语义会翻进 Dockerfile**（2026-10-09 起，此前是整个丢掉 ⇒ 环境错位假红）：
+  单服务场景提取 `environment` → `ENV`（TB 自己的 `TEST_DIR=${T_BENCH_TEST_DIR}` 换成
+  `ENV TEST_DIR=/tests`）、`working_dir` → `WORKDIR`、`entrypoint` → `ENTRYPOINT`
+  （保活类 `sleep infinity` / `tail -f` 跳过 —— Harbor 自己管容器生命周期）、
+  `expose` → `EXPOSE`。**做不到的响亮告警**（多服务 / 非 TB 日志卷 / 端口映射 / 变量插值），
+  转换输出里逐条打出 `[tb_task_to_harbor] ⚠️ …`，不静默 —— 思路对照 harbor 官方 mapper
+  （`harbor/mappers/terminal_bench.py` 的 `DockerComposeProcessor`）。
 - **WORKDIR 只在 Dockerfile 完全没写时才补 `/app`**：TB 基础镜像**自带** `WORKDIR=/app`
   （实测 python-3-13 与 ubuntu-24-04 都是），152/236 自带、84 个靠镜像默认。
   无条件追加会把任务自己的 WORKDIR（实测有 `/workspace`、`/home/alice`）顶掉。
+  compose 给了 `working_dir` 的，提取后 Dockerfile 里已有 WORKDIR ⇒ 兜底自然不触发
+  （与 compose 覆盖镜像 WORKDIR 的语义一致）。
 - **verifier 不 `cd`**：TB 的 `run-tests.sh` 也不 cd，测试里的相对路径依赖容器 WORKDIR。
   官方任务的 `test.sh` 同样不 cd（读 `terminal-bench-sample` 确认）。
-- **pytest 装进任务镜像**，不在 verifier 里现装：官方 `test.sh` 是
+  原版脚本若自己 cd，被包在生成的 test.sh 的子 shell 里，不会漏出来。
+- **`run-tests.sh` 保留，不再整段替换**（2026-10-09 起）：旧版把原版脚本整个换成
+  裸 `pytest /tests/test_outputs.py` —— 原版里 `uv pip install pytest requests numpy …`
+  装的是**测试自己的依赖**，丢掉它 ⇒ import 失败 ⇒ reward 0，与「agent 没做对」无从区分
+  （条件性假红）。现在的 test.sh = 原版脚本包在子 shell 里跑（它自己的 `set -e` 不会挡住
+  reward 落盘）+ 尾部按退出码写 reward；`run-uv-pytest.sh` / `setup-uv-pytest.sh`
+  这些被原版 source 的助手脚本也一并照抄。任务里没有 run-tests.sh 时才退回裸 pytest 模板。
+- **pytest 本体装进任务镜像**，不在 verifier 里现装：官方 `test.sh` 是
   `curl astral.sh/uv | sh` + `uv add pytest==8.4.1`（**要出网 + 要 curl**，两个基础镜像都没 curl）；
   转换版改在构建期分层兜底装（有 pip 走 pip 装 `pytest==8.4.1`，否则 apt 装 `python3-pytest`）。
   差半个 pytest 版本对断言无影响，但口径要写出来，别假装等价。
+  ⚠️ 这行只补 pytest **本体**，测试自己的依赖由保留下来的 run-tests.sh 负责（见上一条）。
 - **缺 pytest 时故意不写 reward**：让 Harbor 报 `RewardFileNotFoundError`（基础设施问题），
   而不是 `reward=0`（看着像 agent 做错了）。
 

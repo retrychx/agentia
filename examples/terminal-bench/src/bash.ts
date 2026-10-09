@@ -7,8 +7,11 @@
  * 那是把框架的能力缺口转嫁给 prompt。
  *
  * 因此这里起一个长驻 `bash`，靠哨兵行判断命令结束：
- *   写 `<命令>\nprintf '%s:%s\n' <哨兵> "$?"`
- *   读 stdout 直到出现哨兵 ⇒ 哨兵之前是输出、之后是退出码。
+ *   写 `<命令>\nprintf '\n%s:%s\n' <哨兵> "$?"`（前导 `\n` 保证哨兵**独占一行**，
+ *   即使命令输出不带尾换行）
+ *   读 stdout 直到出现**独占一行**的哨兵 ⇒ 哨兵之前是输出、之后是退出码。
+ *   锚定整行匹配是为了抗 `set -x`：xtrace 合流进 stdout 后会把 printf 命令本身
+ *   （含哨兵字面量）打出来，子串匹配会提前命中它（见 `exec` 里的注释）。
  *
  * 已知边界（改之前先读，别当成 bug 修）：
  * 1. **交互式命令会挂**（`vim` / `less` / 等待 stdin 的脚本）⇒ 由超时兜底：
@@ -93,14 +96,25 @@ export class ShellSession {
 
   async exec(command: string): Promise<ShellResult> {
     const proc = this.#ensure();
+    // marker 只有 [a-z0-9_] 字符（base36 + 下划线）—— xtrace 展开与正则都不需转义。
     const marker = `__agentia_exit_${++this.#seq}_${Math.random().toString(36).slice(2)}__`;
+    /**
+     * 哨兵必须**独占一行**（行首 = marker、紧跟 `:exitcode`、行尾 \n），不能子串匹配：
+     * 模型执行过 `set -x` 后，bash 的 xtrace 会合流进 stdout（我们 `exec 2>&1`），
+     * printf 那行的展开形态（`+ printf '%s:%s\n' '__agentia_exit_…__' '0'`）里
+     * **也含哨兵字面量、且先于真实哨兵出现** —— `indexOf(marker)` 会提前命中它，
+     * 于是 exitCode 恒为 -1，此后每条命令都如此（实测病例）。
+     * 尾随 `\n` 也必须要求：退出码可能被 chunk 边界劈开（`:2` 是 `:25` 的前缀），
+     * 而 printf 永远以 `\n` 收尾，等它到了再判。
+     */
+    const sentinelRe = new RegExp(`(?:^|\\n)${marker}:(-?\\d+)\\r?\\n`);
     const startedAt = Date.now();
 
     return new Promise<ShellResult>((resolve) => {
       let out = '';
       let settled = false;
 
-      const finish = (idx: number, timedOut: boolean): void => {
+      const finish = (idx: number, exitCode: number, timedOut: boolean): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -115,11 +129,9 @@ export class ShellSession {
           return;
         }
 
-        const stdout = out.slice(0, idx);
-        const codeMatch = /^:(-?\d+)/.exec(out.slice(idx + marker.length));
         resolve({
-          stdout,
-          exitCode: codeMatch ? Number(codeMatch[1]) : -1,
+          stdout: out.slice(0, idx),
+          exitCode,
           timedOut: false,
           durationMs,
         });
@@ -127,19 +139,23 @@ export class ShellSession {
 
       const onData = (chunk: Buffer): void => {
         out += chunk.toString();
-        const idx = out.indexOf(marker);
-        if (idx >= 0) finish(idx, false);
+        const m = sentinelRe.exec(out);
+        // 切在匹配起点：哨兵前的 `\n` 是我们自己 printf 打的（见下方 stdin 写入行），
+        // 不还给模型 —— 否则命令自带尾换行时输出会多一个空行。
+        if (m) finish(m.index, Number(m[1]), false);
       };
 
       const onError = (err: Error): void => {
         out += `\n[shell 起不来: ${err.message}]`;
-        finish(out.length, false);
+        finish(out.length, -1, false);
       };
 
-      const timer = setTimeout(() => finish(-1, true), this.#timeoutMs);
+      const timer = setTimeout(() => finish(-1, -1, true), this.#timeoutMs);
       proc.on('error', onError);
       proc.stdout.on('data', onData);
-      proc.stdin.write(`${command}\nprintf '%s:%s\\n' '${marker}' "$?"\n`);
+      // 哨兵前**先补一个 `\n`**：命令输出可能不带尾换行（`printf abc`），
+      // 没有它哨兵就不独占一行，上面的锚定正则会永远等不到（退化成超时）。
+      proc.stdin.write(`${command}\nprintf '\\n%s:%s\\n' '${marker}' "$?"\n`);
     });
   }
 
