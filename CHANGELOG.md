@@ -916,6 +916,17 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - 契约注释两条（不改行为）：`MemorySnapshot.rev` 声明「水合成功时不得为 undefined」；
   `TaskStore.get` 声明「必须返回副本而非内部活引用」（transport 的「先落库再派发」纪律依赖它）。
 
+### 脚手架 README：「`npm start` 部署/Docker 用这条」的误导表述（2026-10-09 ③）
+
+- **病例**：`agentia create` 生成的 README 写「`npm start` ……（部署/Docker 用这条）」，但脚手架的
+  `main.ts` 是**一次性批处理入口**（`app.run` → 打印 → 退出：无端口、无 `/healthz`、无 drain）——
+  那句话会读成「脚手架能直接上线」。全仓此前没有一处明说「脚手架给的是 CLI 形态，服务看
+  `examples/deploy/`」。
+- **修法**：模板 README 的「构建与生产运行」节把 `npm start` 如实标为 Job 形态（适合 cron / CI /
+  容器一次性任务），并给出服务化的三个指引：`createHttpHandler` + `AsyncRunner` 的配方在
+  `examples/deploy/`、上线清单在 `docs/deployment.md`、API 见项目内 `AGENTS.md` 的「触发与宿主」节。
+- 只改文案，不改生成逻辑与脚本。CLI 套件 210/210 绿。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
