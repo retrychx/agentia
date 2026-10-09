@@ -6065,9 +6065,13 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
    而它没有任何编译期保护。
 2. ⭐ **交付面是散文，闸门守不住它**：这次 `tsc`、单测、八步 `verify-all` **全绿**，而仓库根 README、
    `packages/cli/README.md`（**随 npm 发布**）与官网**中英两版** docs 页**都残留着翻转前的说法**。
-   已补 `tests/docs/scaffold-entry-contract.test.ts`（三层判据 + 两条防真空下限，8 条变异），并把
+   已补 `tests/docs/scaffold-entry-contract.test.ts`（四层判据 + 三条防真空下限，12 条变异），并把
    **射程如实写进文件头** —— 目录树「一行只写一个文件」的列举与散文折行两类**不在射程内**
    （硬判会误红，而误报的门禁会被关掉）。与 2026-09-29 ⑧ 那句「承诺写在文档里、没有门禁」同根。
+   ⭐ **同族第二例（复查时翻到，比本次翻转还早）**：2026-09-22 把装配拆成 `src/app.ts` 时，
+   官网两版 **api 参考**仍把读 `.env` 说成由默认入口 `src/main.ts` 首行做 —— 停在盘上半个月，
+   且此前**零守卫**（`templates.test.mjs` 的同一条不变量只守模板源码）。⇒ 这一条判据同时是
+   「**散文面上还有多少条没人守的旧口径**」的第一个样本：别把「这次只漂了这几处」当成全部。
 3. **它取代了 2026-09-22 那条决策的「落地形状」**里对 `src/main.ts` 的描述 —— 那条原文**保留不改**，
    因为本仓的历史决策记录如实引用当时形状是正确的；读它时请以本条为准。
 
@@ -6076,7 +6080,8 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
 `templates/{env.example,gitignore,README.md}`、`packages/cli/src/{templates,create}.ts`、
 `scripts/e2e-cli.ts`（4d/4e/4f 与两处文件表）、`packages/cli/test/{templates,structure}.test.mjs`
 （棘轮账**原位**改数值）、`docs/{usage-guide,deployment,guards}.md`、根 `README.md`、
-`packages/cli/README.md`、官网 `fragments/docs.html` + `fragments/en/docs.html`，
+`packages/cli/README.md`、官网 `fragments/docs.html` + `fragments/en/docs.html` +
+`fragments/api.html` + `fragments/en/api.html`（后者两处是**同族第二例**的修复），
 新增 `docs/plans/2026-10-09-scaffold-default-service.md` 与 `tests/docs/scaffold-entry-contract.test.ts`。
 **零 `src/` 框架改动**；脚手架是**生成物** ⇒ 既有使用者不需要任何动作（不构成破坏性变更）。
 

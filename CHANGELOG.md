@@ -970,11 +970,16 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **交付面同步（补做）**：这次翻转改的是「哪个文件是默认入口」，而**散文面当时没跟着改** ——
   官网中英两版 docs 页、仓库根 `README.md` 与 `packages/cli/README.md`（**随 npm 发布**）
   都还写着翻转前的说法，而 `tsc`、单测与八步门禁**全绿**：它们扫源码与产物，不看散文。
-  已补齐，并加了 `tests/docs/scaffold-entry-contract.test.ts`（三层判据 + 两条防真空下限，
-  8 条变异验证）。⚠️ **射程如实写在该文件头**：目录树里「一行只写一个文件」的列举、以及
+  已补齐，并加了 `tests/docs/scaffold-entry-contract.test.ts`（四层判据 + 三条防真空下限，
+  12 条变异验证）。⚠️ **射程如实写在该文件头**：目录树里「一行只写一个文件」的列举、以及
   散文把两个入口名折到相邻两行的写法**不在射程内** —— 硬判会误红，而误报的门禁会被关掉。
   ⚠️ 这次漂移此前**零守卫**：`check-website-agent-readiness.mjs` 只核 `llms-full.txt` 与单源
   `docs/usage-guide.md` 逐字节相等，**官网 fragments 整片不在它的射程内**。
+- **同一类病的第二例（顺手修掉）**：2026-09-22 把装配拆成 `src/app.ts` 时，官网两版 api 参考
+  仍把读 `.env` 说成由默认入口 `src/main.ts` 首行做（它实际在 `src/app.ts`）—— 比本次翻转还早，
+  停了半个月。已一并改掉，并给上面那条守卫补了第 ④ 层判据（同一行不得把读 `.env` 的 API
+  挂在默认入口上、却不提装配模块）。⚠️ 这次也**零守卫**：`templates.test.mjs` 的同一条
+  不变量只守模板源码，守不到散文面。
 - **验证**：`templates.test.mjs` 的服务面形状断言改钉 `main.ts`（从 `./app.js` 取工厂、不许
   旁路 `createApp`、AsyncRunner + createHttpHandler + SqliteTaskStore + resumePending +
   `drain({` + SIGTERM、缺省无 token 必须有警告文案），原 `main.ts` 那两条**平移**到 `batch.ts`

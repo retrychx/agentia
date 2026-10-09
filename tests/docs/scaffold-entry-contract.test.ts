@@ -7,28 +7,35 @@ import { fileURLToPath } from 'node:url';
 /**
  * 脚手架「入口契约」在交付面不得漂移（2026-10-09 把默认入口翻成服务时补的守卫）。
  *
- * **为什么需要它**：`agentia create` 的产物里，哪个文件是默认入口、哪个是一次性任务，
- * 是使用者照着文档抄的**第一手信息**。2026-10-09 把默认入口从「跑一次就退出」翻成
- * 「HTTP 服务」（设计稿 `docs/plans/2026-10-09-scaffold-default-service.md`）之后，
- * 仓库根 README、CLI README 与官网两版 docs 页都残留了**翻转前**的说法 —— 而 `tsc`、
- * 单测、八步门禁**全绿**：它们扫源码与产物，不看散文，而读者看到的偏偏是散文那份。
- * 与 `no-legacy-terms.test.ts` 同一类病（改名时类型系统看不见），只是这次改的是**角色**
- * 而不是名字 —— 所以那条守卫抓不到它。
+ * **为什么需要它**：`agentia create` 的产物里，哪个文件是默认入口、哪个是一次性任务、
+ * `.env` 读在哪个文件，都是使用者照着文档抄的**第一手信息**。这类口径本仓已经漂过两次：
+ * ① 2026-09-22 拆出 `app.ts` 之后，官网 api 参考仍写着「脚手架 `main.ts` 首行已内置
+ * `loadEnvFile`」—— 停了半个月（2026-10-09 复查时才翻到）；
+ * ② 2026-10-09 把默认入口从「跑一次就退出」翻成「HTTP 服务」（设计稿
+ * `docs/plans/2026-10-09-scaffold-default-service.md`）之后，仓库根 README、CLI README
+ * 与官网两版 docs 页都残留了**翻转前**的说法。
+ * 两次 `tsc`、单测、八步门禁**全绿**：它们扫源码与产物，不看散文，而读者看到的偏偏是
+ * 散文那份。与 `no-legacy-terms.test.ts` 同一类病（改口径时类型系统看不见），只是这两次
+ * 改的是**角色**与**归属**而不是名字 —— 所以那条守卫抓不到它。
  *
- * **覆盖范围**：只列「描述脚手架生成了什么」的面向使用者表面。`docs/spec.md` /
+ * **覆盖范围**：只列「描述脚手架生成了什么」的面向使用者表面 —— 含官网 api 参考页那种
+ * **借某个 API 条目顺带描述脚手架**的写法（`loadEnvFile` 那一行就是）。`docs/spec.md` /
  * `docs/plans/` / `CHANGELOG.md` 含**历史决策与历史版本记录**，如实引用旧形状是正确的
  * —— 刻意不入列（同 `no-legacy-terms.test.ts` 的取舍）。同理不入列 `examples/`：
- * 那里各工程自己的 `main.ts` 是各自的角色，与脚手架的契约无关。
+ * 那里各工程自己的 `main.ts` / `app.ts` 是各自的角色，与脚手架的契约无关。
  *
- * ⚠️ 每条判据都带**防真空下限**：名词一改（入口文件再改名 / `create` 命令换写法），
- * 判据会「扫不到任何东西」然后全绿 —— 那种绿是本仓最贵的失效形态（`docs/guards.md` §3）。
+ * ⚠️ 每条判据都带**防真空下限**：名词一改（入口文件再改名 / `create` 命令换写法 / 读 `.env`
+ * 的函数换名字），判据会「扫不到任何东西」然后全绿 —— 那种绿是本仓最贵的失效形态
+ * （`docs/guards.md` §3）。
  *
- * ⚠️ **射程**（别把它读成「这三层之外的漂移也守得住」）：
+ * ⚠️ **射程**（别把它读成「这几层之外的漂移也守得住」）：
  * ① 整份表面**从不**提一次性入口 —— 守得住（这正是 2026-10-09 实际发生的那次）；
  * ② 某一行在**列举**产出（同一行还出现 ≥2 个其它脚手架文件）却没提它 —— 守得住；
- * ③ **不在射程内**：目录树那种「一行只写一个文件」的列举里少一条、以及散文把两个入口名
- *    折到相邻两行的写法。③ 两类的共同点是「一行看不出来」，硬判会误红（§3 第 1 条：
- *    误报的门禁最终会被人关掉，等于没有）。
+ * ③ 某一行把 `loadEnvFile` 挂在默认入口上、又不提装配模块 —— 守得住（2026-09-22 那次）；
+ * ④ **不在射程内**：目录树那种「一行只写一个文件」的列举里少一条、散文把两个入口名折到
+ *    相邻两行、以及**没写出 `loadEnvFile` 这个标识符**的 `.env` 归属句（例如只说「首行读
+ *    `.env`」）。④ 的共同点是「一行看不出来」或「判不出来」，硬判要么误红要么看着像守住了
+ *    （§3 第 1 条：误报的门禁最终会被人关掉，等于没有）。
  */
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -40,6 +47,8 @@ const SURFACES: readonly string[] = [
   'packages/cli/templates/README.md',
   'packages/website/src/fragments/docs.html',
   'packages/website/src/fragments/en/docs.html',
+  'packages/website/src/fragments/api.html',
+  'packages/website/src/fragments/en/api.html',
 ];
 
 /** 建工程的命令：某份表面出现它 = 它正在讲「脚手架生成了什么」 */
@@ -84,6 +93,30 @@ const MIN_OTHER_FILES_FOR_ENUM_LINE = 2;
  */
 const STALE_ENTRY_WORDING: readonly string[] = ['薄入口', 'thin entry point'];
 
+/**
+ * 装配模块：`.env` 归它读。与默认入口同现、却不提它 ⇒ 这篇表面把 `.env` 挂到了入口上
+ * （装配/入口分离契约里最贵的一处错 —— 挂错一侧时 `agentia dev` 静默读不到 `.env`，
+ * 用户看到的是「没配 key」，然后去怀疑框架）。
+ */
+const ASSEMBLY_MODULE = 'app.ts';
+
+/** 读 `.env` 的 API 名。用它当触发词（而不是「`.env`」）是刻意的：窄，不误报。 */
+const ENV_LOADER = 'loadEnvFile';
+
+/**
+ * 提到 `ENV_LOADER` 的表面数下限。**这是本判据真正的防真空阀**：函数一改名（或 `.env`
+ * 读取换了别的 API），逐行判据会一行都判不到然后全绿。2026-10-09 实测 7（八份表面里
+ * 只有 `packages/cli/README.md` 不提它）。
+ */
+const MIN_SURFACES_NAMING_ENV_LOADER = 6;
+
+/**
+ * 被「`ENV_LOADER` 与默认入口同现」真正判过的行数下限。2026-10-09 修完后实测 **1**
+ * （只剩 `docs/usage-guide.md` 那条「必须在 `app.ts`、不能在入口」的 ⚠️ 规则本身）。
+ * 低是正常的 —— 这条判据是「矛盾检测」，不是「穷举检测」；跌破 0 说明那条规则被删了。
+ */
+const MIN_ENV_LOADER_LINES = 1;
+
 /** 在盘上真被「整份文件」那条判过的表面数下限。2026-10-09 实测 5（只有 templates/README.md
  *  不提 `agentia create` 命令 ⇒ 不适用）。跌破先弄清是「名词改了」还是「文件被搬了」，再调。 */
 const MIN_CHECKED_SURFACES = 4;
@@ -98,7 +131,7 @@ function read(rel: string): string {
 
 describe('脚手架入口契约：交付面不得漂移', () => {
   it('扫描面非空、每份都读得到（守卫自身不能空跑）', () => {
-    assert.ok(SURFACES.length >= 6, `扫描面只有 ${SURFACES.length} 份`);
+    assert.ok(SURFACES.length >= 8, `扫描面只有 ${SURFACES.length} 份`);
     for (const f of SURFACES) {
       assert.ok(read(f).length > 200, `${f} 内容过短 —— 路径读错了？`);
     }
@@ -169,6 +202,42 @@ describe('脚手架入口契约：交付面不得漂移', () => {
         });
     }
     assert.deepEqual(hits, [], `默认入口被写成了单次入口：\n  ${hits.join('\n  ')}`);
+  });
+
+  it('讲 `.env` 读取的那一行不得把 loadEnvFile 挂在默认入口上', () => {
+    const hits: string[] = [];
+    let linesChecked = 0;
+    let surfacesNamingLoader = 0;
+    for (const f of SURFACES) {
+      const text = read(f);
+      if (text.includes(ENV_LOADER)) surfacesNamingLoader += 1;
+      text.split('\n').forEach((line, i) => {
+        if (!line.includes(ENV_LOADER)) return;
+        if (!DEFAULT_ENTRY.test(line)) return;
+        linesChecked += 1;
+        if (!line.includes(ASSEMBLY_MODULE)) {
+          hits.push(
+            `${f}:${i + 1} 把 ${ENV_LOADER} 挂在默认入口上却没提 ${ASSEMBLY_MODULE} → ${line.trim().slice(0, 90)}`,
+          );
+        }
+      });
+    }
+    assert.ok(
+      surfacesNamingLoader >= MIN_SURFACES_NAMING_ENV_LOADER,
+      `只有 ${surfacesNamingLoader} 份表面提到 ${ENV_LOADER}（下限 ${MIN_SURFACES_NAMING_ENV_LOADER}）` +
+        '—— 判据在空转：读 `.env` 的 API 改名了？',
+    );
+    assert.ok(
+      linesChecked >= MIN_ENV_LOADER_LINES,
+      `「${ENV_LOADER} 与默认入口同现」的行只判到 ${linesChecked} 行（下限 ${MIN_ENV_LOADER_LINES}）` +
+        ' —— 判据在空转',
+    );
+    assert.deepEqual(
+      hits,
+      [],
+      `${ENV_LOADER} 归装配模块 ${ASSEMBLY_MODULE} 读，不归入口 —— 挂错一侧时 \`agentia dev\` 会静默读不到 .env：\n` +
+        hits.map((h) => `  ${h}`).join('\n'),
+    );
   });
 
   it('正向：单源与 CLI README 真的写明了两个入口（防「扫了一堆空文件」的假绿）', () => {
