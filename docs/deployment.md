@@ -16,7 +16,7 @@
 
 | 项 | 口径 |
 |---|---|
-| Node | ≥ 18（CI 在 18 / 20 / 24 上守全链；ESM-only） |
+| Node | ≥ 18（CI 在 18 / 20 / 24 上守全链；ESM-only）。⚠️ 这条是**框架库**的下限；**脚手架默认入口**（`agentia create` 后 `npm start` 起的那个服务）要 **≥ 22.5** —— 它的默认任务库 `SqliteTaskStore` 用 `node:sqlite`。低版本上它抛的是可读报错，不是崩；想在 18 上起服务就换 `FileTaskStore`（同一套 API，单写者前提） |
 | 包 | `@migor/agentia` 单包、零运行时依赖（守卫 `tests/architecture/no-runtime-deps.test.ts` 钉着） |
 | 密钥 | **框架不读 env**——模型客户端的 key 由宿主代码显式传入。`loadEnvFile` 是给本地开发的工具，不是生产的密钥方案；生产用编排平台的 secret 注入 |
 

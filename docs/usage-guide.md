@@ -101,8 +101,8 @@ npx agentia --version            # CLI 版本（= -v）
 | 文件 | 作用 |
 |---|---|
 | `src/app.ts` | **装配**：导出 `createAgentApp({ toolSources?, workdir? })` 工厂 + `CAPABILITY_DIRS` + `createSessionStore()`，并在模块顶部 `loadEnvFile()` 读 `.env` |
-| `src/main.ts` | **启动**：薄入口 —— `createAgentApp()` → `app.run(...)`，再处理 `result.error` |
-| `src/server.ts` | **服务入口**：`createAgentApp()` → `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）→ SIGTERM/SIGINT 触发 `drain` 优雅停机；`npm run build && npm run start:server` 即是带 `/healthz`、异步任务、可选 `AGENTIA_TOKEN` Bearer 鉴权的服务（批处理仍是 `main.ts`） |
+| `src/main.ts` | **默认入口 = HTTP 服务**：`createAgentApp()` → `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）→ SIGTERM/SIGINT 触发 `drain` 优雅停机。`npm run build && npm start` 即是带 `/healthz`、异步任务、可选 `AGENTIA_TOKEN` Bearer 鉴权的服务 |
+| `src/batch.ts` | **一次性入口（Job 形态）**：薄入口 —— `createAgentApp()` → `app.run(...)`，再处理 `result.error`；`npm run start:batch -- "你的问题"` 跑一次就退出（cron / CI / 容器） |
 | `src/dev.config.ts` | **数据**（不是逻辑）：开发期的声明，如 `multiTurn: ['trip-planner']`；见 §2.2 |
 | `src/session-store.ts` | `FileSessionStore`：把多轮对话落成 `.agentia/session.json`（原子写）；见 §6.4「对话历史」 |
 | `src/registry.ts` | 显式注册表（`agentia g` 自动维护） |
@@ -110,7 +110,7 @@ npx agentia --version            # CLI 版本（= -v）
 
 **为什么拆**：`agentia dev` 的调试环要**复用同一个工厂**，才能把「这次调哪个能力 / 工作目录是哪个」
 喂进 `createApp`。所以装配必须在 `app.ts` 里、以**函数**形态存在 —— 别把 `createApp(...)` 搬回
-`main.ts`（搬回去 dev 环就起不来了）。
+任一个入口（`main.ts` / `batch.ts`；搬回去 dev 环就起不来了）。
 
 > **脚手架 `src/app.ts` 怎么找这些目录**：按**本文件位置**解析（`fileURLToPath(new URL('tools/', import.meta.url))`），
 > 所以 dev 解析到 `src/`、`npm run build` 之后解析到 `dist/` —— 从任何目录启动都成立，也不受 cwd 影响。
@@ -182,8 +182,9 @@ npx agentia --version            # CLI 版本（= -v）
 事件循环排空，进程还会以 `code=0` 干净退出（看起来像「用户代码自己跑完了」）。这条有 e2e 钉着
 （`scripts/e2e-dev.ts`）。
 
-**`.env` 由 `src/app.ts` 读**：runner 只 import `app.ts`、**从不执行 `main.ts`**，所以读 `.env`
-的那一行必须在装配模块里 —— 放 `main.ts` 会让 `npm run dev` 静默读不到、而 `npm start` 读得到。
+**`.env` 由 `src/app.ts` 读**：runner 只 import `app.ts`、**从不执行入口**（`main.ts` /
+`batch.ts`），所以读 `.env` 的那一行必须在装配模块里 —— 放进入口会让 `npm run dev` 静默读不到、
+而 `npm start` 读得到。
 
 **安全**：面板只绑 `127.0.0.1`，并做两层校验 —— `Origin` 校验（缺失放行，`Origin: null` 拒绝）
 + **每次启动生成的一次性 token**（首帧 `?t=` 换成 `HttpOnly` cookie，后续请求带着走）。
@@ -524,9 +525,10 @@ const app = await createApp({ ... });
 
 `agentia create` 生成的脚手架把 `.env`、`.env.example` 与 `app.ts` 里的 `loadEnvFile();` 都备好了，并在 `.gitignore` 里挡住 `.env` —— 生成 `.env` 却不 ignore，等于把 key 送进用户的第一个 commit。
 
-> ⚠️ **`loadEnvFile()` 必须在 `app.ts`，不能在 `main.ts`**：`agentia dev` 的 runner 只 import
-> `app.ts`、**从不执行 `main.ts`**。放错一侧的失败形状是静默的 —— `npm run dev` 读不到 `.env`
-> 而 `npm start` 读得到，用户只会看到「没配 key」然后去怀疑框架。这条有 e2e 钉着（`scripts/e2e-dev.ts`）。
+> ⚠️ **`loadEnvFile()` 必须在 `app.ts`，不能在入口（`main.ts` / `batch.ts`）**：`agentia dev` 的
+> runner 只 import `app.ts`、**从不执行入口**。放错一侧的失败形状是静默的 —— `npm run dev` 读不到
+> `.env` 而 `npm start` 读得到，用户只会看到「没配 key」然后去怀疑框架。这条有 e2e 钉着
+> （`scripts/e2e-dev.ts`）。
 
 > ⚠️ **本机 export 过 `ANTHROPIC_API_KEY` 的人**（比如同时用 Claude Code）：按上面的优先级，脚手架 `.env` 里的 key 会被**静默压住**。改了 `.env` 却「没生效」时，先 `echo $ANTHROPIC_API_KEY` 看看环境里是不是已经有一份。
 

@@ -25,8 +25,8 @@
 | 文件 | 作用 |
 |---|---|
 | `src/app.ts` | **装配**：导出 `createAgentApp({ toolSources?, workdir? })` 工厂 + `CAPABILITY_DIRS` + `createSessionStore()`；`.env` 也在这里读 |
-| `src/main.ts` | **启动**：薄入口 —— 调工厂 → `app.run(...)` → 处理 `result.error` |
-| `src/server.ts` | **服务入口**：调同一个工厂 → `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）→ drain 优雅停机（见「作为服务运行」节） |
+| `src/main.ts` | **默认入口 = 服务**：调同一个工厂 → `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）→ drain 优雅停机。`npm start` 跑的就是它 |
+| `src/batch.ts` | **一次性入口（Job）**：薄入口 —— 调工厂 → `app.run(...)` → 处理 `result.error`。`npm run start:batch` 跑的是它 |
 | `src/dev.config.ts` | 开发期**数据**声明（`multiTurn` / `budget` / `workdir`）；只有 `agentia dev` 读它 |
 | `src/session-store.ts` | 多轮的会话后端（`FileSessionStore`，落盘 `.agentia/session.json`） |
 | `src/registry.ts` | 显式注册表（`agentia g` 自动维护） |
@@ -60,26 +60,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 npm run dev -- "你的问题"
 ```
 
-## 构建与生产运行
+## 构建与运行
 
 ```bash
 npm run build   # tsc → dist/ + .md 文本资产跟随拷贝（asset() 按文件位置解析，必须跟着 .js 走）
-npm start -- "你的问题"   # 跑编译产物 dist/main.js —— 跑一次就退出的**批处理入口**
+npm start       # 起 HTTP 服务（= node dist/main.js）
 ```
 
-⚠️ `npm start` 是 **Job 形态**（跑一次、打印、退出）：适合 cron / CI / 容器里的一次性任务，
-**不是长期在线的服务**（没有端口、没有 `/healthz`、没有优雅停机）。长期在线用下面的
-`start:server`；更完整的生产配方（含 Dockerfile / compose / metrics）在框架仓库的
-[`examples/deploy/`](https://github.com/retrychx/agentia/tree/main/examples/deploy)，
-上线前的决定清单在同仓库 `docs/deployment.md`；API 细节见本项目 `AGENTS.md` 的「触发与宿主」节。
-
-## 作为服务运行
-
-`npm start` 跑一次就退出；要挂成长期在线的 HTTP 服务，用脚手架自带的 `src/server.ts`：
-
-```bash
-npm run build && npm run start:server   # = node dist/server.js
-```
+**`npm start` 起来的就是一个在监听的服务**（NestJS 的 `main.ts` 那条口径）：build 完 run 起来
+就是能用的东西，不是跑一次就退出。`npm run start:prod` 与它同物，是显式的生产名。
 
 端点：
 
@@ -87,23 +76,39 @@ npm run build && npm run start:server   # = node dist/server.js
 - `POST /run` —— 同步 run（请求带 `Accept: text/event-stream` → SSE 逐帧）
 - `POST /tasks` —— 异步任务（轮询 `GET /tasks/:id`，或 SSE 订阅 `GET /tasks/:id/stream`）
 
-服务侧给到的另外三件事：任务落 SQLite（`AGENTIA_DB` 指定路径，缺省 `./agentia.db`），
-**崩溃续跑**（重启后上次未完成的任务接着跑）、**优雅停机**（SIGTERM/SIGINT →
-拒新单、等在飞收尾、15s 超时收口；超时没跑完的任务下次启动续跑）。
+服务侧给到的另外三件事：任务落 SQLite（`AGENTIA_DB` 指定路径，缺省**工程根**下的
+`./agentia.db` —— 不是 cwd 相对，换工作目录启动不会静默换库）、**崩溃续跑**（重启后上次
+未完成的任务接着跑）、**优雅停机**（SIGTERM/SIGINT → 拒新单、等在飞收尾、15s 超时收口；
+超时没跑完的任务下次启动续跑）。
 
 **鉴权**：设了环境变量 `AGENTIA_TOKEN` 就启用 Bearer 校验（`Authorization: Bearer <token>`，
 `/healthz` 除外）；**不设则无任何鉴权**，启动时会打一条响亮警告 —— 此时只应监听
 回环 / 内网（或放到有鉴权的反代后面）。框架**不实现** token/JWT 策略，更复杂的
-鉴权自己改 `src/server.ts` 里的 `authenticate` 钩子。
+鉴权自己改 `src/main.ts` 里的 `authenticate` 钩子。
 
-环境变量：`PORT`（缺省 3000）· `AGENTIA_DB`（缺省 `./agentia.db`）· `AGENTIA_TOKEN`（可选）。
+环境变量：`PORT`（缺省 3000）· `AGENTIA_DB`（缺省工程根下的 `./agentia.db`）· `AGENTIA_TOKEN`（可选）。
 
-⚠️ **Node ≥ 22.5**：任务存储 `SqliteTaskStore` 用 `node:sqlite`，更低版本起服务时
-构造期会抛可读报错（`npm run dev` 与 `npm start` 不受影响 —— 它们不碰它）。
+⚠️ **Node ≥ 22.5**：任务存储 `SqliteTaskStore` 用 `node:sqlite`，更低版本起服务时**构造期**
+会抛可读报错。想让这个服务跑在 Node 18 上：把 `src/main.ts` 里那行换成 `FileTaskStore`
+（`@migor/agentia` 同样导出、同一套 API，代价是单写者前提）。`npm run dev` 与
+`npm run start:batch` 不碰它，它们的 Node 下限仍是 18。
+
+## 一次性任务（Job 形态）
+
+cron / CI / 容器里「跑一次就退出」的那种，用 `batch.ts`：
+
+```bash
+npm run build && npm run start:batch -- "你的问题"   # = node dist/batch.js <问题>
+```
+
+它没有端口、没有 `/healthz`、没有停机流程 —— 只跑一轮、打印结果、退出（失败置非零退出码）。
+
+## 更完整的生产配方
 
 要 metrics（`/metrics`）/ OTLP 导出 / Dockerfile / compose 编排，直接抄框架仓库的
 [`examples/deploy/`](https://github.com/retrychx/agentia/tree/main/examples/deploy)
-与 `docs/deployment.md` —— `src/server.ts` 是它的精简版，两者同一套 API。
+与 `docs/deployment.md` —— `src/main.ts` 是它的精简版，两者同一套 API；上线前的决定清单
+也在那份 `docs/deployment.md` 里。API 细节见本项目 `AGENTS.md` 的「触发与宿主」节。
 
 也可以用环境变量（适合 CI / 容器）——**真实环境变量优先，不会被 `.env` 覆盖**：
 

@@ -927,33 +927,53 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `examples/deploy/`、上线清单在 `docs/deployment.md`、API 见项目内 `AGENTS.md` 的「触发与宿主」节。
 - 只改文案，不改生成逻辑与脚本。CLI 套件 210/210 绿。
 
-### 脚手架生成可上线的服务入口（`start:server`）（2026-10-09 ④）
+### 脚手架默认入口 = 可上线的 HTTP 服务（`npm start`）（2026-10-09 ④）
 
 - **病例**：`agentia create` 生成的项目只有 **Job 形态**（`npm start` = 跑一次就退出的
   `main.ts`），而框架的交付承诺是「build 产物可以直接上线当服务」—— 上一版
   （2026-10-09 ③）只把 README 那句误导文案改诚实了，服务化仍要用户自己去
   `examples/deploy/` 抄配方再接线。
-- **形态**：脚手架**无条件**多生成一个 `src/server.ts`（不是 `--flag` —— 「能上线」是
-  默认交付物，不是选配）。它复用 `src/app.ts` 的 `createAgentApp()` 工厂（dev 环与生产
-  共享同一份装配，旁路会被 `templates.test.mjs` 的形状断言挡住），接上
-  `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`：`/healthz`、同步 `POST /run`
-  （含 SSE）、异步 `POST /tasks`、**崩溃续跑**（`resumePending`）、**优雅停机**
-  （SIGTERM/SIGINT → `drain({ timeoutMs: 15_000 })` → `server.close`，二次信号直接退出）。
-  配套：模板 `package.json` 加 `start:server` 脚本、`.gitignore` 加 `agentia.db*`、
-  README 加「作为服务运行」节、`create` 的后续步骤文案补一行；`docs/usage-guide.md`
-  §2.1 文件分工表加 `src/server.ts` 行。
+- **形态（对齐 NestJS 口径）**：`npm run build && npm start` 起来的就是**一个在监听的 HTTP
+  服务**。为此把两个入口调了个个儿 —— **`src/main.ts` = 服务**（NestJS 的 `main.ts` 就是那个
+  在 `listen` 的入口），原来的薄入口挪成 **`src/batch.ts`**（`npm run start:batch -- "你的问题"`）。
+  脚本表：`start` / `start:prod`（**同物**，显式生产名）/ `start:batch`；**不再有 `start:server`**
+  —— 它的角色被 `start` 吸收，留一个同物的旧名只会让人以为服务还有另一种起法。
+  决策记录（含「换骨 vs 换皮」「SQLite vs FileTaskStore」两个取舍）见
+  `docs/plans/2026-10-09-scaffold-default-service.md`。
+- **服务面**：`src/main.ts` 复用 `src/app.ts` 的 `createAgentApp()` 工厂（dev 环与生产共享
+  同一份装配，旁路会被 `templates.test.mjs` 的形状断言挡住），接上 `createHttpHandler` +
+  `AsyncRunner` + `SqliteTaskStore`：`/healthz`、同步 `POST /run`（含 SSE）、异步
+  `POST /tasks`、**崩溃续跑**（`resumePending`）、**优雅停机**（SIGTERM/SIGINT →
+  `drain({ timeoutMs: 15_000 })` → `server.close`，二次信号直接退出）。配套：模板
+  `package.json` / `.gitignore` / README 三节重写、`create` 的后续步骤文案、
+  `docs/usage-guide.md` §2.1 文件分工表两行。
 - **鉴权取舍**：可选，不强制 —— 设了 `AGENTIA_TOKEN` 就启用 Bearer 校验（`/healthz`
   除外）；**不设则启动时打一条响亮警告**（「HTTP 面无任何鉴权，仅应监听回环/内网」）。
   与 `examples/deploy` 同档：框架「鉴权只是缝」（策略是宿主/反代的事），patrol 那种
   强制模式对第一天的新工程太重。
+- **两处顺手修掉的静默**（评审实报，都不是新功能）：① `AGENTIA_DB` 的缺省从 **cwd 相对**
+  改成按本文件位置落**工程根** —— 服务形态常换工作目录启动（systemd / 容器 `-w`），
+  cwd 相对会让同一个工程用上两个库，而 `resumePending()` 静默找不到上一个进程的任务
+  （表面看像「任务丢了」）；② `PORT=`（空串）此前经 `Number('')` ⇒ `0` ⇒ **静默随机端口**，
+  现在显式当缺省，非整数 / 越界则响亮报错（⚠️ **不能**改成 `|| 3000` —— 那会把冒烟测试
+  依赖的 `PORT=0` 一起吃掉）。另把 `PORT` / `AGENTIA_DB` / `AGENTIA_TOKEN` 补进 `.env.example`
+  的变量清单。
 - **Node ≥ 22.5 边界如实标注**：`SqliteTaskStore` 用 `node:sqlite`，更低版本**起服务时**
-  构造期抛可读报错（框架对它延迟加载）；`npm run dev` 与 `npm start` 不受影响。
-  README 与 usage-guide 都写明这条。
-- **验证**：`templates.test.mjs` 加 server.ts 形状断言（从 `./app.js` 取工厂、不许旁路
-  `createApp`、AsyncRunner + createHttpHandler + drain + SIGTERM、缺省无 token 必须有
-  警告文案）；`scripts/e2e-cli.ts` 加一步真起 `node dist/server.js`（PORT=0、临时 DB、
-  假 Anthropic 端点）—— `/healthz` 200、无 token `POST /run` 401、带 token 真跑一轮
-  200、SIGTERM 干净退出。零 `src/` 框架改动。
+  构造期抛可读报错（框架对它延迟加载）。默认入口变成服务之后，这条从「只有 `start:server`
+  需要」变成「**脚手架默认路径就需要**」—— README、`docs/usage-guide.md` 与上线清单
+  `docs/deployment.md` §1 三处都写明，并给出 `FileTaskStore` 这条 Node 18 的退路（同一套
+  API，代价是单写者前提）。框架**库**的 `engines: >=18` 与 `import-floor` job **不变**
+  —— 抬起来的是脚手架默认路径的下限，不是包的下限。
+- **只影响新建工程**：脚手架是**生成物**（`agentia create` 的那一刻写出去），
+  已生成的工程有自己的 `package.json` / `src/`，不会被这一版动到 ⇒ **既有使用者不需要任何动作**
+  （不构成破坏性变更）。
+- **验证**：`templates.test.mjs` 的服务面形状断言改钉 `main.ts`（从 `./app.js` 取工厂、不许
+  旁路 `createApp`、AsyncRunner + createHttpHandler + SqliteTaskStore + resumePending +
+  `drain({` + SIGTERM、缺省无 token 必须有警告文案），原 `main.ts` 那两条**平移**到 `batch.ts`
+  （薄入口 + `result.error` 非零退出）；`scripts/e2e-cli.ts` 一步真起 `node dist/main.js`
+  （PORT=0、临时 DB、假 Anthropic 端点）—— `/healthz` 200、无 token `POST /run` 401、
+  带 token 真跑一轮 200、SIGTERM 干净退出，另一条从**两个 cwd** 真跑 `dist/batch.js`。
+  零 `src/` 框架改动。
 
 ## [0.9.5] - 2026-09-29
 

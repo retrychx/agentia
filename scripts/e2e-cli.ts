@@ -78,11 +78,12 @@ try {
   for (const f of [
     'package.json',
     'tsconfig.json',
-    // 装配（app.ts）与启动（main.ts）分离：dev 环要复用 app.ts 的工厂
+    // 装配（app.ts）与启动分离：dev 环要复用 app.ts 的工厂
     'src/app.ts',
+    // 默认入口 = 服务（无条件生成）：build 之后 `npm start` 即得可上线的 HTTP 服务
     'src/main.ts',
-    // 服务入口（无条件生成）：build 之后 `npm run start:server` 即得可上线的 HTTP 服务
-    'src/server.ts',
+    // 一次性入口（Job 形态）：`npm run start:batch -- "你的问题"`
+    'src/batch.ts',
     'src/dev.config.ts',
     'src/session-store.ts',
     'src/registry.ts',
@@ -112,19 +113,22 @@ try {
   // 结果被同文件注释里的那句说明满足了 —— 把调用删掉门禁照样绿（反向验证抓到的假绿）。
   // 这一条是语法层面的（要知道它真能被读到，见下面 4b 的行为验证）。
   //
-  // ⚠️ 位置是 app.ts，不是 main.ts（2026-09-22 修）：装配/启动拆开后 dev 环只 import app.ts、
-  // **从不执行 main.ts**，所以读 .env 必须在装配模块里。这条断言原先指着 main.ts ——
+  // ⚠️ 位置是 app.ts，不是入口（2026-09-22 修）：装配/启动拆开后 dev 环只 import app.ts、
+  // **从不执行入口**，所以读 .env 必须在装配模块里。这条断言原先指着当时的那个入口 ——
   // 于是 `npm run dev` 静默读不到 .env 而 `npm start` 读得到，一路绿到真跑探针才发现。
+  // 2026-10-09 起入口有**两个**（main.ts = 服务、batch.ts = 一次性），两个都要查。
   const appSrc = readFileSync(join(proj, 'src/app.ts'), 'utf8');
   assert(
     /^loadEnvFile\(\);$/m.test(appSrc),
     'src/app.ts 里应有独立的 `loadEnvFile();` 调用（否则生成的 .env 形同废纸，且 npm run dev 读不到它）',
   );
-  const mainSrc = readFileSync(join(proj, 'src/main.ts'), 'utf8');
-  assert(
-    !/^loadEnvFile\(\);$/m.test(mainSrc),
-    'src/main.ts 不该再调 loadEnvFile —— dev 环不执行它，放这儿等于两个入口两个行为',
-  );
+  for (const entry of ['src/main.ts', 'src/batch.ts']) {
+    const entrySrc = readFileSync(join(proj, entry), 'utf8');
+    assert(
+      !/^loadEnvFile\(\);$/m.test(entrySrc),
+      `${entry} 不该再调 loadEnvFile —— dev 环不执行入口，放这儿等于两个入口两个行为`,
+    );
+  }
   // tsconfig 必须只 include 'src' —— 能力目录/注册表全在 src 下，一个 include 全覆盖。
   // 曾经是 ['src', 'capabilities.ts'] 却漏掉能力目录本身 → 未登记的能力静默不参与类型检查。
   const tsconfig = JSON.parse(readFileSync(join(proj, 'tsconfig.json'), 'utf8'));
@@ -271,9 +275,10 @@ try {
   // 测试**不再复刻**这三步：脚本内容变了（换编译器 / 加一步 / 改 tsconfig），这里跟着变。
   npmRun('build', proj);
   for (const f of [
+    // 默认入口（服务）的产物 —— 下面 4f 真起它
     'dist/main.js',
-    // 服务入口的产物 —— start:server 的承诺（下面 4f 真起它）
-    'dist/server.js',
+    // 一次性入口的产物 —— 下面 4e 真跑它（两种 cwd 各一次）
+    'dist/batch.js',
     // 装配搬进 app.ts 之后，生产路径也依赖它 —— 少一个产物 `node dist/main.js` 立刻 MODULE_NOT_FOUND
     'dist/app.js',
     'dist/session-store.js',
@@ -286,7 +291,7 @@ try {
   const scaffoldPkg = JSON.parse(readFileSync(join(proj, 'package.json'), 'utf8')) as {
     scripts: Record<string, string>;
   };
-  for (const s of ['dev', 'build', 'start', 'start:server', 'typecheck']) {
+  for (const s of ['dev', 'build', 'start', 'start:prod', 'start:batch', 'typecheck']) {
     assert(typeof scaffoldPkg.scripts[s] === 'string', `脚手架 package.json 缺 scripts.${s}`);
   }
   // 构建**必须先清 dist**：tsc 不删不再产出的文件，而生产入口是按本文件位置 discover
@@ -395,13 +400,13 @@ try {
   delete fakeEnv.ANTHROPIC_AUTH_TOKEN; // 环境里可能有真实凭据，别让它盖过假端点
   try {
     for (const [label, cwd, entry] of [
-      ['从工程根', proj, 'dist/main.js'],
-      ['从无关目录（cwd 无关性）', repoRoot, join(proj, 'dist', 'main.js')],
+      ['从工程根', proj, 'dist/batch.js'],
+      ['从无关目录（cwd 无关性）', repoRoot, join(proj, 'dist', 'batch.js')],
     ] as const) {
       const r = await runChild(process.execPath, [entry, '生产路径冒烟'], { cwd, env: fakeEnv });
       assert(
         r.status === 0,
-        `${label} 跑 dist/main.js 应退出 0\n  stdout=${r.stdout}\n  stderr=${r.stderr}`,
+        `${label} 跑 dist/batch.js 应退出 0\n  stdout=${r.stdout}\n  stderr=${r.stderr}`,
       );
       assert(
         r.stdout.includes('PROD_OK'),
@@ -416,13 +421,13 @@ try {
       );
     }
 
-    // —— 4f) 服务入口【真起一遍】：`node dist/server.js` 是「build 产物可以直接上线」
-    //    的那条承诺 —— 就绪标记（PORT=0 由 OS 分配，从 `[server] listening on :<port>`
-    //    解析实际端口）→ /healthz 200 → 无 token POST /run 401 → 带 token 真跑一轮
-    //    200 → SIGTERM 干净退出。就绪标记的文案与模板的 server.ts 互为锚点
-    //    （模板头注也钉着这条）。假端点还开着，模型侧零网络。
+    // —— 4f) 默认入口（服务）【真起一遍】：`npm start` 跑的就是 `node dist/main.js` ——
+    //    「build 产物 run 起来就能用」那条承诺的正身 —— 就绪标记（PORT=0 由 OS 分配，
+    //    从 `[server] listening on :<port>` 解析实际端口）→ /healthz 200 → 无 token
+    //    POST /run 401 → 带 token 真跑一轮 200 → SIGTERM 干净退出。就绪标记的文案与模板的
+    //    main.ts 互为锚点（模板头注也钉着这条）。假端点还开着，模型侧零网络。
     const e2eToken = 'e2e-token-0123456789';
-    const srv = spawn(process.execPath, ['dist/server.js'], {
+    const srv = spawn(process.execPath, ['dist/main.js'], {
       cwd: proj,
       env: {
         ...fakeEnv,
@@ -684,8 +689,8 @@ try {
     });
     for (const rel of [
       'src/app.ts', // 装配工厂（dev 环的入口）
-      'src/main.ts', // 启动薄入口
-      'src/server.ts', // 服务入口（start:server）
+      'src/main.ts', // 默认入口：HTTP 服务（npm start）
+      'src/batch.ts', // 一次性入口（npm run start:batch）
       'src/dev.config.ts', // 开发期数据声明
       'src/session-store.ts', // 多轮的会话后端
       'src/tools/hello/index.ts',
