@@ -42,11 +42,45 @@ const binding = resolveModel();
  * （exception 桶）。⇒ 这两者必须落进同一个桶，否则同一个「预算用光」
  * 在榜上是两种命运（一个 exception、一个 reward=0）。
  *
- * ⚠️ **刻意不含 `'error'`**：模型调到一半报错确实也可疑，但本轮没有病例
- * （唯一观测到的 `stop=error` 是 0 token，已被下一条守卫接住），
- * 按本仓「先有病例再有设备」的规矩不预先扩。
+ * ⚠️ **刻意不含 `'error'`**：`stop=error` 不按收尾原因一刀切 —— 它底下分两种，
+ * 「基础设施故障」（429 重试耗尽 / 5xx / 超时 / 连接断 / 上下文超长 400）与
+ * 「真能力失败」（请求构造错等 api 4xx），分开判（见 `INFRA_ERROR_TYPES` 与
+ * 文件末尾的 exit 4 守卫）。
  */
 const HARNESS_STOP_REASONS = new Set(['max_iterations', 'budget_exceeded']);
+
+/**
+ * **基础设施类错误**（与「模型会不会做」无关的运行环境故障）。
+ *
+ * 判据写在框架自己的分类表上：`src/engine/errors.ts` 里这四类 **retryable 全是 true**，
+ * 而引擎已经替我们重试过（缺省 3 次，指数退避，见 `src/engine/retry.ts`）——
+ * 重试耗尽还落到 `stop=error`，说明是**持续故障**（限流窗口没过 / 端点在抖 / 网络断），
+ * 不是模型答错。Terminal-Bench 只读 reward.txt ⇒ 不拦的话它们全落进「完成」桶的 reward 0，
+ * 与「模型不会做」无从区分（与坑 5 / 坑 6.1 同一形状，只是把失败时刻从「0 token」
+ * 推到了「跑到一半」）。
+ */
+const INFRA_ERROR_TYPES = new Set(['rate_limit', 'server', 'timeout', 'connection']);
+
+/**
+ * `api` 类（4xx）里**唯一**算基础设施的子类：上下文超长。
+ * 框架缺省**不裁剪**长上下文（trimming 要显式开），而本适配器不能擅自开 ——
+ * 裁掉的内容可能就是任务要的。所以 400 里 message 命中「上下文装不下」的，
+ * 量的是**适配器配置**，不是能力；其余 api 4xx（请求构造错等）仍是真能力失败。
+ *
+ * ⚠️ 判据只能认消息文本（`OpenAI 请求失败 400: <body 前 200 字符>`，body 进了 message），
+ * 模式取各家端点的稳定措辞：Anthropic「prompt is too long」、OpenAI/DeepSeek
+ * 「context length / maximum context」、通用「request too large / reduce the length」。
+ * 宁可漏（落回 reward 0，保守方向）不可错杀（把真答错抬出分母）。
+ */
+const CONTEXT_OVERFLOW_MESSAGE =
+  /prompt is too long|context[ _-]?length|context[ _-]?window|maximum context|too many tokens|request too large|reduce the length/i;
+
+/** `stop=error` 的 error 是否属于基础设施故障（⇒ exception 桶，不算 agent 的 0 分） */
+function isInfraError(error: { type: string; message: string } | undefined): boolean {
+  if (!error) return false;
+  if (INFRA_ERROR_TYPES.has(error.type)) return true;
+  return error.type === 'api' && CONTEXT_OVERFLOW_MESSAGE.test(error.message);
+}
 
 /**
  * 循环上限缺省。⚠️ 不能吃框架缺省（40）：Terminal-Bench 的任务是**长程**的。
@@ -185,6 +219,8 @@ const status = {
   completion_tokens: atif.final_metrics?.total_completion_tokens ?? 0,
   cost_usd: atif.final_metrics?.total_cost_usd ?? 0,
   truncated_by_harness: HARNESS_STOP_REASONS.has(result.stopReason),
+  /** stop=error 且属基础设施故障（见 isInfraError）⇒ 走 exit 4，不落「完成」桶 */
+  infra_error: result.stopReason === 'error' && isInfraError(result.error),
 };
 await writeFile(STATUS_OUT, `${JSON.stringify(status, null, 2)}\n`);
 // 必须收尾：长驻 bash 会让 node 的事件循环不空 ⇒ 进程不退出 ⇒ trial 挂到超时。
@@ -270,5 +306,35 @@ if (HARNESS_STOP_REASONS.has(result.stopReason)) {
     );
   });
   process.exit(3);
+}
+
+/**
+ * ⚠️ 第三个例外：**`stop=error` 且是基础设施故障，也不算 agent 的 0 分**（2026-10-09 新增）。
+ *
+ * 前两条守卫各管一个端点：零 token 管「一次都没调成」（exit 2），预算掐断管「被自己的
+ * 旋钮停住」（exit 3）。中间那块原来是个洞：**跑了一半、tokens > 0、然后撞上持续故障**
+ * —— 429 把重试耗尽、端点 5xx、连接断、或者上下文超长 400（框架缺省不裁剪，见
+ * `CONTEXT_OVERFLOW_MESSAGE`）—— 旧代码一路走到 `process.exit(0)`，Harbor 照常跑验证器
+ * 记 reward=0，落进「完成」桶，与「模型答错」无从区分。200→500 的循环上限提升
+ * 放大了暴露面（跑得更久 ⇒ 撞上故障窗口的概率更高）。
+ *
+ * 判据（`isInfraError`）：四类 retryable 错误（引擎已重试过还失败 = 持续故障）+
+ * api 类里的上下文超长。**真能力失败不收**（api 4xx 里的请求构造错等）——
+ * 那些照常 exit 0、进 reward 0 桶。宁可漏抬（保守方向），不可错抬。
+ *
+ * ⚠️ 顺序有语义：这条必须排在零 token 守卫**之后** —— 全程没调成的纯故障 run
+ * （tokens=0）仍走 exit 2 那条更老的口径，不变。
+ */
+if (result.stopReason === 'error' && isInfraError(result.error)) {
+  await new Promise<void>((resolve) => {
+    process.stderr.write(
+      `[agentia] 模型调用撞上持续基础设施故障：stop=error error=${result.error?.type} ` +
+        `steps=${atif.steps.length} message=${result.error?.message.slice(0, 160) ?? ''}。` +
+        '这属于基础设施异常（重试已耗尽 / 上下文装不下），不是 agent 的 0 分 ⇒ ' +
+        '主动非零退出，让 Harbor 记成 exception。\n',
+      () => resolve(),
+    );
+  });
+  process.exit(4);
 }
 process.exit(0);

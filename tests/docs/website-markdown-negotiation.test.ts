@@ -168,6 +168,18 @@ describe('官网内容协商：_worker.js', () => {
     assert.deepEqual(calls, [], '规范化没做，反而去协商了 markdown');
   });
 
+  it('/en/ 的 308 保留 query 与 hash（与 Base.astro 检测脚本的跳转同口径）', async () => {
+    const { env, calls } = fakeEnv(() => ok('text/html'));
+    const res = await worker.fetch(get('/en/?from=x#frag'), env);
+    assert.equal(res.status, 308);
+    assert.equal(
+      res.headers.get('location'),
+      'https://agentia-web.pages.dev/en?from=x#frag',
+      '308 丢了 query/hash —— Base.astro 的检测脚本跳转是带上它们的，两边口径必须一致',
+    );
+    assert.deepEqual(calls, [], '/en/ 是我们的规则负责的，不该再去问静态资产');
+  });
+
   it('/en（无尾斜杠）不拦：它是英文首页本体，必须原样透传', async () => {
     const html = ok('text/html; charset=utf-8', '<html>en</html>');
     const { env, calls } = fakeEnv(() => html);

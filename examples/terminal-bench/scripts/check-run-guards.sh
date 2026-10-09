@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 #
-# 离线检查 `src/run.ts` 的**两条守卫**（不需要 Docker、不需要真模型、不花钱）。
+# 离线检查 `src/run.ts` 的**三条守卫**（不需要 Docker、不需要真模型、不花钱）。
 #
-# 为什么值得单独一个脚本：这两条守卫的失败模式恰恰是「**悄悄不生效**」——
-# 它们各自对应一种「看着像 agent 答错的 0 分」（见 README §六 坑 5 / 坑 6.1）。
+# 为什么值得单独一个脚本：这三条守卫的失败模式恰恰是「**悄悄不生效**」——
+# 它们各自对应一种「看着像 agent 答错的 0 分」（见 README §六 坑 5 / 坑 6.1 / 坑 6.2）。
 # 守卫要是哪天哑了，`reward.txt` 上一切照旧，没有任何东西会红。
 # 而端到端验证一次真容器要几十分钟 + 几美元 ⇒ 没人会为了改一行守卫去跑它。
-# 这里用**假端点**把三种收尾造出来，几十秒跑完，断言的是**进程退出码**。
+# 这里用**假端点**把五种收尾造出来，几十秒跑完，断言的是**进程退出码**。
 #
-# 三条断言的判据（都是「退出码」这种不会被伪装的东西）：
-#   撞循环上限  ⇒ exit 3，stderr 有「掐断」字样，sidecar 的 truncated_by_harness = true
-#   正常收尾    ⇒ exit 0，stderr 空，sidecar 的 truncated_by_harness = false
-#   零 token    ⇒ exit 2（第一条守卫，**不能被新守卫遮住**）
+# 五条断言的判据（都是「退出码」这种不会被伪装的东西）：
+#   撞循环上限      ⇒ exit 3，stderr 有「掐断」字样，sidecar 的 truncated_by_harness = true
+#   正常收尾        ⇒ exit 0，stderr 空，sidecar 的 truncated_by_harness = false
+#   零 token        ⇒ exit 2（第一条守卫，**不能被新守卫遮住**）
+#   持续 5xx        ⇒ exit 4，sidecar 的 infra_error = true（tokens > 0 ⇒ 零 token 守卫接不住）
+#   上下文超长 400  ⇒ exit 4，infra_error = true（api 类里**唯一**算基础设施的子类）
 #
 # 用法：npm run check:guards   （或 bash scripts/check-run-guards.sh）
 set -uo pipefail
@@ -61,9 +63,10 @@ run_case() { # $1=mode $2=maxIterations $3=期望退出码 $4=期望 truncated_b
   kill "$stub_pid" 2>/dev/null
   wait "$stub_pid" 2>/dev/null || true   # 不等一下的话，bash 会把 TERM 当作业状态打到 stderr
 
-  local got_cut got_stop
+  local got_cut got_stop got_infra
   got_cut="$("$NODE" -e "try{const s=require('$work/logs/agent/agentia-run-status.json');process.stdout.write(String(s.truncated_by_harness))}catch{process.stdout.write('MISSING')}")"
   got_stop="$("$NODE" -e "try{const s=require('$work/logs/agent/agentia-run-status.json');process.stdout.write(s.stop_reason)}catch{process.stdout.write('MISSING')}")"
+  got_infra="$("$NODE" -e "try{const s=require('$work/logs/agent/agentia-run-status.json');process.stdout.write(String(s.infra_error))}catch{process.stdout.write('MISSING')}")"
 
   local label="MODE=$mode MAX_ITERATIONS=$maxiter"
   # ⚠️ 变量后面紧跟中文标点时必须写 `${x}`：`$x，` 会被 bash 当成一个变量名（实测 unbound variable）。
@@ -79,6 +82,17 @@ run_case() { # $1=mode $2=maxIterations $3=期望退出码 $4=期望 truncated_b
     echo "      ✗ exit 3 但 stderr 里没有说明文字（exception_info 里就看不到原因了）"
     FAIL=1
   fi
+  # 基础设施守卫同样要留痕，且 sidecar 的 infra_error 必须置真
+  if [ "$want_rc" = "4" ]; then
+    grep -q "基础设施" "$work/stderr.txt" || {
+      echo "      ✗ exit 4 但 stderr 里没有说明文字：$(cat "$work/stderr.txt")"
+      FAIL=1
+    }
+    [ "$got_infra" = "true" ] || {
+      echo "      ✗ exit 4 但 sidecar 的 infra_error=${got_infra}（期望 true）"
+      FAIL=1
+    }
+  fi
   [ "$want_rc" = "0" ] && [ -s "$work/stderr.txt" ] && {
     echo "      ✗ 正常收尾不应往 stderr 写东西：$(cat "$work/stderr.txt")"
     FAIL=1
@@ -91,9 +105,11 @@ echo "== run.ts 守卫自检（假端点，不花钱）=="
 run_case tool 1 3 true || FAIL=1
 run_case text 5 0 false || FAIL=1
 run_case zero 5 2 false || FAIL=1
+run_case flaky500 50 4 false || FAIL=1
+run_case ctx400 50 4 false || FAIL=1
 
 if [ "$FAIL" != "0" ]; then
   echo "== 有断言没通过 =="
   exit 1
 fi
-echo "== 3/3 通过 =="
+echo "== 5/5 通过 =="

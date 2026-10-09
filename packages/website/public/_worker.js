@@ -88,13 +88,20 @@ export default {
       const url = new URL(request.url);
       // 见边界 ④：英文首页的产物是扁平的 en.html ⇒ 把目录形态收敛到它
       if (url.pathname === '/en/') {
+        // query 与 hash 必须带过 308：Base.astro 的检测脚本跳转就保留了它们
+        // （location.replace(target + location.search + location.hash)），两边口径必须一致 ——
+        // 丢掉的话 /en/?from=x 这类带参入口会被剥光参数。
+        // （hash 本来到不了服务器，但 Request/测试里的 URL 可以带它，口径上一起保。）
+        const target = new URL('/en', url);
+        target.search = url.search;
+        target.hash = url.hash;
         // 显式构造而不是 `Response.redirect()`：后者只给一个 `location` 头、
         // 不带任何 cache 头（实测 Node 与 workerd 都是 `[['location', …]]`）——
         // 那正好是 AFDocs 的 cache-header-hygiene 说的「missing cache headers」形态。
         return new Response(null, {
           status: 308,
           headers: {
-            location: new URL('/en', url).href,
+            location: target.href,
             // 取值与站内其余响应**同一档**（不是为这条特殊挑的）：全站统一成
             // 「可 revalidate」比给一条 308 单独调一个 max-age 更好推理；
             // 长 max-age 也不是选项 —— 这条规则将来若改形态，访客不该被钉在旧跳转上。

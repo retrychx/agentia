@@ -72,6 +72,28 @@ const TIMER_MS = Number(process.env.SOAK_SUSPEND_TIMER_MS ?? 400);
 const PER_ROUND = CONCURRENCY * 4;
 /** 一批任务从提交到终态的预算；超了就是红（「不收敛」必须响，不能等下一轮） */
 const SETTLE_BUDGET_MS = Math.max(20_000, Math.round(DURATION_MS / 3));
+/** 每条 signal 臂在驱动循环里顺序做的 waitAll 个数（「信号续跑后再挂起」+「重复投递后再挂起」），
+ *  各吃一份 SETTLE 预算 —— 看门狗余量按它派生 */
+const SIGNAL_WAITS_PER_ARM = 2;
+/** 每臂驱动动作的固定开销上限（poll / approve / trySignal 都是本地 SQLite 读写，给个保守值） */
+const PER_ARM_OVERHEAD_MS = 250;
+/** 看门狗给收尾段（汇总 + 断言 + 关端）的固定 buffer */
+const WATCHDOG_BUFFER_MS = 15_000;
+/** main 跑完后看门狗的最后宽限：到点进程还没退 ⇒ 有别的句柄把它吊住了（断言 ⑧ 的那一格） */
+const WATCHDOG_FINAL_GRACE_MS = 10_000;
+
+/**
+ * 一轮的最坏耗时预算 = 进入挂起 SETTLE + 每臂驱动开销（signal 臂再多 SIGNAL_WAITS_PER_ARM 个
+ * SETTLE）+ 宿主 tick + 到达终态 SETTLE + buffer。每一项都指得回循环里一个真实的预算来源
+ * （每个会慢的调用都各自带预算、超时自己先红），所以一轮总耗时越过这个派生上限，
+ * 只可能是**预算外**的东西把进程吊住了。
+ */
+const roundBudgetMs = (signalCount: number): number =>
+  2 * SETTLE_BUDGET_MS +
+  PER_ROUND * PER_ARM_OVERHEAD_MS +
+  signalCount * SIGNAL_WAITS_PER_ARM * SETTLE_BUDGET_MS +
+  (TIMER_MS + APPROVAL_TIMEOUT_MS + 50) +
+  WATCHDOG_BUFFER_MS;
 
 assert.ok(DURATION_MS >= 5_000, 'SOAK_SUSPEND_DURATION_MS 太短得不出任何结论（≥ 5s）');
 assert.ok(CONCURRENCY >= 1 && CONCURRENCY <= 64, 'SOAK_SUSPEND_CONCURRENCY 应在 1..64');
@@ -395,15 +417,35 @@ async function main(): Promise<void> {
     maxQueued: 0,
   });
 
-  // 看门狗：断言结束后进程若被活着的句柄吊住，打出来再死 —— 「没退出」本身是一条失败
-  const watchdog = setTimeout(() => {
-    console.error('\n✖ soak-suspend 结束后进程未退出（句柄泄漏）。活跃句柄：');
+  // 看门狗（断言 ⑧）：到点还没收尾 ⇒ 打出来再死 —— 「没退出」本身是一条失败。
+  // ⚠️ 余量从**真实预算**派生，不再写死 `DURATION_MS + 30s`：循环只在轮首看表，endAt 之后
+  //    还会把最后一轮跑完，而一轮的合法收尾可以吃掉「进入挂起 + 每条 signal 臂两个 + 到达终态」
+  //    的全部 SETTLE 预算 —— 45 分钟档（SETTLE = 15min）一轮合法但缓慢的收尾就能越过 30s
+  //    余量，健康跑被判成「句柄泄漏」，诊断还指错方向。改为每轮按**这一批的真实臂构成**
+  //    重上膛（signal 臂数决定本轮 waitAll 预算的个数），每微秒都指得回一个真实预算。
+  // ⚠️ unref：看门狗**自己**不许成为吊住进程的那个句柄 —— 这样 main 跑完后也不必撤掉它：
+  //    若还有别的句柄把进程吊住，最后那档（WATCHDOG_FINAL_GRACE_MS）到点照样响
+  //    （旧实现收尾时 clearTimeout，「断言完还有句柄吊着」这一格其实永远没人报）。
+  const reportStuck = (): void => {
+    console.error(
+      '\n✖ soak-suspend 越过本轮预算仍未收敛 / 结束后进程未退出（预算外挂起，多半是句柄泄漏）。活跃句柄：',
+    );
     const handles = (
       process as unknown as { _getActiveHandles?: () => unknown[] }
     )._getActiveHandles?.();
     console.error(`  ${handles?.length ?? '?'} 个`);
     process.exit(1);
-  }, DURATION_MS + 30_000);
+  };
+  let watchdog: NodeJS.Timeout | undefined;
+  /** 重上膛：进入新一轮 / 进入收尾时按该阶段的真实预算重算期限 */
+  const armWatchdog = (budgetMs: number): void => {
+    if (watchdog !== undefined) clearTimeout(watchdog);
+    const t = setTimeout(reportStuck, budgetMs);
+    t.unref();
+    watchdog = t;
+  };
+  // 装配与首批建批期间的上膛：臂构成还没数出来，按最坏构成（全 signal）给
+  armWatchdog(roundBudgetMs(PER_ROUND));
 
   // 采样间隔随时长缩放：任何时长都攒够内存断言所需的样本量 ——
   // 「采样不足就跳过断言」= 静默跳过 = 假装验过（第八轮复审抓到的自家病灶）。
@@ -416,6 +458,20 @@ async function main(): Promise<void> {
 
   /** 每条任务**第一次**被观察到的 runId（= 挂起那段）—— 跨段判定与 trace link 对账的基准 */
   const firstRunIds = new Map<string, string>();
+  /** 每条任务**最近两次**观察到的 runId：恢复段根 span 的 link 指向的是**上一段**的 runId
+   *  （`async.ts` 续跑时注入 `traceContext: { traceId: rec.runId }`；signal 臂有三段 ⇒
+   *  目标不一定是第一段），所以 ⑦ 的指向校验要拿「终态之前最后一次观察到的 runId」对，
+   *  不按 first 对。本驱动的每次 dispatch（approve / signalTask / resumePending）都被
+   *  poll 夹着，逐段都能被观察到 —— 「漏看一段 ⇒ prev 失准」在本驱动结构下不成立。 */
+  const lastRunIds = new Map<string, string>();
+  const prevRunIds = new Map<string, string>();
+  const noteRunId = (taskId: string, runId: string | undefined): void => {
+    if (runId === undefined) return;
+    const cur = lastRunIds.get(taskId);
+    if (cur === runId) return;
+    if (cur !== undefined) prevRunIds.set(taskId, cur);
+    lastRunIds.set(taskId, runId);
+  };
   /** 每轮的「挂起记录字节数 / 挂起任务数」（记录**逻辑**体积的线性口径） */
   const bytesPerSuspended: number[] = [];
   /** 每轮的 DB 文件字节数 + 当时的累计任务数 ⇒ 「字节/任务」是**线性**口径（长档短档可比） */
@@ -461,6 +517,9 @@ async function main(): Promise<void> {
       submittedCount++;
     }
 
+    // 看门狗按**这一批**的真实臂构成重上膛（signal 臂数决定本轮 waitAll 预算的个数）
+    armWatchdog(roundBudgetMs(batch.reduce((n, b) => n + (b.arm === 'signal' ? 1 : 0), 0)));
+
     // 1) 等这一批「挂起来」（或已经跑到终态）—— 挂起的判据是落库后的状态，不是内存标记
     await waitAll(
       runner,
@@ -471,6 +530,7 @@ async function main(): Promise<void> {
     );
     for (const b of batch) {
       const rec = await runner.poll(b.taskId);
+      noteRunId(b.taskId, rec?.runId);
       if (rec?.runId !== undefined && !firstRunIds.has(b.taskId))
         firstRunIds.set(b.taskId, rec.runId);
     }
@@ -503,6 +563,7 @@ async function main(): Promise<void> {
     //    「当前状态为 running」直接冒到顶层）。**契约是对的，是驱动的假设太强。**
     for (const b of batch) {
       const rec = await runner.poll(b.taskId);
+      noteRunId(b.taskId, rec?.runId);
       if (rec?.status !== 'suspended') {
         // 我自己还没动手，它就已经被惰性判定推走了（窗口太短 / 驱动太慢）——
         // **数出来**，别静默 continue：这是本档最容易骗自己的地方（臂一次都没落地，
@@ -544,6 +605,7 @@ async function main(): Promise<void> {
         //    因为拒它的是状态。**守卫测的东西 ≠ 它想测的东西**，这一档自己先犯了一次。
         //    幂等闸的真身是「重试一条已经投过的事件」（真实场景：客户端重试 / 双写）。
         const beforeDup = await runner.poll(b.taskId);
+        noteRunId(b.taskId, beforeDup?.runId);
         if (beforeDup?.status === 'suspended') {
           dupAttempted++;
           const again = await trySignal(runner, b.taskId, event);
@@ -563,6 +625,7 @@ async function main(): Promise<void> {
           '重复投递后再挂起',
         );
         const after = await runner.poll(b.taskId);
+        noteRunId(b.taskId, after?.runId);
         if (after?.status === 'suspended') {
           approvalsSent++;
           try {
@@ -597,6 +660,7 @@ async function main(): Promise<void> {
     );
     for (const b of batch) {
       const rec = await runner.poll(b.taskId);
+      noteRunId(b.taskId, rec?.runId);
       assert.ok(rec, `任务 ${b.taskId}（${b.arm} 臂）提交后再也查不到`);
       assert.ok(isTerminal(rec.status), `任务 ${b.taskId}（${b.arm} 臂）没到终态：${rec.status}`);
       reconciled++;
@@ -628,13 +692,18 @@ async function main(): Promise<void> {
       const first = firstRunIds.get(b.taskId);
       if (first !== undefined && rec.runId !== undefined && rec.runId !== first) {
         multiSegment++;
-        if ((root.links?.length ?? 0) > 0) linked++;
+        // ⑦ 不只要「有 link」，还要**指对**：终态段根 span 的 link 必须指向**上一段**的 runId
+        //    （traceId == runId，见 src/core/trace.ts 头注与 async.ts 的 traceContext 注入；
+        //    只查 links 非空的话，指向任何错误目标 —— 甚至指向自己 —— 都算过，断链照样绿）。
+        const prev = prevRunIds.get(b.taskId);
+        if (prev !== undefined && (root.links ?? []).some((l) => l.traceId === prev)) linked++;
       }
     }
   }
 
   // 收尾：最后一批已在循环里对过账，这里只剩**读数**确认（不再全表扫）。
   clearInterval(sampler);
+  armWatchdog(WATCHDOG_BUFFER_MS);
   await provider.close();
   const dbFinal = statSync(dbFile).size;
 
@@ -742,6 +811,14 @@ async function main(): Promise<void> {
     signalOk > 0,
     `信号臂一次都没**投进去**（投递 ${signalsSent} 次全是状态竞态）—— ③ 的 signal 侧在空转`,
   );
+  // 与 signalOk 对称的 approve 侧闸：至少一次人工批**落地**（按落地的决定数，不按「发过几次
+  // approve」—— 与 ② 的对账口径一致）。没有它，微档（如 5s×1 并发）下 approve 臂全部竞态
+  // 推走也能过：竞态上限有 max(10, …) 的地板拦不住，danger=0=humanApproved=0 空转全绿。
+  assert.ok(
+    humanApproved > 0,
+    `人工批一次都没**落地**（approve 发出 ${approvalsSent} 次，全被惰性兜底推走 / 撞状态竞态）—— ` +
+      '③ 的 approve 侧在空转，② 的 danger 对账恒真。处置同 ⑨：调大 SOAK_SUSPEND_APPROVAL_TIMEOUT_MS',
+  );
   assert.equal(
     provider.stats.noArm,
     0,
@@ -828,7 +905,8 @@ async function main(): Promise<void> {
     `heapUsed 热身后仍增长 ${mb(tailAvg - headAvg)}（${mb(headAvg)} → ${mb(tailAvg)}）—— 疑似泄漏`,
   );
 
-  // ⑦ 跨段就必须 link：恢复段 trace 经 `link` 挂到挂起段 ——
+  // ⑦ 跨段就必须 link、且 link 必须**指对**（循环里逐条核过「指向上一段 runId」才计入 linked）：
+  //    恢复段 trace 经 `link` 挂到上一段 ——
   //    挂起/恢复不许把 trace 记账绕过去（「每次 run 产出可观测调用树」是框架的对外承诺）。
   //    判据用**观察到的**第一段 runId 与终态 runId 比对（在循环里逐条数的），不按臂名猜 ——
   //    臂名与段数的对应是实现细节，写死会让断言在实现优化后变成假红。
@@ -842,7 +920,9 @@ async function main(): Promise<void> {
     `跨段任务只有 ${linked}/${multiSegment} 条的恢复段 trace 挂上了上一段（link 断了 = 调用树断成两棵）`,
   );
 
-  clearTimeout(watchdog);
+  // 不撤看门狗，换最后一档短宽限：它 unref 过、自己吊不住进程；main 返回后进程若没退，
+  // 到点它照样响 —— ⑧ 要抓的「断言完还有句柄吊着」正是这一档（撤掉就永远没人报了）。
+  armWatchdog(WATCHDOG_FINAL_GRACE_MS);
   // 跑绿了才清掉临时库；红了留着 —— 那正是唯一能用来复盘的东西（路径会打在报错里）
   rmSync(dbDir, { recursive: true, force: true });
   console.log(

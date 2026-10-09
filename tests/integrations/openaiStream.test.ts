@@ -79,6 +79,35 @@ describe('OpenAI 适配器：真流式（C3）', () => {
     assert.equal(msg.usage.cache_read_input_tokens, 0);
   });
 
+  it('DeepSeek 缓存计量（流式）：prompt_cache_hit_tokens → cache_read，且从 input_tokens 拆出不双计', async () => {
+    // DeepSeek 口径：prompt_tokens = hit + miss（hit 已含在 prompt_tokens 里）。
+    // 命中部分若不从 input_tokens 拆出，costEstimate 会把它计两次（全价 in + 0.1× cache_read）。
+    const body = sseBody([
+      { id: 'c1', choices: [{ delta: { content: 'x' } }] },
+      { choices: [{ finish_reason: 'stop', delta: {} }] },
+      {
+        choices: [],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 7,
+          prompt_cache_hit_tokens: 800,
+          prompt_cache_miss_tokens: 200,
+        },
+      },
+      '[DONE]',
+    ]);
+    const { fetchImpl } = sseFetch(body);
+    const msg = await createOpenAIClient({ fetchImpl }).messages.stream(BASE).finalMessage();
+    assert.equal(msg.usage.cache_read_input_tokens, 800, '命中数进 cache_read_input_tokens');
+    assert.equal(
+      msg.usage.input_tokens,
+      200,
+      'input_tokens 只剩未命中部分（= miss = prompt_tokens − hit），否则总账双计',
+    );
+    assert.equal(msg.usage.cache_creation_input_tokens, 0, 'OpenAI 形态没有「缓存写」计量');
+    assert.equal(msg.usage.output_tokens, 7);
+  });
+
   it('tool_calls 分片按 index 累积（设计点名的易错点）', async () => {
     const body = sseBody([
       {

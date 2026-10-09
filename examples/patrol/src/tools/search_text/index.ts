@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Tool } from '@migor/agentia';
 import type { Workspace } from '../../workspace.js';
@@ -53,8 +53,13 @@ export default class SearchText {
       for (const name of readdirSync(dir).sort()) {
         if (truncated) return;
         const abs = join(dir, name);
-        const st = statSync(abs, { throwIfNoEntry: false });
+        // lstat 而不是 stat：**不跟随软链**。取舍：跟随 + realpath 判界也能守住边界，
+        // 但不跟随更安全也更简单（不用在递归每层都验真身、天然免疫软链环）；
+        // 代价是「根内指向根内的合法软链目录」不再被搜到 —— 巡检场景下目录树以真实
+        // 目录为准，软链里的内容仍可由 read_file 按路径点名读取（它走 realpath 校验）。
+        const st = lstatSync(abs, { throwIfNoEntry: false });
         if (!st) continue;
+        if (st.isSymbolicLink()) continue;
         if (st.isDirectory()) {
           if (!SKIP_DIRS.has(name)) walk(abs);
           continue;

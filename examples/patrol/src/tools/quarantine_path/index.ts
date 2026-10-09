@@ -34,6 +34,9 @@ export default class QuarantinePath {
     strict: true,
   })
   quarantinePath(input: { path: string; reason: string }): string {
+    // resolveReadable 返回的是 realpath 后的真身：指向界外的软链在解析期就已被拒
+    // （否则 renameSync 跟随链接，会把 root 外的真文件移进隔离区，而审批人看到的
+    // 仍是 benign 相对路径）；指向界内的软链则移动的是真身文件，软链本身留在原地。
     const src = this.ws.resolveReadable(input.path);
     const st = statSync(src, { throwIfNoEntry: false });
     if (!st) throw new Error(`文件不存在：${input.path}`);

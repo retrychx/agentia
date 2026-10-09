@@ -20,6 +20,7 @@ agent 的 CLI 再跑起来」（`BaseInstalledAgent`，与官方 `eve` 适配器
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -69,7 +70,26 @@ class Agentia(BaseInstalledAgent):
         return "agentia"
 
     def version(self) -> str | None:
-        return os.environ.get("AGENTIA_VERSION_OVERRIDE", "0.10.0")
+        override = os.environ.get("AGENTIA_VERSION_OVERRIDE")
+        if override:
+            return override
+        # 真值 = 将要 vendor 进容器的那份框架清单（PKG_ROOT/package.json，见
+        # `_vendor_package`：容器里跑的就是它）。此前这里硬编码 "0.10.0"，
+        # 发版后静默漂走（包里已是 0.10.1）——硬编码的版本号一定会过期，别再写。
+        # 读不到就**响亮失败**：version 进 result.json，错版本会污染所有读数的归因；
+        # 而要 vendor 的清单都读不到时，install 阶段本来也必挂，早炸更诚实。
+        manifest = PKG_ROOT / "package.json"
+        try:
+            version = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+        except Exception as exc:
+            raise RuntimeError(
+                f"version() 取不到框架版本：读 {manifest} 失败（{exc}）。"
+                "确认 AGENTIA_PKG_ROOT 指向已构建的框架工作区，"
+                "或用 AGENTIA_VERSION_OVERRIDE 显式指定。"
+            ) from exc
+        if not isinstance(version, str) or not version:
+            raise RuntimeError(f"{manifest} 里的 version 不是非空字符串：{version!r}")
+        return version
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:

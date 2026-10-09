@@ -16,7 +16,7 @@
 //     failed ≥ 注入数（少了 = 故障被静默吞），且超出部分 ≤ 请求的 0.1%
 //     （多了 = 可重试故障没被重试吸收）；
 //   ② 每个失败 run 的错误分类都要在**处置表**里表过态（`scripts/soak-error-posture.ts` 的
-//      `SOAK_ERROR_POSTURE`，穷尽表：加一类不表态 ⇒ `typecheck` 红）：`unknown` / `aborted` /
+//      `SOAK_ERROR_POSTURE`，穷尽表：加一类不表态 ⇒ `typecheck:tests` 红）：`unknown` / `aborted` /
 //      `timeout` 属 hard-red（出现即红 —— `unknown` 是「分类器失手」，后两类在这套跑法里不该发生），
 //      其余**允许但分类计数并打印**。⚠️ 这里原先是一份手写的三名字白名单（`api` / `server` /
 //      `rate_limit`），漏了框架自己的 `connection` ⇒ 2026-09-29 那轮 2 小时（719 万 run）撞到

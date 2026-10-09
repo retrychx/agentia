@@ -21,6 +21,11 @@ export interface MemorySnapshot {
    * 不透明版本句柄：框架**不解释它**（不认识、也不比较），只在回写时原样递给 `saveIfRev`。
    * 内容由 store 决定：整店单调计数、逐键 hash、数据库的 row version 都行 ——
    * **粒度越细误报越少**（粗粒度会把「别人写了别的键」也报成冲突，方向是宁可多报）。
+   *
+   * ⚠️ 契约（实现方的义务）：**水合成功时 rev 不得为 `undefined`** —— `undefined` 是保留值，
+   * 只表示「没读到 / 读失败」。`run.ts` 的 `flushMemory` 正是用 `rev === undefined` 判
+   * 「水合失败 ⇒ 跳过 CAS 回写」：若 store 水合**成功**却回了 undefined，那一次本可成功的
+   * 回写会被跳过，且收到一条归因错误的 warn（被说成「水合失败」，实际是 store 违约）。
    */
   rev: unknown;
 }

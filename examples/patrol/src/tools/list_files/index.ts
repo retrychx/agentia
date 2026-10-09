@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Tool } from '@migor/agentia';
 import type { Workspace } from '../../workspace.js';
@@ -27,9 +27,17 @@ export default class ListFiles {
     const abs = this.ws.resolveReadable(input.dir ?? '.');
     const names = readdirSync(abs).sort();
     const rows = names.slice(0, MAX_ENTRIES).map((name) => {
-      const st = statSync(join(abs, name), { throwIfNoEntry: false });
+      // lstat 不跟随软链：条目类型如实标 'link'（让模型知道它是链接），
+      // 链接指不指向界内由 read_file / quarantine_path 的 realpath 校验把关。
+      const st = lstatSync(join(abs, name), { throwIfNoEntry: false });
       if (!st) return { name, type: 'unknown' };
-      const type = st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'other';
+      const type = st.isDirectory()
+        ? 'dir'
+        : st.isFile()
+          ? 'file'
+          : st.isSymbolicLink()
+            ? 'link'
+            : 'other';
       return { name, type, bytes: type === 'file' ? st.size : undefined };
     });
     const truncated = names.length > MAX_ENTRIES;

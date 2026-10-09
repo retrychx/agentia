@@ -6016,6 +6016,27 @@ Vercel AI SDK **不做什么**、代价是什么、**什么场景该选别人**�
 **影响面**：`scripts/release-surface.mjs`（两处判据 + 为什么不能用裸 `TODO` 的注释）、本节。
 框架代码零改动。
 
+### 2026-10-09 ①：**OpenAI 兼容端点接 DeepSeek 缓存计量** —— 两家厂商的 `input_tokens` 口径相反
+
+**起因**：一轮对自身改动的深度评审发现 `src/integrations/openai.ts` 把 `cache_read_input_tokens`
+恒记 0，DeepSeek 回报里的 `prompt_cache_hit_tokens` 被整个丢弃 —— agent loop 每轮重发不断增长的
+前缀，缓存命中率常达 80–95%（命中价 ≈ 0.1×），**成本读数系统性高估数倍**，且方向一致
+（terminal-bench 横向比较时永远冤枉自己）。
+
+**关键口径差**（映射的全部难点在这）：DeepSeek 的 `prompt_tokens` **已含**命中部分
+（`prompt_tokens = hit + miss`），而 Anthropic 的 `input_tokens` **不含** `cache_read_input_tokens`。
+直接透传会让命中部分被 `costEstimate` 计两次（一次全价 input、一次 0.1× cache_read）。
+所以映射是：`input_tokens = max(0, prompt_tokens − hit)`（只留未命中）、`cache_read = hit`；
+无这两个字段的端点（纯 OpenAI）行为逐字不变。
+
+**为什么记一条**：这是「同一字段名、两家语义相反」的记账陷阱 —— 接第三家 OpenAI 兼容端点时
+必须先核「它的 prompt_tokens 含不含缓存命中」，否则总账必双计。判据写在
+`src/integrations/openai.ts` 的 `inputUsageOf()` 头注里。
+
+**影响面**：`src/integrations/openai.ts`（usage 装配两处 + `OpenAIUsage` 接口）、
+tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格。trace 的 `Usage` 结构不变，
+变准的只有 DeepSeek 端点的记账值。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
