@@ -3,7 +3,7 @@
 Agentia 框架的命令行工具：脚手架、能力生成、本地调试与 **trace 观测**。
 
 ```bash
-npx @migor/cli create my-app       # 脚手架：四分类目录 + src/registry.ts + src/app.ts + src/main.ts
+npx @migor/cli create my-app       # 脚手架：四分类目录 + src/registry.ts + src/app.ts + src/main.ts + src/batch.ts
 cd my-app && npm install           # 框架与 CLI 都进工程（CLI 在 devDependencies）
 npx agentia g subagent doc-reviewer # 生成能力并自动登记到注册表
 npm run dev                        # = agentia dev：本地 inspector 面板（输入 prompt / 选能力 / 选工作目录）
@@ -20,7 +20,7 @@ npx agentia --version              # 版本（= -v）
 
 | 命令 | 作用 |
 |---|---|
-| `agentia create <name>` | 脚手架新项目：`src/tools` · `src/skills` · `src/prompts` · `src/subagents` 四分类目录、`src/registry.ts` 注册表、`src/app.ts`（装配工厂）+ `src/main.ts`（薄入口）+ `src/dev.config.ts`、tsconfig。CLI 本身也装进工程的 `devDependencies` |
+| `agentia create <name>` | 脚手架新项目：`src/tools` · `src/skills` · `src/prompts` · `src/subagents` 四分类目录、`src/registry.ts` 注册表、`src/app.ts`（装配工厂）+ `src/main.ts`（**默认入口 —— HTTP 服务**，`npm start` 起的就是它）+ `src/batch.ts`（一次性入口，`npm run start:batch`）+ `src/dev.config.ts`、tsconfig。CLI 本身也装进工程的 `devDependencies` |
 | `agentia g <type> <name>` | 生成能力（`tool` / `skill` / `subagent` / `prompt`）到对应分类目录 `src/<分类>/<name>/` 并登记注册表；长文本资产（`system.md` / `asset.md`）一并生成 |
 | `agentia dev [-- "首次 run 的 prompt"]` | 起本地 inspector 面板：面板上输入 prompt 驱动一次真 run（`↑`/`↓` 调历史）、**多选能力**（收窄菜单）、**选工作目录**、**开关多轮**，再在 trace-view 里看调用树。CLI 自己管文件监视（允许清单含 `.md` —— 改文本资产不用重启）与子进程重启。首个非空参数作为第一次 run 的 prompt（`npm run dev -- "问题"` 就是这么走的） |
 | `agentia doctor [--json]` | 纯静态体检，不加载用户代码。`--json` 出结构化结果（有错误仍退出 1） |
@@ -45,12 +45,14 @@ npx agentia --version              # 版本（= -v）
 
 ```
 src/
+├─ app.ts              # createAgentApp 装配工厂（能力 / 工作目录 / .env）
+├─ main.ts             # 默认入口：npm start → HTTP 服务
+├─ batch.ts            # 一次性入口：npm run start:batch
 ├─ tools/<name>/       # @Tool
 ├─ skills/<name>/      # @Skill
 ├─ prompts/<name>/     # @Prompt（含 asset.md）
 ├─ subagents/<name>/   # @SubAgent（含 system.md）
-├─ registry.ts         # 显式注册表（create / g / add 维护，doctor 校验）
-└─ main.ts             # createApp 装配入口
+└─ registry.ts         # 显式注册表（create / g / add 维护，doctor 校验）
 ```
 
 <!-- no-legacy-terms: allow -->

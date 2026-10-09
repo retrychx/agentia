@@ -137,7 +137,7 @@ export function projectTsconfig(): string {
 }
 
 /**
- * 装配入口 app.ts（templates/src/app.ts）—— **与启动分离**的那个工厂。
+ * 装配模块 app.ts（templates/src/app.ts）—— **与启动分离**的那个工厂。
  *
  * 为什么单独一个文件（D9(d)）：dev 环要驱动用户的 app，就得有个「接受选项的工厂」
  * 能喂进能力选择与工作目录。`CAPABILITY_DIRS` 也在它里面，且**同时是面板能力选择器的

@@ -6037,6 +6037,49 @@ Vercel AI SDK **不做什么**、代价是什么、**什么场景该选别人**�
 tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格。trace 的 `Usage` 结构不变，
 变准的只有 DeepSeek 端点的记账值。
 
+### 2026-10-09 ②：脚手架默认入口从 Job 翻成 HTTP 服务 —— **交付面是散文，闸门守不住它**
+
+**起因**：用户一句话需求 ——「框架 build 之后 run 起来可以直接用，参考 NestJS 服务口径」。
+当时形态（#224 刚落）是 `npm start` 仍跑**一次就退出**的批处理，**另外**给一个
+`npm run start:server` 才是服务。多一个 script 不等于「直接可用」：NestJS 的口径里
+`main.ts` **就是**那个在 `listen` 的入口。⇒ 把**默认值**翻过来，而不是再加一个名字。
+
+**两个取舍都摆给用户选**（用户都取推荐项）：① 形状 —— **换骨**（`src/main.ts` = 服务、
+一次性挪 `src/batch.ts`）优于换皮（只改 scripts 指向），代价是模板文件名与一路引用要一起改，
+漏一处就是假绿；② 默认存储 —— 留 **`SqliteTaskStore`**（默认路径因此需 **Node ≥ 22.5**），
+代价是低版本上默认路径起不来，退路是换 `FileTaskStore`（同一套 API，**单写者前提**）。
+
+⚠️ **框架库的 `engines: >=18` 与 CI 的 `import-floor` job 刻意不动** —— 抬的是**脚手架默认路径**，
+不是包本身（`node:sqlite` 在 `src/store/sqliteStore.ts` 里延迟加载，低版本上**构造**才抛可读报错）。
+这条口径差必须写明，否则「`engines` 说 18、脚手架说 22.5」会被读成自相矛盾。
+
+**顺带修掉两条静默**（都是本仓老形态）：① `AGENTIA_DB` 的缺省是 **cwd 相对** ⇒ 换个 workdir
+启动（systemd / 容器 `-w`）会静默用**另一个库**，`resumePending()` 找不到上个进程的任务
+（表面像「任务丢了」）⇒ 改成复用 `app.ts` 已导出的 `PROJECT_ROOT`；② `PORT=`（空串）经
+`Number('')` ⇒ `0` ⇒ **静默随机端口** ⇒ 显式判空串 + `Number.isInteger` 响亮报错。
+⚠️ 后者**不能**用 `|| 3000` 兜底 —— 那会把 e2e 刻意依赖的 `PORT=0` 一起吃掉。
+
+**为什么记一条**：
+
+1. **默认值也是对外契约**：使用者不会读完 README 才决定 `npm start` 跑什么。改默认值就是改契约，
+   而它没有任何编译期保护。
+2. ⭐ **交付面是散文，闸门守不住它**：这次 `tsc`、单测、八步 `verify-all` **全绿**，而仓库根 README、
+   `packages/cli/README.md`（**随 npm 发布**）与官网**中英两版** docs 页**都残留着翻转前的说法**。
+   已补 `tests/docs/scaffold-entry-contract.test.ts`（三层判据 + 两条防真空下限，8 条变异），并把
+   **射程如实写进文件头** —— 目录树「一行只写一个文件」的列举与散文折行两类**不在射程内**
+   （硬判会误红，而误报的门禁会被关掉）。与 2026-09-29 ⑧ 那句「承诺写在文档里、没有门禁」同根。
+3. **它取代了 2026-09-22 那条决策的「落地形状」**里对 `src/main.ts` 的描述 —— 那条原文**保留不改**，
+   因为本仓的历史决策记录如实引用当时形状是正确的；读它时请以本条为准。
+
+**影响面**：`packages/cli/templates/src/{main,batch}.ts`（换名 + 两条 hygiene）、
+模板 `package.json`（scripts 表 = `start` / `start:prod` / `start:batch`，**删** `start:server`）、
+`templates/{env.example,gitignore,README.md}`、`packages/cli/src/{templates,create}.ts`、
+`scripts/e2e-cli.ts`（4d/4e/4f 与两处文件表）、`packages/cli/test/{templates,structure}.test.mjs`
+（棘轮账**原位**改数值）、`docs/{usage-guide,deployment,guards}.md`、根 `README.md`、
+`packages/cli/README.md`、官网 `fragments/docs.html` + `fragments/en/docs.html`，
+新增 `docs/plans/2026-10-09-scaffold-default-service.md` 与 `tests/docs/scaffold-entry-contract.test.ts`。
+**零 `src/` 框架改动**；脚手架是**生成物** ⇒ 既有使用者不需要任何动作（不构成破坏性变更）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

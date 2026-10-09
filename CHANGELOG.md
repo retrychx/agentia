@@ -939,7 +939,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   脚本表：`start` / `start:prod`（**同物**，显式生产名）/ `start:batch`；**不再有 `start:server`**
   —— 它的角色被 `start` 吸收，留一个同物的旧名只会让人以为服务还有另一种起法。
   决策记录（含「换骨 vs 换皮」「SQLite vs FileTaskStore」两个取舍）见
-  `docs/plans/2026-10-09-scaffold-default-service.md`。
+  `docs/plans/2026-10-09-scaffold-default-service.md` 与 `docs/spec.md` §10 2026-10-09 ②。
 - **服务面**：`src/main.ts` 复用 `src/app.ts` 的 `createAgentApp()` 工厂（dev 环与生产共享
   同一份装配，旁路会被 `templates.test.mjs` 的形状断言挡住），接上 `createHttpHandler` +
   `AsyncRunner` + `SqliteTaskStore`：`/healthz`、同步 `POST /run`（含 SSE）、异步
@@ -967,6 +967,14 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **只影响新建工程**：脚手架是**生成物**（`agentia create` 的那一刻写出去），
   已生成的工程有自己的 `package.json` / `src/`，不会被这一版动到 ⇒ **既有使用者不需要任何动作**
   （不构成破坏性变更）。
+- **交付面同步（补做）**：这次翻转改的是「哪个文件是默认入口」，而**散文面当时没跟着改** ——
+  官网中英两版 docs 页、仓库根 `README.md` 与 `packages/cli/README.md`（**随 npm 发布**）
+  都还写着翻转前的说法，而 `tsc`、单测与八步门禁**全绿**：它们扫源码与产物，不看散文。
+  已补齐，并加了 `tests/docs/scaffold-entry-contract.test.ts`（三层判据 + 两条防真空下限，
+  8 条变异验证）。⚠️ **射程如实写在该文件头**：目录树里「一行只写一个文件」的列举、以及
+  散文把两个入口名折到相邻两行的写法**不在射程内** —— 硬判会误红，而误报的门禁会被关掉。
+  ⚠️ 这次漂移此前**零守卫**：`check-website-agent-readiness.mjs` 只核 `llms-full.txt` 与单源
+  `docs/usage-guide.md` 逐字节相等，**官网 fragments 整片不在它的射程内**。
 - **验证**：`templates.test.mjs` 的服务面形状断言改钉 `main.ts`（从 `./app.js` 取工厂、不许
   旁路 `createApp`、AsyncRunner + createHttpHandler + SqliteTaskStore + resumePending +
   `drain({` + SIGTERM、缺省无 token 必须有警告文案），原 `main.ts` 那两条**平移**到 `batch.ts`
