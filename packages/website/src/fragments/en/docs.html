@@ -52,19 +52,13 @@
 <span class="cm"># put ANTHROPIC_API_KEY into the .env the scaffold generated (.gitignore already covers it)</span>
 <span class="cmd">npm</span> run dev -- <span class="str">"review docs/report.md for me"</span></code></pre>
         </div>
-        <p>The entry point <code>src/main.ts</code> does exactly one thing: assemble the app, then trigger a run.</p>
+        <p><strong>Assembly and startup are separate</strong>: the factory lives in <code>src/app.ts</code> and both entries share it — the default entry <code>src/main.ts</code> is the <strong>HTTP service</strong> (<code>npm run build</code>, then <code>npm start</code>), and the one-shot batch job is <code>src/batch.ts</code> (<code>npm run start:batch -- "your question"</code>).</p>
         <div class="code-block">
-          <div class="code-title"><i></i><i></i><i></i><em>src/main.ts</em></div>
-          <pre><code><span class="kw">import</span> { createApp, SystemPrompt } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;
-
-<span class="kw">const</span> app = <span class="kw">await</span> <span class="fn">createApp</span>({
-  name: <span class="str">'my-app'</span>,
-  discover: [<span class="str">'src/tools'</span>, <span class="str">'src/skills'</span>, <span class="str">'src/prompts'</span>, <span class="str">'src/subagents'</span>], <span class="cm">// four category folders; order is assembly order</span>
-  system: <span class="kw">new</span> <span class="fn">SystemPrompt</span>().<span class="fn">add</span>(<span class="str">'role'</span>, <span class="str">'You are the main agent of my-app; dispatch the capabilities on your menu as the task requires.'</span>, <span class="kw">true</span>),
-});
-
-<span class="kw">const</span> { result } = <span class="kw">await</span> app.<span class="fn">run</span>([{ role: <span class="str">'user'</span>, content: process.argv[<span class="dec">2</span>] }]);
-console.<span class="fn">log</span>(result.finalText);</code></pre>
+          <div class="code-title"><i></i><i></i><i></i><em>src/</em></div>
+          <pre><code>app.ts       <span class="cm"># createAgentApp() assembly factory: capabilities / workdir / .env (shared by the dev loop and both entries)</span>
+main.ts      <span class="cm"># default entry: npm start → HTTP service (/healthz · POST /run · POST /tasks · drain)</span>
+batch.ts     <span class="cm"># one-shot: npm run start:batch -- "your question"</span>
+registry.ts  <span class="cm"># explicit registry (kept up to date by agentia g)</span></code></pre>
         </div>
       </section>
 
@@ -74,6 +68,7 @@ console.<span class="fn">log</span>(result.finalText);</code></pre>
         <p>Find the recipe by what you want to do: five cards, each with a minimal skeleton and a link to go deeper. Every API and command matches <code>docs/usage-guide.md</code> word for word.</p>
 
         <h3>Ship an HTTP agent service</h3>
+        <p><strong>The scaffold already gives you this</strong>: <code>src/main.ts</code> from <code>agentia create</code> is exactly it — <code>npm run build</code>, then <code>npm start</code>. The version below wires the host <strong>from scratch</strong>; read it when you replace the assembly or bring your own host.</p>
         <p>One handler serves synchronous <code>POST /run</code> (SSE when <code>Accept: text/event-stream</code> is set), asynchronous <code>POST /tasks</code> (de-duplicated by idempotency key) and the <code>GET /healthz</code> probe. Auth goes through the <code>authenticate</code> seam (it intercepts before the body is read) and shutdown goes through <code>drain</code> — unfinished tasks stay in the store, and <code>resumePending()</code> picks them up after a restart.</p>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>server.ts</em></div>
@@ -269,7 +264,9 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
           <div class="code-title"><i></i><i></i><i></i><em>project layout</em></div>
           <pre><code>my-app/
 ├─ src/
-│  ├─ main.ts                    <span class="cm"># createApp assembly entry point</span>
+│  ├─ app.ts                     <span class="cm"># createAgentApp assembly factory (shared by the dev loop and both entries)</span>
+│  ├─ main.ts                    <span class="cm"># default entry: npm start → HTTP service</span>
+│  ├─ batch.ts                   <span class="cm"># one-shot entry: npm run start:batch</span>
 │  ├─ registry.ts                <span class="cm"># explicit registry (kept up to date by agentia g)</span>
 │  ├─ tools/weather/index.ts     <span class="cm"># @Tool</span>
 │  ├─ skills/weekly-report/      <span class="cm"># @Skill</span>
@@ -603,7 +600,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><th>Command</th><th>What it does</th></tr>
           </thead>
           <tbody>
-            <tr><td>agentia create &lt;name&gt;</td><td>Scaffolds a new project: the four category folders (with .gitkeep), a src/registry.ts registry, src/app.ts (the assembly factory) + src/main.ts (a thin entry point) + src/dev.config.ts, and tsconfig.</td></tr>
+            <tr><td>agentia create &lt;name&gt;</td><td>Scaffolds a new project: the four category folders (with .gitkeep), a src/registry.ts registry, src/app.ts (the assembly factory) + src/main.ts (<strong>the default entry — an HTTP service</strong>) + src/batch.ts (a one-shot entry) + src/dev.config.ts, and tsconfig.</td></tr>
             <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>Generates a capability into the matching category folder (tool → src/tools/, skill → src/skills/, prompt → src/prompts/, subagent → src/subagents/) and registers it in src/registry.ts automatically; long-text assets (system.md / asset.md) are generated along with it.</td></tr>
             <tr><td>agentia dev</td><td>Starts a local inspector panel: type a prompt to drive one real run (with ↑/↓ history), multi-select capabilities (narrowing the menu), choose the working directory, toggle multi-turn, then inspect the call tree in trace-view. The CLI manages file watching itself (the allow-list includes .md, so editing a text asset needs no restart). Binds 127.0.0.1 only, with Origin checks and a one-time token per launch.</td></tr>
             <tr><td>agentia doctor</td><td>Assembly health check: unregistered / dangling capabilities, naming rules, duplicate entries.</td></tr>
@@ -624,7 +621,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
           </thead>
           <tbody>
             <tr><td>ANTHROPIC_API_KEY</td><td>Required. Anthropic API key (ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL are also supported for compatible endpoints).</td></tr>
-            <tr><td>.env (<code>loadEnvFile()</code>)</td><td>The framework does <strong>not</strong> read <code>.env</code> on its own: the scaffold's <code>loadEnvFile()</code> in <code>src/app.ts</code> loads it into <code>process.env</code> (it lives in the assembly module so that both entry points — <code>agentia dev</code> and <code>npm start</code> — pick it up). <strong>Real environment variables win</strong> — a key that is already defined (even as an empty string) is not overwritten by the file unless you pass <code>{ override: true }</code> explicitly.</td></tr>
+            <tr><td>.env (<code>loadEnvFile()</code>)</td><td>The framework does <strong>not</strong> read <code>.env</code> on its own: the scaffold's <code>loadEnvFile()</code> in <code>src/app.ts</code> loads it into <code>process.env</code> (it lives in the assembly module so the <code>agentia dev</code> loop and both entries — <code>npm start</code> / <code>npm run start:batch</code> — all pick it up). <strong>Real environment variables win</strong> — a key that is already defined (even as an empty string) is not overwritten by the file unless you pass <code>{ override: true }</code> explicitly.</td></tr>
             <tr><td>AGENTIA_MODEL</td><td>Optional. Global default-model override; falls back to <code>claude-opus-5</code> when unset. An explicitly passed model wins over everything.</td></tr>
             <tr><td>OPENAI_API_KEY</td><td>Optional. Key for OpenAI-compatible providers, used in multi-provider setups.</td></tr>
           </tbody>
