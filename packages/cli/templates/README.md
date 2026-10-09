@@ -63,8 +63,15 @@ npm run dev -- "你的问题"
 
 ```bash
 npm run build   # tsc → dist/ + .md 文本资产跟随拷贝（asset() 按文件位置解析，必须跟着 .js 走）
-npm start -- "你的问题"   # 跑编译产物 dist/main.js（部署/Docker 用这条）
+npm start -- "你的问题"   # 跑编译产物 dist/main.js —— 跑一次就退出的**批处理入口**
 ```
+
+⚠️ `npm start` 是 **Job 形态**（跑一次、打印、退出）：适合 cron / CI / 容器里的一次性任务，
+**不是长期在线的服务**（没有端口、没有 `/healthz`、没有优雅停机）。要把这个 app 挂成 HTTP 服务，
+用框架的 `createHttpHandler` + `AsyncRunner` 自己接一层宿主 —— 可直接抄的完整配方（含
+Dockerfile / compose / 崩溃续跑）在框架仓库的
+[`examples/deploy/`](https://github.com/retrychx/agentia/tree/main/examples/deploy)，
+上线前的决定清单在同仓库 `docs/deployment.md`；API 细节见本项目 `AGENTS.md` 的「触发与宿主」节。
 
 也可以用环境变量（适合 CI / 容器）——**真实环境变量优先，不会被 `.env` 覆盖**：
 
