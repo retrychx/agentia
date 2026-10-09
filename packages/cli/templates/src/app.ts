@@ -30,9 +30,9 @@ import ReadFileTool from './tools/read-file/index.js';
  * 读哪个文件、什么时候读由这里决定；已存在的真实环境变量优先，不会被文件覆盖。
  * 想换路径/顺序：`loadEnvFile({ path: '.env.local' })`，或直接删掉这一行改用自己的加载器。
  *
- * ⚠️ 必须在 **app.ts（装配模块）**，不能在 main.ts：`agentia dev` 的 runner 只 import
- * 本文件、**从不执行 main.ts**。放在 main.ts 里会让 `npm run dev` 静默读不到 `.env`，
- * 而 `npm start` 读得到 —— 同一份 `.env` 两个行为，且失败的形状是「忘了配 key」。
+ * ⚠️ 必须在 **app.ts（装配模块）**，不能在任一个入口（`main.ts` / `batch.ts`）：`agentia dev`
+ * 的 runner 只 import 本文件、**从不执行入口**。放在入口里会让 `npm run dev` 静默读不到
+ * `.env`，而 `npm start` 读得到 —— 同一份 `.env` 两个行为，且失败的形状是「忘了配 key」。
  */
 loadEnvFile();
 

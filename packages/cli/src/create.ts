@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   appTs,
+  batchTs,
   CAPABILITY_DIR_LIST,
   cleanMjs,
   copyAssetsMjs,
@@ -78,10 +79,14 @@ export function createProject(name: string, parent: string | undefined): number 
 
   write(dir, 'package.json', projectPackageJson(name));
   write(dir, 'tsconfig.json', projectTsconfig());
-  // 装配（app.ts）与启动（main.ts）分离：dev 环要复用 app.ts 的工厂，
+  // 装配（app.ts）与启动分离：dev 环要复用 app.ts 的工厂，
   // 才能把「能力选择 / 工作目录」喂进 createApp（见 templates.ts 的 appTs 注释）。
   write(dir, 'src/app.ts', appTs(name));
+  // 默认入口 = **服务**（与 app.ts 的工厂同一个）：build 之后 `npm start` 即得可上线的
+  // HTTP 服务（/healthz、异步任务、崩溃续跑、优雅停机、可选鉴权）
   write(dir, 'src/main.ts', mainTs(name));
+  // 一次性入口（cron / CI / 容器里的 Job 形态）：`npm run start:batch -- "问题"`
+  write(dir, 'src/batch.ts', batchTs(name));
   // dev 环的**数据**声明（只有数据，没有逻辑；生产路径不读它）
   write(dir, 'src/dev.config.ts', devConfigTs());
   // 对话型能力用的文件后端会话存储（可选件，但生成出来省得用户自己写）
@@ -127,6 +132,9 @@ export function createProject(name: string, parent: string | undefined): number 
 
 生产构建：npm run build && npm start（先清 dist/，再 tsc → dist/，.md 资产由 scripts/copy-assets.mjs 跟随拷贝）
           dev 跑 src/、start 跑 dist/ —— 能力目录按文件位置解析，两边都成立。
+          npm start 起的是**服务**（node dist/main.js：/healthz · POST /run · POST /tasks ·
+          崩溃续跑 · 优雅停机 · AGENTIA_TOKEN 可选鉴权；需 Node ≥ 22.5）。
+          跑一次就退出的批处理：npm run start:batch -- "你的问题"（node dist/batch.js）
 
 目录约定：src/tools/ · src/skills/ · src/prompts/ · src/subagents/（一能力一文件夹）
 

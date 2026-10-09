@@ -116,6 +116,9 @@ function capabilityVars(name: string): Record<string, string> {
  * - `@migor/cli` 装进 devDependencies（而不是让用户每次 npx 去 registry 拉）：工程内
  *   `npx agentia …` 走本地 bin —— 离线可用，且版本被 pin 住与框架同批。
  *   这两条 pin（框架 + CLI）是**版本发布面**（scripts/release-surface.mjs），格式不能动。
+ * - `start` / `start:prod` **同物**（都是 `node dist/main.js`）是刻意的：本脚手架的 dev 路径
+ *   是 `npm run dev`，所以 `start` 已经是「跑 dist 的那条」——`start:prod` 只是把
+ *   「这是生产入口」显式写出来（NestJS 用户会敲这个名字）。多一行 script，不是第二条路。
  */
 export function projectPackageJson(name: string): string {
   return renderTemplate('package.json', { __PROJECT_NAME__: name });
@@ -180,17 +183,35 @@ export function readFileToolIndexTs(): string {
 }
 
 /**
- * 入口 main.ts（templates/src/main.ts）。**薄入口**：调工厂 → 处理 result。
+ * 默认入口 main.ts（templates/src/main.ts）—— **HTTP 服务**：`npm run build && npm start`
+ * 起来的就是它，在 `PORT` 上长期监听（NestJS 的 `main.ts` 那条口径）。
+ * `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）+ drain 优雅停机 +
+ * 可选 Bearer 鉴权（AGENTIA_TOKEN）。
  *
- * 装配搬去了 app.ts（见上），这里只留「跑一次」。两件事的顺序与语义都不能变 ——
- * 尤其 `result.error` 那段：run 失败**不抛**，不检查就是「打印空行 + 退出 0」，
- * 让首次运行（比如忘了配 ANTHROPIC_API_KEY）看起来像成功。
- *
- * ⚠️ `loadEnvFile()` **不在**这里，在 app.ts —— dev 环只 import app.ts、从不执行本文件，
- * 把读 .env 留在这边会让 `npm run dev` 与 `npm start` 对同一份 `.env` 有两个行为。
+ * **无条件生成、而且是默认**：脚手架的交付承诺是「build 产物 run 起来就是个能用的服务」。
+ * 服务化不该让用户自己去 examples/deploy 抄，也不该让用户先翻 README 才知道该起哪个入口。
+ * ⚠️ 与 batch.ts 同一道闸：必须复用 app.ts 的 `createAgentApp()` 工厂，
+ * 不许旁路 createApp（templates.test.mjs 钉着）。
  */
 export function mainTs(name: string): string {
   return renderTemplate('src/main.ts', { __PROJECT_NAME__: name });
+}
+
+/**
+ * 一次性入口 batch.ts（templates/src/batch.ts）。**薄入口**：调工厂 → 处理 result。
+ *
+ * 「跑一次就退出」的 Job 形态（cron / CI / 容器一次性任务）。它此前叫 `main.ts` ——
+ * 2026-10-09 把默认入口翻成服务时挪到这个名字，好让 `main.ts` 就是 `npm start` 跑的那个
+ * （见 docs/plans/2026-10-09-scaffold-default-service.md）。
+ *
+ * 两件事的顺序与语义都不能变 —— 尤其 `result.error` 那段：run 失败**不抛**，
+ * 不检查就是「打印空行 + 退出 0」，让首次运行（比如忘了配 ANTHROPIC_API_KEY）看起来像成功。
+ *
+ * ⚠️ `loadEnvFile()` **不在**这里，在 app.ts —— dev 环只 import app.ts、从不执行入口，
+ * 把读 .env 留在这边会让 `npm run dev` 与 `npm start` 对同一份 `.env` 有两个行为。
+ */
+export function batchTs(name: string): string {
+  return renderTemplate('src/batch.ts', { __PROJECT_NAME__: name });
 }
 
 export function projectReadme(name: string): string {

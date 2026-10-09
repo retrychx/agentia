@@ -99,14 +99,27 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 「为什么」注（含「只增不减」这个代价的如实标注）。**只是数据，零行为。**
     'dev-protocol.ts': 337,
     'markdown.ts': 296,
-    'templates.ts': 259,
+    // 2026-10-09（脚手架服务入口 start:server）：259 → 271（+12 = serverTs accessor +
+    //   它的口径注「无条件生成 / 不许旁路 createApp」）
+    // 2026-10-09 同日（脚手架默认入口翻成服务 —— **默认值翻转**，不是新功能）：271 → 280（+9）。
+    //   改：mainTs 的口径注整段重写成「默认入口 = HTTP 服务」；增：batchTs accessor + 它的口径注、
+    //   projectPackageJson 多一条「start / start:prod 同物」的注。
+    //   ⚠️ serverTs **收敛成了** mainTs（同一个函数名换了模板），不是删了一个 accessor ——
+    //   所以本表条目数不变。见 docs/plans/2026-10-09-scaffold-default-service.md。
+    'templates.ts': 280,
     'doctor.ts': 213,
     // 2026-09-27（R8-P3b `agentia export` 命令注册）：206 → 219（+13 = import/帮助表/
     //   USAGE 表/分发分支，全是接线；新命令的本体在 export.ts）
     'cli.ts': 219,
     'native-pick.ts': 198,
     'report.ts': 194,
-    'create.ts': 140,
+    // 2026-10-09（脚手架服务入口 start:server）：140 → 146（+6 = import + write 一行 +
+    //   后续步骤文案两行 + serverTs 的接线注 —— `serverTs` 同批改名成 `mainTs`，见上一条）
+    // 2026-10-09 同日（默认入口翻成服务）：146 → 148（+2 = 写出那两行的注释改写 +
+    //   后续步骤文案多一行「跑一次就退出的批处理」）。新模板本体在
+    //   templates/src/{main,batch}.ts，不在这个棘轮面内（归 tsconfig.templates.json
+    //   与 templates.test.mjs 的形状断言照看）。
+    'create.ts': 148,
     'dev-logic.ts': 58, // 2026-09-23 A 阶段新增（server 侧纯判定，单源化后注释只留一份）
     // 2026-09-23 B 阶段新增（显式状态机：类型 + update 纯函数；零副作用零 node:* import）
     // 2026-09-27 复核尾巴：703 → 708（+5，纯注释 —— abort-grace-expired 的相位弱化边界注）
@@ -222,7 +235,17 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // ⚠️ 与上一笔的分野：那条 +18 修的是**缺陷**，这笔加的是**承诺兑现**（设计稿 §0 说
   // 「改一句 prompt 就能立刻重跑对照」，原先要手动 ⌘ 点两条）。判据 `autoPairTarget`
   // 有单测（6 个断言）且做过变异验证（把 `length !== 1` 改成 `!== 2` ⇒ 红）。
-  const TOTAL_BUDGET = 9287;
+  // 补账（2026-10-09，脚手架服务入口 start:server —— **新功能**）：9287 → 9305（+18）。
+  //   两笔：templates.ts +12（serverTs accessor —— 即今日的 `mainTs`，同批改的名；+ 口径注）、
+  //   create.ts +6（接线 + 文案）。新模板本体当时在 templates/src/server.ts（87 行），
+  //   不在这个棘轮面内（它归 tsconfig.templates.json 与 templates.test.mjs 的形状断言照看）。
+  //   ⚠️ 路径与函数名都已随下面那笔改名（`server.ts` → `main.ts`、`serverTs` → `mainTs`），
+  //   此处保留旧名只为对齐当时的提交。
+  // 补账（2026-10-09 同日，脚手架默认入口翻成服务 —— **默认值翻转**）：9305 → 9316（+11 =
+  //   templates.ts +9 + create.ts +2，两处都在**原位**改了数值并各自写明组成）。
+  //   ⚠️ 本笔的性质：**不是新功能** —— HTTP 宿主与批处理两个入口此前都在（#224 刚落的），
+  //   这一笔翻的是「哪一个才叫 `npm start`」。之所以还是要补账：棘轮管的是行数，不是功能。
+  const TOTAL_BUDGET = 9316;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

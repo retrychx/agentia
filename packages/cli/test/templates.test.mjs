@@ -97,20 +97,103 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     );
   });
 
-  it('main.ts 模板是薄入口：装配搬去 app.ts，这里只留「读 .env → 调工厂 → 处理 result」', () => {
-    const main = T.mainTs('demo');
-    const body = code(main); // 注释里会出现「别把 createApp(...) 搬回这里」，那不是违例
+  it('batch.ts 模板是薄入口（一次性 Job）：装配搬去 app.ts，这里只留「调工厂 → 处理 result」', () => {
+    const batch = T.batchTs('demo');
+    const body = code(batch); // 注释里会出现「别把 createApp(...) 搬回这里」，那不是违例
     assert.ok(
       !body.includes('createApp('),
-      'main.ts 不该再直接调 createApp —— 装配搬进 app.ts，否则 dev 环拿不到那个工厂',
+      'batch.ts 不该再直接调 createApp —— 装配搬进 app.ts，否则 dev 环拿不到那个工厂',
     );
+    assert.ok(
+      /from\s+'\.\/app\.js'/.test(body),
+      "batch.ts 必须从 './app.js' 取工厂（注意 .js 后缀：NodeNext 的产物路径）",
+    );
+    assert.ok(body.includes('createAgentApp()'), 'batch.ts 必须真的调用那个工厂');
+    // 反面：也不该自己调 run 之外的装配动作（比如再建一个 createApp 的旁路）
+    assert.ok(!/createApp\s*\(/.test(body), 'batch.ts 里不该有 createApp 调用');
+    // 它是**一次性**形态：HTTP 宿主不许塞进来（那会把「跑一次就退出」变成起服务）
+    assert.ok(
+      !/createHttpHandler|\.listen\(/.test(body),
+      'batch.ts 是一次性 Job 形态，不该起服务 —— HTTP 宿主在 main.ts',
+    );
+  });
+
+  it('main.ts 模板是**默认入口**（可上线的 HTTP 服务）：复用 app.ts 的工厂，不许旁路 createApp', () => {
+    // 与 batch.ts 同一道闸（见上一条）：默认入口若自己 createApp 一份装配，
+    // 「能力选择 / 工作目录 / .env 读取」就会在 dev 与生产长出两个行为。
+    const main = T.mainTs('demo');
+    const body = code(main); // 头注里解释「别旁路」时会提到 createApp，那不是违例
     assert.ok(
       /from\s+'\.\/app\.js'/.test(body),
       "main.ts 必须从 './app.js' 取工厂（注意 .js 后缀：NodeNext 的产物路径）",
     );
-    assert.ok(body.includes('createAgentApp()'), 'main.ts 必须真的调用那个工厂');
-    // 反面：main.ts 也不该自己调 run 之外的装配动作（比如再建一个 createApp 的旁路）
-    assert.ok(!/createApp\s*\(/.test(body), 'main.ts 里不该有 createApp 调用');
+    assert.ok(body.includes('createAgentApp()'), 'main.ts 必须真的调用 createAgentApp() 工厂');
+    assert.ok(!/createApp\s*\(/.test(body), 'main.ts 里不该有 createApp 调用（装配在 app.ts）');
+    // 服务面的四根柱子：异步任务 + HTTP 宿主 + 优雅停机 + 崩溃续跑，少一根就不是
+    // 「可以直接上线」的承诺（缺的那根不会在单测里现形，只会在用户部署后现形）。
+    for (const needle of ['AsyncRunner', 'createHttpHandler', 'SqliteTaskStore', 'resumePending']) {
+      assert.ok(body.includes(needle), `main.ts 缺 ${needle}`);
+    }
+    assert.ok(/\.drain\(\{/.test(body), 'main.ts 必须接 drain 优雅停机');
+    assert.ok(body.includes("'SIGTERM'"), 'main.ts 必须订阅 SIGTERM（框架不订阅，是宿主的职责）');
+    // **默认入口**这层身份：它必须真的 listen —— 否则「build 完 run 起来就是个服务」是空话
+    assert.ok(/\.listen\(/.test(body), 'main.ts 必须真的起服务（.listen）');
+  });
+
+  it('main.ts 模板：AGENTIA_TOKEN 缺省时必须响亮警告，设了才挂 authenticate', () => {
+    // 鉴权取舍（与 examples/deploy 同档）：不强制（框架「鉴权只是缝」），但不静默 ——
+    // 无鉴权起服务却不吭声，等于替用户做了一个他没做的决定。
+    const main = T.mainTs('demo');
+    const body = code(main);
+    assert.ok(
+      /AGENTIA_TOKEN/.test(body) && /authorization/i.test(body),
+      'main.ts 必须读 AGENTIA_TOKEN 并做 Bearer 校验（authorization 头）',
+    );
+    assert.ok(
+      main.includes('未设 AGENTIA_TOKEN') && main.includes('无任何鉴权'),
+      'AGENTIA_TOKEN 缺省时必须打印响亮警告（不静默、不强制）',
+    );
+    // 条件展开：没设 token 时**不传**钩子（显式 undefined 与「不提供」在
+    // exactOptionalPropertyTypes 下是两回事 —— 框架侧开着这个开关）
+    assert.ok(
+      /\.\.\.\(authenticate \? \{ authenticate \} : \{\}\)/.test(body),
+      'authenticate 必须条件展开（缺省 = 不挂钩子，不是传 undefined）',
+    );
+  });
+
+  it('main.ts 模板：就绪标记按 server.address() 的实际端口打（PORT=0 可解析）', () => {
+    // e2e 用 PORT=0 起服务并从这行解析实际端口 —— 打 PORT 变量本身会让 PORT=0 的
+    // 测试永远无法连上（操作系统分的端口没人知道）。文案与 e2e-cli.ts 的正则互为锚点。
+    const main = T.mainTs('demo');
+    assert.ok(main.includes('server.address()'), '就绪行必须取 server.address() 的实际端口');
+    assert.ok(
+      main.includes('[server] listening on :'),
+      '就绪标记 `[server] listening on :<port>` 是 e2e 的解析锚点，改文案要同步改 scripts/e2e-cli.ts',
+    );
+  });
+
+  it('main.ts 模板：AGENTIA_DB 缺省落工程根（不是 cwd 相对），PORT 空串当缺省', () => {
+    // 两条都是评审实报的**静默**（2026-10-09）：
+    //   ① `?? 'agentia.db'` 是 cwd 相对 —— 服务形态常换工作目录启动（systemd / 容器 `-w`），
+    //      同一个工程会用上**两个库**，而 resumePending() 静默找不到上个进程的任务；
+    //   ② `Number(process.env.PORT ?? 3000)` 在 `PORT=`（空串）时得 `0` ⇒ 静默**随机端口**。
+    const main = code(T.mainTs('demo'));
+    assert.ok(
+      /PROJECT_ROOT/.test(main) && !/\?\?\s*'agentia\.db'/.test(main),
+      "AGENTIA_DB 的缺省必须按本文件位置落工程根（PROJECT_ROOT），不能是 cwd 相对的 'agentia.db'",
+    );
+    assert.ok(
+      /rawPort\s*===\s*undefined\s*\|\|\s*rawPort\.trim\(\)\s*===\s*''/.test(main),
+      "PORT 的空串必须显式当缺省 —— `Number('')` 是 0，会让服务静默落到随机端口",
+    );
+    assert.ok(
+      /Number\.isInteger\(PORT\)/.test(main),
+      'PORT 非整数 / 越界必须响亮报错（不是让 server.listen 去抛栈里全是 node:net 的原始错）',
+    );
+    assert.ok(
+      !/\|\|\s*3000/.test(main),
+      '别用 `|| 3000` 兜底：那会把 PORT=0（OS 分配端口，冒烟测试依赖它）一起吃掉',
+    );
   });
 
   it('dev.config.ts 模板只放数据（且 multiTurn 缺省为空 = 全部单轮）', () => {
@@ -316,13 +399,13 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     );
   });
 
-  it('main.ts 模板在 run 失败时给出原因并置非零退出码', () => {
+  it('batch.ts 模板在 run 失败时给出原因并置非零退出码', () => {
     // run 失败**不抛**（硬失败记进 result.error），模板若不显式检查就会「打印空行 + 退出 0」，
     // 让首次运行（如没配 ANTHROPIC_API_KEY）看起来像成功 —— 实测过这个静默失败。
-    const main = T.mainTs('demo');
-    assert.ok(main.includes('result.error'), 'main.ts 应检查 result.error');
-    assert.ok(main.includes('result.stopReason'), 'main.ts 应打印 stopReason');
-    assert.ok(main.includes('process.exitCode = 1'), 'main.ts 失败时应置非零退出码');
+    const batch = T.batchTs('demo');
+    assert.ok(batch.includes('result.error'), 'batch.ts 应检查 result.error');
+    assert.ok(batch.includes('result.stopReason'), 'batch.ts 应打印 stopReason');
+    assert.ok(batch.includes('process.exitCode = 1'), 'batch.ts 失败时应置非零退出码');
   });
 
   it('.env 三件套：生成 .env / .env.example，且 .gitignore 必须挡住 .env', () => {

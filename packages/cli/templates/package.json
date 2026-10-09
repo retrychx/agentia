@@ -6,6 +6,8 @@
     "dev": "agentia dev",
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "start": "node dist/main.js",
+    "start:prod": "node dist/main.js",
+    "start:batch": "node dist/batch.js",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

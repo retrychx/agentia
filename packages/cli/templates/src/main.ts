@@ -1,19 +1,106 @@
-import { createAgentApp } from './app.js';
+/**
+ * 入口（**默认**）—— HTTP 服务：`npm run build && npm start` 起来的就是它，在 `PORT`
+ * （缺省 3000）上长期监听。这就是 NestJS 那条口径里 `main.ts` 的角色：build 完 run 起来
+ * 就是一个**能用的服务**，不是跑一次就退出。
+ *
+ * 一次性批处理在 `batch.ts`（`npm run start:batch -- "你的问题"`）。两者**共用** app.ts 的
+ * 同一个 `createAgentApp()` 工厂 —— 能力选择 / 工作目录 / `.env` 读取只有一份实现。
+ *
+ * 本文件给到的：`/healthz`、同步 `POST /run`（含 SSE 逐帧）、异步 `POST /tasks` +
+ * 崩溃续跑（SqliteTaskStore + resumePending）、优雅停机（SIGTERM/SIGINT → drain →
+ * server.close）、可选 Bearer 鉴权（AGENTIA_TOKEN）。
+ * 更完整的生产配方（metrics / OTLP / Dockerfile / compose / 反代）在框架仓库的
+ * examples/deploy/ 与 docs/deployment.md；API 细节见本项目 AGENTS.md 的「触发与宿主」节。
+ *
+ * ⚠️ SqliteTaskStore 用 `node:sqlite`，需要 **Node ≥ 22.5** —— 更低版本在**构造期**抛可读
+ * 报错（框架对它延迟加载，所以 `npm run dev` 与 `npm run start:batch` 不受影响）。
+ * 想让这个服务在 Node 18 上也能起：把下面那行换成 `FileTaskStore`（`@migor/agentia` 同样
+ * 导出，构造参数一样是文件路径）—— 代价是**单写者前提**，多进程共写同一文件会交错。
+ */
+import { mkdirSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { IncomingMessage } from 'node:http';
+import { dirname, resolve } from 'node:path';
+import { AsyncRunner, SqliteTaskStore, createHttpHandler } from '@migor/agentia';
+import { createAgentApp, PROJECT_ROOT } from './app.js';
 
-// 装配在 app.ts 里（与启动分离）：`agentia dev` 的调试环要复用同一个工厂，
-// 才能把「能力选择 / 工作目录」喂进 createApp。别把 createApp(...) 搬回这里。
-// `.env` 也由 app.ts 读 —— 那才是 `agentia dev` 与 `npm start` **都**会经过的那条路
-// （本文件在 dev 环下根本不执行），写在这里会让两个入口的行为不一致。
+// `PORT=`（空串）不是「用缺省」的写法，但 `Number('')` 恰好是 0 ⇒ 静默变成**随机端口**
+// （没人知道的端口 = 看起来就是起不来）。这里把空串显式当缺省，并对非整数 / 越界响亮报错。
+// ⚠️ 别改成 `Number(process.env.PORT) || 3000` —— 那会把 `PORT=0`（由 OS 分配端口，
+//    冒烟测试正是靠它拿随机端口）一起吃掉。
+const rawPort = process.env.PORT;
+const PORT = rawPort === undefined || rawPort.trim() === '' ? 3000 : Number(rawPort);
+if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
+  throw new Error(
+    `PORT 必须是 0–65535 的整数（0 = 由操作系统分配），实际：${JSON.stringify(rawPort)}`,
+  );
+}
+
+// 缺省落**工程根**、不是 cwd：服务形态常换工作目录启动（systemd / 容器 `-w`），cwd 相对会让
+// 同一个工程在两种启动方式下用**两个库** —— 而 `resumePending()` 静默找不到上一个进程的任务，
+// 表面看像「任务丢了」。与 app.ts 的能力目录同一条判据、同一个常量（PROJECT_ROOT）。
+const DB_PATH = process.env.AGENTIA_DB ?? resolve(PROJECT_ROOT, 'agentia.db');
+const TOKEN = process.env.AGENTIA_TOKEN;
+
+if (DB_PATH !== ':memory:') mkdirSync(dirname(DB_PATH), { recursive: true });
+
+// 不设 token 不静默：响亮警告，但不强制（与框架「鉴权只是缝」同档 —— 策略是宿主的事）
+if (!TOKEN) {
+  console.warn('[server] 警告：未设 AGENTIA_TOKEN，HTTP 面无任何鉴权，仅应监听回环/内网');
+}
+
+// 装配与 main.ts / dev 环共用同一个工厂 —— 别把 createApp(...) 搬来这里旁路它，
+// 否则「能力选择 / 工作目录 / .env 读取」在生产与开发两条路上长出两个行为。
 const app = await createAgentApp();
 
-const { result } = await app.run([{ role: 'user', content: process.argv[2] ?? '介绍一下你自己' }]);
+// 耐久任务存储（WAL，多进程安全）+ 崩溃续跑：上次未完成的 queued/running 任务
+// 重启后接着跑（不是丢弃）；多进程共库时按 ownerId 跳过本进程记录
+const store = new SqliteTaskStore(DB_PATH);
+const runner = new AsyncRunner(app, { store });
+const resumed = await runner.resumePending();
+if (resumed) console.log(`[server] 续跑 ${resumed} 个未完成任务`);
 
-// 注意：run 失败**不会抛**（硬失败被记进 result.error 与 trace 后正常返回）—— 不显式检查就会
-// 「打印一行空白 + 退出 0」，让首次运行（比如忘了配 ANTHROPIC_API_KEY）看起来像成功。
-if (result.error) {
-  console.error(`run 失败（stopReason=${result.stopReason}）：${result.error.message}`);
-  console.error('提示：模型调用读 ANTHROPIC_API_KEY —— 填进 .env（src/app.ts 的 loadEnvFile() 会读）或 export 均可；');
-  console.error('      换端点 / 注入自定义 client 见项目内 AGENTS.md。');
-  process.exitCode = 1;
+// 设了 AGENTIA_TOKEN 才挂鉴权钩子（Bearer 校验）；框架的 authenticate 是缝，
+// 抛错即 401（细节只进服务端日志），正常返回即通过。/healthz 不在鉴权面内。
+const authenticate = TOKEN
+  ? (req: IncomingMessage): void => {
+      if (req.headers.authorization !== `Bearer ${TOKEN}`) {
+        throw new Error('缺少或错误的 Bearer token');
+      }
+    }
+  : undefined;
+const handler = createHttpHandler(app, {
+  runner,
+  ...(authenticate ? { authenticate } : {}),
+});
+
+const server = createServer(handler);
+
+server.listen(PORT, () => {
+  // PORT=0 时端口由操作系统分配，以 server.address() 拿到的实际端口为准
+  const addr = server.address();
+  const actualPort = typeof addr === 'object' && addr !== null ? addr.port : PORT;
+  // ⚠️ 首行是**就绪信号**（e2e 从它解析实际端口判定服务可用）——
+  //    改文案要同步改仓库 scripts/e2e-cli.ts 的正则
+  console.log(`[server] listening on :${actualPort}（db=${DB_PATH}）`);
+  console.log('  POST /run        同步 run（带 Accept: text/event-stream → SSE 逐帧）');
+  console.log('  POST /tasks      异步任务（轮询 GET /tasks/:id）');
+  console.log('  GET  /healthz    健康检查（探针用，不鉴权）');
+});
+
+// 优雅停机：框架**不订阅信号**，这是宿主的职责。第二次信号直接退出（便于强杀）
+let stopping = false;
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`[server] ${sig}：优雅停机……`);
+    void (async () => {
+      // 拒新单 → 等在飞同步 run 与异步任务收尾 → 超时强制收口 SSE
+      const clean = await handler.drain({ timeoutMs: 15_000 });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      console.log(clean ? '[server] 已排空退出' : '[server] 超时收口，剩余任务下次启动续跑');
+      process.exit(0);
+    })();
+  });
 }
-if (result.finalText) console.log(result.finalText);
