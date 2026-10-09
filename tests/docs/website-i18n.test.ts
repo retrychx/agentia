@@ -14,10 +14,14 @@
  *      这正是 `packages/website/src/scripts/scenarios.js` 头注里对读者承诺过的那条判据。
  *   ③ **英文面不出现中文**：英文 fragment 剥掉代码块后不含 CJK；更要紧的是**真跑**客户端脚本
  *      与 BYOK playground，断言英文下写进 DOM 的字符串一个中文字符都没有（中文下则有）。
- *   ④ **语言机制在场且方向正确**：`<html lang>` 随页；检测脚本**先 localStorage、再
- *      navigator.languages、拿不到就不跳**，且**只读不写** localStorage（写了就把「自动跳转」
- *      记成「用户选择」，用户点回中文会被立刻弹走 —— 只有 Nav 的切换控件才写）；
- *      `/en` 已登记进 sitemap / llms.txt / `_worker.js`。
+ *   ④ **语言机制在场且方向正确**：`<html lang>` 随页；**客户端**的 `location.replace` 检测脚本
+ *      **已下线**（2026-10-09 搬到服务端 `_worker.js` 的 302 —— 它留在每一页 HTML 里，会让
+ *      AFDocs 的 `redirect-behavior` 逐页判 `js-redirect` FAIL）；Nav 的切换控件写 **`hl` cookie**
+ *      （服务端读它，让「显式选择」优先于 `Accept-Language` 自动跳转，否则英文浏览器点「中」
+ *      会被弹回 `/en` 形成循环）；`/en` 已登记进 sitemap / llms.txt / `_worker.js`。
+ *      ⚠️ 302 的**行为**（目标 / `Vary` / 循环防线）不在本文件射程内，由
+ *      `tests/docs/website-lang-negotiation.test.ts` **真跑** worker 守 —— 这里只问
+ *      「客户端那段还在不在、cookie 有没有写上」。
  *
  * ⚠️ 为什么②③用**子进程**真跑（`tests/fixtures/website-i18n-harness.mjs`）：客户端脚本的语言在
  * **import 期**就定了（`packages/website/src/scripts/lang.js` 顶层读 `<html lang>`），而 ESM 按
@@ -56,19 +60,25 @@ const read = (p: string) => readFileSync(p, 'utf8');
 const countCjk = (s: string) => (s.match(new RegExp(CJK.source, 'g')) ?? []).length;
 
 /**
- * 只剥**整行都是注释**的行（`// …` 与 `/* … *\/` 块），用来给 ④ 那组「某段代码在场」的断言兜底。
+ * 两层「剥壳」，给 ④ 那组「某段代码**在不在**」的断言用（2026-10-09 从「某段代码在场」翻成
+ * 「某段代码已下线」后仍需要它们）：
  *
- * 为什么需要它：`assert.match(detect, /location\.replace\(/)` 这类断言问的是「**代码里**有没有」，
- * 但正则不认识代码与注释 —— 脚本块里**一条写着同样字面量的注释**就能把它喂绿，而真代码被删。
- * 本仓已经在同一个文件里栽过一次同款（① 的 `lang='en'` 被**头部注释**满足），登记过的形状叫
- * 「同一字面量在两处出现」。这段脚本里本来就带注释（`// 交给 Cloudflare Pages 的 308 …`、
- * `/* 任何异常都不该影响页面可用性 *\/`），所以这不是假想风险。
+ *   · `stripHtmlComments` 去 HTML 注释（`<!-- … -->`）—— 本仓**两个方向都踩过**：
+ *     一条注释把断言喂**绿**（① 的 `lang='en'` 被头部注释满足），以及一条**说明性**注释把断言
+ *     喂**红**（注释里照写那段代码的字面量，而代码已删）。
+ *   · `stripJsCommentLines` 去**整行**的 `// …` 与 `/* … *\/`（Base.astro 的 frontmatter 里
+ *     就有 `//` 注释）。
  *
- * ⚠️ 边界（如实标注）：**按行**判定，不处理「代码同一行尾部的 `// …`」。要满足上面那些断言，
- * 行内混合形态仍须**同一行里真有那段代码** —— 所以按行剥已经挡掉了「一条独立注释把断言喂绿」
+ * 为什么必须两层都剥：正则不认识代码与注释 —— 断言 `!/location\.replace\s*\(/` 问的是
+ * 「**代码里**还有没有」，而注释里同样能出现这个字面量，方向任一边都会骗人。
+ *
+ * ⚠️ 边界（如实标注）：**按行**判定，不处理「代码同一行尾部的 `// …`」。要触发上面那些断言，
+ * 行内混合形态仍须**同一行里真有那段代码** —— 所以按行剥已经挡掉了「一条独立注释骗过断言」
  * 这个现实形态。不写字符级扫描器：本仓实测它会在正则/字符串字面量里错位（见头注「射程」那段）。
- * 「剥壳器自己是活的」由紧跟其后的自证断言负责 —— 退化成恒等函数时它会红，而不是静默失效。
+ * 「剥壳器自己是活的」由紧跟其后的**两条**自证断言负责 —— 任一层退化成恒等函数时它们会红。
  */
+const stripHtmlComments = (html: string): string => html.replace(/<!--[\s\S]*?-->/g, '');
+
 const stripJsCommentLines = (js: string): string => {
   const out: string[] = [];
   let inBlock = false;
@@ -90,6 +100,11 @@ const stripJsCommentLines = (js: string): string => {
 
 // 自证：拿一段含注释的样本跑一遍。少了它，剥壳器哪天退化成恒等函数也没人知道，
 // 而那种「退化」不会红、只会让 ④ 那组断言悄悄回到「可被注释满足」的状态。
+assert.equal(
+  stripHtmlComments('a<!-- location.replace( -->b'),
+  'ab',
+  'stripHtmlComments 退化了（没剥掉 HTML 注释）',
+);
 assert.equal(
   stripJsCommentLines('a;\n// location.replace(\n/* if (!known) return; */\nc;'),
   'a;\nc;',
@@ -384,35 +399,50 @@ describe('官网双语：语言机制在场且方向正确', () => {
     assert.match(base, /const zhPath = isEn \? cleanPath\.replace/, '中文地址没有从当前页派生');
   });
 
-  it('检测脚本：先 localStorage、再 navigator.languages、拿不到就不跳；且只读不写', () => {
+  it('Base.astro：客户端语言跳转已下线（HTML 里不再有 JS 跳转）', () => {
     const base = read(join(WEB, 'src', 'layouts', 'Base.astro'));
-    const m = /<script is:inline>([\s\S]*?)<\/script>/.exec(base);
-    assert.ok(m, 'Base.astro 里找不到 is:inline 的语言检测脚本');
-    const detect = m[1] as string;
-    // ⚠️ 断言一律打在**剥掉整行注释**的代码上（理由见 stripJsCommentLines 的头注）：
-    //    这段脚本里本来就有注释，一条含 `location.replace(` 的注释足以把下面那条断言喂绿。
-    const code = stripJsCommentLines(detect);
-    assert.ok(code.length > 200, `剥注释后只剩 ${code.length} 字符 —— 抽取或剥壳退化了`);
-    assert.ok(code.includes("'agentia-lang'"), '检测脚本没读 agentia-lang');
-    assert.match(code, /localStorage\.getItem/, '检测脚本没有以 localStorage 为首选判据');
-    assert.match(code, /navigator\.languages/, '检测脚本没有回落看 navigator.languages');
-    assert.match(code, /\^zh\\b/i, '检测脚本没有「语言列表里有中文吗」的判据');
-    assert.match(code, /location\.replace\(/, '检测脚本没有用 location.replace（会留下历史条目）');
-    assert.match(code, /if \(!known\) return;/, '拿不到语言信息时必须**不跳** —— 缺这条回落');
+    // 断在**两层剥壳之后**的源码上：本文件既有 HTML 注释也有 frontmatter 的 `//` 注释，
+    // 而「已下线」这句说明本身就出现在注释里 —— 不剥壳，一条写着同样字面量的注释就能把断言
+    // 按**反方向**骗过（假红 / 假绿两形态本仓都踩过，见 stripHtmlComments 的头注）。
+    const code = stripJsCommentLines(stripHtmlComments(base));
     assert.ok(
-      !/setItem/.test(code),
-      '检测脚本**不得写** localStorage —— 写了就把「自动跳转」记成「用户选择」，' +
-        '用户之后手动点回中文会被立刻弹走（只有 Nav 的切换控件才写）',
+      !/location\.replace\s*\(/.test(code),
+      'Base.astro 里又有客户端跳转了 —— 它是 is:inline 的、留在**每一页** HTML 里，' +
+        'AFDocs 的 redirect-behavior 会逐页判 js-redirect FAIL（语言协商归服务端 _worker.js）',
     );
+    assert.ok(
+      !base.includes('agentia-lang'),
+      'Base.astro 还在用 localStorage["agentia-lang"] —— 语言记录现在只有 cookie `hl` 一处',
+    );
+    // 行为侧（302 的目标 / `Vary` / 循环防线）由 tests/docs/website-lang-negotiation.test.ts
+    // **真跑** worker 守；这里只问「客户端那段还在不在」。
   });
 
-  it('Nav.astro：切换控件在场，两个链接指向同页的另一种语言，且切换时写 localStorage', () => {
+  it('Nav.astro：切换控件在场，两个链接指向同页的另一种语言，且切换时写 `hl` cookie', () => {
     const nav = read(join(WEB, 'src', 'components', 'Nav.astro'));
     assert.ok(nav.includes('class="lang-switch"'), 'Nav 里没有语言切换控件');
     assert.ok(nav.includes('href={zhHref}'), '切换控件没有指向中文地址');
     assert.ok(nav.includes('href={enHref}'), '切换控件没有指向英文地址');
-    assert.ok(nav.includes("localStorage.setItem('agentia-lang','zh')"), '点「中」没有记住选择');
-    assert.ok(nav.includes("localStorage.setItem('agentia-lang','en')"), '点「EN」没有记住选择');
+    // 写入的必须是**服务端读得到的** cookie（`hl`，path=/）：服务端 _worker.js 靠它把
+    // 「显式选择」置于 `Accept-Language` 自动跳转之上（缺它就有循环）。
+    // ⚠️ 只在**真的 onclick 处理器**里找（不看整文件）：Nav 的注释里就写着 `localStorage`
+    // （说明「不再用它」），整文件 grep 会被那句说明按反方向骗过 —— 本仓两个方向都踩过。
+    const handlers = [...nav.matchAll(/onclick="([^"]*)"/g)].map((m) => m[1] as string);
+    const onclick = handlers.join('\n');
+    assert.equal(
+      handlers.length,
+      2,
+      `切换控件的 onclick 处理器应有 2 个，实际 ${handlers.length} 个`,
+    );
+    assert.ok(
+      onclick.includes("'hl=zh;path=/"),
+      '点「中」没有写下 hl=zh cookie（显式选择优先的输入）—— 只写 localStorage 的话服务端读不到',
+    );
+    assert.ok(onclick.includes("'hl=en;path=/"), '点「EN」没有写下 hl=en cookie');
+    assert.ok(
+      !onclick.includes('localStorage'),
+      'Nav 的切换控件仍在写 localStorage —— 语言记录现在只有 cookie `hl` 一处（服务端读它）',
+    );
     assert.ok(
       nav.includes('hreflang="zh-CN"') && nav.includes('hreflang="en"'),
       '切换链接缺少 hreflang',

@@ -8,9 +8,11 @@
 //   ② 相对路径在本站的 404 页上是**错的**：404 页会以**任意**请求路径被送出
 //      （/foo/bar/baz 也回它），浏览器按 /foo/bar/ 解析 `./docs` ⇒ 又落回 404。
 //
-// 语言面（2026-10-08）：导航文案与站内链接都随 `lang` 变；`zhHref` / `enHref` 是
-// 「本页在两种语言下的地址」，由 Base.astro 算好传进来（页面不各算一次）。
-// 切换控件点击时**写** localStorage（自动检测只读不写，见 Base.astro 的注释）。
+// 语言面（2026-10-08，切换机制 2026-10-09 改）：导航文案与站内链接都随 `lang` 变；
+// `zhHref` / `enHref` 是「本页在两种语言下的地址」，由 Base.astro 算好传进来（页面不各算一次）。
+// 切换控件点击时**写 cookie** `hl=zh` / `hl=en` —— 服务端 `public/_worker.js` 读它，
+// 让「显式选择」优先于按 `Accept-Language` 的自动跳转（没有它，英文浏览器点「中」落回 `/`
+// 又会被自动弹回 `/en`，形成循环）。⚠️ 不再写 localStorage：语言记录只有 cookie 一处。
 const {
   page = 'home',
   lang = 'zh',
@@ -91,7 +93,7 @@ const navText = isEn
           aria-current={!isEn ? 'true' : undefined}
           hreflang="zh-CN"
           lang="zh-CN"
-          onclick="try{localStorage.setItem('agentia-lang','zh')}catch(e){}">中</a>
+          onclick="try{document.cookie='hl=zh;path=/;max-age=31536000;SameSite=Lax'}catch(e){}">中</a>
         <span aria-hidden="true">/</span>
         <a
           href={enHref}
@@ -99,7 +101,7 @@ const navText = isEn
           aria-current={isEn ? 'true' : undefined}
           hreflang="en"
           lang="en"
-          onclick="try{localStorage.setItem('agentia-lang','en')}catch(e){}">EN</a>
+          onclick="try{document.cookie='hl=en;path=/;max-age=31536000;SameSite=Lax'}catch(e){}">EN</a>
       </div>
       <a href="https://github.com/retrychx/agentia" target="_blank" rel="noopener" class="nav-cta">GitHub ↗</a>
     </div>

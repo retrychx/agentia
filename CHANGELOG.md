@@ -844,6 +844,45 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   ⇒ 被文件自己的注释满足），都是变异验证当场抓到的，已收紧。
 - 同样**不涉及包**（改的是 `.github/workflows/ci.yml`、`packages/website` 与 `tests/`）。
 
+### 官网 · 语言跳转从客户端 JS 搬到服务端 302（2026-10-09 ①）
+
+- **病例（真 FAIL，非判据抖动）**：AFDocs（`agentdocsspec.com` 的 0.20.0 打分器）的
+  `redirect-behavior` **逐页**判 `js-redirect` 而 FAIL —— 这是 CI 上唯一一条**真** FAIL
+  （`cache-header-hygiene` 那条是部署半传播的连带假红，早前已排除）。根因：语言自动检测是
+  `Base.astro` 里一段 `is:inline` 脚本（`location.replace`），而它**留在每一页 HTML 里**
+  （英文页也有，只是运行期不触发）；AFDocs 判的是「这份 HTML 里有没有 JS 跳转」，不区分它会不会真跑。
+- **搬到服务端**：`packages/website/public/_worker.js`（Pages **advanced mode** worker，源码 ==
+  线上行为）按 `Accept-Language` 对**中文页面路径**回 **302** 到 `/en` 等价路径，并带
+  **`Vary: Accept-Language`**（少了它 CDN 会把中文那份 200 回给英文访客 —— 跳转直接失效）。
+  客户端那段脚本连同 `localStorage['agentia-lang']` 一起下线。⚠️ 设计稿
+  `docs/plans/2026-10-08-website-i18n.md` §7 那条「静态托管没有服务端、JS 是唯一手段」当场被推翻
+  （它没把 `_worker.js` 算进去），已在原处划掉并补 §9。
+- **显式选择优先于自动检测（防循环的那把锁）**：`Nav.astro` 的中 / EN 切换控件改写成
+  **`hl=zh` / `hl=en` cookie**（`path=/`、一年有效）；`/` 见到 `hl=zh` 就**不跳** —— 没有它，
+  英文浏览器点「中」落回 `/` 后会被自动检测再次弹回 `/en`，用户**出不来**。
+- **四条刻意边界**（写进 `_worker.js` 注释 + 设计稿 §9.3）：① 只从中文路径跳到 `/en`、**不反向**
+  （`/en` 是本体、永不拦；代价如实标注：中文偏好访客循外链落到 `/en` 时**不会**被送回 `/`，
+  旧 JS 会 —— 有意收窄）；② **只在非 markdown 请求上做**（带 `Accept: text/markdown` 的 agent
+  要它请求的那个 URL 的 `.md`）；③ 只处理 `GET` / `HEAD`；④ 302 **不给长 `max-age`**
+  （与站内其余响应同档 `public, max-age=0, must-revalidate`）。
+- **守卫**：新增 `tests/docs/website-lang-negotiation.test.ts`（**真跑** `_worker.js`，喂假
+  `env.ASSETS`）11 条 —— 用户点名的五条（`hl=zh` 不跳 / 无 cookie + `Accept-Language: en` ⇒
+  302 到 `/en` / `zh-CN` 不跳 / `/en` 本体不被拦 / **手动切回中文后不再被弹回**）外加 `Vary` +
+  缓存头、深层页 query 保留、`POST` 与 markdown 不跳、`/en/` 308 与内容协商**不回归**。
+  `tests/docs/website-i18n.test.ts` 两条改写（客户端跳转**已下线**：断言打在**两层剥壳**后的源码上；
+  Nav 改核 **`hl` cookie**、且只认真实 `onclick` 处理器里的写入 —— Nav 注释里就写着 `localStorage`）。
+  **反向验证过 8 条**（各恰好点名那条，复原后 `sha256` 逐字节一致）：整段停用 ⇒ **4 条** /
+  忽略 cookie ⇒ **2 条** / `Vary` 换成 `Accept`、去掉 `/en` 排除、去掉「非 markdown」闸、
+  去掉方法闸 ⇒ **各 1 条**（服务端）；Nav 退回 `localStorage`、Base 加回客户端脚本 ⇒ **各 1 条**。
+- **验收读数（本地真跑，8 页 curated 样本）**：`redirect-behavior` 由 **FAIL（js-redirect，逐页）
+  翻成 PASS**（「No redirects detected across 8 pages」），`URL Stability and Redirects` 100/100；
+  同一份产物在**退回旧实现**时该检查重新 FAIL —— 红→绿两向都实测过。
+- ⚠️ **一处自己踩到的坑（顺手记下）**：第一版把「已下线」的说明写在 `<head>` 的 **HTML 注释**里，
+  而 Astro 会把它**渲进每一页**（`location.replace` 字面量又回到了产物 HTML 里 —— 正是这条检查
+  在看的字面量）；已把说明移进**构建期才执行的 frontmatter** 注释，`<head>` 只留一句不含该字面量的短注。
+- 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
+  既有使用者不需要任何动作。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
