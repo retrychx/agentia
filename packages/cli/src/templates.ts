@@ -193,6 +193,18 @@ export function mainTs(name: string): string {
   return renderTemplate('src/main.ts', { __PROJECT_NAME__: name });
 }
 
+/**
+ * 服务入口 server.ts（templates/src/server.ts）：可上线的 HTTP 宿主 ——
+ * `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）+ drain 优雅停机 +
+ * 可选 Bearer 鉴权（AGENTIA_TOKEN）。**无条件生成**（不是 --flag）：脚手架的交付承诺
+ * 是「build 产物可以直接上线当服务」，服务化不该让用户自己去 examples/deploy 抄。
+ * ⚠️ 与 main.ts 同一道闸：它必须复用 app.ts 的 `createAgentApp()` 工厂，
+ * 不许旁路 createApp（templates.test.mjs 钉着）。
+ */
+export function serverTs(name: string): string {
+  return renderTemplate('src/server.ts', { __PROJECT_NAME__: name });
+}
+
 export function projectReadme(name: string): string {
   return renderTemplate('README.md', { __PROJECT_NAME__: name });
 }

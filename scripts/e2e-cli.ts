@@ -2,7 +2,7 @@
 // agentia create 脚手架 → agentia g 生成四类能力 → 注册表 codemod →
 // discoverProviders/createApp({discover}) 装配 → mock 模型跑通一次 run。
 // 运行：npm run e2e（先 build 框架与 CLI，再 tsx 跑本脚本）
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import {
@@ -81,6 +81,8 @@ try {
     // 装配（app.ts）与启动（main.ts）分离：dev 环要复用 app.ts 的工厂
     'src/app.ts',
     'src/main.ts',
+    // 服务入口（无条件生成）：build 之后 `npm run start:server` 即得可上线的 HTTP 服务
+    'src/server.ts',
     'src/dev.config.ts',
     'src/session-store.ts',
     'src/registry.ts',
@@ -270,6 +272,8 @@ try {
   npmRun('build', proj);
   for (const f of [
     'dist/main.js',
+    // 服务入口的产物 —— start:server 的承诺（下面 4f 真起它）
+    'dist/server.js',
     // 装配搬进 app.ts 之后，生产路径也依赖它 —— 少一个产物 `node dist/main.js` 立刻 MODULE_NOT_FOUND
     'dist/app.js',
     'dist/session-store.js',
@@ -282,7 +286,7 @@ try {
   const scaffoldPkg = JSON.parse(readFileSync(join(proj, 'package.json'), 'utf8')) as {
     scripts: Record<string, string>;
   };
-  for (const s of ['dev', 'build', 'start', 'typecheck']) {
+  for (const s of ['dev', 'build', 'start', 'start:server', 'typecheck']) {
     assert(typeof scaffoldPkg.scripts[s] === 'string', `脚手架 package.json 缺 scripts.${s}`);
   }
   // 构建**必须先清 dist**：tsc 不删不再产出的文件，而生产入口是按本文件位置 discover
@@ -411,6 +415,96 @@ try {
         `生产形态的能力菜单里应有脚手架生成的 hello 能力（请求体开头：${b.slice(0, 300)}）`,
       );
     }
+
+    // —— 4f) 服务入口【真起一遍】：`node dist/server.js` 是「build 产物可以直接上线」
+    //    的那条承诺 —— 就绪标记（PORT=0 由 OS 分配，从 `[server] listening on :<port>`
+    //    解析实际端口）→ /healthz 200 → 无 token POST /run 401 → 带 token 真跑一轮
+    //    200 → SIGTERM 干净退出。就绪标记的文案与模板的 server.ts 互为锚点
+    //    （模板头注也钉着这条）。假端点还开着，模型侧零网络。
+    const e2eToken = 'e2e-token-0123456789';
+    const srv = spawn(process.execPath, ['dist/server.js'], {
+      cwd: proj,
+      env: {
+        ...fakeEnv,
+        PORT: '0',
+        AGENTIA_TOKEN: e2eToken,
+        AGENTIA_DB: join(tmp, 'e2e-server-db', 'tasks.db'),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let srvStdout = '';
+    let srvStderr = '';
+    srv.stderr.on('data', (c: Buffer) => {
+      srvStderr += c.toString('utf8');
+    });
+    let srvExit: number | null = null;
+    try {
+      const actualPort = await new Promise<number>((resolvePort, rejectPort) => {
+        const timer = setTimeout(
+          () => rejectPort(new Error(`server 就绪超时\nstdout=${srvStdout}\nstderr=${srvStderr}`)),
+          30_000,
+        );
+        srv.stdout.on('data', (c: Buffer) => {
+          srvStdout += c.toString('utf8');
+          const m = /\[server\] listening on :(\d+)/.exec(srvStdout);
+          if (m) {
+            clearTimeout(timer);
+            resolvePort(Number(m[1]));
+          }
+        });
+        srv.once('exit', (code) =>
+          rejectPort(
+            new Error(
+              `server 在就绪前退出（code=${code}）\nstdout=${srvStdout}\nstderr=${srvStderr}`,
+            ),
+          ),
+        );
+      });
+      const base = `http://127.0.0.1:${actualPort}`;
+      const health = await fetch(`${base}/healthz`);
+      assert(health.status === 200, `/healthz 应 200，实际 ${health.status}`);
+      const noAuth = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      assert(noAuth.status === 401, `无 token POST /run 应 401，实际 ${noAuth.status}`);
+      const authed = await fetch(`${base}/run`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${e2eToken}`,
+        },
+        body: JSON.stringify({ messages: [{ role: 'user', content: '生产服务冒烟' }] }),
+      });
+      const authedBody = await authed.text();
+      assert(
+        authed.status === 200,
+        `带 token POST /run 应 200，实际 ${authed.status}：${authedBody.slice(0, 300)}`,
+      );
+      assert(
+        authedBody.includes('PROD_OK'),
+        `POST /run 应真跑一轮并回模型文本：${authedBody.slice(0, 300)}`,
+      );
+    } finally {
+      // 不管断言过没过都收口子进程；退出的断言在 finally 外做（不掩盖原始失败）
+      srv.kill('SIGTERM');
+      srvExit = await new Promise<number | null>((r) => {
+        const timer = setTimeout(() => r(null), 15_000);
+        srv.once('exit', (code) => {
+          clearTimeout(timer);
+          r(code);
+        });
+      });
+    }
+    assert(
+      srvExit === 0,
+      `SIGTERM 后 server 应干净退出（code=0），实际 ${srvExit}\nstderr=${srvStderr}`,
+    );
+    assert(
+      srvStdout.includes('[server] 已排空退出'),
+      `优雅停机应打「已排空退出」（没在飞任务时应排空）：stdout=${srvStdout}`,
+    );
   } finally {
     fake.close();
   }
@@ -591,6 +685,7 @@ try {
     for (const rel of [
       'src/app.ts', // 装配工厂（dev 环的入口）
       'src/main.ts', // 启动薄入口
+      'src/server.ts', // 服务入口（start:server）
       'src/dev.config.ts', // 开发期数据声明
       'src/session-store.ts', // 多轮的会话后端
       'src/tools/hello/index.ts',

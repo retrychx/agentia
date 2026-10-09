@@ -99,14 +99,18 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 「为什么」注（含「只增不减」这个代价的如实标注）。**只是数据，零行为。**
     'dev-protocol.ts': 337,
     'markdown.ts': 296,
-    'templates.ts': 259,
+    // 2026-10-09（脚手架服务入口 start:server）：259 → 271（+12 = serverTs accessor +
+    //   它的口径注「无条件生成 / 不许旁路 createApp」）
+    'templates.ts': 271,
     'doctor.ts': 213,
     // 2026-09-27（R8-P3b `agentia export` 命令注册）：206 → 219（+13 = import/帮助表/
     //   USAGE 表/分发分支，全是接线；新命令的本体在 export.ts）
     'cli.ts': 219,
     'native-pick.ts': 198,
     'report.ts': 194,
-    'create.ts': 140,
+    // 2026-10-09（脚手架服务入口 start:server）：140 → 146（+6 = import + write 一行 +
+    //   后续步骤文案两行 + serverTs 的接线注）
+    'create.ts': 146,
     'dev-logic.ts': 58, // 2026-09-23 A 阶段新增（server 侧纯判定，单源化后注释只留一份）
     // 2026-09-23 B 阶段新增（显式状态机：类型 + update 纯函数；零副作用零 node:* import）
     // 2026-09-27 复核尾巴：703 → 708（+5，纯注释 —— abort-grace-expired 的相位弱化边界注）
@@ -222,7 +226,11 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // ⚠️ 与上一笔的分野：那条 +18 修的是**缺陷**，这笔加的是**承诺兑现**（设计稿 §0 说
   // 「改一句 prompt 就能立刻重跑对照」，原先要手动 ⌘ 点两条）。判据 `autoPairTarget`
   // 有单测（6 个断言）且做过变异验证（把 `length !== 1` 改成 `!== 2` ⇒ 红）。
-  const TOTAL_BUDGET = 9287;
+  // 补账（2026-10-09，脚手架服务入口 start:server —— **新功能**）：9287 → 9305（+18）。
+  //   两笔：templates.ts +12（serverTs accessor + 口径注）、create.ts +6（接线 + 文案）。
+  //   新模板本体在 templates/src/server.ts（87 行），不在这个棘轮面内（它归
+  //   tsconfig.templates.json 与 templates.test.mjs 的形状断言照看）。
+  const TOTAL_BUDGET = 9305;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

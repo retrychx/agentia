@@ -102,6 +102,7 @@ npx agentia --version            # CLI 版本（= -v）
 |---|---|
 | `src/app.ts` | **装配**：导出 `createAgentApp({ toolSources?, workdir? })` 工厂 + `CAPABILITY_DIRS` + `createSessionStore()`，并在模块顶部 `loadEnvFile()` 读 `.env` |
 | `src/main.ts` | **启动**：薄入口 —— `createAgentApp()` → `app.run(...)`，再处理 `result.error` |
+| `src/server.ts` | **服务入口**：`createAgentApp()` → `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）→ SIGTERM/SIGINT 触发 `drain` 优雅停机；`npm run build && npm run start:server` 即是带 `/healthz`、异步任务、可选 `AGENTIA_TOKEN` Bearer 鉴权的服务（批处理仍是 `main.ts`） |
 | `src/dev.config.ts` | **数据**（不是逻辑）：开发期的声明，如 `multiTurn: ['trip-planner']`；见 §2.2 |
 | `src/session-store.ts` | `FileSessionStore`：把多轮对话落成 `.agentia/session.json`（原子写）；见 §6.4「对话历史」 |
 | `src/registry.ts` | 显式注册表（`agentia g` 自动维护） |

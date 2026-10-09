@@ -927,6 +927,34 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `examples/deploy/`、上线清单在 `docs/deployment.md`、API 见项目内 `AGENTS.md` 的「触发与宿主」节。
 - 只改文案，不改生成逻辑与脚本。CLI 套件 210/210 绿。
 
+### 脚手架生成可上线的服务入口（`start:server`）（2026-10-09 ④）
+
+- **病例**：`agentia create` 生成的项目只有 **Job 形态**（`npm start` = 跑一次就退出的
+  `main.ts`），而框架的交付承诺是「build 产物可以直接上线当服务」—— 上一版
+  （2026-10-09 ③）只把 README 那句误导文案改诚实了，服务化仍要用户自己去
+  `examples/deploy/` 抄配方再接线。
+- **形态**：脚手架**无条件**多生成一个 `src/server.ts`（不是 `--flag` —— 「能上线」是
+  默认交付物，不是选配）。它复用 `src/app.ts` 的 `createAgentApp()` 工厂（dev 环与生产
+  共享同一份装配，旁路会被 `templates.test.mjs` 的形状断言挡住），接上
+  `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`：`/healthz`、同步 `POST /run`
+  （含 SSE）、异步 `POST /tasks`、**崩溃续跑**（`resumePending`）、**优雅停机**
+  （SIGTERM/SIGINT → `drain({ timeoutMs: 15_000 })` → `server.close`，二次信号直接退出）。
+  配套：模板 `package.json` 加 `start:server` 脚本、`.gitignore` 加 `agentia.db*`、
+  README 加「作为服务运行」节、`create` 的后续步骤文案补一行；`docs/usage-guide.md`
+  §2.1 文件分工表加 `src/server.ts` 行。
+- **鉴权取舍**：可选，不强制 —— 设了 `AGENTIA_TOKEN` 就启用 Bearer 校验（`/healthz`
+  除外）；**不设则启动时打一条响亮警告**（「HTTP 面无任何鉴权，仅应监听回环/内网」）。
+  与 `examples/deploy` 同档：框架「鉴权只是缝」（策略是宿主/反代的事），patrol 那种
+  强制模式对第一天的新工程太重。
+- **Node ≥ 22.5 边界如实标注**：`SqliteTaskStore` 用 `node:sqlite`，更低版本**起服务时**
+  构造期抛可读报错（框架对它延迟加载）；`npm run dev` 与 `npm start` 不受影响。
+  README 与 usage-guide 都写明这条。
+- **验证**：`templates.test.mjs` 加 server.ts 形状断言（从 `./app.js` 取工厂、不许旁路
+  `createApp`、AsyncRunner + createHttpHandler + drain + SIGTERM、缺省无 token 必须有
+  警告文案）；`scripts/e2e-cli.ts` 加一步真起 `node dist/server.js`（PORT=0、临时 DB、
+  假 Anthropic 端点）—— `/healthz` 200、无 token `POST /run` 401、带 token 真跑一轮
+  200、SIGTERM 干净退出。零 `src/` 框架改动。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

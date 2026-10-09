@@ -26,6 +26,7 @@
 |---|---|
 | `src/app.ts` | **装配**：导出 `createAgentApp({ toolSources?, workdir? })` 工厂 + `CAPABILITY_DIRS` + `createSessionStore()`；`.env` 也在这里读 |
 | `src/main.ts` | **启动**：薄入口 —— 调工厂 → `app.run(...)` → 处理 `result.error` |
+| `src/server.ts` | **服务入口**：调同一个工厂 → `createHttpHandler` + `AsyncRunner` + `SqliteTaskStore`（崩溃续跑）→ drain 优雅停机（见「作为服务运行」节） |
 | `src/dev.config.ts` | 开发期**数据**声明（`multiTurn` / `budget` / `workdir`）；只有 `agentia dev` 读它 |
 | `src/session-store.ts` | 多轮的会话后端（`FileSessionStore`，落盘 `.agentia/session.json`） |
 | `src/registry.ts` | 显式注册表（`agentia g` 自动维护） |
@@ -67,11 +68,42 @@ npm start -- "你的问题"   # 跑编译产物 dist/main.js —— 跑一次就
 ```
 
 ⚠️ `npm start` 是 **Job 形态**（跑一次、打印、退出）：适合 cron / CI / 容器里的一次性任务，
-**不是长期在线的服务**（没有端口、没有 `/healthz`、没有优雅停机）。要把这个 app 挂成 HTTP 服务，
-用框架的 `createHttpHandler` + `AsyncRunner` 自己接一层宿主 —— 可直接抄的完整配方（含
-Dockerfile / compose / 崩溃续跑）在框架仓库的
+**不是长期在线的服务**（没有端口、没有 `/healthz`、没有优雅停机）。长期在线用下面的
+`start:server`；更完整的生产配方（含 Dockerfile / compose / metrics）在框架仓库的
 [`examples/deploy/`](https://github.com/retrychx/agentia/tree/main/examples/deploy)，
 上线前的决定清单在同仓库 `docs/deployment.md`；API 细节见本项目 `AGENTS.md` 的「触发与宿主」节。
+
+## 作为服务运行
+
+`npm start` 跑一次就退出；要挂成长期在线的 HTTP 服务，用脚手架自带的 `src/server.ts`：
+
+```bash
+npm run build && npm run start:server   # = node dist/server.js
+```
+
+端点：
+
+- `GET /healthz` —— 健康检查（探针用，不鉴权）
+- `POST /run` —— 同步 run（请求带 `Accept: text/event-stream` → SSE 逐帧）
+- `POST /tasks` —— 异步任务（轮询 `GET /tasks/:id`，或 SSE 订阅 `GET /tasks/:id/stream`）
+
+服务侧给到的另外三件事：任务落 SQLite（`AGENTIA_DB` 指定路径，缺省 `./agentia.db`），
+**崩溃续跑**（重启后上次未完成的任务接着跑）、**优雅停机**（SIGTERM/SIGINT →
+拒新单、等在飞收尾、15s 超时收口；超时没跑完的任务下次启动续跑）。
+
+**鉴权**：设了环境变量 `AGENTIA_TOKEN` 就启用 Bearer 校验（`Authorization: Bearer <token>`，
+`/healthz` 除外）；**不设则无任何鉴权**，启动时会打一条响亮警告 —— 此时只应监听
+回环 / 内网（或放到有鉴权的反代后面）。框架**不实现** token/JWT 策略，更复杂的
+鉴权自己改 `src/server.ts` 里的 `authenticate` 钩子。
+
+环境变量：`PORT`（缺省 3000）· `AGENTIA_DB`（缺省 `./agentia.db`）· `AGENTIA_TOKEN`（可选）。
+
+⚠️ **Node ≥ 22.5**：任务存储 `SqliteTaskStore` 用 `node:sqlite`，更低版本起服务时
+构造期会抛可读报错（`npm run dev` 与 `npm start` 不受影响 —— 它们不碰它）。
+
+要 metrics（`/metrics`）/ OTLP 导出 / Dockerfile / compose 编排，直接抄框架仓库的
+[`examples/deploy/`](https://github.com/retrychx/agentia/tree/main/examples/deploy)
+与 `docs/deployment.md` —— `src/server.ts` 是它的精简版，两者同一套 API。
 
 也可以用环境变量（适合 CI / 容器）——**真实环境变量优先，不会被 `.env` 覆盖**：
 

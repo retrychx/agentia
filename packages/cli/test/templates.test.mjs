@@ -113,6 +113,58 @@ describe('templates 目录约定（四分类目录，无伞形词）', { skip: S
     assert.ok(!/createApp\s*\(/.test(body), 'main.ts 里不该有 createApp 调用');
   });
 
+  it('server.ts 模板是可上线的服务入口：复用 app.ts 的工厂，不许旁路 createApp', () => {
+    // 与 main.ts 同一道闸（见上一条）：server.ts 是**生产**入口，它若自己 createApp
+    // 一份装配，「能力选择 / 工作目录 / .env 读取」就会在 dev 与生产长出两个行为。
+    const server = T.serverTs('demo');
+    const body = code(server); // 头注里解释「别旁路」时会提到 createApp，那不是违例
+    assert.ok(
+      /from\s+'\.\/app\.js'/.test(body),
+      "server.ts 必须从 './app.js' 取工厂（注意 .js 后缀：NodeNext 的产物路径）",
+    );
+    assert.ok(body.includes('createAgentApp()'), 'server.ts 必须真的调用 createAgentApp() 工厂');
+    assert.ok(!/createApp\s*\(/.test(body), 'server.ts 里不该有 createApp 调用（装配在 app.ts）');
+    // 服务面的四根柱子：异步任务 + HTTP 宿主 + 优雅停机 + 崩溃续跑，少一根就不是
+    // 「可以直接上线」的承诺（缺的那根不会在单测里现形，只会在用户部署后现形）。
+    for (const needle of ['AsyncRunner', 'createHttpHandler', 'SqliteTaskStore', 'resumePending']) {
+      assert.ok(body.includes(needle), `server.ts 缺 ${needle}`);
+    }
+    assert.ok(/\.drain\(\{/.test(body), 'server.ts 必须接 drain 优雅停机');
+    assert.ok(body.includes("'SIGTERM'"), 'server.ts 必须订阅 SIGTERM（框架不订阅，是宿主的职责）');
+  });
+
+  it('server.ts 模板：AGENTIA_TOKEN 缺省时必须响亮警告，设了才挂 authenticate', () => {
+    // 鉴权取舍（与 examples/deploy 同档）：不强制（框架「鉴权只是缝」），但不静默 ——
+    // 无鉴权起服务却不吭声，等于替用户做了一个他没做的决定。
+    const server = T.serverTs('demo');
+    const body = code(server);
+    assert.ok(
+      /AGENTIA_TOKEN/.test(body) && /authorization/i.test(body),
+      'server.ts 必须读 AGENTIA_TOKEN 并做 Bearer 校验（authorization 头）',
+    );
+    assert.ok(
+      server.includes('未设 AGENTIA_TOKEN') && server.includes('无任何鉴权'),
+      'AGENTIA_TOKEN 缺省时必须打印响亮警告（不静默、不强制）',
+    );
+    // 条件展开：没设 token 时**不传**钩子（显式 undefined 与「不提供」在
+    // exactOptionalPropertyTypes 下是两回事 —— 框架侧开着这个开关）
+    assert.ok(
+      /\.\.\.\(authenticate \? \{ authenticate \} : \{\}\)/.test(body),
+      'authenticate 必须条件展开（缺省 = 不挂钩子，不是传 undefined）',
+    );
+  });
+
+  it('server.ts 模板：就绪标记按 server.address() 的实际端口打（PORT=0 可解析）', () => {
+    // e2e 用 PORT=0 起服务并从这行解析实际端口 —— 打 PORT 变量本身会让 PORT=0 的
+    // 测试永远无法连上（操作系统分的端口没人知道）。文案与 e2e-cli.ts 的正则互为锚点。
+    const server = T.serverTs('demo');
+    assert.ok(server.includes('server.address()'), '就绪行必须取 server.address() 的实际端口');
+    assert.ok(
+      server.includes('[server] listening on :'),
+      '就绪标记 `[server] listening on :<port>` 是 e2e 的解析锚点，改文案要同步改 scripts/e2e-cli.ts',
+    );
+  });
+
   it('dev.config.ts 模板只放数据（且 multiTurn 缺省为空 = 全部单轮）', () => {
     // 判据（D8 ②）：逻辑副本会漂移，数据不会 ⇒ dev.ts（逻辑）不要，dev.config.ts（数据）可以。
     const cfg = T.devConfigTs();

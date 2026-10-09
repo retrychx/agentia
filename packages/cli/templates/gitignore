@@ -7,3 +7,6 @@ dist
 
 # dev 环的本地状态：对话历史（.agentia/session.json）等 —— 是本机调试产物，不进版本库
 .agentia/
+
+# 服务入口（src/server.ts）的 SQLite 任务库（wal/shm 是它的伴生文件）
+agentia.db*

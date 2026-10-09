@@ -18,6 +18,7 @@ import {
   projectTsconfig,
   readFileToolIndexTs,
   REGISTRY_PATH,
+  serverTs,
   sessionStoreTs,
   toolIndexTs,
 } from './templates.js';
@@ -82,6 +83,9 @@ export function createProject(name: string, parent: string | undefined): number 
   // 才能把「能力选择 / 工作目录」喂进 createApp（见 templates.ts 的 appTs 注释）。
   write(dir, 'src/app.ts', appTs(name));
   write(dir, 'src/main.ts', mainTs(name));
+  // 服务入口（与 main.ts 同用 app.ts 的工厂）：build 之后 `npm run start:server`
+  // 即得可上线的 HTTP 服务（/healthz、异步任务、崩溃续跑、优雅停机、可选鉴权）
+  write(dir, 'src/server.ts', serverTs(name));
   // dev 环的**数据**声明（只有数据，没有逻辑；生产路径不读它）
   write(dir, 'src/dev.config.ts', devConfigTs());
   // 对话型能力用的文件后端会话存储（可选件，但生成出来省得用户自己写）
@@ -127,6 +131,8 @@ export function createProject(name: string, parent: string | undefined): number 
 
 生产构建：npm run build && npm start（先清 dist/，再 tsc → dist/，.md 资产由 scripts/copy-assets.mjs 跟随拷贝）
           dev 跑 src/、start 跑 dist/ —— 能力目录按文件位置解析，两边都成立。
+          服务入口：npm run build && npm run start:server（node dist/server.js ——
+          /healthz · POST /run · POST /tasks · 崩溃续跑 · 优雅停机 · AGENTIA_TOKEN 可选鉴权）
 
 目录约定：src/tools/ · src/skills/ · src/prompts/ · src/subagents/（一能力一文件夹）
 
